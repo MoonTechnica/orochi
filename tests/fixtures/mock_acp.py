@@ -123,6 +123,14 @@ def seats(request):
                         {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
         answer = json.loads(sys.stdin.readline())
         (root / "refused.txt").write_text(json.dumps(answer.get("result", {})))
+        if os.environ.get("MOCK_MID_REPLY"):
+            # Speak up while the lead is answering, not before: the lead writes advice.txt
+            # just before it starts streaming its reply.
+            deadline = time.time() + 30
+            while not (root / "advice.txt").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            time.sleep(0.8)
+            tool("send_message", to=got[0]["from"], body="one more thing: the retry has no backoff")
     proc.terminate()
 
 

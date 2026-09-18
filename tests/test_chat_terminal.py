@@ -56,6 +56,7 @@ MOCK_SEATS = "{seats}"
 MOCK_LINES = "{lines}"
 MOCK_LINE_DELAY = "{delay}"
 MOCK_FINISH_DELAY = "{finish}"
+MOCK_MID_REPLY = "{"1" if seats else ""}"
 """)
     return path
 
