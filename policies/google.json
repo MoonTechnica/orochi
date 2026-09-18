@@ -41,12 +41,6 @@
       ]
     }
   ],
-  "task_profiles": {
-    "simple": "small_edit, documentation",
-    "normal": "bug_fix, implementation, test",
-    "complex": "refactor, migration",
-    "extreme": "architecture, long_horizon"
-  },
   "reasoning_rules": {
     "simple": [
       "minimal",

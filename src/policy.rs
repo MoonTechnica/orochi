@@ -11,7 +11,10 @@ pub struct ProviderPolicy {
     pub source: Vec<String>,
     pub updated_at: String,
     pub models: Vec<ModelRule>,
-    pub task_profiles: BTreeMap<String, String>,
+    /// Retired: it listed task types per complexity, and nothing ever read it. Still accepted, so
+    /// an installed or published registry that carries it keeps loading.
+    #[serde(default, skip_serializing, rename = "task_profiles")]
+    _task_profiles: Option<serde::de::IgnoredAny>,
     pub reasoning_rules: BTreeMap<String, Vec<String>>,
     pub context_rules: ContextRules,
     pub cache_rules: CacheRules,

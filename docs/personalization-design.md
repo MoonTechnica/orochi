@@ -23,7 +23,7 @@ Facts found by surveying the code as of 2026-09-18:
 | 1 | **There is no memory.** It remembers no preferences, conventions or past decisions, and starts from a blank slate every time | There is nowhere to store them. Invariant: "task text and conversation do not go into SQLite" |
 | 2 | **Learning labels are narrow.** A run is `Success` only when an automatic check other than `git_` passes. Design, discussion, investigation, documentation, and repositories without tests produce zero learning records no matter how often they are used | `evaluator::outcome`, `learning::labeled` |
 | 3 | **Learning keys on an exact model ID match.** Every time a model is updated, its whole track record is lost | `model=?2` in `storage::learning_runs` / `pooled_runs` |
-| 4 | It holds no task type × model affinity. `task_profiles` is dead data that is only parsed | `policy.rs:14`, no references |
+| 4 | It holds no task type × model affinity. `task_profiles` is dead data that is only parsed (removed from the bundled policies on 2026-09-19; still accepted when a registry carries it) | `policy.rs:14`, no references |
 | 5 | For reference: OpenClaw's "learning" is textual memory (`USER.md` / `MEMORY.md` / daily notes), mainly explicit saves + automatic saves before compaction + promotion from daily notes. It is not numerical learning from outcomes | [Memory overview](https://docs.openclaw.ai/concepts/memory) |
 
 1 is a capability Orochi **does not have**; 2 and 3 are capabilities it **has, but thin**. They differ in nature, so they become separate pillars.

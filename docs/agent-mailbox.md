@@ -31,7 +31,7 @@ orochi peers                        # running agents with their worktree, route 
 orochi peers --messages --json      # also show messages within the retention period
 ```
 
-- Each Orochi process registers as a peer when it starts. One process is one peer, and every participant in `collaborate` uses the same peer name.
+- Each Agent session registers as a peer when it starts working — not when Orochi starts, and not the sessions opened only to list models. One Orochi process can therefore hold several peers (see [Unit of a peer](#unit-of-a-peer)).
 - Only peers in the same git repository (including separate directories created with `git worktree`) can exchange messages. Directories that are not git repositories are separated by path.
 - `--dry-run` and status commands do not join. `orochi serve` (runs from Zed and similar editors) is not supported, because each session has a different working directory.
 

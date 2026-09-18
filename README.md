@@ -27,9 +27,11 @@ The [Original Draft Specification](docs/design-draft.md) is being implemented in
 
 Added: EWMA and a constrained Bandit, prediction calibration and candidate comparison, direct retrieval of Codex quota, ingestion of Claude statusline quota, a Frontier routing Judge, a two-round routing Council, and exposing Orochi over ACP with `orochi serve`. For details, configuration and unverified parts, see [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md).
 
+Added on 2026-09-18/19 (automated tests only; not yet verified with real agents): a task classifier that asks an agent instead of matching keywords (on by default), team escalation from the console for work that splits across workspaces, `collaborate` without a hand-written plan, memory across sessions and agents, route preferences, weak labels from what you do after an answer, and tier pooling (off by default). See [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md) and [Personalization Design](docs/personalization-design.md).
+
 [Measurement and Session Collaboration Validation (2026-09-16)](docs/real-validation-20260916.md): confirmed measurement of 8 identical-task pairs on Claude/Codex, holdout validation of the learning coefficients, on-demand quota retrieval for Claude, implementation, review and integration by 3 independent sessions of the same Claude Haiku, and task execution from the exposed ACP gateway to the real Codex. This small data set did not show an advantage for EWMA/Bandit, so the default coefficients are kept.
 
-[Session Collaboration](docs/session-collaboration.md) is used through `orochi collaborate`. Even with the same Agent and model, a different session is a different worker. In every role — coordinator, implementation, review and integration — a usage limit makes the role switch to another available Agent/model. Plans, decisions, intermediate answers and progress are saved to `report.json`, and if no candidate is usable the run can be resumed later with `collaborate-resume`. It supports up to 4 parallel implementers with merging, addressed messages to any participant, and discussion rounds. With `--apply`, a result that passed verification is merged into the original working tree, and conflicts are resolved by a dedicated resolution session.
+[Session Collaboration](docs/session-collaboration.md) is used through `orochi collaborate`. Even with the same Agent and model, a different session is a different worker. In every role — coordinator, implementation, review and integration — a usage limit makes the role switch to another available Agent/model. Plans, decisions, intermediate answers and progress are saved to `report.json`, and if no candidate is usable the run can be resumed later with `collaborate-resume`. It supports up to 4 parallel implementers with merging, addressed messages to any participant, and discussion rounds. With `--apply`, a result that passed verification is merged into the original working tree, and conflicts are resolved by a dedicated resolution session. Without `--plan`, the team is derived from the task; `--dry-run` prints it as a plan file that can be edited and passed back with `--plan`.
 
 With the [Agent Mailbox](docs/agent-mailbox.md), `orochi` agents running at the same time in multiple terminals can exchange messages about work on the same repository (including worktrees). `scheduler.shared_workspace = true` also allows concurrent runs in the same directory. Confirmed between real Codex instances: one communicated a function's specification and the other matched its implementation to it.
 
@@ -119,6 +121,9 @@ orochi --peer-name backend "..."  # name in the mailbox
 orochi --resume '<session ID>' "Continue by adding input validation"
 orochi runs --limit 20
 orochi policy status
+orochi memory                  # what Orochi remembers about you and this repository
+orochi memory --forget r2      # forget one item
+orochi collaborate "..." --dry-run   # the team Orochi would derive, printed as a plan file
 ```
 
 Normal Agent answers go to stdout; routing reasons and verification results go to stderr. `--json` is available for status commands and `--dry-run`. If the task is exactly a subcommand name, separate it as in `orochi -- "status"`.
@@ -166,6 +171,19 @@ orochi --yolo                       # approve every permission request once each
 - **You can keep typing during a run.** Pressing Enter puts the message in the queue (`⏸ queued (1): …`), and queued messages are processed in order as soon as the running work finishes.
 - **Shift+Tab switches the approval mode.** If the agent provides session modes over ACP (e.g. `default` / `acceptEdits` / `plan` for Claude Agent ACP, `read-only` / `auto` for Codex ACP), it cycles through those; otherwise it cycles through Orochi's own `ask` / `always` / `never`. `/confirm` also changes it.
 - **Files and images can be attached.** Paste a path (drag & drop), or write a path after `@` and complete it with Tab; an `[Image #1]` / `[File #1]` tag is inserted in the input box and a list appears below it. Images are sent as ACP `image` blocks and text as `resource` blocks. If the agent does not support them, or the file exceeds 8 MiB, the file's location is sent instead (`resource_link`).
+- **Requests are classified by an agent, not by keywords.** Before routing, Orochi asks an agent that would run the work anyway what kind of task it is and how hard, and shows `⎿ classified as bug_fix / normal`. The answer can only raise the difficulty, never lower it, and if no agent answers in time Orochi keeps its local keyword profile. The classifier is the one adviser that sees the request text; none of it is stored (its cache is keyed by a salted hash). `[classifier] enabled = false` turns it off. Automated tests only; its accuracy with real agents is unverified.
+- **Work that splits across workspaces asks once, then runs as a team.** When the team derived from the request would have more than one implementer, Orochi shows it and asks once:
+
+  ```text
+  ◆ This is more than one agent's worth of work
+    coordinator, 3 implementer(s), 3 reviewer(s), integrator, 3 discussion round(s)
+    each implementer works in its own copy; a verified result is merged back into your tree
+    ⎿ Enter or y to start the team · any other key runs it as a normal turn
+  ```
+
+  It asks only on a terminal, and `/solo` and `/team` turns are never escalated. The report stays in `<data>/collaborations/<id>/`, so an interrupted team can be resumed with `orochi collaborate-resume --output <path>`.
+- **It remembers, across sessions and across agents.** When you state something that should hold beyond the current task ("keep diffs small", "this project uses pnpm"), the classifier picks it up in the same call (`⎿ remembered: keep diffs small`), and from then on it opens every new agent session, whichever agent is chosen. A session with two or more messages is looked back over once when you quit, for preferences that only show across messages (`looking back over this session · Esc skips`). Notes are plain Markdown in `<data>/memory/`: one file per repository, plus `USER.md` for what you say holds for every project. Lines you write yourself never expire; a note Orochi heard once expires after 90 days, one heard again after 180. `/memory` lists them, and `/memory forget r2` removes one. A `MEMORY.md` inside the repository is never read, no agent can write memory, and routing advisers never see it. Automated tests only.
+- **Say which agent you want for a kind of work.** "Use Fable for design", said once or written into memory, makes matching candidates cheaper for that kind of work: `⎿ classified as architecture / complex · you prefer fable`. It only tips a close call (cost × 0.8, Orochi's own heuristic): a candidate that fails a capability, quota or success-floor gate is never brought back. It matches a name fragment, so it survives model updates.
 - **Orochi decides the sequence of steps.** Each message is classified: a small request runs as-is in a single pass, while one involving design changes or of large scale is split into "design → implement (→ review)", and an Agent and model are re-chosen for each step. This results in a strong reasoning model for design and a fast model for implementation. Each step's answer is handed on to the next step, and follow-up instructions continue in the session that did the implementation. The decision is shown as, e.g., `⎿ complex task · design → implement`.
   - If the implementation did not finish normally, a review is added, and only if the review answers `VERDICT: fix` is one more fix step added — just once.
   - `/team <task>` forces the three steps, and `/solo <task>` forces a single run.
@@ -193,13 +211,13 @@ orochi --yolo                       # approve every permission request once each
 - When confirmation is needed, **the input box is replaced in place by the confirmation screen**. Choose `1 Yes` / `2 No` / `3 Auto` with a number key or ↑↓ and Enter; Esc denies. Once you answer, it returns to the input box, and only one line, `⏺ <tool name> → allowed once`, remains in the history.
 - **Orochi's own mailbox tools (`orochi-mailbox`) are not confirmed.** They only contact other Agents and touch neither files nor commands. The exchanges appear in the chat display. If no other Agent is running, `read_messages` returns immediately without waiting.
 - If you deny, the work for that message stops. Give a different approach in the next message.
-- Agents that are not installed are not shown. Only Agents that are actually unusable, e.g. due to an authentication failure, are warned about, once per session.
+- Agents that are not installed are not shown. Only Agents that are actually unusable, e.g. due to an authentication failure, are warned about, once per session. When a failure has no known kind, the warning includes the cause the agent reported.
 
 Differences from a normal run:
 
 - Input is sent as-is. The normal run's preamble "verify it as a coding task" is not added.
 - The Agent and model are chosen on the first message, and from the second message on, that session is loaded with `session/load` and continued. The pinned versions Codex ACP 1.10.0 and Claude Agent ACP 0.77.0 advertise `loadSession` in their source. For an Agent that does not support `session/load`, the conversation so far (up to about 32 KiB, in memory) is passed as context to a new session with the same Agent and model.
-- Checks (evaluation) run only if files changed during that message. In a git repository this is determined from the files git tracks; elsewhere, from the size and modification time of files excluding `.git`, `node_modules` and `target`. A message with no changes is recorded as unverified (`partial_success`) and is not used for learning.
+- Checks (evaluation) run only if files changed during that message. In a git repository this is determined from the files git tracks; elsewhere, from the size and modification time of files excluding `.git`, `node_modules` and `target`. A message with no changes is recorded as unverified (`partial_success`) and never counts as a verified result. What you do next labels it weakly instead: carrying on after reading the answer counts slightly for its route (0.2), and `/reroute` counts against it (0.3). Stopping a turn with Esc labels nothing by itself; only a `/reroute` after it does. These weights are Orochi's own heuristic, and `orochi calibrate` reports them apart from verified outcomes.
 - If a check fails after the Agent has finished its answer, the work is not handed over to another Agent automatically. The result is shown and it returns to waiting for input. An error in the middle of an answer, such as a usage limit, switches to another candidate as usual.
 - While a conversation continues, the Agent and model are pinned, so it does not switch to another Agent automatically even on a usage limit or similar. `/reroute` reroutes the next message while still passing the conversation so far as context.
 - The repository lock is held only while a message is running.
@@ -215,11 +233,12 @@ Differences from a normal run:
 | `/team <task>` | Run design → implement → review in order, choosing a different Agent for each step (`/collaborate` is the same) |
 | `/peers` | Other Agents running in the same repository, with their working directory, branch, route and status |
 | `/status` | Working directory, the continuing Agent, model and session, and the answering policy |
+| `/memory` | What Orochi remembers about you and this repository. `/memory forget <id>` removes one item |
 | `/exit` (`/quit`), Ctrl-D | Quit |
-| Tab while typing `/` | Complete a command. If there are several candidates, list them |
+| Typing `/` | Matching commands are listed above the input; ↑↓ select one, Tab or Enter takes it |
 | Tab while typing `@` | Complete a file name and attach it |
 | Shift+Tab | Switch the approval mode (auto → ask → never) |
-| ↑↓ | Input history for this session |
+| ↑↓ | Input history for this session (while command candidates are listed, ↑↓ moves through them) |
 | `\` at end of line + Enter | Insert a newline and keep typing. A multi-line paste becomes one message |
 | Esc during a run | Interrupt that work and return to input |
 | Ctrl-C | Clear the input. Pressing it twice when empty quits |
@@ -274,6 +293,17 @@ prompt_timeout_secs = 1800
 permission = "ask"
 ```
 
+```toml
+[classifier]
+enabled = true        # default; false keeps the local keyword profile only
+# agent = "claude"    # default: every enabled agent in order, within one agent's worth of time
+
+[memory]
+enabled = true        # default
+user_chars = 1500     # budget for USER.md in each new agent session
+repo_chars = 2500     # budget for this repository's notes
+```
+
 Specifying `agents` replaces the default 4 entries. Multiple custom IDs can be registered. If an Agent can use a browser or web search, declare `browser` / `web` explicitly. These two items are not inferred from ACP's standard capabilities alone.
 
 ### Adviser (Router)
@@ -319,7 +349,7 @@ The JSON files in [policies/](policies/) are bundled. Reasoning guidance based o
 
 **`success_prior`, `relative_tokens` and the cache discount rates are Orochi's own heuristic, not calibrated against benchmarks. They are not success rates or prices published by the Provider.** Patterns are used only to apply priors to model IDs obtained over ACP; they never generate model IDs.
 
-Roughly, the score is `(expected tokens × cache adjustment + context restoration) × quota factor + latency`, divided by the estimated success probability. With the initial prior weighted at 16, it is blended with local evaluation history through a per-context EWMA. Candidates below the lower bound on success probability, violating a hard constraint, or in cooldown are excluded. Optional Bandit exploration is likewise limited to candidates that passed these constraints. `orochi calibrate` shows prediction error, and `orochi benchmark --input ...` shows a comparison of measured candidates.
+Roughly, the score is `(expected tokens × cache adjustment + context restoration) × quota factor + latency`, divided by the estimated success probability. With the initial prior weighted at 16, it is blended with local evaluation history through a per-context EWMA. Candidates below the lower bound on success probability, violating a hard constraint, or in cooldown are excluded. Optional Bandit exploration is likewise limited to candidates that passed these constraints. `learning.tier_pooling` (off by default) starts a model that has no history of its own from what other models of the same provider and tier measured on the same kind of work, so measurements survive a model being replaced; turn it on after `orochi benchmark-tune` shows it helps on your data. `orochi calibrate` shows prediction error, and `orochi benchmark --input ...` shows a comparison of measured candidates.
 
 ```sh
 orochi policy update                          # install the bundled version

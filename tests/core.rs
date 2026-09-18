@@ -1382,3 +1382,23 @@ mod preferences {
         assert!(!orochi::router::adviser::request(&task, &[]).contains("fable"));
     }
 }
+
+/// `task_profiles` was dropped from the bundled policies because nothing read it. A registry
+/// installed or published before that still carries it and must keep loading; a new one is
+/// written without it.
+#[test]
+fn a_registry_with_the_retired_task_profiles_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = serde_json::to_value(Registry::bundled().unwrap()).unwrap();
+    assert!(!registry.to_string().contains("task_profiles"));
+    for policy in registry["policies"].as_array_mut().unwrap() {
+        policy["task_profiles"] = json!({"simple": "small_edit, documentation"});
+    }
+    std::fs::write(dir.path().join("policies.json"), registry.to_string()).unwrap();
+    let loaded = Registry::load(dir.path()).unwrap();
+    assert!(
+        !serde_json::to_string(&loaded)
+            .unwrap()
+            .contains("task_profiles")
+    );
+}
