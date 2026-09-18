@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "name": "Diverse small tasks (Python, JavaScript, Rust, docs; simple to complex), Claude Haiku vs Codex gpt-5.6-luna",
+  "arms": [
+    {
+      "id": "haiku",
+      "agent": "claude",
+      "provider": "anthropic",
+      "command": "claude",
+      "model": "haiku"
+    },
+    {
+      "id": "luna-medium",
+      "agent": "codex",
+      "provider": "openai",
+      "command": "codex",
+      "model": "gpt-5.6-luna",
+      "reasoning": "medium"
+    }
+  ],
+  "cases": [
+    {
+      "id": "py-expression-evaluator",
+      "files": {
+        "calc.py": "def evaluate(expression):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement evaluate(expression) in calc.py. It evaluates arithmetic expressions with +, -, *, / (true division), parentheses, unary minus and decimal numbers such as 2.5, using normal operator precedence and left associativity, and returns the numeric result. Whitespace between tokens is allowed. Raise ValueError for malformed input and for division by zero. Do not use eval, exec or compile. Modify only calc.py.",
+      "check": "import math, pathlib, sys\nsys.path.insert(0, '.')\nsource = pathlib.Path('calc.py').read_text()\nassert not any(word in source for word in ('eval(', 'exec(', 'compile(')), 'forbidden builtin'\nfrom calc import evaluate\ncases = {'1 + 2 * 3': 7, '(1 + 2) * 3': 9, '10 / 4': 2.5, '-3 + 5': 2, '2 * -(1 + 1)': -4,\n         '8 - 3 - 2': 3, '2.5 * 4': 10, '  7 ': 7, '100 / 10 / 5': 2, '-(-2)': 2}\nfor expression, expected in cases.items():\n    got = evaluate(expression)\n    assert math.isclose(got, expected), (expression, got)\nfor bad in ['', '1 +', '(1 + 2', '1 2', '2 * * 3', '1 / 0', 'abc', ')(']:\n    try:\n        evaluate(bad)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(bad)\n"
+    },
+    {
+      "id": "js-duration-parser",
+      "files": {
+        "duration.js": "function parseDuration(text) {\n  throw new Error('not implemented');\n}\n\nmodule.exports = { parseDuration };\n"
+      },
+      "task": "Implement parseDuration(text) in duration.js. It converts strings such as '1h30m', '45s', '2h', '1h2m3s' and ' 5m ' into a number of seconds. Each of the units h, m and s may appear at most once and only in that order, at least one unit is required, amounts are non-negative integers, and whitespace is allowed only around the whole string. Throw a RangeError for anything else, including empty strings, bare numbers, unknown units, repeated or out-of-order units, decimal or negative amounts and inner whitespace. Modify only duration.js.",
+      "check": "import subprocess\nscript = r\"\"\"\nconst assert = require('assert');\nconst { parseDuration } = require('./duration.js');\nassert.strictEqual(parseDuration('1h30m'), 5400);\nassert.strictEqual(parseDuration('45s'), 45);\nassert.strictEqual(parseDuration('2h'), 7200);\nassert.strictEqual(parseDuration('1h2m3s'), 3723);\nassert.strictEqual(parseDuration(' 5m '), 300);\nassert.strictEqual(parseDuration('0s'), 0);\nfor (const bad of ['', '5', '1x', '1m1h', '1h1h', '1.5h', 'h', '-1m', '1h 30m']) {\n  assert.throws(() => parseDuration(bad), RangeError, JSON.stringify(bad));\n}\n\"\"\"\nsubprocess.run(['node', '-e', script], check=True, timeout=30)\n"
+    },
+    {
+      "id": "rust-bracket-balance",
+      "files": {
+        "Cargo.toml": "[package]\nname = \"brackets\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        "src/lib.rs": "pub fn is_balanced(input: &str) -> bool {\n    unimplemented!()\n}\n"
+      },
+      "task": "Implement is_balanced in src/lib.rs: return true when every (), [] and {} bracket in the input is closed in the correct order, ignoring all other characters. Add unit tests in the same file and make sure `cargo test` passes. Do not add dependencies. Modify only src/lib.rs.",
+      "check": "import os, pathlib, shutil, subprocess, tempfile\nrepo = pathlib.Path.cwd()\ncargo = os.path.expanduser('~/.cargo/bin/cargo')\ncargo = cargo if os.path.exists(cargo) else shutil.which('cargo')\nwith tempfile.TemporaryDirectory() as temp:\n    temp = pathlib.Path(temp)\n    (temp / 'Cargo.toml').write_text('[package]\\nname = \"check\"\\nversion = \"0.1.0\"\\nedition = \"2021\"\\n'\n                                     f'[dependencies]\\nbrackets = {{ path = \"{repo}\" }}\\n')\n    (temp / 'src').mkdir()\n    (temp / 'src/lib.rs').write_text('')\n    (temp / 'tests').mkdir()\n    (temp / 'tests/check.rs').write_text(\"\"\"use brackets::is_balanced;\n#[test]\nfn cases() {\n    for s in [\"\", \"()\", \"([]{})\", \"a(b[c]{d}e)f\", \"{[()()]}\"] { assert!(is_balanced(s), \"{s}\"); }\n    for s in [\"(\", \")\", \"(]\", \"([)]\", \"{{}\", \"())(\"] { assert!(!is_balanced(s), \"{s}\"); }\n}\n\"\"\")\n    env = dict(os.environ, CARGO_TARGET_DIR=str(temp / 'target'))\n    env.pop('RUSTUP_TOOLCHAIN', None)\n    for directory in (temp, repo):\n        subprocess.run([cargo, 'test', '--offline', '--quiet'], cwd=directory, env=env, check=True, timeout=240)\n"
+    },
+    {
+      "id": "py-cart-decimal-bugfix",
+      "files": {
+        "pricing.py": "def apply_discount(amount, percent):\n    \"\"\"Return amount reduced by percent, rounded to cents (half up).\"\"\"\n    return round(amount * (1 - percent / 100), 2)\n",
+        "cart.py": "from pricing import apply_discount\n\n\nclass Cart:\n    def __init__(self):\n        self.items = []\n\n    def add(self, name, price, quantity=1):\n        self.items.append((name, price, quantity))\n\n    def subtotal(self):\n        return sum(price for _, price, quantity in self.items)\n\n    def total(self, discount_percent=0):\n        return apply_discount(self.subtotal(), discount_percent)\n"
+      },
+      "task": "Fix the bugs in cart.py and pricing.py. Cart.subtotal must include item quantities. Prices may be given as strings or decimal.Decimal values, and subtotal, total and apply_discount must return decimal.Decimal amounts rounded to the cent with half-up rounding. Reject negative quantities and discount percentages outside 0 to 100 with ValueError. Keep the public API.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom decimal import Decimal\nfrom cart import Cart\nfrom pricing import apply_discount\ncart = Cart()\ncart.add('pen', '1.005', 2)\ncart.add('book', Decimal('10.10'))\nassert cart.subtotal() == Decimal('12.11'), cart.subtotal()\nassert cart.total() == Decimal('12.11'), cart.total()\nassert cart.total(10) == Decimal('10.90'), cart.total(10)\nassert isinstance(cart.total(10), Decimal)\nassert apply_discount(Decimal('2.675'), 0) == Decimal('2.68')\nassert apply_discount(Decimal('0.125'), 0) == Decimal('0.13')\nassert apply_discount('20.00', 25) == Decimal('15.00')\nfor percent in (-1, 101):\n    try:\n        apply_discount(Decimal('1'), percent)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(percent)\ntry:\n    Cart().add('x', '1', -1)\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('negative quantity accepted')\n"
+    },
+    {
+      "id": "js-report-refactor",
+      "files": {
+        "report.js": "function render(rows) {\n  let out = '';\n  out += 'NAME       QTY   PRICE\\n';\n  for (let i = 0; i < rows.length; i++) {\n    const r = rows[i];\n    let name = r.name;\n    if (name.length > 10) name = name.slice(0, 9) + '~';\n    while (name.length < 10) name += ' ';\n    let qty = String(r.qty);\n    while (qty.length < 5) qty = ' ' + qty;\n    let price = (Math.round(r.price * 100) / 100).toFixed(2);\n    while (price.length < 8) price = ' ' + price;\n    out += name + ' ' + qty + price + '\\n';\n  }\n  let total = 0;\n  for (let i = 0; i < rows.length; i++) total += rows[i].qty * rows[i].price;\n  out += 'TOTAL' + (Math.round(total * 100) / 100).toFixed(2).padStart(20) + '\\n';\n  return out;\n}\nmodule.exports = { render };\n"
+      },
+      "task": "Refactor report.js without changing the output of render for any input. Extract and export formatRow(row), which returns one item line without the trailing newline, and computeTotal(rows), which returns the unrounded total; use both in render and replace the manual padding loops with padStart/padEnd. Keep render exported. Modify only report.js.",
+      "check": "import json, pathlib, subprocess\nreference = \"function render(rows) {\\n  let out = '';\\n  out += 'NAME       QTY   PRICE\\\\n';\\n  for (let i = 0; i < rows.length; i++) {\\n    const r = rows[i];\\n    let name = r.name;\\n    if (name.length > 10) name = name.slice(0, 9) + '~';\\n    while (name.length < 10) name += ' ';\\n    let qty = String(r.qty);\\n    while (qty.length < 5) qty = ' ' + qty;\\n    let price = (Math.round(r.price * 100) / 100).toFixed(2);\\n    while (price.length < 8) price = ' ' + price;\\n    out += name + ' ' + qty + price + '\\\\n';\\n  }\\n  let total = 0;\\n  for (let i = 0; i < rows.length; i++) total += rows[i].qty * rows[i].price;\\n  out += 'TOTAL' + (Math.round(total * 100) / 100).toFixed(2).padStart(20) + '\\\\n';\\n  return out;\\n}\\nmodule.exports = { render };\\n\"\nsource = pathlib.Path('report.js').read_text()\nassert 'while (' not in source, 'manual padding loop remains'\nscript = \"\"\"\nconst assert = require('assert');\nconst m = require('./report.js');\nconst reference = {};\nnew Function('module', REFERENCE)(reference);\nconst inputs = [[], [{name: 'pen', qty: 3, price: 1.005}],\n  [{name: 'a very long product name', qty: 12345, price: 0.1}, {name: 'x', qty: 0, price: 99999.999}],\n  [{name: 'tenletters', qty: 1, price: 2.675}, {name: 'eleven char', qty: 2, price: 3}]];\nfor (const rows of inputs) assert.strictEqual(m.render(rows), reference.exports.render(rows));\nassert.strictEqual(typeof m.formatRow, 'function');\nassert.strictEqual(m.formatRow({name: 'pen', qty: 3, price: 1.5}), 'pen            3    1.50');\nassert.ok(Math.abs(m.computeTotal([{qty: 3, price: 0.1}, {qty: 1, price: 2}]) - 2.3) < 1e-9);\n\"\"\".replace('REFERENCE', json.dumps(reference))\nsubprocess.run(['node', '-e', script], check=True, timeout=30)\n"
+    },
+    {
+      "id": "docs-roman-readme",
+      "files": {
+        "README.md": "# roman\n\nConverts integers to Roman numerals.\n",
+        "roman.py": "def to_roman(n):\n    \"\"\"Convert an integer from 1 to 3999 to a Roman numeral.\"\"\"\n    if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 3999:\n        raise ValueError(\"expected an integer from 1 to 3999\")\n    table = [(1000, \"M\"), (900, \"CM\"), (500, \"D\"), (400, \"CD\"), (100, \"C\"), (90, \"XC\"),\n             (50, \"L\"), (40, \"XL\"), (10, \"X\"), (9, \"IX\"), (5, \"V\"), (4, \"IV\"), (1, \"I\")]\n    out = []\n    for value, symbol in table:\n        count, n = divmod(n, value)\n        out.append(symbol * count)\n    return \"\".join(out)\n"
+      },
+      "task": "Update the README.md documentation only. Add a '## Usage' section with a Python code block that imports to_roman with `from roman import to_roman` and shows that to_roman(1994) returns 'MCMXCIV', and a '## Limits' section explaining that inputs must be integers from 1 to 3999 and that other values raise ValueError. Do not modify roman.py.",
+      "check": "import hashlib, pathlib, re\ntext = pathlib.Path('README.md').read_text()\nusage = re.search(r'^## Usage[ \\t]*$(.*?)(?=^## |\\Z)', text, re.M | re.S)\nlimits = re.search(r'^## Limits[ \\t]*$(.*?)(?=^## |\\Z)', text, re.M | re.S)\nassert usage and limits, 'missing sections'\nusage, limits = usage.group(1), limits.group(1)\nassert '```python' in usage and 'from roman import to_roman' in usage\nassert 'to_roman(1994)' in usage and 'MCMXCIV' in usage\nassert '3999' in limits and 'ValueError' in limits and re.search(r'\\b1\\b', limits)\nassert hashlib.sha256(pathlib.Path('roman.py').read_bytes()).hexdigest() == '5d993f897323d90e7ba9e7f266c81d1a49c6e1f9d55ebafe089e216ca4188317'\n"
+    }
+  ]
+}

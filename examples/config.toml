@@ -1,0 +1,83 @@
+# Copy to the path returned by `orochi config path` and customize.
+[discovery]
+auto_add = true
+auto_install = true
+setup_timeout_secs = 120
+
+[[agents]]
+id = "codex"
+provider = "openai"
+command = "codex-acp"
+args = []
+enabled = true
+browser = false
+web = false
+
+[[agents]]
+id = "claude"
+provider = "anthropic"
+command = "claude-agent-acp"
+enabled = true
+
+[[agents]]
+id = "gemini"
+provider = "google"
+command = "gemini"
+args = ["--acp"]
+enabled = true
+
+[[agents]]
+id = "antigravity"
+provider = "google"
+command = "agy_acp_server.par"
+enabled = true
+
+[scheduler]
+required_success = 0.7
+routing_confidence = 0.8
+max_attempts = 3
+discovery_timeout_secs = 30
+prompt_timeout_secs = 1800
+cache_ttl_secs = 1800
+permission = "ask"
+# Allow several Orochi runs in one working directory (shared lock).
+shared_workspace = false
+
+[evaluator]
+auto = true
+timeout_secs = 300
+
+# Optional routing adviser: an [[agents]] entry consulted over ACP in an empty temporary
+# directory with permissions denied. Orochi reads no credentials; the CLI uses its own auth.
+# Agent sessions carry a large system prompt; size the budget accordingly.
+# [router]
+# agent = "codex"
+# model = "gpt-5.6-luna"        # optional; omitted = chosen from the agent's models by policy
+# timeout_secs = 120
+# max_resource_fraction = 1.0
+# session_overhead_tokens = 24000
+
+# Adaptive routing. Exploration remains opt-in.
+[learning]
+strategy = "ewma"
+alpha = 0.1
+prior_weight = 16.0
+exploration = 0.1
+max_cost_ratio = 1.25
+# Share an arm's token overrun and success offset across task contexts (0 disables).
+pooling = 0.0
+
+# Messages between agents of concurrent Orochi runs in the same repository (and worktrees).
+[mailbox]
+enabled = true
+retention_secs = 86400
+max_messages_per_hour = 60
+
+[quota]
+refresh_before_run = false
+timeout_secs = 15
+max_age_secs = 300
+
+[council]
+enabled = false
+# See docs/adaptive-routing.md for frontier and council.members settings.

@@ -1,0 +1,99 @@
+{
+  "provider": "openai",
+  "version": 1,
+  "source": [
+    "https://developers.openai.com/api/docs/guides/latest-model",
+    "https://developers.openai.com/api/docs/guides/reasoning-best-practices"
+  ],
+  "updated_at": "2026-09-15",
+  "models": [
+    {
+      "pattern": "luna",
+      "tier": "small",
+      "relative_tokens": 0.65,
+      "success_prior": [
+        0.89,
+        0.74,
+        0.4,
+        0.2
+      ]
+    },
+    {
+      "pattern": "astra",
+      "tier": "frontier",
+      "relative_tokens": 1.6,
+      "success_prior": [
+        0.96,
+        0.94,
+        0.91,
+        0.85
+      ]
+    },
+    {
+      "pattern": "sol",
+      "tier": "standard",
+      "relative_tokens": 1,
+      "success_prior": [
+        0.94,
+        0.88,
+        0.73,
+        0.55
+      ]
+    },
+    {
+      "pattern": "*",
+      "tier": "unknown",
+      "relative_tokens": 1.2,
+      "success_prior": [
+        0.86,
+        0.78,
+        0.7,
+        0.5
+      ]
+    }
+  ],
+  "task_profiles": {
+    "simple": "small_edit, documentation",
+    "normal": "bug_fix, implementation, test",
+    "complex": "refactor, migration",
+    "extreme": "architecture, long_horizon"
+  },
+  "reasoning_rules": {
+    "simple": [
+      "low",
+      "minimal",
+      "medium"
+    ],
+    "normal": [
+      "medium",
+      "low",
+      "high"
+    ],
+    "complex": [
+      "high",
+      "medium",
+      "xhigh"
+    ],
+    "extreme": [
+      "xhigh",
+      "high",
+      "max",
+      "medium"
+    ]
+  },
+  "context_rules": {
+    "prefer_envelope": true,
+    "thinking": "agent_default"
+  },
+  "cache_rules": {
+    "affinity_discount": 0.15,
+    "stable_prefix": true
+  },
+  "hard_constraints": [],
+  "fallback_rules": [
+    "exclude_cooldown",
+    "preserve_filesystem",
+    "handoff_envelope",
+    "require_success_floor"
+  ]
+}

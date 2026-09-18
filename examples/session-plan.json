@@ -1,0 +1,48 @@
+{
+  "participants": [
+    {
+      "id": "manager",
+      "role": "coordinator",
+      "agent": "claude",
+      "model": "haiku",
+      "fallback": true,
+      "allowed_agents": [
+        "claude",
+        "codex"
+      ]
+    },
+    {
+      "id": "author",
+      "role": "implementer",
+      "agent": "claude",
+      "model": "haiku",
+      "fallback": true,
+      "allowed_agents": [
+        "claude",
+        "codex"
+      ]
+    },
+    {
+      "id": "reviewer",
+      "role": "reviewer",
+      "agent": "claude",
+      "model": "haiku",
+      "fallback": true,
+      "allowed_agents": [
+        "claude",
+        "codex"
+      ]
+    },
+    {
+      "id": "integrator",
+      "role": "integrator",
+      "agent": "claude",
+      "model": "haiku",
+      "fallback": true,
+      "allowed_agents": [
+        "claude",
+        "codex"
+      ]
+    }
+  ]
+}

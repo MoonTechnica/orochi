@@ -1,0 +1,36 @@
+[package]
+name = "orochi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+description = "Adaptive agent and model scheduler for ACP coding agents"
+license = "MIT"
+
+[dependencies]
+agent-client-protocol = "=2.0.0"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-width = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+walkdir = "2"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[[bin]]
+name = "orochi"
+path = "src/main.rs"

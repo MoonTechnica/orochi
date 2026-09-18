@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "name": "Python interval merging smoke calibration, repeated independent sessions",
+  "arms": [
+    {
+      "id": "haiku",
+      "agent": "claude",
+      "provider": "anthropic",
+      "command": "claude",
+      "model": "haiku"
+    },
+    {
+      "id": "luna",
+      "agent": "codex",
+      "provider": "openai",
+      "command": "codex",
+      "model": "gpt-5.6-luna",
+      "reasoning": "medium"
+    }
+  ],
+  "cases": [
+    {
+      "id": "merge-intervals-1",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 1.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[0, 3], [2, 5]]) == [[0,5]]\n"
+    },
+    {
+      "id": "merge-intervals-2",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 2.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[1, 4], [3, 6]]) == [[1,6]]\n"
+    },
+    {
+      "id": "merge-intervals-3",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 3.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[2, 5], [4, 7]]) == [[2,7]]\n"
+    },
+    {
+      "id": "merge-intervals-4",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 4.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[3, 6], [5, 8]]) == [[3,8]]\n"
+    },
+    {
+      "id": "merge-intervals-5",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 5.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[4, 7], [6, 9]]) == [[4,9]]\n"
+    },
+    {
+      "id": "merge-intervals-6",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 6.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[5, 8], [7, 10]]) == [[5,10]]\n"
+    },
+    {
+      "id": "merge-intervals-7",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 7.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[6, 9], [8, 11]]) == [[6,11]]\n"
+    },
+    {
+      "id": "merge-intervals-8",
+      "files": {
+        "intervals.py": "def merge_intervals(intervals):\n    raise NotImplementedError\n"
+      },
+      "task": "Implement merge_intervals in intervals.py. Given integer [start, end] pairs in any order, merge ranges when they overlap or share an endpoint (next_start <= current_end); adjacent disjoint integer ranges such as [1,4] and [5,9] must remain separate, return sorted lists, and leave input unchanged. Empty input returns []. Reject reversed pairs with ValueError. Modify only intervals.py. Trial label: 8.",
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom intervals import merge_intervals\nassert merge_intervals([]) == []\nassert merge_intervals([[3,5],[1,3],[9,10],[2,4]]) == [[1,5],[9,10]]\nassert merge_intervals([[-5,-2],[-3,0],[7,7]]) == [[-5,0],[7,7]]\nx=[[5,9],[1,2],[2,4]]\nassert merge_intervals(x) == [[1,4],[5,9]]\nassert x == [[5,9],[1,2],[2,4]]\ntry: merge_intervals([[4,2]])\nexcept ValueError: pass\nelse: raise AssertionError('reversed range accepted')\nassert merge_intervals([[7, 10], [9, 12]]) == [[7,12]]\n"
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "participants": [
+    {
+      "id": "manager",
+      "role": "coordinator",
+      "agent": "codex",
+      "model": "gpt-5.6-luna",
+      "allowed_agents": ["codex", "claude"]
+    },
+    {
+      "id": "alice",
+      "role": "implementer",
+      "agent": "claude",
+      "model": "haiku",
+      "paths": ["textstats/words.py"]
+    },
+    {
+      "id": "bob",
+      "role": "implementer",
+      "agent": "codex",
+      "model": "gpt-5.6-luna",
+      "allowed_agents": ["codex", "claude"],
+      "paths": ["textstats/lines.py"]
+    },
+    {
+      "id": "reviewer",
+      "role": "reviewer",
+      "agent": "claude",
+      "model": "haiku"
+    },
+    {
+      "id": "integrator",
+      "role": "integrator",
+      "agent": "claude",
+      "model": "sonnet"
+    }
+  ],
+  "discussion": {
+    "max_rounds": 2
+  }
+}
