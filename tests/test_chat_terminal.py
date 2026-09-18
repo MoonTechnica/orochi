@@ -37,6 +37,8 @@ def config(
 auto_add = false
 [evaluator]
 auto = false
+[classifier]
+enabled = false
 [mailbox]
 enabled = {"true" if seats else "false"}
 [scheduler]
