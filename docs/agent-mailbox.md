@@ -1,108 +1,108 @@
-# エージェント間メールボックス
+# Agent Mailbox
 
-実装・検証: 2026-09-17。
+Implemented and verified: 2026-09-17.
 
-複数のターミナルで`orochi`を同時に動かすと、各プロセスが起動したエージェント同士で、同じリポジトリの作業について連絡を取り合える。対象はOrochiが起動したエージェント（通常実行と`collaborate`）。
+When `orochi` runs in several terminals at once, the agents each process started can contact one another about work on the same repository. This covers agents that Orochi started (normal runs and `collaborate`).
 
 ```text
-ターミナル1: orochi --peer-name backend  "APIを実装して…"
-ターミナル2: orochi --peer-name frontend "画面側を実装して…"
-                 │                                   │
-        Claude Code / Codex など            Claude Code / Codex など
-                 │  MCPツール                        │  MCPツール
-                 └──── orochi-mailbox（Orochiのデータディレクトリ）────┘
+Terminal 1: orochi --peer-name backend  "Implement the API…"
+Terminal 2: orochi --peer-name frontend "Implement the UI side…"
+                 │                                                  │
+     Claude Code / Codex, etc.                          Claude Code / Codex, etc.
+                 │  MCP tools                                       │  MCP tools
+                 └──── orochi-mailbox (Orochi's data directory) ────┘
 ```
 
-## 使い方
+## Usage
 
 ```toml
 [mailbox]
-enabled = true                 # 既定true
-retention_secs = 86400         # メッセージの保持期間（既定24時間、最大30日）
-max_messages_per_hour = 60     # 1プロセスあたりの送信上限
+enabled = true                 # default true
+retention_secs = 86400         # message retention period (default 24 hours, max 30 days)
+max_messages_per_hour = 60     # send limit per process
 
 [scheduler]
-shared_workspace = true        # 同じディレクトリで複数の実行を許可する（既定false）
+shared_workspace = true        # allow several runs in the same directory (default false)
 ```
 
 ```sh
-orochi --peer-name backend  "..."   # 省略時は「ディレクトリ名-4桁」
-orochi peers                        # 実行中のエージェントとworktree・経路・状態
-orochi peers --messages --json      # 保持期間内のメッセージも表示
+orochi --peer-name backend  "..."   # defaults to "<directory name>-<4 digits>"
+orochi peers                        # running agents with their worktree, route and status
+orochi peers --messages --json      # also show messages within the retention period
 ```
 
-- Orochiの各プロセスが、起動時に参加者（peer）として登録される。1プロセスで1参加者で、`collaborate`の全担当は同じ参加者名を使う。
-- 同じgitリポジトリ（`git worktree`で作った別ディレクトリも含む）の参加者だけがやり取りできる。gitでないディレクトリはパス単位で分かれる。
-- `--dry-run`と状態確認のコマンドは参加しない。`orochi serve`（Zed等からの実行）は、セッションごとに作業ディレクトリが異なるため未対応。
+- Each Orochi process registers as a peer when it starts. One process is one peer, and every participant in `collaborate` uses the same peer name.
+- Only peers in the same git repository (including separate directories created with `git worktree`) can exchange messages. Directories that are not git repositories are separated by path.
+- `--dry-run` and status commands do not join. `orochi serve` (runs from Zed and similar editors) is not supported, because each session has a different working directory.
 
-## エージェントから見えるもの
+## What agents see
 
-Orochiはエージェントのセッション開始時（ACPの`session/new`）に、stdio MCPサーバー`orochi-mailbox`（Orochi自身の実行ファイル）を渡す。ACPの仕様上、全エージェントがstdio MCPに対応する。判定役のセッションには渡さない。
+When an agent session starts (ACP `session/new`), Orochi passes it the stdio MCP server `orochi-mailbox` (Orochi's own executable). Under the ACP specification, every agent supports stdio MCP. It is not passed to adviser sessions.
 
-| ツール | 内容 |
+| Tool | Description |
 |---|---|
-| `list_peers` | 実行中の参加者の名前・worktree・ブランチ・経路（Agent / モデル）・状態。自分には`you: true` |
-| `send_message` | 参加者名（大文字小文字は区別しない）または`all`へ送信。本文は8 KiBまで |
-| `read_messages` | 自分宛てと全体宛ての未読を最大20件取得して既読にする。`wait_seconds`（最大120秒）で到着を待てる |
-| `set_status` | 自分が何をしているかを1行（200バイトまで）で知らせる |
+| `list_peers` | Name, worktree, branch, route (Agent / model) and status of running peers. Your own entry has `you: true` |
+| `send_message` | Send to a peer name (case-insensitive) or to `all`. The body is limited to 8 KiB |
+| `read_messages` | Fetch up to 20 unread messages addressed to you or to everyone, and mark them read. `wait_seconds` (up to 120 seconds) waits for new arrivals |
+| `set_status` | Tell others what you are doing, in one line (up to 200 bytes) |
 
-タスクのプロンプトには、自分の参加者名、実行中の他の参加者、ツールの使い方を短く追加する（MCPサーバー`orochi-mailbox`のツールであり、シェルコマンドではないことも明記する。実機でHaikuがシェルから呼ぼうとして失敗したため）。他の参加者がいる場合は、最初に`read_messages`と`set_status`を使い、他の参加者が触りそうなファイルを編集する前に知らせ、終了前にもう一度確認するよう指示する。他の参加者からのメッセージは作業上のメモとして扱い、ユーザーの依頼やリポジトリの指示を上書きしないことも明示する。ツールを使うかどうかは最終的にエージェントの判断で、Orochiは強制しない。
+The task prompt gets a short addition with the agent's own peer name, the other running peers and how to use the tools (it also states that these are tools of the MCP server `orochi-mailbox`, not shell commands, because in a run against the real CLI Haiku tried to call them from the shell and failed). When there are other peers, it instructs the agent to use `read_messages` and `set_status` first, to notify the others before editing files other peers are likely to touch, and to check once more before finishing. It also states explicitly that messages from other peers are working notes and do not override the user's request or the repository's instructions. Whether to use the tools is ultimately up to the agent; Orochi does not force it.
 
-## 保存と安全性
+## Storage and safety
 
-- 保存先はデータディレクトリの`mailbox.sqlite3`（権限0600）。実行記録の`telemetry.sqlite3`とは別ファイルで、メッセージ本文は実行記録に入らない。
-- メッセージ本文には作業内容が含まれうる。保持期間を過ぎたものは、次にメールボックスを開いたときに削除する。
-- 参加者として保存するのは、名前・worktreeのパス・ブランチ名・経路・状態・所有プロセスのPIDと開始時刻。タスク本文は保存しない。
-- 所有プロセスが終了した参加者は、次の参照時に一覧から消える（PIDと開始時刻で判定し、再利用されたPIDと区別する）。直接宛てのメッセージは参加者IDに結び付くため、後から同じ名前で参加しても前の参加者宛てのメッセージは読めない。全体宛ても、参加より前に送られたものは読めない（自分が存在しなかった時点の問いに答えてしまうため）。参加後に届いたものだけを読む。
-- エージェントのMCPサーバーはエージェントの子プロセスとして起動し、Orochiの監視プロセスの回収対象になる。
-- 送信数は参加者ごとに1時間あたりの上限を設ける。宛先は実行中の参加者だけ。
+- Messages are stored in `mailbox.sqlite3` in the data directory (permissions 0600). It is a separate file from `telemetry.sqlite3`, which holds the run records, and message bodies never enter the run records.
+- Message bodies may contain work content. Messages past the retention period are deleted the next time the mailbox is opened.
+- For each peer, only the name, worktree path, branch name, route, status, and the owning process's PID and start time are stored. Task text is not stored.
+- A peer whose owning process has exited disappears from the list the next time it is read (judged by PID and start time, which tells a reused PID apart). Direct messages are tied to the peer ID, so joining later under the same name does not let you read messages addressed to the previous peer. Broadcast messages sent before you joined cannot be read either (you would end up answering questions asked when you did not exist). Only messages that arrive after joining are read.
+- An agent's MCP server starts as a child process of the agent and is covered by the reclamation performed by Orochi's supervisor process.
+- Each peer has an hourly send limit. Recipients can only be running peers.
 
-## 同じディレクトリでの同時実行
+## Concurrent runs in the same directory
 
-`scheduler.shared_workspace = true`にすると、同じディレクトリの実行同士は共有ロックになり、同時に動ける。`collaborate --apply`の作業ツリーへの適用は常に排他ロックで、共有中の実行があれば待たずに`blocked`になる（再開可能）。既定（false）では従来どおり、同じディレクトリでは1実行だけ。
+With `scheduler.shared_workspace = true`, runs in the same directory take a shared lock and can run at the same time. Applying a `collaborate --apply` result to the working tree always takes an exclusive lock; if a shared run is active, it does not wait but becomes `blocked` (resumable). By default (false), as before, only one run at a time is allowed per directory.
 
-同時実行では、各実行の評価コマンドが他の実行の途中の変更を含めて動く。変更の衝突を防ぐのはメールボックスでの調整と各エージェントの判断で、Orochiはファイル単位の排他を行わない。確実に分けたい場合は`git worktree`を使う。
+In concurrent runs, each run's evaluation commands run with the other runs' in-progress changes included. What prevents conflicting changes is coordination over the mailbox and each agent's judgment; Orochi does not lock individual files. If you need guaranteed separation, use `git worktree`.
 
-複数のOrochiプロセスが新しいデータディレクトリを同時に開くと、SQLiteの初期化がBUSYになることがあったため、初期化を短時間再試行するようにした。
+When several Orochi processes opened a new data directory at the same time, SQLite initialization could hit BUSY, so initialization is now retried for a short time.
 
-## 検証
+## Verification
 
-- fixture（`tests/mailbox.rs`）: worktree間で同じ範囲になること、宛先・全体宛て・既読・名前の重複・他リポジトリとの分離、終了済みプロセスの参加者の除外、保持期間と送信上限、MCPサーバーのツール一覧と呼び出し、同じディレクトリでの2実行の往復、既定の排他ロック、1プロセス内の2つの席（横の席の書き込み拒否とチャット表示を含む）。
-- 実機（2026-09-17、`.orochi/live-e2e/remaining-20260916/mailbox-live/`）: 同じディレクトリで2つの`orochi`（どちらもCodex gpt-5.6-luna / medium）を同時に実行。
-  - `backend`は`api.py`を書き、関数名`get_user_record`と辞書のキー（user_id・name・email・active）を`frontend`へ送った。
-  - `frontend`は`read_messages`で待ってから`client.py`を実装し、確認を返した。
-  - 両方の成果物を合わせたコードが動くこと、終了後に参加者・監視記録・MCPサーバーのプロセスが残っていないことを確認した。
-  - 両実行とも約95秒、各アダプターの報告値で約2.6万tokens。
-- Claude Codeでのツール呼び出しは、利用枠の都合で実機未確認。
+- Fixture (`tests/mailbox.rs`): worktrees resolving to the same scope; addressed messages, broadcasts, read state, duplicate names and isolation from other repositories; exclusion of peers whose process has exited; the retention period and send limit; the MCP server's tool list and calls; a round trip between two runs in the same directory; the default exclusive lock; two seats in one process (including write denial for the side seat and the chat display).
+- Against the real CLI (2026-09-17, `.orochi/live-e2e/remaining-20260916/mailbox-live/`): two `orochi` runs (both Codex gpt-5.6-luna / medium) ran concurrently in the same directory.
+  - `backend` wrote `api.py` and sent `frontend` the function name `get_user_record` and the dictionary keys (user_id, name, email, active).
+  - `frontend` waited with `read_messages`, then implemented `client.py` and sent back a confirmation.
+  - Confirmed that the code combining both deliverables works, and that no peers, supervisor records or MCP server processes remained after exit.
+  - Each run took about 95 seconds and about 26,000 tokens by each adapter's reported figures.
+- Tool calls from Claude Code have not been verified against the real CLI, because of usage limits.
 
-## 未対応
+## Not supported
 
-- `orochi serve`（ACP Gateway）経由のセッション。
-- Orochiを通さずに起動したエージェントの参加。
-- 人がCLIからメッセージを送る機能（`orochi peers`は閲覧のみ）。
-- メッセージの到着をエージェントに割り込みで知らせる機能。エージェントが`read_messages`を呼んだときに届く。
+- Sessions through `orochi serve` (the ACP Gateway).
+- Participation by agents started without going through Orochi.
+- A way for a person to send messages from the CLI (`orochi peers` is view-only).
+- Notifying an agent of an arriving message by interrupting it. Messages are delivered when the agent calls `read_messages`.
 
-## 参加者の単位
+## Unit of a peer
 
-参加者（peer）は**Agentセッション単位**です。1つのOrochiプロセスが複数のAgentを動かす場合（`/team`の各段、`collaborate`の各担当）、それぞれが別の参加者として登録され、互いに`list_peers`で見え、`send_message`で送り合えます。`--peer-name`は名前の接頭辞として使い、同じ名前が既にある場合は`-2`のような連番を付けます。セッションが終わると、その参加者は一覧から消えます。
+A peer is **per Agent session**. When one Orochi process runs several Agents (each stage of `/team`, each participant in `collaborate`), each one is registered as a separate peer; they can see one another with `list_peers` and send to one another with `send_message`. `--peer-name` is used as a name prefix, and if the same name already exists, a sequence number such as `-2` is appended. When a session ends, its peer disappears from the list.
 
-## 1つのターンに複数の席
+## Several seats in one turn
 
-対話モードでは、**1つのOrochiプロセスの中で複数のAgentセッションを同時に**動かす。2席になるのは設計変更を伴う・規模が大きい・長丁場と判断された依頼、それ以上になるのは人数を指定して頼まれたとき（「5人くらいのエージェントで議論して」→最大6席）。
+In interactive mode, **several Agent sessions run concurrently inside one Orochi process**. A request judged to involve a design change, to be large, or to be long-running gets 2 seats; more than that only when the request asks for a specific number of agents (「5人くらいのエージェントで議論して」 ("discuss this with about five agents") → up to 6 seats).
 
-- 人数が指定された議論では、進行役`facilitator`に加えて`skeptic`／`architect`／`simplifier`／`operator`／`advocate`を順に座らせる。視点が違うほうが、同じ答えを5回聞くより役に立つため。
-- 議論だけの依頼（何も作らない依頼）は**全席が読み取り専用**で、リポジトリは変更しない。
-- エージェント自身に`orochi`プロセスを起動させることはしない。ピアはOrochiが起動し、プロンプトでも「自分で別のエージェントやOrochiを起動しないこと」と明示する。
+- In a discussion with a specified number of agents, `skeptic`/`architect`/`simplifier`/`operator`/`advocate` are seated in that order in addition to the facilitator, `facilitator`. Different perspectives are more useful than hearing the same answer five times.
+- A discussion-only request (one that builds nothing) makes **every seat read-only**, and the repository is not changed.
+- Agents are never made to start `orochi` processes themselves. Orochi starts the peers, and the prompt also states explicitly "do not start another agent or Orochi yourself."
 
-- 席の名前と役割はタスクから決める。作業役は`implementer`／`fixer`／`refactorer`／`migrator`など、横の席は構造を変える依頼なら`architect`、曖昧な依頼なら`researcher`、それ以外は`reviewer`。段に分かれている場合、作業役の名前はその段の名前（`implement`）になる。
-- 作業役だけがファイルを変更する。横の席は読むだけで、`edit`／`execute`などの書き込み系ツールの許可要求はOrochiが拒否する（利用者には確認を出さない）。作業ツリーは1つのままで、コピーもマージもしない。
-- 席は順に少しずつ遅れて起動し、**すでに他の席が使っている(Agent, モデル)の組み合わせは候補から外す**（他に残っていない場合だけ同じものを使う）。同じモデルが並んでも議論にならないため。
-- 席はそのターン限りで終わる。続きを頼まれたターンは、同じ人数の席を**座り直す**（前のターンのやり取りはリードの文脈として渡る）。
-- 2者はこのメールボックスで会話する。Orochiが足す指示文は英語だが、回答もメッセージも「依頼と同じ言語で書く」よう明示する（明示しないとモデルごとに英語・日本語が割れる）。やり取りはチャット表示にそのまま流れる（どちらも自分のプロセスの席なので、`(this session)`は付けず色で区別する）。
-- 作業役のターンが終わると2つ目の席も終了する。評価（チェックコマンド）は作業役のターンにだけ行う。
-- 「エージェント同士で会話して」「相談しながら進めて」のように依頼自体が協働を求めている場合は、規模にかかわらず2席にする。
-- `/solo <タスク>`は1人に固定する。
+- Seat names and roles are decided from the task. The working seat is `implementer`/`fixer`/`refactorer`/`migrator` and so on; the side seat is `architect` for a request that changes structure, `researcher` for an ambiguous request, and `reviewer` otherwise. When the work is split into stages, the working seat's name is the stage's name (`implement`).
+- Only the working seat changes files. The side seat only reads, and Orochi denies its permission requests for write tools such as `edit`/`execute` (without asking the user). There is still a single working tree, with no copies and no merges.
+- Seats start one after another with a short delay, and **(Agent, model) combinations already used by another seat are removed from the candidates** (the same one is reused only when nothing else remains). The same model seated twice does not make a discussion.
+- Seats last only for that turn. A turn that asks to continue **reseats** the same number of seats (the previous turn's exchange is passed on as the lead's context).
+- The two talk over this mailbox. The instructions Orochi adds are in English, but they explicitly say to write replies and messages "in the same language as the request" (without that, some models answer in English and others in Japanese). The exchange flows straight into the chat display (both are seats in this process, so `(this session)` is not attached; they are told apart by color).
+- When the working seat's turn ends, the second seat ends too. Evaluation (check commands) runs only for the working seat's turn.
+- When the request itself asks for collaboration, as in 「エージェント同士で会話して」 ("have the agents talk to each other") or 「相談しながら進めて」 ("work through it while consulting each other"), it gets 2 seats regardless of size.
+- `/solo <task>` pins the turn to one agent.
 
-## 対話モードでの表示
+## Display in interactive mode
 
-`orochi`の対話モードは、このメールボックスのやり取りをチャット形式で表示します。送信者ごとに色を変え、自分のセッションはブランド色、相手は名前から決まる色です。参加（`●`）と離脱（`○`）も表示します。入力中に届いたメッセージは入力行を壊さないように保留し、送信直後に表示します。`/peers`で現在の参加者を確認できます。自分のAgentがメールボックスのツールを呼んだときは、ツール行ではなく「Messaging another agent」などの状態表示にします。
+The interactive mode of `orochi` shows the exchanges on this mailbox as a chat. Each sender gets its own color: your own session uses the brand color, and others get a color derived from their name. Joining (`●`) and leaving (`○`) are shown too. Messages that arrive while you are typing are held back so they do not break the input line, and are shown right after you send. `/peers` shows the current peers. When your own Agent calls a mailbox tool, a status such as "Messaging another agent" is shown instead of a tool line.

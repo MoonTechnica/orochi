@@ -1,52 +1,52 @@
-# CLI本体の自動検出・実機E2E（2026-09-15）
+# CLI Auto-Discovery: Live E2E (2026-09-15)
 
-## 問題と変更
+## Problem and changes
 
-従来は`claude-agent-acp`の存在だけでClaudeのインストール状態を判定していたため、`claude`本体が存在しても候補から除外されていた。
+Previously, whether Claude was installed was decided solely by the presence of `claude-agent-acp`, so Claude was excluded from the candidates even when the `claude` CLI itself was present.
 
-- CLI本体・ACPアダプター・接続準備の状態を分離した。
-- Claude/CodexのCLI本体があれば、不足するACPアダプターをOrochiの`adapters/`キャッシュへ自動導入する。
-- 既知の4プリセットを省略した設定にも補完する。同じIDの明示設定と`enabled = false`を優先する。
-- `agents`はダウンロードせず、`adapter_required`等の状態を表示する。実行・discovery時に準備し、失敗理由を表示する。
-- 固定バージョン、専用npmキャッシュ、install scripts無効、排他制御、原子的な導入、別枠の準備タイムアウトを使用する。
+- Separated the states of the CLI itself, the ACP adapter, and connection readiness.
+- If the Claude/Codex CLI itself is present, a missing ACP adapter is automatically installed into Orochi's `adapters/` cache.
+- The four known presets are also filled in for configurations that omit them. An explicit setting with the same ID, and `enabled = false`, take precedence.
+- `agents` does not download anything; it displays states such as `adapter_required`. Preparation happens at run / discovery time, and the reason for a failure is displayed.
+- Uses pinned versions, a dedicated npm cache, disabled install scripts, mutual exclusion, atomic installation, and a separate preparation timeout.
 
-自動検出の対象はCodex、Claude Code、Gemini CLI、Antigravity ACP。その他はカスタムACPコマンドを登録する。任意のCLIへ未知のプロトコルを推測して送る実装ではない。
+Auto-discovery covers Codex, Claude Code, Gemini CLI and Antigravity ACP. For anything else, register a custom ACP command. The implementation does not guess an unknown protocol and send it to an arbitrary CLI.
 
-## 実機確認
+## Verification against the real CLIs
 
-macOS上でPATHから利用できたCoding CLIはCodexとClaude Code。Gemini/Antigravityは未導入。
+On macOS, the coding CLIs available from PATH were Codex and Claude Code. Gemini/Antigravity were not installed.
 
-| 確認 | 結果 |
+| Check | Result |
 |---|---|
-| Claude本体だけでのinventory | `installed: true`, `adapter_required` |
-| 不足アダプターの自動導入 | `@agentclientprotocol/claude-agent-acp@0.77.0`を専用キャッシュへ導入成功 |
-| 既存CLIの利用 | `CLAUDE_CODE_EXECUTABLE`に検出した`claude`を指定 |
-| ClaudeのACP discovery | `default`, `opus[1m]`, `claude-fable-5-1[1m]`, `sonnet`, `haiku` |
-| CodexのACP discovery | `gpt-5.6-sol`, `gpt-6-astra`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` |
-| 元のWebアプリ依頼文でのdry-run | Claude/Codexの計10候補がルーティング対象 |
-| Claudeへの実行委譲 | `--agent claude`でHaikuを選び、1ファイル作成・内容検証に成功 |
-| Claude実行の所要時間 | discovery込み10.46秒、1試行、終了コード0 |
+| Inventory with only the Claude CLI itself | `installed: true`, `adapter_required` |
+| Automatic installation of the missing adapter | Successfully installed `@agentclientprotocol/claude-agent-acp@0.77.0` into the dedicated cache |
+| Using the existing CLI | Set `CLAUDE_CODE_EXECUTABLE` to the detected `claude` |
+| Claude ACP discovery | `default`, `opus[1m]`, `claude-fable-5-1[1m]`, `sonnet`, `haiku` |
+| Codex ACP discovery | `gpt-5.6-sol`, `gpt-6-astra`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` |
+| Dry run with the original web app request | 10 Claude/Codex candidates in total were routing targets |
+| Delegating execution to Claude | With `--agent claude`, Haiku was selected; created one file and passed content verification |
+| Duration of the Claude run | 10.46 s including discovery, 1 attempt, exit code 0 |
 
-元の依頼文では`gpt-5.6-luna / medium`が先頭で、`haiku`も同じ推定コストで候補に含まれた。今回は候補登録と実行接続の検証であり、Provider間の品質・費用の優劣を示すベンチマークではない。Claudeへの委譲確認には明示的な`--agent claude`を使用した。
+With the original request, `gpt-5.6-luna / medium` came first, and `haiku` was also among the candidates at the same estimated cost. This run verified candidate registration and execution connectivity; it is not a benchmark showing the relative quality or cost of providers. An explicit `--agent claude` was used to confirm delegation to Claude.
 
-## 再現用のローカル成果物
+## Local artifacts for reproduction
 
-`.orochi/live-e2e/native-discovery/`配下に次を保存した（Git管理対象外）。
+The following were saved under `.orochi/live-e2e/native-discovery/` (not tracked by Git).
 
-- `evidence/discovery.json`: 実Agentのモデル・reasoning・mode一覧
-- `evidence/route.json`: 元のWebアプリ依頼文に対する全候補とスコア
-- `evidence/claude-run.log`, `claude-result.json`, `runs.json`: Claude実行結果
-- `config.toml`, `task.txt`, `repo/result.txt`: 実行条件と生成ファイル
+- `evidence/discovery.json`: the real agents' lists of models, reasoning levels and modes
+- `evidence/route.json`: all candidates and scores for the original web app request
+- `evidence/claude-run.log`, `claude-result.json`, `runs.json`: results of the Claude run
+- `config.toml`, `task.txt`, `repo/result.txt`: run conditions and the generated file
 
-検証用アプリへの追加修正は行っていない。
+No further changes were made to the app used for verification.
 
-## 回帰テスト
+## Regression tests
 
-ネットワーク不要のテストで、CLI本体のみの検出、npm不足と導入無効の区別、明示設定の維持、同時導入の排他、キャッシュ再利用、導入失敗後の再試行、CLI実行から候補登録・ファイル作成までを検証する。
+Network-free tests verify detection with only the CLI itself, distinguishing missing npm from disabled installation, preserving explicit settings, mutual exclusion of concurrent installs, cache reuse, retry after a failed install, and the path from CLI execution through candidate registration to file creation.
 
-全36テスト、Clippy（警告をエラー扱い）、Rustfmtのチェックが成功。リリースビルドとアカウント不要のデモも成功した。
+All 36 tests, Clippy (with warnings treated as errors) and the Rustfmt check passed. The release build and the no-account demo also succeeded.
 
-## 接続方式の出典
+## Sources for the connection method
 
-- [Codex ACPのCODEX_PATH](https://github.com/agentclientprotocol/codex-acp/blob/main/README.md)
-- [Claude Agent ACPのCLAUDE_CODE_EXECUTABLE](https://github.com/agentclientprotocol/claude-agent-acp/blob/main/src/acp-agent.ts)
+- [CODEX_PATH in Codex ACP](https://github.com/agentclientprotocol/codex-acp/blob/main/README.md)
+- [CLAUDE_CODE_EXECUTABLE in Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp/blob/main/src/acp-agent.ts)

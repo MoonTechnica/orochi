@@ -1,56 +1,56 @@
 # Orochi
 
-**Adaptive Agent & Model Scheduler** — ACP Coding Agentを、タスク・利用制限・Provider Policy・ローカル実績から選ぶRust CLI。
+**Adaptive Agent & Model Scheduler** — a Rust CLI that chooses an ACP Coding Agent based on the task, usage limits, Provider Policy and local track record.
 
 ```sh
-orochi "認証処理をrefresh token方式に変更して"
-orochi   # 端末で起動すると対話セッション（orochi -c で直近の会話を再開）
+orochi "Switch the authentication logic to refresh tokens"
+orochi   # started on a terminal, it opens an interactive session (orochi -c resumes the most recent conversation)
 ```
 
-## 現在の実装範囲
+## Current implementation scope
 
-[元のDraft仕様](docs/design-draft.md)を段階的に実装しています。通常実行は1つのAgentへ委譲し、`collaborate`は独立した複数セッションで実装・レビュー・統合を行います。
+The [Original Draft Specification](docs/design-draft.md) is being implemented incrementally. A normal run delegates to one Agent; `collaborate` performs implementation, review and integration in multiple independent sessions.
 
-- Claude / Codex / Gemini / AntigravityのCLI検出と、任意のACP stdioアダプター設定
-- Claude/Codex本体の検出、不足するACPアダプターの専用キャッシュへの自動導入
-- 公式Rust ACP SDK 2.0.0によるstable protocol v1接続・ストリーミング・キャンセル
-- `configOptions`のモデル・reasoning・mode取得。モデル変更後に返された設定を再取得・検証
-- 旧式の`models` / `session/set_model`と`modes`の互換処理。設定がないAgentではAgent自身のデフォルトを利用
-- ローカルTask Profiler、決定的ルーティング、成功確率の下限、Provider hard constraints
-- 任意設定の判定役（ACPエージェント）。候補IDだけを推薦し、Schedulerが再検証
-- Agent全体／モデル別cooldown、reset時刻、5分→15分→30分→60分のbackoff
-- 利用残量が取得できた場合のquota shadow price、履歴統計、cache affinityの推定
-- TaskEnvelopeによるfallback。変更中のファイルを保持し、会話全文は転送しない
-- テスト・typecheck・lint・build・git diffによる評価、SQLiteローカルtelemetry
-- セッション一覧、明示的な`--resume`、Policyの検証・アトミック更新
-- 同一リポジトリの排他実行、子プロセス終了待ち、Unixでのプロセスグループ終了
+- CLI detection for Claude / Codex / Gemini / Antigravity, plus configuration of any ACP stdio adapter
+- Detection of the Claude/Codex CLIs themselves, and automatic installation of missing ACP adapters into a dedicated cache
+- Stable protocol v1 connection, streaming and cancellation via the official Rust ACP SDK 2.0.0
+- Retrieval of models, reasoning and modes from `configOptions`. After a model change, the returned configuration is re-read and validated
+- Compatibility handling for the legacy `models` / `session/set_model` and `modes`. For an Agent with no configuration, the Agent's own defaults are used
+- Local Task Profiler, deterministic routing, a lower bound on success probability, Provider hard constraints
+- Optional adviser (an ACP agent). It recommends only candidate IDs, and the Scheduler re-validates them
+- Agent-wide / per-model cooldown, reset time, 5 min → 15 min → 30 min → 60 min backoff
+- When remaining usage can be obtained, estimation of a quota shadow price, history statistics and cache affinity
+- Fallback via TaskEnvelope. Files being changed are kept, and the full conversation is not forwarded
+- Evaluation by tests, typecheck, lint, build and git diff; local SQLite telemetry
+- Session listing, explicit `--resume`, Policy validation and atomic updates
+- Exclusive execution per repository, waiting for child processes to exit, process-group termination on Unix
 
-EWMAと制約付きBandit、予測校正・候補比較、Codex残量の直接取得、Claude statusline残量の取り込み、FrontierのルーティングJudge、2ラウンドのルーティングCouncil、`orochi serve`によるACP公開を追加しました。詳細・設定・未検証部分は[適応ルーティングとACP Gateway](docs/adaptive-routing.md)を参照してください。
+Added: EWMA and a constrained Bandit, prediction calibration and candidate comparison, direct retrieval of Codex quota, ingestion of Claude statusline quota, a Frontier routing Judge, a two-round routing Council, and exposing Orochi over ACP with `orochi serve`. For details, configuration and unverified parts, see [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md).
 
-[実測・実機検証結果](docs/real-validation-20260916.md): Claude/Codexの同一課題8組の実測、学習係数のholdout検証、Claudeの随時残量取得、同じClaude Haikuの独立3セッションによる実装・レビュー・統合、公開ACPから実Codexへのタスク実行を確認しました。今回の小規模データではEWMA/Banditの優位性は確認できず、既定係数は維持しています。
+[Measurement and Session Collaboration Validation (2026-09-16)](docs/real-validation-20260916.md): confirmed measurement of 8 identical-task pairs on Claude/Codex, holdout validation of the learning coefficients, on-demand quota retrieval for Claude, implementation, review and integration by 3 independent sessions of the same Claude Haiku, and task execution from the exposed ACP gateway to the real Codex. This small data set did not show an advantage for EWMA/Bandit, so the default coefficients are kept.
 
-[セッション協議](docs/session-collaboration.md)は`orochi collaborate`で使用します。同じAgent・モデルでもセッションが異なれば別の作業者です。司令塔・実装・レビュー・統合の全役割で、利用制限時に利用可能な別Agent／モデルへ交代します。計画・判断・途中回答・進捗を`report.json`へ保存し、全候補が使えない場合は`collaborate-resume`で後から再開できます。最大4人の並列実装とマージ、任意の参加者への宛先付きメッセージと協議ラウンドに対応します。`--apply`を指定すると、検証に成功した結果を元の作業ツリーへマージし、競合は解消用のセッションで解決します。
+[Session Collaboration](docs/session-collaboration.md) is used through `orochi collaborate`. Even with the same Agent and model, a different session is a different worker. In every role — coordinator, implementation, review and integration — a usage limit makes the role switch to another available Agent/model. Plans, decisions, intermediate answers and progress are saved to `report.json`, and if no candidate is usable the run can be resumed later with `collaborate-resume`. It supports up to 4 parallel implementers with merging, addressed messages to any participant, and discussion rounds. With `--apply`, a result that passed verification is merged into the original working tree, and conflicts are resolved by a dedicated resolution session.
 
-[エージェント間メールボックス](docs/agent-mailbox.md)により、複数のターミナルで同時に動かした`orochi`のエージェント同士が、同じリポジトリ（worktreeを含む）の作業についてメッセージをやり取りできます。`scheduler.shared_workspace = true`で同じディレクトリでの同時実行も可能です。実Codex同士で、関数の仕様を伝えて実装を合わせることを確認しました。
+With the [Agent Mailbox](docs/agent-mailbox.md), `orochi` agents running at the same time in multiple terminals can exchange messages about work on the same repository (including worktrees). `scheduler.shared_workspace = true` also allows concurrent runs in the same directory. Confirmed between real Codex instances: one communicated a function's specification and the other matched its implementation to it.
 
-Agentは監視プロセス経由で起動します。Orochiが強制終了されても、Agentと子孫プロセスを終了します。監視プロセスごと止まった場合は、次回起動時に回収します。
+Agents are started through a supervisor process. Even if Orochi is force-killed, the Agent and its descendant processes are terminated. If the supervisor itself also stops, they are reclaimed at the next start.
 
-Router／Judge／Councilの判定役も`[[agents]]`のエージェントをACPで使います（HTTP endpoint版は削除）。Orochiは認証情報を扱わず、各CLIの認証（サブスクリプションのログインまたはAPIキー）に従います。ACP対応のCLIがローカルモデルに対応していれば、実行・判定役のどちらにも使えます。
+The Router / Judge / Council advisers also use `[[agents]]` agents over ACP (the HTTP endpoint version has been removed). Orochi does not handle credentials; it follows each CLI's own authentication (a subscription login or an API key). If an ACP-capable CLI supports local models, they can be used both for execution and as advisers.
 
-[残タスクの実機検証](docs/real-validation-20260916-2.md)で次を確認しました。
+The [Live Validation of Remaining Tasks (2026-09-16, part 2)](docs/real-validation-20260916-2.md) confirmed the following.
 
-- 実Codexの利用上限から実Claudeへの交代
-- 実Claude／Codexによる並列実装・協議・作業ツリーとの競合解消
-- 強制終了からの回収と再開
-- ACP判定役の3方式での交代
-- Zedのエージェントパネルからの実行
-- 言語・難易度の異なる6課題の実測
+- Switching from the real Codex's usage limit to the real Claude
+- Parallel implementation, discussion and conflict resolution against the working tree by real Claude / Codex
+- Recovery and resumption after a forced kill
+- Switching between advisers in all 3 ACP adviser modes
+- Execution from Zed's agent panel
+- Measurement of 6 tasks differing in language and difficulty
 
-実Claudeの利用上限から実Codexへの交代は未確認です。Antigravityの実機E2EはGoogleログイン待ちです。Gemini CLIの追加検証はユーザー指示により対象外にしました。ローカルモデルでの実機確認はまだ行っていません。
+Switching from the real Claude's usage limit to the real Codex has not been confirmed. Live E2E for Antigravity is waiting on a Google login. Additional validation of the Gemini CLI was made out of scope at the user's instruction. Verification against the real CLI with local models has not been done yet.
 
-## ビルド
+## Build
 
-Rust **1.96.0**、C/C++ビルドツールが必要です。SQLiteは同梱ビルドします。
+Requires Rust **1.96.0** and C/C++ build tools. SQLite is built from the bundled source.
 
 ```sh
 cargo build --release --locked
@@ -58,20 +58,20 @@ cargo install --path . --locked
 orochi --help
 ```
 
-Rustは`rust-toolchain.toml`で固定しています。miseを使っている場合は、このディレクトリで同じRustバージョンを選択してください。
+Rust is pinned in `rust-toolchain.toml`. If you use mise, select the same Rust version in this directory.
 
-## Agentの準備
+## Preparing Agents
 
-使用するCLIをインストールし、**各Agent自身の公式ログイン手順**で認証してください。Orochiは認証情報の収集やログイン代行を行いません。
+Install the CLIs you will use, and authenticate with **each Agent's own official login procedure**. Orochi neither collects credentials nor logs in on your behalf.
 
-| Agent ID | 検出・接続方法 | 導入元 |
+| Agent ID | Detection / connection method | Source |
 |---|---|---|
-| `codex` | `codex`本体、または`codex-acp`。不足するアダプターは自動導入 | [Codex ACP](https://github.com/agentclientprotocol/codex-acp) |
-| `claude` | `claude`本体、または`claude-agent-acp`。不足するアダプターは自動導入 | [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp) |
+| `codex` | The `codex` CLI itself, or `codex-acp`. A missing adapter is installed automatically | [Codex ACP](https://github.com/agentclientprotocol/codex-acp) |
+| `claude` | The `claude` CLI itself, or `claude-agent-acp`. A missing adapter is installed automatically | [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp) |
 | `gemini` | `gemini --acp` | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/) |
-| `antigravity` | `agy_acp_server.par` | [Antigravity ACP Registry掲載情報](https://zed.dev/acp/agent/antigravity-acp) |
+| `antigravity` | `agy_acp_server.par` | [Antigravity ACP Registry listing](https://zed.dev/acp/agent/antigravity-acp) |
 
-Claude/CodexはCLI本体だけがインストールされていても検出されます。アダプターがない場合はNode.js 22以上とnpmを使い、初回のdiscovery時に準備します。
+Claude/Codex are detected even when only the CLI itself is installed. If the adapter is missing, it is prepared at the first discovery using Node.js 22 or later and npm.
 
 ```sh
 orochi config init
@@ -79,104 +79,104 @@ orochi agents
 orochi agents --discover
 ```
 
-プリセットはPATH上の実行ファイルを検出します。既存ACPコマンドを優先し、不足分はデータディレクトリの`adapters/`へ固定バージョン（Codex ACP 1.10.0、Claude Agent ACP 0.77.0）で導入します。グローバルインストールや対象リポジトリの依存関係は変更しません。導入は公式npmレジストリから行い、install scriptsを無効化し、完成したキャッシュを再利用します。CLI本体は`CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE`でアダプターに渡します。明示されたenv設定は維持します。
+The presets detect executables on PATH. An existing ACP command takes precedence, and whatever is missing is installed into `adapters/` in the data directory at pinned versions (Codex ACP 1.10.0, Claude Agent ACP 0.77.0). Global installations and the target repository's dependencies are not modified. Installation is from the official npm registry with install scripts disabled, and a completed cache is reused. The CLI itself is passed to the adapter via `CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE`. Explicitly configured env settings are kept.
 
-CLIがPATHにない場合は`command`に絶対パスを設定できます。Claude/Codexのネイティブ実行ファイルはファイル名`claude` / `codex`で識別します。独自のACPコマンド・引数はそのまま使います。GeminiはネイティブACP、AntigravityはACP実行ファイルを使用します。その他のAgentは`[[agents]]`にACPコマンドを登録してください。
+If a CLI is not on PATH, you can set an absolute path in `command`. The native Claude/Codex executables are identified by the file names `claude` / `codex`. A custom ACP command and arguments are used as-is. Gemini uses its native ACP, and Antigravity uses its ACP executable. For any other Agent, register an ACP command in `[[agents]]`.
 
-既知の4プリセットは設定ファイルに省略されていても補完されます。同じIDの明示設定を優先するので、`enabled = false`で除外できます。自動補完やダウンロードを制御する場合:
+The four known presets are filled in even when omitted from the configuration file. An explicit entry with the same ID takes precedence, so `enabled = false` excludes one. To control the automatic fill-in and downloads:
 
 ```toml
 [discovery]
-auto_add = true          # falseなら[[agents]]に書いたものだけ使用
-auto_install = true     # falseなら不足アダプターを自動導入しない
-setup_timeout_secs = 120 # ACP接続のタイムアウトとは別枠
+auto_add = true          # if false, use only what is written in [[agents]]
+auto_install = true     # if false, do not auto-install missing adapters
+setup_timeout_secs = 120 # separate from the ACP connection timeout
 ```
 
-`orochi agents` / `status`はダウンロードしません。`ready`は接続準備済み、`adapter_required`はCLI本体検出済みで初回準備待ちです。`setup_unavailable`はNode/npm不足、`setup_disabled`は自動導入無効を意味します。認証やACP接続の失敗は`agents --discover`とルーティング時に別途表示されます。
+`orochi agents` / `status` do not download anything. `ready` means ready to connect, and `adapter_required` means the CLI itself was detected and first-time setup is pending. `setup_unavailable` means Node/npm is missing, and `setup_disabled` means automatic installation is disabled. Authentication and ACP connection failures are shown separately by `agents --discover` and at routing time.
 
-`agents --discover`と`--dry-run`は必要なアダプターを準備し、ACPプロセスと一時セッションを作成して設定を取得します。タスクのpromptは送信しません。インストール済みであっても、認証・実行権限・ACP互換性に問題があれば失敗理由を表示します。
+`agents --discover` and `--dry-run` prepare the needed adapters, create an ACP process and a temporary session, and retrieve the configuration. The task prompt is not sent. Even when installed, a problem with authentication, execution permissions or ACP compatibility is shown as a failure reason.
 
-## 使い方
+## Usage
 
 ```sh
-orochi "このIssueを実装して"
-orochi -C /path/to/repository "バグを修正して"
+orochi "Implement this issue"
+orochi -C /path/to/repository "Fix the bug"
 
-# promptを送らずに候補と選択理由を確認
-orochi --dry-run --json "このモジュールをリファクタして"
+# Check the candidates and the reason for the choice without sending the prompt
+orochi --dry-run --json "Refactor this module"
 
-# Agentやモデルを指定する場合もPolicyとquotaの制約を適用
+# Policy and quota constraints apply even when specifying an Agent or model
 orochi --agent claude "..."
-orochi --model '<agents --discoverで取得したID>' --reasoning high "..."
+orochi --model '<ID obtained from agents --discover>' --reasoning high "..."
 
-orochi status                  # 全エージェントの準備状態・CLIパス・保存済み利用状況
-orochi --status                # statusの短縮形
-orochi status --discover       # 実際に接続して利用可能モデルと失敗理由を確認
-orochi status --json           # JSONでも取得可能
+orochi status                  # readiness, CLI path and saved usage for all agents
+orochi --status                # short form of status
+orochi status --discover       # actually connect to check available models and failure reasons
+orochi status --json           # also available as JSON
 orochi sessions
-orochi peers --messages        # 同じリポジトリで実行中のエージェントとメッセージ
-orochi --peer-name backend "..."  # メールボックスでの名前
-orochi --resume '<session ID>' "続けて入力検証を追加して"
+orochi peers --messages        # agents running in the same repository, and their messages
+orochi --peer-name backend "..."  # name in the mailbox
+orochi --resume '<session ID>' "Continue by adding input validation"
 orochi runs --limit 20
 orochi policy status
 ```
 
-通常のAgent回答はstdout、ルーティング理由・検証結果はstderrへ出力します。`--json`は状態確認コマンドと`--dry-run`で利用できます。タスクがサブコマンド名そのものの場合は、`orochi -- "status"`のように区切ってください。
+Normal Agent answers go to stdout; routing reasons and verification results go to stderr. `--json` is available for status commands and `--dry-run`. If the task is exactly a subcommand name, separate it as in `orochi -- "status"`.
 
-`status`は実行履歴の有無によらず全エージェントを一覧表示します。現在のインストール・有効/無効・cooldownを反映するため、過去に成功したAgentでも削除・無効化されていればその状態を表示します。通常の`status`はAgentを起動せず、認証状態は未確認です。`status --discover`は不足アダプターを準備して接続確認を行い、接続成功時は`connected`とモデル一覧、失敗時は理由を表示します。タスクのpromptは送信せず、cooldown中のAgentは再接続を待ちます。保存済みquotaと直近の実行結果も続けて確認できます。
+`status` lists all agents regardless of whether they have run history. It reflects the current installation, enabled/disabled state and cooldown, so even an Agent that succeeded in the past shows that state if it has since been removed or disabled. Plain `status` does not start any Agent, and authentication state is unchecked. `status --discover` prepares missing adapters and checks the connection, showing `connected` and the model list on success, or the reason on failure. The task prompt is not sent, and an Agent in cooldown waits before reconnecting. Saved quota and recent run results can also be checked afterwards.
 
-終了コードは`0`（完了／検証なしの完了）、`1`（実行・評価・設定エラー）、`2`（CLI引数エラー）、`130`（中断／権限拒否）です。
+Exit codes are `0` (completed / completed without verification), `1` (execution, evaluation or configuration error), `2` (CLI argument error) and `130` (interrupted / permission denied).
 
-### 対話モード
+### Interactive mode
 
-端末でタスクを付けずに`orochi`を起動すると、対話セッションになります。`orochi chat`でも同じです。画面・操作・メッセージの流れ方は[OpenHands CLI](https://docs.openhands.dev/openhands/usage/cli/terminal)（[ソース](https://github.com/OpenHands/OpenHands-CLI)）と[Claude Code](https://code.claude.com/docs/en/interactive-mode)の慣習に合わせています。どちらも全画面のTUIですが、Orochiは端末に順に出力していく方式です。
+Starting `orochi` on a terminal without a task opens an interactive session. `orochi chat` does the same. The screen, controls and message flow follow the conventions of the [OpenHands CLI](https://docs.openhands.dev/openhands/usage/cli/terminal) ([source](https://github.com/OpenHands/OpenHands-CLI)) and [Claude Code](https://code.claude.com/docs/en/interactive-mode). Both of those are full-screen TUIs, whereas Orochi writes its output to the terminal sequentially.
 
 ```sh
-orochi                              # 対話を開始
-orochi -c                           # このディレクトリの直近の会話を続ける（--continue）
-orochi --resume '<session ID>'      # 記録済みセッションの続きから対話
-orochi --agent claude               # 最初のメッセージと再ルーティング時のAgent指定
-orochi --yolo                       # 権限要求を毎回一度限りで許可（--always-approve、--permission allowと同じ）
+orochi                              # start a conversation
+orochi -c                           # continue the most recent conversation in this directory (--continue)
+orochi --resume '<session ID>'      # continue the conversation from a recorded session
+orochi --agent claude               # Agent for the first message and for rerouting
+orochi --yolo                       # approve every permission request once each time (same as --always-approve and --permission allow)
 ```
 
 ```text
-> ノートを更新して
-  ⎿ codex · gpt-5.6-luna · medium            選ばれたAgent（Provider別の色）。経路が変わったときだけ表示
-✻ Inspecting the fixture                    思考の要約（薄い斜体）
+> Update the notes
+  ⎿ codex · gpt-5.6-luna · medium            the chosen Agent (colored per Provider); shown only when the route changes
+✻ Inspecting the fixture                    thinking summary (dim italics)
 
-⏺ I'll list the files first.                Agentの回答。文字は届いた順に表示し、行が確定したら整形
+⏺ I'll list the files first.                the Agent's answer; text appears as it arrives and is formatted once a line is complete
 
-⏺ List fixture files: $ ls ✓                実行中は灰色の行とスピナー。完了するとその行が緑の✓／赤の✗に変わる
-  ⎿ a.txt … +1 lines                        結果の1行目と残りの行数
+⏺ List fixture files: $ ls ✓                while running: a grey line with a spinner; when done the line turns into a green ✓ / red ✗
+  ⎿ a.txt … +1 lines                        first line of the result and the number of remaining lines
 
 ⏺ Edit notes: notes.txt ✓
   ⎿ Updated notes.txt with 1 addition and 1 removal
-      - old line                            差分（赤／緑）
+      - old line                            diff (red / green)
       + new line
 
-⏺ Plan                                      計画（☒ 完了、☐ 実行中は強調）
+⏺ Plan                                      plan (☒ done; ☐ in progress is highlighted)
   ⎿ ☒ Inspect files
     ☐ Report back
 
 ✻ 12s · codex · gpt-5.6-luna · ↑ 10.2k ↓ 1.1k · cache 40%
 ```
 
-- **表示は常に上へ流れ続けます。** 入力欄が複数行に伸び縮みしても、実行中に次のメッセージを打っても、前の出力を描き直したり上書きしたりしません（擬似端末で画面を再現するテストで固定しています）。
-- **入力欄は常に画面下部に固定します。** 履歴はその上を流れ、端末のスクロールバックにも残ります。入力欄の下の状態行に、承認モード・順番待ちの件数・作業状況（`⠹ Working (12s) · esc to interrupt`）を表示します。
-- **実行中もそのまま入力できます。** Enterで送ると順番待ちに入り（`⏸ queued (1): …`）、実行中の作業が終わり次第、順に処理します。
-- **Shift+Tabで承認モードを切り替えます。** エージェントがACPで提供するセッションモード（Claude Agent ACPなら`default`／`acceptEdits`／`plan`など、Codex ACPなら`read-only`／`auto`など）があればそれを巡回し、無ければOrochi側の`ask`／`always`／`never`を巡回します。`/confirm`でも変更できます。
-- **ファイルや画像を添付できます。** パスを貼り付ける（ドラッグ＆ドロップ）か、`@`のあとにパスを書いてTabで補完すると、入力欄に`[Image #1]`／`[File #1]`のタグが入り、その下に一覧が出ます。画像はACPの`image`ブロック、テキストは`resource`ブロックとして送ります。エージェントが対応していない場合や8 MiBを超える場合は、ファイルの場所（`resource_link`）として送ります。
-- **段取りはOrochiが決めます。** メッセージごとに分類し、小さい依頼はそのまま1回で実行、設計変更を伴うものや大規模なものは「設計 → 実装（→ レビュー）」に分けて、段ごとに別々のAgent・モデルを選び直します。設計は推論の強いモデル、実装は速いモデル、という使い分けになります。前の段の回答は次の段へ引き継ぎ、追加の指示は実装を担当したセッションに続きます。判断は`⎿ complex task · design → implement`のように表示します。
-  - 実装が正常に終わらなかった場合はレビューを追加し、レビューが`VERDICT: fix`と答えた場合だけ、もう1回だけ修正の段を追加します。
-  - `/team <タスク>`で3段を強制、`/solo <タスク>`で1回だけの実行を強制できます。
-- **人数を頼めば、その人数を同じプロセス内で起動します。** 「5人くらいのエージェントでディスカッションして」のように頼むと、Orochiが**そのぶんのAgentセッションを1つのプロセス内で同時に起動**します（最大6席）。席は`facilitator`（進行役）＋`skeptic`／`architect`／`simplifier`／`operator`／`advocate`のように**違う視点**を割り当てます。議論だけの依頼では**全員が読み取り専用**になり、リポジトリは変更しません。エージェントに`orochi`コマンドを実行させて別プロセスを立ち上げさせることはしません（プロンプトでも明示的に禁止しています）。
-- **大きい依頼には、もう1つの席を横に置きます。** 設計変更を伴う・規模が大きい・長丁場と判断された依頼では、Orochiは作業役の横に**同じプロセス内でもう1つのAgentセッションを同時に**起動します。席の名前と役割はタスクから決めます（構造を変える依頼なら`architect`、曖昧な依頼なら`researcher`、それ以外は`reviewer`。作業役も`implementer`／`fixer`／`migrator`のように決まります）。2つ目の席は**読むだけ**で、ファイルを変更するツールはOrochi側で拒否するため、作業ツリーは1つのままで競合しません。2者はメールボックスで会話し（Orochiが足す指示文は英語ですが、**回答もエージェント同士のメッセージも依頼と同じ言語で書く**よう指示します）、その内容はそのままチャット表示に流れます（`⎿ reviewer test · astra-test`のように、どのAgent・モデルが座っているかも表示します）。**席ごとに違うAgent・モデルを割り当てます。** 他の席が使っている(Agent, モデル)の組み合わせは候補から外し（他に選択肢がない場合だけ同じものを使います）、同じモデルが並ぶのを避けます。作業役が終わると2つ目の席も終了します。「エージェント同士で相談しながらやって」のように**依頼そのものが協働を求めている場合**は、規模にかかわらず2席にします。**席は毎回そのターン限り**なので、議論の続きを頼むと同じ人数で座り直します（前のターンの内容は引き継ぎます）。`/solo <タスク>`なら1人に固定します。
-- **会話が手に負えなくなったら、選び直します。** 会話は同じAgent・モデルで続きますが、依頼が重くなって**そのモデルなら最初から選ばれなかった**水準（`scheduler.required_success`に届かない）になった場合、そのターンだけ固定を外して選び直します（`⎿ this needs more than the model in this conversation · picking again`）。設計変更や大規模な依頼は段に分かれるので、そこでも選び直されます。
-- **利用枠の都合で強いモデルを避けたときは、そう言います。** 残量が少ないモデルは選定コストが上がるため、本来の1番手を譲ることがあります。その場合は`⎿ fable is close to its limit here; using sonnet instead`のように1行残します。
-- **足りない能力は、できるAgentへ渡します。** 会話の途中で画像生成（`image`）、ブラウザ操作（`browser`）、Web検索（`web`）が必要になった場合、担当中のAgentが対応していなければ、その依頼だけ対応できるAgentが実行し、会話自体は元のAgentに戻ります（結果は次の依頼で元のAgentに伝えます）。能力は`[[agents]]`の`image` / `browser` / `web`で宣言します。`--agent`で指定している場合も、能力が足りないときはこの引き渡しが優先されます。
-- **同じリポジトリで動いているAgent同士で、リソースを譲り合います。** 他の参加者（別プロセスのOrochiだけでなく、同じターンの別の席も含む）が使用中のAgent（アカウント）は、選定時のコストを1.4倍にして優先度を下げます。ほかに選択肢がなければそのまま使います。エージェントへの指示にも「同じファイル・アカウント・ツールが必要なときは、先に相談して順番を決める」よう明記しています。
-- 同じリポジトリで動いている他のOrochi（別プロセス・別worktree）とのやり取りを、チャット形式で表示します。**参加者はAgentセッション単位**なので、1つのOrochiが動かしている複数のAgent同士（`/team`の各段や`collaborate`の各担当）も、互いに認識してメッセージを送れます。参加者として登録するのは実際に作業を始めたセッションだけで、モデル一覧の取得のために開いたセッションは登録しません。
-- 各参加者が**どのAgent・どのモデルを使っているか**を表示します。メッセージの見出し（`✉ backend (codex · gpt-5.6-luna) → frontend`）、`/peers`の一覧、`list_peers`の結果（`agent`／`model`）で確認できます。
+- **Output always keeps flowing upward.** Even when the input box grows or shrinks across multiple lines, or you type the next message during a run, earlier output is never redrawn or overwritten (pinned by a test that reproduces the screen in a pseudo-terminal).
+- **The input box is always pinned to the bottom of the screen.** History flows above it and also stays in the terminal's scrollback. The status row below the input box shows the approval mode, the number of queued messages and the work status (`⠹ Working (12s) · esc to interrupt`).
+- **You can keep typing during a run.** Pressing Enter puts the message in the queue (`⏸ queued (1): …`), and queued messages are processed in order as soon as the running work finishes.
+- **Shift+Tab switches the approval mode.** If the agent provides session modes over ACP (e.g. `default` / `acceptEdits` / `plan` for Claude Agent ACP, `read-only` / `auto` for Codex ACP), it cycles through those; otherwise it cycles through Orochi's own `ask` / `always` / `never`. `/confirm` also changes it.
+- **Files and images can be attached.** Paste a path (drag & drop), or write a path after `@` and complete it with Tab; an `[Image #1]` / `[File #1]` tag is inserted in the input box and a list appears below it. Images are sent as ACP `image` blocks and text as `resource` blocks. If the agent does not support them, or the file exceeds 8 MiB, the file's location is sent instead (`resource_link`).
+- **Orochi decides the sequence of steps.** Each message is classified: a small request runs as-is in a single pass, while one involving design changes or of large scale is split into "design → implement (→ review)", and an Agent and model are re-chosen for each step. This results in a strong reasoning model for design and a fast model for implementation. Each step's answer is handed on to the next step, and follow-up instructions continue in the session that did the implementation. The decision is shown as, e.g., `⎿ complex task · design → implement`.
+  - If the implementation did not finish normally, a review is added, and only if the review answers `VERDICT: fix` is one more fix step added — just once.
+  - `/team <task>` forces the three steps, and `/solo <task>` forces a single run.
+- **Ask for a number of agents, and that many are started in the same process.** A request like 「5人くらいのエージェントでディスカッションして」 ("have about five agents discuss this") makes Orochi **start that many Agent sessions concurrently within one process** (up to 6 seats). The seats are assigned **different perspectives**, such as `facilitator` (moderator) + `skeptic` / `architect` / `simplifier` / `operator` / `advocate`. For a discussion-only request, **every seat is read-only**, and the repository is not changed. Orochi does not have an agent run the `orochi` command to launch a separate process (this is also explicitly forbidden in the prompt).
+- **A large request gets a second seat beside it.** For a request judged to involve design changes, to be large in scale, or to be long-running, Orochi starts **another Agent session concurrently in the same process** beside the worker. The seat's name and role are determined from the task (`architect` for a request that changes structure, `researcher` for an ambiguous request, `reviewer` otherwise; the worker likewise becomes e.g. `implementer` / `fixer` / `migrator`). The second seat **only reads**: Orochi refuses tools that change files, so there remains a single working tree and no conflicts. The two talk over the mailbox (the instructions Orochi adds are in English, but it tells them to **write both their answers and their messages to each other in the same language as the request**), and that conversation flows straight into the chat display (which also shows which Agent and model occupies each seat, as in `⎿ reviewer test · astra-test`). **Each seat is assigned a different Agent and model.** An (Agent, model) combination used by another seat is removed from the candidates (the same one is used only when there is no other choice), so the same model is not lined up twice. When the worker finishes, the second seat ends too. When **the request itself asks for collaboration**, as in 「エージェント同士で相談しながらやって」 ("do it with the agents consulting each other"), it gets 2 seats regardless of scale. **Seats last for that turn only**, so asking to continue a discussion re-seats the same number of agents (the previous turn's content is carried over). `/solo <task>` fixes it to one agent.
+- **When the conversation outgrows its model, it chooses again.** A conversation continues with the same Agent and model, but if a request becomes heavy enough that **that model would not have been chosen in the first place** (it does not reach `scheduler.required_success`), the pin is lifted for that turn only and the route is chosen again (`⎿ this needs more than the model in this conversation · picking again`). Design changes and large requests are split into steps, so they are re-chosen there as well.
+- **When a strong model is avoided because of usage limits, it says so.** A model with low remaining quota gets a higher selection cost, so it may give up its place as first choice. In that case one line is left, such as `⎿ fable is close to its limit here; using sonnet instead`.
+- **A missing capability is handed to an Agent that has it.** If image generation (`image`), browser operation (`browser`) or web search (`web`) becomes necessary mid-conversation and the Agent in charge does not support it, an Agent that does runs that one request only, and the conversation itself returns to the original Agent (the result is passed on to the original Agent with the next request). Capabilities are declared with `image` / `browser` / `web` in `[[agents]]`. Even when an Agent is specified with `--agent`, this hand-off takes precedence when a capability is missing.
+- **Agents running in the same repository share resources.** An Agent (account) in use by another participant (not only Orochi in a separate process, but also another seat in the same turn) has its selection cost multiplied by 1.4, lowering its priority. If there is no other choice, it is used anyway. The instructions to agents also state explicitly that "when you need the same file, account or tool, consult first and decide the order".
+- Exchanges with other Orochi instances running in the same repository (in separate processes or separate worktrees) are shown in chat form. **Participants are per Agent session**, so multiple Agents driven by one Orochi (the steps of `/team`, or the roles of `collaborate`) also know about each other and can send messages. Only sessions that actually started work are registered as participants; sessions opened to retrieve the model list are not.
+- It shows **which Agent and which model** each participant is using. You can see this in a message's header (`✉ backend (codex · gpt-5.6-luna) → frontend`), in the `/peers` list, and in the result of `list_peers` (`agent` / `model`).
 
 ```text
 ● backend joined · ~/dev/app-worktree · feature/api · codex / gpt-5.6-luna
@@ -187,64 +187,64 @@ orochi --yolo                       # 権限要求を毎回一度限りで許可
 ○ backend left
 ```
 
-  相手ごとに色を変え、自分のセッションはブランド色で示します。参加・離脱も表示します。入力中に届いたメッセージは、入力行を壊さないように、送信した直後にまとめて表示します。自分のAgentがメールボックスのツールを使ったときは、ツール行の代わりに「Messaging another agent」などの状態表示にします。`/peers`で現在動いているAgentの一覧を確認できます。`[mailbox] enabled = false`の場合は表示しません。
-- 色は役割ごとに固定しています。ロゴ・プロンプト・スピナー・計画の実行中項目はブランド色、Agentの回答は青、成功は緑、失敗は赤、注意・権限要求は黄、補足情報はグレーです。Markdownの見出し・太字・`コード`・コードブロック・箇条書きも色分けします。`NO_COLOR`を設定するか、端末以外へ出力する場合は色を付けません。
-- **権限の既定は自動承認（auto）です。** 対話モードは既定で、Agentからの権限要求に一度限りの許可を自動で返します。止めて確認させたい場合は`--permission ask`か`/confirm ask`、すべて拒否するなら`/confirm never`です（設定の`scheduler.permission`で`allow`／`deny`を明示した場合はそちらを使います。単発実行`orochi "タスク"`の既定は従来どおり`ask`です）。
-- 確認が必要な場合は、**入力欄がそのまま確認画面に置き換わります**。`1 Yes`／`2 No`／`3 Auto`を数字キーか↑↓とEnterで選び、Escで拒否します。答えると入力欄に戻り、履歴には`⏺ <ツール名> → allowed once`の1行だけが残ります。
-- **Orochi自身のメールボックスのツール（`orochi-mailbox`）は確認しません。** 他のAgentと連絡するだけで、ファイルもコマンドも触らないためです。やり取りはチャット表示に出ます。他に動いているAgentがいない場合、`read_messages`は待たずにすぐ返します。
-- 拒否すると、そのメッセージの作業は止まります。次のメッセージで別のやり方を指示してください。
-- 未インストールのAgentは表示しません。認証失敗など、実際に使えないAgentだけをセッション中に1回警告します。
+  Each peer gets its own color, and your own session is shown in the brand color. Joins and departures are shown as well. Messages that arrive while you are typing are shown together right after you send, so the input line is not broken. When your own Agent uses a mailbox tool, a status such as "Messaging another agent" is shown instead of a tool line. `/peers` lists the Agents currently running. Nothing is shown when `[mailbox] enabled = false`.
+- Colors are fixed per role. The logo, prompt, spinner and the in-progress item of a plan use the brand color; Agent answers are blue, success green, failure red, warnings and permission requests yellow, and supplementary information grey. Markdown headings, bold, `code`, code blocks and bullet lists are colored too. No color is used when `NO_COLOR` is set or when output is not a terminal.
+- **The default for permissions is automatic approval (auto).** By default, interactive mode automatically answers an Agent's permission request with a one-time approval. To stop and have you confirm, use `--permission ask` or `/confirm ask`; to deny everything, `/confirm never` (if the configuration sets `scheduler.permission` explicitly to `allow` / `deny`, that is used instead. The default for a one-shot run `orochi "task"` remains `ask` as before).
+- When confirmation is needed, **the input box is replaced in place by the confirmation screen**. Choose `1 Yes` / `2 No` / `3 Auto` with a number key or ↑↓ and Enter; Esc denies. Once you answer, it returns to the input box, and only one line, `⏺ <tool name> → allowed once`, remains in the history.
+- **Orochi's own mailbox tools (`orochi-mailbox`) are not confirmed.** They only contact other Agents and touch neither files nor commands. The exchanges appear in the chat display. If no other Agent is running, `read_messages` returns immediately without waiting.
+- If you deny, the work for that message stops. Give a different approach in the next message.
+- Agents that are not installed are not shown. Only Agents that are actually unusable, e.g. due to an authentication failure, are warned about, once per session.
 
-通常実行との違い:
+Differences from a normal run:
 
-- 入力はそのまま送ります。通常実行の「コーディング作業として検証する」前置きは付けません。
-- 最初のメッセージでAgent・モデルを選び、2通目以降はそのセッションを`session/load`で読み込んで続けます。固定バージョンのCodex ACP 1.10.0とClaude Agent ACP 0.77.0は、ソース上で`loadSession`を広告しています。`session/load`に対応しないAgentでは、同じAgent・モデルの新しいセッションに、それまでの会話（メモリ上に最大約32 KiB）を文脈として渡します。
-- チェック（評価）は、そのメッセージの間にファイルが変わった場合だけ実行します。gitリポジトリではgitが認識するファイル、それ以外では`.git`・`node_modules`・`target`を除くファイルのサイズと更新時刻で判定します。変更がなかったメッセージは未検証（`partial_success`）として記録し、学習には使いません。
-- Agentが回答を終えた後にチェックが失敗しても、別のAgentへ自動では引き継ぎません。結果を表示して入力待ちに戻ります。利用制限など、回答の途中でのエラーは通常どおり別の候補へ交代します。
-- 会話の継続中はAgent・モデルを固定するため、利用制限などが起きても別のAgentへ自動では交代しません。`/reroute`で、それまでの会話を文脈として渡したまま次のメッセージを再ルーティングできます。
-- リポジトリのロックは、メッセージの実行中だけ保持します。
-- 入力履歴と会話はメモリ上だけに保持し、ディスクへは保存しません。SQLiteへは、通常実行と同様に本文を含まない実行記録とセッションIDだけを保存します。
+- Input is sent as-is. The normal run's preamble "verify it as a coding task" is not added.
+- The Agent and model are chosen on the first message, and from the second message on, that session is loaded with `session/load` and continued. The pinned versions Codex ACP 1.10.0 and Claude Agent ACP 0.77.0 advertise `loadSession` in their source. For an Agent that does not support `session/load`, the conversation so far (up to about 32 KiB, in memory) is passed as context to a new session with the same Agent and model.
+- Checks (evaluation) run only if files changed during that message. In a git repository this is determined from the files git tracks; elsewhere, from the size and modification time of files excluding `.git`, `node_modules` and `target`. A message with no changes is recorded as unverified (`partial_success`) and is not used for learning.
+- If a check fails after the Agent has finished its answer, the work is not handed over to another Agent automatically. The result is shown and it returns to waiting for input. An error in the middle of an answer, such as a usage limit, switches to another candidate as usual.
+- While a conversation continues, the Agent and model are pinned, so it does not switch to another Agent automatically even on a usage limit or similar. `/reroute` reroutes the next message while still passing the conversation so far as context.
+- The repository lock is held only while a message is running.
+- Input history and the conversation are kept in memory only and are not saved to disk. As with a normal run, only run records without the text and session IDs are saved to SQLite.
 
-| 入力 | 動作 |
+| Input | Action |
 |---|---|
-| `/help` | コマンドとショートカットの一覧 |
-| `/new`（`/clear`） | 会話を破棄し、次のメッセージを新規にルーティング |
-| `/resume`（`/history`） | このディレクトリの最近の会話を一覧表示。`/resume <番号またはID>`で再開 |
-| `/reroute` | 会話を文脈として渡したまま、次のメッセージを再ルーティング |
-| `/confirm`（`/permissions`） | 権限要求への応答方針（ask／always／never）を表示・変更 |
-| `/team <task>` | 設計→実装→レビューを、段ごとに別々のAgentを選んで順に実行（`/collaborate`も同じ） |
-| `/peers` | 同じリポジトリで動いている他のAgentと、その作業ディレクトリ・ブランチ・経路・状態 |
-| `/status` | 作業ディレクトリ、継続中のAgent・モデル・セッション、応答方針 |
-| `/exit`（`/quit`）、Ctrl-D | 終了 |
-| `/`の入力中、Tab | コマンドを補完。候補が複数あれば一覧表示 |
-| `@`の入力中、Tab | ファイル名を補完して添付 |
-| Shift+Tab | 承認モードの切り替え（auto → ask → never） |
-| ↑↓ | このセッションの入力履歴 |
-| 行末の`\`+Enter | 改行して入力を続ける。複数行の貼り付けは1つのメッセージになる |
-| 実行中のEsc | その作業を中断して入力へ戻る |
-| Ctrl-C | 入力内容を消す。空の状態で2回押すと終了 |
-| Ctrl-D | 終了 |
+| `/help` | List of commands and shortcuts |
+| `/new` (`/clear`) | Discard the conversation and route the next message afresh |
+| `/resume` (`/history`) | List recent conversations in this directory. `/resume <number or ID>` resumes one |
+| `/reroute` | Reroute the next message while passing the conversation as context |
+| `/confirm` (`/permissions`) | Show or change the policy for answering permission requests (ask / always / never) |
+| `/team <task>` | Run design → implement → review in order, choosing a different Agent for each step (`/collaborate` is the same) |
+| `/peers` | Other Agents running in the same repository, with their working directory, branch, route and status |
+| `/status` | Working directory, the continuing Agent, model and session, and the answering policy |
+| `/exit` (`/quit`), Ctrl-D | Quit |
+| Tab while typing `/` | Complete a command. If there are several candidates, list them |
+| Tab while typing `@` | Complete a file name and attach it |
+| Shift+Tab | Switch the approval mode (auto → ask → never) |
+| ↑↓ | Input history for this session |
+| `\` at end of line + Enter | Insert a newline and keep typing. A multi-line paste becomes one message |
+| Esc during a run | Interrupt that work and return to input |
+| Ctrl-C | Clear the input. Pressing it twice when empty quits |
+| Ctrl-D | Quit |
 
-実行中に打ったキーは画面に表示せず、Escと権限パネルの操作以外は破棄します。stdinが端末でない場合、タスクなしの`orochi`は従来どおりヘルプを表示します。`orochi chat`は標準入力の各行を1メッセージとして処理します。この場合は装飾・思考・実行中の行を出さずに出力し、権限要求は拒否し、入力行を権限の回答には使いません。
+Keys typed during a run are not shown on screen, and everything other than Esc and permission-panel input is discarded. When stdin is not a terminal, `orochi` without a task shows help as before. `orochi chat` processes each line of standard input as one message. In that case output is produced without decoration, thinking or in-progress lines, permission requests are denied, and input lines are not used as answers to permission requests.
 
-行編集と画面制御は自前で実装しています（`src/chat/term.rs`）。端末のスクロール領域（DECSTBM）で下部の行を固定し、入力はraw modeでキーを直接読みます。全画面（代替画面）には切り替えないため、履歴は端末のスクロールバックに残ります。終了時はスクロール領域・bracketed paste・termiosを元に戻します。日本語入力の確定のように複数文字が一度に届く場合も取りこぼしません。
+Line editing and screen control are implemented in-house (`src/chat/term.rs`). The bottom rows are pinned with the terminal's scroll region (DECSTBM), and input reads keys directly in raw mode. It does not switch to a full screen (alternate screen), so history stays in the terminal's scrollback. On exit, the scroll region, bracketed paste and termios are restored. Even when several characters arrive at once, as when committing Japanese input, none are dropped.
 
-モックACP fixtureと疑似端末（pty）で、下部固定の入力欄・実行中の入力と順番待ち・Shift+Tabの切り替え・画像とファイルの添付・逐次表示と整形・ツール行の更新・差分・計画・権限パネルの矢印キー操作・エージェント間メッセージの表示（実行中と待機中の両方）・`/peers`・セッションの継続・`/reroute`・`/new`・Escによる中断・Tab補完・日本語入力・狭い端末を確認しました。実機のClaude／Codexでは、変更前の版で1回対話し、チェックの失敗から別Agentへ引き継がれる問題を確認しました。変更後の版の実機確認はまだ行っていません。OpenHandsのコマンドパレット、会話履歴・計画のサイドパネル、出力の折りたたみ、Claude Codeの入力枠・下部ステータス行は、順に出力していく方式では実装していません。
+With a mock ACP fixture and a pseudo-terminal (pty), the following were confirmed: the input box pinned to the bottom, typing and queueing during a run, Shift+Tab switching, image and file attachments, incremental display and formatting, tool line updates, diffs, plans, arrow-key operation of the permission panel, display of inter-agent messages (both while running and while idle), `/peers`, session continuation, `/reroute`, `/new`, interruption with Esc, Tab completion, Japanese input, and narrow terminals. With the real Claude / Codex, one conversation was held on the version before the change, and a problem was confirmed where a check failure was handed over to another Agent. Verification of the version after the change against the real CLI has not been done yet. OpenHands' command palette, the conversation-history and plan side panels, output folding, and Claude Code's input frame and bottom status line are not implemented in the sequential output approach.
 
-### 権限
+### Permissions
 
-デフォルトは`ask`です。ACPの`session/request_permission`を表示し、許可は`allow_once`を選びます。TTYがない場合は拒否します。
+The default is `ask`. ACP `session/request_permission` is shown, and an approval selects `allow_once`. Without a TTY, requests are denied.
 
 ```sh
-orochi --permission allow "..."  # ACPの一度限りの許可要求に自動応答
+orochi --permission allow "..."  # automatically answer ACP one-time permission requests
 orochi --permission deny "..."
 ```
 
-OrochiはOS sandboxではありません。Agent自身が備えるツール、認証、sandbox、承認設定も適用されます。AgentがACPへ許可を問い合わせない操作は、Orochiでは仲介できません。OrochiはClient側のfilesystem/terminal capabilitiesを広告せず、Agent側のネイティブツールを利用します。
+Orochi is not an OS sandbox. The Agent's own tools, authentication, sandbox and approval settings also apply. Operations for which the Agent does not ask permission over ACP cannot be mediated by Orochi. Orochi does not advertise client-side filesystem/terminal capabilities, and uses the Agent's native tools.
 
-### 設定
+### Configuration
 
-既定の設定ファイルは`$XDG_CONFIG_HOME/orochi/config.toml`、未設定時は`~/.config/orochi/config.toml`です。
+The default configuration file is `$XDG_CONFIG_HOME/orochi/config.toml`, or `~/.config/orochi/config.toml` when that is unset.
 
 ```sh
 orochi config path
@@ -253,7 +253,7 @@ orochi config show
 orochi --config /path/to/config.toml --data-dir /path/to/data "..."
 ```
 
-`OROCHI_CONFIG` / `OROCHI_DATA_DIR`でも変更できます。リポジトリ内の設定を自動で実行設定として読み込むことはありません。サンプルは[examples/config.toml](examples/config.toml)にあります。
+`OROCHI_CONFIG` / `OROCHI_DATA_DIR` can also change these. Configuration inside a repository is never loaded automatically as run configuration. A sample is in [examples/config.toml](examples/config.toml).
 
 ```toml
 [[agents]]
@@ -274,31 +274,31 @@ prompt_timeout_secs = 1800
 permission = "ask"
 ```
 
-`agents`を指定すると、既定の4件を置き換えます。独自IDを複数登録できます。AgentがブラウザやWeb検索を利用できる場合、`browser` / `web`を明示します。ACPの標準capabilitiesだけからこの2項目は推測しません。
+Specifying `agents` replaces the default 4 entries. Multiple custom IDs can be registered. If an Agent can use a browser or web search, declare `browser` / `web` explicitly. These two items are not inferred from ACP's standard capabilities alone.
 
-### 判定役（Router）
+### Adviser (Router)
 
-追加設定なしではローカルの決定的ルーティングで動作します。候補の選択を別のエージェントに相談する場合は、`[[agents]]`のIDとモデルを指定します。判定役はACPで接続し、認証は各CLIに従います。
+With no additional configuration, Orochi runs with local deterministic routing. To consult another agent about the choice of candidate, specify an `[[agents]]` ID and model. The adviser connects over ACP, and authentication follows each CLI.
 
 ```toml
 [router]
 agent = "codex"
-model = "gpt-5.6-luna"   # 省略するとPolicyで判定向きのモデルを自動選択
+model = "gpt-5.6-luna"   # if omitted, a model suited to advising is chosen automatically by Policy
 session_overhead_tokens = 24000
 ```
 
-低confidenceかつ候補が複数ある場合だけ相談します。新しい一時ディレクトリのセッションで、permissionを拒否して実行します。タスク本文・ファイル名・リポジトリパスは送らず、分類属性と上位12候補のみを送ります。未知の候補ID、失敗応答、過大な回答は採用しません。推薦が最良候補の期待コストの1.25倍を超える場合も採用しません。判定役だけに使うエージェントは`routing_only = true`にします。Frontier Judge・Councilと設定項目の詳細は[適応ルーティング](docs/adaptive-routing.md#4-routerfrontier-judgecouncil)を参照してください。
+It is consulted only when confidence is low and there are multiple candidates. It runs in a session in a new temporary directory, with permissions denied. Task text, file names and repository paths are not sent; only classification attributes and the top 12 candidates are sent. Unknown candidate IDs, failed responses and oversized answers are not adopted. A recommendation exceeding 1.25× the expected cost of the best candidate is not adopted either. An agent used only as an adviser is set to `routing_only = true`. For details on the Frontier Judge, the Council and the configuration items, see [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md#4-router-frontier-judge-and-council).
 
-### 評価
+### Evaluation
 
-デフォルトの自動評価は次のとおりです。
+The default automatic evaluation is as follows.
 
 - Rust: `cargo test --quiet`
 - Go: `go test ./...`
-- Node.js: 存在する`test` / `typecheck` / `lint` / `build` scriptsを、lockfileに合うpackage managerで実行
-- Git repository: staged / unstaged双方の`git diff --check`
+- Node.js: the existing `test` / `typecheck` / `lint` / `build` scripts, run with the package manager matching the lockfile
+- Git repository: `git diff --check` for both staged and unstaged changes
 
-`CI=true`、stdinなしで実行します。明示したchecksは自動検出を置き換えます。Python等は次のように設定してください。
+These run with `CI=true` and no stdin. Explicitly configured checks replace auto-detection. For Python and others, configure as follows.
 
 ```toml
 [evaluator]
@@ -311,57 +311,57 @@ command = "python3"
 args = ["-m", "pytest", "-q"]
 ```
 
-実行コマンドはshell文字列へ展開せず、実行ファイルと引数を個別に渡します。`--no-eval`で評価を省略できます。Agentの`end_turn`だけでは成功ラベルにしません。検証なし／diff検証のみの場合は`partial_success`、実質的なチェック通過を`success`、失敗・未完了を`failure`として記録します。チェック通過は要件の意味的な完全達成を保証するものではありません。
+Commands are not expanded into a shell string; the executable and arguments are passed separately. `--no-eval` skips evaluation. An Agent's `end_turn` alone does not produce a success label. No verification / diff-only verification is recorded as `partial_success`, a substantive check pass as `success`, and failure or incompletion as `failure`. Passing checks does not guarantee that the requirements were fully met in meaning.
 
-## Policyとコストモデル
+## Policy and cost model
 
-[policies/](policies/)のJSONを同梱しています。公式資料に基づくreasoning方針と、Orochi固有の性能推定を分離して扱います。
+The JSON files in [policies/](policies/) are bundled. Reasoning guidance based on official documentation and Orochi's own performance estimates are handled separately.
 
-**`success_prior`・`relative_tokens`・cache割引率は、ベンチマーク未校正のOrochiヒューリスティックです。Providerが公表した成功率や料金ではありません。** パターンはACPで取得したモデルIDへのprior適用だけに用い、モデルIDを生成しません。
+**`success_prior`, `relative_tokens` and the cache discount rates are Orochi's own heuristic, not calibrated against benchmarks. They are not success rates or prices published by the Provider.** Patterns are used only to apply priors to model IDs obtained over ACP; they never generate model IDs.
 
-概略のスコアは、`(期待tokens × cache補正 + context復元) × quota係数 + latency`を推定成功確率で割ったものです。初期priorの重みを16として、context別EWMAでローカル評価履歴と混合します。成功確率の下限未満、hard constraint違反、cooldown中の候補は除外します。任意設定のBandit探索もこれらの制約を通過した候補に限定します。`orochi calibrate`で予測誤差、`orochi benchmark --input ...`で測定済み候補の比較を確認できます。
+Roughly, the score is `(expected tokens × cache adjustment + context restoration) × quota factor + latency`, divided by the estimated success probability. With the initial prior weighted at 16, it is blended with local evaluation history through a per-context EWMA. Candidates below the lower bound on success probability, violating a hard constraint, or in cooldown are excluded. Optional Bandit exploration is likewise limited to candidates that passed these constraints. `orochi calibrate` shows prediction error, and `orochi benchmark --input ...` shows a comparison of measured candidates.
 
 ```sh
-orochi policy update                          # 同梱版をインストール
-orochi policy update --from ./policies        # 3つのJSONを読み込み
-orochi policy update --from ./registry.json   # registry全体を読み込み
-orochi policy update --url https://example.org/registry.json --sha256 '<64桁のdigest>'
+orochi policy update                          # install the bundled version
+orochi policy update --from ./policies        # read the 3 JSON files
+orochi policy update --from ./registry.json   # read a whole registry
+orochi policy update --url https://example.org/registry.json --sha256 '<64-digit digest>'
 ```
 
-registry形式は`{"schema_version":1,"policies":[...]}`です。全件を検証してからアトミックに置換し、検証失敗時は既存版を保持します。リモート更新はHTTPSと明示digestを要求します。公式資料の自動スクレイピング、署名付き配布サービス、更新先サーバー自体は実装していません。更新元の選定は利用者が行います。
+The registry format is `{"schema_version":1,"policies":[...]}`. All entries are validated before being replaced atomically, and the existing version is kept if validation fails. Remote updates require HTTPS and an explicit digest. Automatic scraping of official documentation, a signed distribution service, and the update server itself are not implemented. Choosing the update source is up to the user.
 
-Policyの出典:
+Policy sources:
 
 - [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model)
 - [Anthropic thinking / effort](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost)
-- [Google thinking](https://ai.google.dev/gemini-api/docs/thinking)、[context caching](https://ai.google.dev/gemini-api/docs/caching)
+- [Google thinking](https://ai.google.dev/gemini-api/docs/thinking), [context caching](https://ai.google.dev/gemini-api/docs/caching)
 
-## Quota・usage・telemetry
+## Quota, usage and telemetry
 
-データは`$XDG_DATA_HOME/orochi`、未設定時は`~/.local/share/orochi`へ保存します。
+Data is saved to `$XDG_DATA_HOME/orochi`, or `~/.local/share/orochi` when that is unset.
 
-- `telemetry.sqlite3`: runs、sessions、runtime、quota_snapshots、スキーマversionとローカルsalt（今回schema v2へ移行）
-- `policies.json`: インストール済みPolicy
-- `locks/`: 同一リポジトリ実行のロック
-- `adapters/`: 自動導入したACPアダプターとnpmキャッシュ
+- `telemetry.sqlite3`: runs, sessions, runtime, quota_snapshots, the schema version and a local salt (migrated to schema v2 in this release)
+- `policies.json`: the installed Policy
+- `locks/`: locks for same-repository runs
+- `adapters/`: auto-installed ACP adapters and the npm cache
 
-タスク本文、会話、ソースコード、diff本文、Agent stderr、テスト出力はDBへ保存しません。repository識別子はローカルsaltを使ったハッシュです。TaskEnvelopeは実行中のメモリにのみ保持します。Agent自身が保存する会話やProvider側の記録は別です。
+Task text, conversations, source code, diff bodies, Agent stderr and test output are not saved to the DB. The repository identifier is a hash using a local salt. The TaskEnvelope is held only in memory during a run. Conversations saved by the Agent itself and records on the Provider side are a separate matter.
 
-一般的な認証／rate-limitエラー、構造化された`resetAt` / `reset_at` / `resetsAt`（Unix秒）、`retryAfter` / `retry_after`（秒）を観測します。`data.scope = "model"`が明示されなければrate-limitはAgent全体に適用します。標準化されていないサブスクリプション残量を推測してhealthyと表示することはありません。
+Common authentication / rate-limit errors, structured `resetAt` / `reset_at` / `resetsAt` (Unix seconds) and `retryAfter` / `retry_after` (seconds) are observed. Unless `data.scope = "model"` is explicit, a rate limit applies to the whole Agent. Non-standardized subscription quota is never guessed and shown as healthy.
 
-アダプターが残量を提供できる場合は、応答またはsession updateで次の拡張を使用できます。
+If an adapter can provide quota, it can use the following extension in a response or session update.
 
 ```json
 {"_meta":{"orochi.dev/quota":{"remaining":0.08,"reset_at":2000000000,"model":null}}}
 ```
 
-`remaining`は0〜1、`model: null`はAgent全体です。Provider内部の非公開quota APIは呼びません。`orochi quota --refresh`でCodex公式CLIの残量を直接取得できます。Claudeは公式`/usage`の随時取得（Python 3 / POSIX）と`quota-ingest`による公式statusline入力に対応します。Antigravityも`agy`の公式`/usage`取得を実装していますが、認証済みの表示パースは未検証です。[取得元・期限・制約](docs/adaptive-routing.md#3-残量)を参照してください。
+`remaining` is 0–1, and `model: null` means the whole Agent. Private, undocumented quota APIs internal to a Provider are not called. `orochi quota --refresh` retrieves quota directly from the official Codex CLI. For Claude, on-demand retrieval via the official `/usage` (Python 3 / POSIX) and official statusline input via `quota-ingest` are supported. Retrieval via `agy`'s official `/usage` is also implemented for Antigravity, but parsing of the authenticated display is unverified. See [sources, expiry and constraints](docs/adaptive-routing.md#3-quota).
 
-usageは応答のdraft `usage`（camelCase）または`_meta["orochi.dev/usage"]`（turn単位）から取得します。OpenAI互換とAnthropic形式を正規化し、reasoning/cacheを二重加算しません。欠落値は`null`であり、ゼロでも推定tokensでもありません。draftのusage semanticsやアダプターの報告精度に依存するため、実測値の厳密な比較にはアダプター側の確認が必要です。
+Usage is taken from the draft `usage` in the response (camelCase) or from `_meta["orochi.dev/usage"]` (per turn). OpenAI-compatible and Anthropic formats are normalized, and reasoning/cache are not double-counted. A missing value is `null`, neither zero nor estimated tokens. Because this depends on the draft usage semantics and the adapter's reporting accuracy, a strict comparison of measured values requires checking on the adapter side.
 
-cache affinityは同じrepository・設定・指示ファイル・Agent・モデル・reasoning・modeの直近セッションから推定します。ACPでcache keyやadaptive thinking設定が公開されていなければ、Provider固有パラメーターを勝手に送信せずAgent側に任せます。
+Cache affinity is estimated from recent sessions with the same repository, configuration, instruction files, Agent, model, reasoning and mode. If ACP does not expose a cache key or adaptive thinking settings, Provider-specific parameters are not sent on Orochi's own initiative; this is left to the Agent.
 
-## 開発・検証
+## Development and verification
 
 ```sh
 cargo fmt --all -- --check
@@ -369,47 +369,47 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-E2EテストはPython 3のACP fixtureを実際の子プロセスとして起動します。判定役もACP fixtureで検証します。実アカウント・外部LLM・API課金は不要です。CIはLinux/macOSを対象にします。Windowsの実機検証と子孫プロセス一括終了は未対応です。
+The E2E tests start Python 3 ACP fixtures as real child processes. The adviser is also verified with an ACP fixture. No real account, external LLM or API billing is needed. CI targets Linux/macOS. Verification on real Windows machines and bulk termination of descendant processes on Windows are not supported.
 
-[examples/demo.py](examples/demo.py)で、アカウントなしの一連の動作を試せます。
+[examples/demo.py](examples/demo.py) lets you try the whole flow without an account.
 
 ```sh
 cargo build --locked
 python3 examples/demo.py
 ```
 
-テストはACP contractに対する検証です。各実Providerのログイン済み環境での互換性は、使用するアダプターversionとともに別途確認してください。
+The tests verify against the ACP contract. Compatibility with each real Provider in a logged-in environment should be checked separately, together with the adapter version you use.
 
-[CLI自動検出の実機E2E結果](docs/cli-discovery-e2e.md): Claude/Codex両方の候補登録と、Claudeへの実行委譲を確認済みです。
+[CLI Auto-Discovery: Live E2E](docs/cli-discovery-e2e.md): candidate registration for both Claude/Codex and delegation of execution to Claude have been confirmed.
 
-## 構成
+## Layout
 
 ```text
-src/acp.rs          ACP接続・session・動的設定・stream・permission
-src/discovery.rs    CLI検出・ACP接続方式の解決・不足アダプターの準備
-src/agents.rs       Providerごとのerror / quota / usage正規化
-src/router/         Task Profiler・ACPによるタスク分類、候補生成・スコア、ACP判定役によるRouter・Judge・Council
-src/scheduler/      実行・fallback・quota / circuit breaker
-src/process.rs      Agentの監視プロセス・子孫の記録・強制終了後の回収
-src/mailbox.rs      プロセス間のエージェント間メッセージ（MCPサーバー・期限付き保存）
-src/memory.rs       セッションを跨ぐ記憶（ユーザーの好み・リポジトリの覚え書き。テレメトリとは別保存）
-src/context.rs      TaskEnvelope、Git情報、cache key
-src/evaluator.rs    ローカル評価とプロセス管理
-src/storage.rs      SQLite・schema・repository lock
-src/learning.rs     EWMA・Bandit・予測校正
-src/benchmark.rs    測定済み候補の時系列比較・holdout係数探索
-src/collaboration/  独立ACPセッションの工程・タスクからのチーム編成・並列実装のマージ・メッセージ・作業ツリーへの適用
-src/quota_terminal.py ネイティブCLIの読み取り専用残量取得
-src/quota_sources.rs CLI残量取得・statusline取り込み
-src/gateway.rs      OrochiのACP v1 stdio公開
-src/chat/           対話モード（画面表示・順番待ち・承認モード・添付・セッション継続）
-src/chat/term.rs    端末制御（下部固定の入力欄・キー入力・スクロール領域）
-src/policy.rs       Policy検証・更新
-src/config.rs       設定・既定のAgentプリセット
-src/cli.rs          ユーザー操作
+src/acp.rs          ACP connection, sessions, dynamic configuration, streams, permissions
+src/discovery.rs    CLI detection, resolving the ACP connection method, preparing missing adapters
+src/agents.rs       Per-Provider error / quota / usage normalization
+src/router/         Task Profiler and task classification over ACP, candidate generation and scoring, Router / Judge / Council via ACP advisers
+src/scheduler/      Execution, fallback, quota / circuit breaker
+src/process.rs      Agent supervisor processes, recording descendants, reclaiming after a forced kill
+src/mailbox.rs      Inter-process messages between agents (MCP server, retention-limited storage)
+src/memory.rs       Memory across sessions (user preferences, repository notes; stored separately from telemetry)
+src/context.rs      TaskEnvelope, Git information, cache key
+src/evaluator.rs    Local evaluation and process management
+src/storage.rs      SQLite, schema, repository lock
+src/learning.rs     EWMA, Bandit, prediction calibration
+src/benchmark.rs    Time-series comparison of measured candidates, holdout coefficient search
+src/collaboration/  Steps of independent ACP sessions, team composition from the task, merging parallel implementations, messages, applying to the working tree
+src/quota_terminal.py Read-only quota retrieval from native CLIs
+src/quota_sources.rs CLI quota retrieval, statusline ingestion
+src/gateway.rs      Exposing Orochi over ACP v1 stdio
+src/chat/           Interactive mode (screen display, queueing, approval modes, attachments, session continuation)
+src/chat/term.rs    Terminal control (input box pinned to the bottom, key input, scroll region)
+src/policy.rs       Policy validation and updates
+src/config.rs       Configuration, default Agent presets
+src/cli.rs          User-facing commands
 ```
 
-ACP仕様の参照: [Rust SDK](https://github.com/agentclientprotocol/rust-sdk)、[Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options)。
+ACP specification references: [Rust SDK](https://github.com/agentclientprotocol/rust-sdk), [Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options).
 
 ## License
 

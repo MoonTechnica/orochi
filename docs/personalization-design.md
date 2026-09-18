@@ -1,223 +1,223 @@
-# 個人最適化の設計 — 記憶と采配学習
+# Personalization Design: Memory and Routing Learning
 
-作成: 2026-09-18。
+Written: 2026-09-18.
 
-**状態（2026-09-18時点）**
+**Status (as of 2026-09-18)**
 
-| フェーズ | 状態 |
+| Phase | Status |
 |---|---|
-| P1 記憶の保存・注入・分類器相乗りの取得・`/memory`・`orochi memory` | **実装済み・自動テストのみ**（mockエージェントでのE2Eを含む）。実エージェントでの取得精度は**未検証** |
-| P2 セッション終了時の蒸留・tier pooling | **実装済み・自動テストのみ**。tier poolingは既定で無効（D2）、合成データのreplayでのみ効果を確認。蒸留の取得精度は実エージェントで**未検証** |
-| P3 弱いラベル・采配の好み | **実装済み・自動テストのみ**。弱いラベルの重みはOrochiの未較正ヒューリスティック。実利用での効果は**未検証** |
+| P1 Memory storage, injection, capture piggybacked on the classifier, `/memory`, `orochi memory` | **Implemented; automated tests only** (including E2E with a mock agent). Capture accuracy with real agents is **unverified** |
+| P2 End-of-session distillation, tier pooling | **Implemented; automated tests only**. Tier pooling is disabled by default (D2); its effect has been confirmed only by replaying synthetic data. Distillation capture accuracy with real agents is **unverified** |
+| P3 Weak labels, route preferences | **Implemented; automated tests only**. The weak-label weights are Orochi's own uncalibrated heuristic. Their effect in real use is **unverified** |
 
-実装の記録は[適応ルーティング](adaptive-routing.md)の「2. EWMA・Bandit」（弱いラベル・tier pooling）と「4.4. 記憶」（記憶・振り返り・采配の好み）。本書は設計の経緯として残す。§3〜§5は当初の設計のままで、実装で変えた点は§9にまとめてある。
+The implementation is recorded in [Adaptive Routing and the ACP Gateway](adaptive-routing.md), under "2. EWMA and Bandit" (weak labels, tier pooling) and "4.4. Memory" (memory, session look-back, route preferences). This document is kept as a record of how the design came about. §3–§5 remain as originally designed; the points changed during implementation are collected in §9.
 
-## 0. 目的と出発点
+## 0. Goal and starting point
 
-目的は一つ: **使えば使うほど、その人のエージェントの使い方に最適化される。** ユーザーが渡すのはプロンプトだけ、という前提は変えない。
+There is one goal: **the more someone uses it, the more it adapts to how that person uses agents.** The premise that the user hands over nothing but a prompt does not change.
 
-2026-09-18時点のコード調査で分かった事実:
+Facts found by surveying the code as of 2026-09-18:
 
-| # | 事実 | 根拠 |
+| # | Fact | Basis |
 |---|---|---|
-| 1 | **記憶が無い。** 好み・規約・過去の決定を一切覚えず、毎回まっさらから始まる | 保存先が存在しない。不変条件「タスク本文・会話はSQLiteに入れない」 |
-| 2 | **学習ラベルが狭い。** `git_`以外の自動チェックが通ったときだけ`Success`。設計・議論・調査・ドキュメント、テストの無いリポジトリは何回使っても学習0件 | `evaluator::outcome`、`learning::labeled` |
-| 3 | **学習がモデルIDの完全一致。** モデルが更新されるたびに実績が全部消える | `storage::learning_runs` / `pooled_runs`の`model=?2` |
-| 4 | タスク種別×モデルの相性は持っていない。`task_profiles`はparseされるだけの死にデータ | `policy.rs:14`、参照箇所なし |
-| 5 | 参考: OpenClawの「学習」はテキストの記憶（`USER.md` / `MEMORY.md` / 日次ノート）で、主に明示保存＋compaction前の自動保存＋日次ノートからの昇格。結果からの数値学習ではない | [Memory overview](https://docs.openclaw.ai/concepts/memory) |
+| 1 | **There is no memory.** It remembers no preferences, conventions or past decisions, and starts from a blank slate every time | There is nowhere to store them. Invariant: "task text and conversation do not go into SQLite" |
+| 2 | **Learning labels are narrow.** A run is `Success` only when an automatic check other than `git_` passes. Design, discussion, investigation, documentation, and repositories without tests produce zero learning records no matter how often they are used | `evaluator::outcome`, `learning::labeled` |
+| 3 | **Learning keys on an exact model ID match.** Every time a model is updated, its whole track record is lost | `model=?2` in `storage::learning_runs` / `pooled_runs` |
+| 4 | It holds no task type × model affinity. `task_profiles` is dead data that is only parsed | `policy.rs:14`, no references |
+| 5 | For reference: OpenClaw's "learning" is textual memory (`USER.md` / `MEMORY.md` / daily notes), mainly explicit saves + automatic saves before compaction + promotion from daily notes. It is not numerical learning from outcomes | [Memory overview](https://docs.openclaw.ai/concepts/memory) |
 
-1はOrochiに**存在しない**能力、2・3は**あるが痩せている**能力。性質が違うので柱を分ける。
+1 is a capability Orochi **does not have**; 2 and 3 are capabilities it **has, but thin**. They differ in nature, so they become separate pillars.
 
-## 1. 要件
+## 1. Requirements
 
-| ID | 要件 | 理由 |
+| ID | Requirement | Reason |
 |---|---|---|
-| R1 | **プロンプトだけ。** 必須の新コマンド・新設定を増やさない | 製品の前提 |
-| R2 | **エージェントを跨ぐ。** Claudeの`CLAUDE.md`はCodexに見えず、逆も同じ。采配が毎回変わるOrochiでは、記憶はその上の層に要る | Orochi固有の価値。ここは各エージェント単体では原理的に持てない |
-| R3 | **モデルの入れ替わりに耐える。** モデルIDに紐づく知識を持たない | 「モデルは刻一刻と変わる」 |
-| R4 | **決めすぎない。** 記憶も好みもソフトな影響に留め、上書きでき、古くなれば消える | 手書きの相性表を入れない方針と同じ |
-| R5 | 既存の不変条件を壊さない。テレメトリに本文を入れない、対象リポジトリを信用しない、判定役のpayloadに本文を入れない | `CLAUDE.md` Invariants |
-| R6 | **見える・直せる・消せる。** 隠れた状態を持たない | 誤った記憶は静かに害になる |
-| R7 | 間違いが測れるか、自然に消える | 測れない機能は「なんとなく学習している」で終わる |
-| R8 | ターンごとの追加LLM呼び出しを増やさない | 分類器で既に1回払っている |
+| R1 | **Prompt only.** Add no required new commands or new settings | The product's premise |
+| R2 | **Spans agents.** Claude's `CLAUDE.md` is invisible to Codex, and vice versa. In Orochi, where the routing changes every time, memory is needed in the layer above them | Value unique to Orochi. No single agent can have this, in principle |
+| R3 | **Survives model turnover.** Hold no knowledge tied to model IDs | "Models change from moment to moment" |
+| R4 | **Don't over-decide.** Memory and preferences stay soft influences, can be overridden, and disappear when stale | Same policy as not adding a hand-written affinity table |
+| R5 | Do not break existing invariants: no task text in telemetry, do not trust the target repository, no task text in the adviser payload | `CLAUDE.md` Invariants |
+| R6 | **Visible, fixable, deletable.** No hidden state | A wrong memory does harm silently |
+| R7 | Mistakes are either measurable or fade on their own | A feature that cannot be measured ends up as "it's learning, sort of" |
+| R8 | Add no extra LLM calls per turn | One is already paid for the classifier |
 
-対象外: embedding／ベクトル検索、エージェントが書き込める記憶ツール、クラウド同期、タスク種別×モデルの手書き表。
+Out of scope: embeddings / vector search, a memory tool that agents can write to, cloud sync, a hand-written task type × model table.
 
-## 2. 全体像
-
-```
-プロンプト ─→ 分類器（既存の1回） ─┬→ TaskDescriptor ─→ scorer ─→ 実行
-                                   └→ remember[] ─→ 【A 記憶】─→ 次回以降のプロンプトへ注入
-実行結果・直後のユーザーの振る舞い ─→ 【B 采配学習】─→ scorerの事前分布
-記憶のうち采配に関するもの ─→ 【C 采配の好み】─→ scorerのコスト（ソフト）
-```
-
-- **A 記憶**（テキスト）: その人・そのプロジェクトがどうしたいか。効く範囲が広いが検証はできない。
-- **B 采配学習**（数値）: どの采配が通ったか。`calibrate`で検証できる。
-- **C 采配の好み**: AとBの橋。「設計はFableで」のような発言を、制約ではなくソフトな優先として効かせる。
-
-## 3. A: 記憶
-
-### 3.1 置き場所
+## 2. Overview
 
 ```
-<data>/memory/USER.md                        ユーザー全体（返答の言語、進め方の好み）
-<data>/memory/repos/<repository_id>/MEMORY.md  リポジトリ単位（規約、決定、構成の事実）
+prompt ─→ classifier (existing single call) ─┬→ TaskDescriptor ─→ scorer ─→ execute
+                                             └→ remember[] ─→ [A Memory] ─→ injected into later prompts
+run results, user's immediate behavior ─→ [B Routing learning] ─→ scorer prior
+memory entries about routing ─→ [C Route preferences] ─→ scorer cost (soft)
 ```
 
-- テレメトリ（`telemetry.sqlite3`）とは**完全に別**。mailboxと同じ扱いで、モード0600、1ファイル64 KiB上限。
-- `repository_id`は既存のsalted hash。ディレクトリ名からリポジトリは分からない。
-- **対象リポジトリの中には置かない・読まない。** リポジトリ内に`MEMORY.md`があっても無視する。リポジトリはプロンプトに注入されるテキストを植え付けられる立場にあってはならない（R5）。
-- 形式はプレーンなMarkdownの箇条書き。自動で入った行だけが末尾にメタデータを持つ:
+- **A Memory** (text): how that person and that project want things done. Wide reach, but it cannot be verified.
+- **B Routing learning** (numerical): which routes succeeded. Verifiable with `calibrate`.
+- **C Route preferences**: the bridge between A and B. Makes a statement like "use Fable for design" apply as a soft preference rather than a constraint.
+
+## 3. A: Memory
+
+### 3.1 Location
+
+```
+<data>/memory/USER.md                        user-wide (reply language, preferred way of working)
+<data>/memory/repos/<repository_id>/MEMORY.md  per repository (conventions, decisions, facts about the structure)
+```
+
+- **Completely separate** from telemetry (`telemetry.sqlite3`). Treated the same as the mailbox: mode 0600, 64 KiB cap per file.
+- `repository_id` is the existing salted hash. The repository cannot be identified from the directory name.
+- **Never stored in or read from the target repository.** A `MEMORY.md` inside the repository is ignored. The repository must not be in a position to plant text that gets injected into prompts (R5).
+- The format is a plain Markdown bullet list. Only lines added automatically carry metadata at the end:
 
 ```markdown
-- パッケージマネージャはpnpm <!-- auto seen:3 last:1758153600 -->
-- コメントは決定の記録だけ。説明コメントは書かない
+- Package manager is pnpm <!-- auto seen:3 last:1758153600 -->
+- Comments only record decisions. No explanatory comments
 ```
 
-メタデータの無い行＝人が書いた行で、**期限切れにならず、注入で最優先**される。
+A line without metadata = a line a person wrote; it **never expires and takes top priority in injection**.
 
-### 3.2 取得（ユーザーは何もしない）
+### 3.2 Capture (the user does nothing)
 
-**経路1: 分類器への相乗り（P1）。** 分類器は既に毎ターン、ユーザーの発言を読んでいる。返すJSONに任意のフィールドを足すだけで、**追加のLLM呼び出しは0回**（R8）。
+**Path 1: piggybacking on the classifier (P1).** The classifier already reads the user's message every turn. Adding optional fields to the JSON it returns means **zero extra LLM calls** (R8).
 
 ```json
 {"task_type":"bug_fix","complexity":"normal",
- "remember":[{"text":"パッケージマネージャはpnpm","scope":"repo"}],
+ "remember":[{"text":"Package manager is pnpm","scope":"repo"}],
  "reinforce":["r2"], "replaces":[]}
 ```
 
-- 拾うのは「**このタスクが終わっても有効な、ユーザー自身の指示や事実**」だけ。1メッセージ最大2件、各200文字まで。タスクの内容そのものは拾わない。
-- 重複を避けるため、分類リクエストに**現在のリポジトリの記憶一覧（番号付き、注入と同じ上限）**を添える。言い直されたものは`reinforce`で番号を返し、`seen`を増やす。覆されたものは`replaces`。
-- 分類キャッシュに保存する前に`remember`等を**取り除く**。キャッシュに残るのは今まで通りラベルだけ。
-- 拾ったらコンソールに1行出す: `⎿ remembered: パッケージマネージャはpnpm`。誤って拾ったことにユーザーがその場で気づける（R6）。
+- It captures only "**the user's own instructions or facts that stay valid after this task ends**". At most 2 per message, 200 characters each. It does not capture the content of the task itself.
+- To avoid duplicates, the classification request includes **the current repository's memory list (numbered, with the same cap as injection)**. For something restated, the classifier returns its number in `reinforce`, which increments `seen`. Something overturned goes in `replaces`.
+- `remember` and the related fields are **stripped** before saving to the classification cache. The cache keeps only labels, as before.
+- When something is captured, one line is printed to the console: `⎿ remembered: Package manager is pnpm`. The user can notice a wrong capture on the spot (R6).
 
-**経路2: セッション終了時の蒸留（P2）。** 「いやだからキーワードでやらないでよ」のような訂正は、1メッセージでは恒久的な好みか判断できない。チャット終了時に、メモリ上にある会話（既に`TRANSCRIPT_BYTES`で上限あり）を1回だけ分類器と同じ経路に通し、ターンを跨いで一貫していた好みを拾う。**1セッション1回**であり、ターンごとではない。
+**Path 2: end-of-session distillation (P2).** A correction like "no, I said don't do it with keywords" cannot be judged a lasting preference from one message alone. When the chat ends, the conversation held in process memory (already capped by `TRANSCRIPT_BYTES`) is passed once through the same path as the classifier, to capture preferences that were consistent across turns. It is **once per session**, not per turn.
 
-**経路3: 手で書く。** ファイルはただのMarkdown。
+**Path 3: writing by hand.** The file is just Markdown.
 
-エージェントに記憶を書かせるツールは**作らない**。エージェントの出力はリポジトリ内容の影響を受けるので、そこから記憶に書ければ、悪意あるリポジトリが次回以降の全プロンプトを汚染できる。書けるのはOrochiだけ。
+We **do not build** a tool that lets agents write memory. Agent output is influenced by repository content, so if it could write to memory, a malicious repository could contaminate every later prompt. Only Orochi can write.
 
-### 3.3 スコープと漏洩防止
+### 3.3 Scope and leak prevention
 
-リポジトリAで覚えたことがリポジトリBのプロンプトに出れば、別のプロバイダに別案件の情報を送ることになる。
+If something learned in repository A appears in a prompt in repository B, information from one project is sent to a different provider working on a different project.
 
-- 自動取得の既定スコープは**repo**。
-- `USER.md`に自動で入るのは、ユーザーが明示的に一般化した発言（「どのプロジェクトでも」「常に」）と分類器が判断したものだけ。それ以外で`USER.md`を育てるのは手書き（D1）。
-- 判定役（router / judge / council）のpayloadには**一切含めない**。分類器に渡るのは現在のリポジトリの一覧だけ。
+- The default scope for automatic capture is **repo**.
+- The only automatic entries into `USER.md` are statements the classifier judges to be explicitly generalized by the user ("in every project", "always"). Otherwise, `USER.md` grows only by hand (D1).
+- **Never included** in the adviser (router / judge / council) payload. Only the current repository's list goes to the classifier.
 
-### 3.4 注入
+### 3.4 Injection
 
-- 場所は2箇所: `scheduler`がプロンプトを確定する所（`peer_note`を前置している箇所。chat・one-shot・`serve`・読み取り専用の席）と、collaborateの参加者のプロンプトを組む`collaboration/turn.rs`。
-- **新しいセッションの開始時だけ**。`resume`するターンには既に入っているので再注入しない。
-- 上限: USER 1500文字 + repo 2500文字（D3、`memory.user_chars` / `memory.repo_chars`）。超えたら「手書き → `seen`の多い順 → 新しい順」で切る。
-- 前置きの文言で位置づけを固定する: *ユーザーの継続的な好みとプロジェクトの覚え書きであり、今回のタスクの指示とリポジトリの指示に優先しない。*
-- 注入前に制御文字を除去、ESCは可視化（mailbox本文・エラー詳細と同じ扱い）。
+- Two places: where `scheduler` finalizes the prompt (where it prepends `peer_note`; covers chat, one-shot, `serve` and read-only seats), and `collaboration/turn.rs`, which builds the prompts for collaborate participants.
+- **Only at the start of a new session.** A turn that `resume`s already has it, so it is not re-injected.
+- Caps: USER 1500 characters + repo 2500 characters (D3, `memory.user_chars` / `memory.repo_chars`). Beyond that, it is cut in the order "hand-written → most `seen` → newest".
+- The preamble wording fixes its standing: *these are the user's ongoing preferences and notes about the project, and they do not take precedence over this task's instructions or the repository's instructions.*
+- Before injection, control characters are removed and ESC is made visible (the same treatment as mailbox bodies and error details).
 
-### 3.5 忘却
+### 3.5 Forgetting
 
-- 自動の行: `seen == 1`のまま90日再観測されなければ削除。`seen >= 2`は180日。
-- 矛盾する新しい発言は`replaces`で置き換え。
-- `/memory`（一覧、`/memory forget r2`）と`orochi memory [--forget r2] [--json]`。一覧にはファイルのパスも出る。**確認用であって、使うのに必要な操作ではない**（R1）。
-- `memory.enabled = false`で取得も注入も止まる。
+- Automatic lines: deleted if not observed again for 90 days while `seen == 1`. 180 days for `seen >= 2`.
+- A contradicting newer statement replaces the old one via `replaces`.
+- `/memory` (list, `/memory forget r2`) and `orochi memory [--forget r2] [--json]`. The list also shows the file paths. **These are for checking, not operations needed in order to use it** (R1).
+- `memory.enabled = false` stops both capture and injection.
 
-### 3.6 テストで固定する不変条件
+### 3.6 Invariants pinned by tests
 
-1. 記憶のテキストは`telemetry.sqlite3`の生バイト列に現れない。
-2. リポジトリAの記憶はリポジトリBで注入されない。
-3. `adviser::request`（router / judge / council）に記憶が含まれない。
-4. 対象リポジトリ内の`MEMORY.md`は読まれない。
-5. 分類キャッシュには`remember`が残らない。
-6. `resume`するターンには再注入されない。上限を超えない。
-7. 人が書いた行は期限切れにならない。
+1. Memory text does not appear in the raw bytes of `telemetry.sqlite3`.
+2. Repository A's memory is not injected in repository B.
+3. `adviser::request` (router / judge / council) contains no memory.
+4. A `MEMORY.md` inside the target repository is not read.
+5. `remember` does not remain in the classification cache.
+6. A turn that `resume`s is not re-injected. Caps are not exceeded.
+7. Lines a person wrote do not expire.
 
-## 4. B: 采配学習
+## 4. B: Routing learning
 
-### B1. tier単位のpooling（P2）
+### B1. Tier pooling (P2)
 
-モデルIDは変わるがtierは変わらない（ポリシーが部分文字列パターンでtierを引いているのはそのため）。実績の無いモデルIDの事前分布を、**同じprovider・同じtier・同じtask_type・同じcomplexityの、他のモデルIDの実績**でずらす。
+Model IDs change, but tiers do not (which is why the policy looks up tiers by substring pattern). The prior of a model ID with no track record is shifted by **the track record of other model IDs with the same provider, same tier, same task_type and same complexity**.
 
-- 既存の`pool()`（prior residualとtoken ratio）と同じ計算を別のキーで回すだけ。自分の実績が溜まるほど寄与は減る。
-- tierは読み出し時に`policy.model_rule(model).tier`で再計算するので**スキーマ変更なし**。
-- これで「設計タスクではfrontierが実際に強い」のようなタスク種別ごとの差が、手書きの表ではなく**実測から**出る（R3・R4）。
-- `learning.rs`と`benchmark.rs`は関数を共有しているので同時に変える。既定では無効のまま入れ、`benchmark`の再生で改善を確認してから有効にする（D2）。
+- It just runs the same computation as the existing `pool()` (prior residual and token ratio) over a different key. Its contribution shrinks as the model's own track record accumulates.
+- The tier is recomputed at read time with `policy.model_rule(model).tier`, so **there is no schema change**.
+- This makes per-task-type differences, such as "frontier really is stronger on design tasks", come **from measurement** rather than from a hand-written table (R3, R4).
+- `learning.rs` and `benchmark.rs` share functions, so they change together. It ships disabled by default and is enabled after replaying with `benchmark` confirms an improvement (D2).
 
-### B2. 弱いラベル（P3）
+### B2. Weak labels (P3)
 
-自動チェックで検証できないターンにも、ユーザーの振る舞いという証拠はある。新しい操作は求めず、**既に起きていることを記録するだけ**。
+Even turns that automatic checks cannot verify leave evidence in the user's behavior. No new action is asked of the user; it **only records what already happens**.
 
-| 観測 | 符号 | 重み（初期値・未較正） |
+| Observation | Sign | Weight (initial value, uncalibrated) |
 |---|---|---|
-| 同じ采配のまま次のターンへ進んだ | 正 | 0.2 |
-| 直後に`/reroute`・`/new` | 負 | 0.3 |
-| Escで中断 | 負 | 0.3 |
-| エージェントが触ったファイルを直後にユーザーが編集 | 負 | 0.2 |
+| Moved on to the next turn with the same route | Positive | 0.2 |
+| `/reroute` or `/new` immediately afterward | Negative | 0.3 |
+| Interrupted with Esc | Negative | 0.3 |
+| The user edits a file the agent touched, immediately afterward | Negative | 0.2 |
 
-- `RunRecord`に`evidence: f64`（`#[serde(default)]`で既存レコードは1.0）を足し、`estimate`がラベルの質量に掛ける。検証済みの実績（1.0）を弱い推測で薄めない。
-- **`calibrate`が「強いラベルだけ」と「弱いラベル込み」のBrierを並べて出す。** 弱いラベルで悪化したら重みが高すぎると数字で分かる（R7）。重みはOrochiのヒューリスティックであり、その旨をコードとdocsに明記する。
+- Add `evidence: f64` to `RunRecord` (existing records get 1.0 via `#[serde(default)]`), and `estimate` multiplies the label mass by it. Verified results (1.0) are not diluted by weak guesses.
+- **`calibrate` shows the Brier score for "strong labels only" and "including weak labels" side by side.** If weak labels make it worse, the numbers show that the weights are too high (R7). The weights are Orochi's own heuristic, and the code and docs state this explicitly.
 
-## 5. C: 采配の好み（P3）
+## 5. C: Route preferences (P3)
 
-最初の問い「明示的にモデルを指定したら以降も覚えていてほしい」への答え。分類器が采配に関する発言を構造化して返す:
+This is the answer to the original question, "if I explicitly specify a model, I want it remembered for later too". The classifier returns statements about routing in structured form:
 
 ```json
-"remember":[{"kind":"route","task_type":"architecture","model":"fable","text":"設計はFableで"}]
+"remember":[{"kind":"route","task_type":"architecture","model":"fable","text":"use Fable for design"}]
 ```
 
-- `model`はポリシーと同じ**部分文字列パターン**。`fable-5-1`が`fable-6`になっても生きる（R3）。ACPで発見されなかったIDを作ることには使わない（既存ルール）。
-- 効き方は**ソフト**: 一致する候補の`expected_cost`に0.8を掛けるだけ。ケイパビリティ・クォータ・`required_success`のゲートは通常通りで、落ちた候補が好みで復活することはない。`reasons`に理由を出す。
-- 他の記憶と同じく見えて、消せて、古くなれば消える。今回限りの指定（`--model`）は今まで通りハード制約で、記憶には入れない。
+- `model` is a **substring pattern**, the same as in the policy. It keeps working when `fable-5-1` becomes `fable-6` (R3). It is not used to make up IDs that ACP did not discover (existing rule).
+- The effect is **soft**: it only multiplies a matching candidate's `expected_cost` by 0.8. The capability, quota and `required_success` gates apply as usual, and a candidate that failed them is never revived by a preference. The reason is shown in `reasons`.
+- Like other memory, it is visible, deletable, and disappears when stale. A one-time specification (`--model`) remains a hard constraint as before and does not go into memory.
 
-## 6. フェーズ
+## 6. Phases
 
-| | 内容 | 追加LLM呼び出し |
+| | Contents | Extra LLM calls |
 |---|---|---|
-| **P1** | 記憶の保存・注入・手書き・分類器相乗りの取得・`/memory`・3.6のテスト | 0 |
-| **P2** | セッション終了時の蒸留、tier pooling（`benchmark`で検証） | 1回/チャットセッション |
-| **P3** | 弱いラベル＋`calibrate`の分離表示、采配の好み | 0 |
+| **P1** | Memory storage, injection, hand-writing, capture piggybacked on the classifier, `/memory`, the tests in 3.6 | 0 |
+| **P2** | End-of-session distillation, tier pooling (verified with `benchmark`) | 1 per chat session |
+| **P3** | Weak labels + separate display in `calibrate`, route preferences | 0 |
 
-P1だけで「覚えていてくれる」体感が出る。P2でモデル更新に耐えるようになり、P3で検証できないタスクからも学習が始まる。
+P1 alone gives the feel of "it remembers me". P2 makes it survive model updates, and P3 starts learning from tasks that cannot be verified.
 
-## 7. リスク
+## 7. Risks
 
-- **誤取得。** タスクの内容を恒久的な好みと取り違える。→ 取得時の1行表示、`seen==1`の早期失効、件数と文字数の上限。
-- **プロンプトの肥大。** 全エージェントの全新規セッションに乗る。→ 4000文字の上限、`resume`時は注入しない。
-- **記憶の汚染。** ユーザーが貼り付けた外部テキストに「これを覚えろ」と書かれている場合。→ 拾うのはユーザー自身の継続的な指示のみと分類器に指示、上限、注入時の位置づけ文言。分類器の判断に依存する部分であり、保証ではない。
-- **分類器が動かないターンでは取得しない。** `--dry-run`、agentとmodelの両方をピン留めしたone-shot。P2の蒸留がチャット側を補う。
+- **Wrong capture.** Task content is mistaken for a lasting preference. → One-line display on capture, early expiry for `seen==1`, caps on the number of entries and characters.
+- **Prompt bloat.** It rides on every new session of every agent. → 4000-character cap; no injection on `resume`.
+- **Memory poisoning.** External text the user pasted says "remember this". → The classifier is instructed to capture only the user's own ongoing instructions; caps; the standing wording at injection. This part depends on the classifier's judgment and is not a guarantee.
+- **No capture on turns where the classifier does not run.** `--dry-run`, and one-shot runs with both agent and model pinned. P2 distillation covers the chat side.
 
-## 8. 決定事項（2026-09-18）
+## 8. Decisions (2026-09-18)
 
-| ID | 論点 | 決定 |
+| ID | Issue | Decision |
 |---|---|---|
-| D1 | `USER.md`への自動取得 | 明示的な一般化発言のみ許可 |
-| D2 | tier poolingの既定 | 無効で入れ、`benchmark`で改善を確認できたら有効 |
-| D3 | 注入の上限 | USER 1500 + repo 2500文字 |
-| D4 | セッション終了時の蒸留 | 1チャットセッションにつき1回のLLM呼び出しを許容 |
+| D1 | Automatic capture into `USER.md` | Allowed only for explicitly generalized statements |
+| D2 | Tier pooling default | Ship disabled; enable once `benchmark` confirms an improvement |
+| D3 | Injection caps | USER 1500 + repo 2500 characters |
+| D4 | End-of-session distillation | Allow 1 LLM call per chat session |
 
-## 9. 実装で設計から変えた点
+## 9. Changes from the design made during implementation
 
 **P3**
 
-- **采配の好みは構造化して保存しない。** 記憶はテキストのまま（「設計はFableで」を手で書いても効く）。分類器が毎ターン、記憶一覧と依頼から「このタスクに当てはまる好み」を読み、`prefer`に名前の断片（`fable`など）を返す。独自の記法も保存形式も増えず、追加の呼び出しも無い。`prefer`は英数字と`-_.`だけの64文字以内の断片に限り、ユーザーの言葉を運べないようにしてある（分類キャッシュに入るため）。
-- **分類キャッシュのキーに記憶一覧を含めた。** 好みは記憶から読むので、記憶が変われば分類し直す。
-- **`/new`は中立。** 設計では`/reroute`と同じく負としていたが、`/new`は話題を変えるときに使うもので、直前の答えへの評価ではない。負にすると、うまくいったセッションほど負のラベルが溜まる。
-- **実行中にキューされたメッセージは評価にしない。** 答えを見る前に書かれたものなので。パイプ入力では実質すべてがこれに当たる。
-- **検証済みの結果は弱いラベルで上書きしない。** チェックが通ったターンの直後に`/reroute`されても成功のまま。弱いラベルが効くのは未検証の完了（`PartialSuccess`）と中断（`Cancelled`）だけ。
-- **Escだけではラベルにしない**（2026-09-19）。当初はEscでの中断を負0.3としていたが、止める理由（エージェントが的外れ／ユーザーの言い忘れ）はその時点で区別できない。中断後の行動で決める: `/reroute`なら負0.3、同じエージェントのまま続けたらラベルなし。
-- **「エージェントが触ったファイルを直後にユーザーが編集」は未実装。** 触ったファイルの記録と、無関係な編集との区別が要り、4つの中で最もノイズが多い。
-- **重みは`decay^w`で効かせる。** 重み1なら従来の更新と完全に一致し、既存の学習結果は変わらない。確信度（`samples`）は検証済みだけを数える。
+- **Route preferences are not stored in structured form.** Memory stays text (writing "use Fable for design" by hand works too). Every turn, the classifier reads "the preferences that apply to this task" from the memory list and the request, and returns name fragments (such as `fable`) in `prefer`. This adds no custom notation or storage format, and no extra call. `prefer` is limited to fragments of at most 64 characters made only of alphanumerics and `-_.`, so that it cannot carry the user's words (because it goes into the classification cache).
+- **The memory list is included in the classification cache key.** Preferences are read from memory, so when memory changes, the task is classified again.
+- **`/new` is neutral.** The design treated it as negative, like `/reroute`, but `/new` is used to change the topic, not to judge the previous answer. Making it negative would pile up negative labels on exactly the sessions that went well.
+- **Messages queued during a run are not treated as evaluation.** They were written before the answer was seen. With piped input, effectively every message falls into this category.
+- **Verified results are not overwritten by weak labels.** Even if `/reroute` follows immediately after a turn whose checks passed, it stays a success. Weak labels apply only to unverified completions (`PartialSuccess`) and interruptions (`Cancelled`).
+- **Esc alone is not a label** (2026-09-19). Originally an Esc interruption was negative 0.3, but the reason for stopping (the agent was off target / the user forgot to say something) cannot be told apart at that point. It is decided by what happens after the interruption: `/reroute` gives negative 0.3; continuing with the same agent gives no label.
+- **"The user edits a file the agent touched, immediately afterward" is not implemented.** It needs a record of the touched files and a way to tell them apart from unrelated edits, and it is the noisiest of the four.
+- **Weights are applied as `decay^w`.** With a weight of 1 it matches the previous update exactly, so existing learning results do not change. Confidence (`samples`) counts only verified results.
 
 **P2**
 
-- **蒸留に渡すのはユーザーの発言だけ。** エージェントの返答は入れない。好みはユーザーの言葉に現れるもので、返答を足すとトークンが増えるうえに、エージェントが言ったことを好みとして拾う誤りを招く。
-- **`/new`を跨いで保持する。** 会話の履歴（`/new`で消える）とは別に、そのセッションで言ったことを保持する。1セッション64件まで、送るのは新しい側から16000文字まで。メモリ上のみで、どこにも保存しない。
-- **終了時に待たせるので、Escで飛ばせる。** 「looking back over this session · Esc skips」と表示する。
-- **tier poolingは`benchmark-tune`の探索対象に入れた。** 効くかどうかを手元のデータで確かめられる。replayのtierは、インストール済みではなく同梱のpolicyから読む（policyを更新しても過去のreplay結果が変わらないように）。
+- **Only the user's messages go into distillation.** Agent replies are not included. Preferences show up in the user's words; adding the replies increases tokens and invites the error of capturing something the agent said as a preference.
+- **Kept across `/new`.** Separately from the conversation history (which `/new` clears), what the user said in the session is kept. Up to 64 entries per session; up to 16000 characters are sent, newest first. Held only in process memory and never stored anywhere.
+- **It makes the user wait at exit, so Esc skips it.** It shows "looking back over this session · Esc skips".
+- **Tier pooling was added to the `benchmark-tune` search space.** Whether it helps can be checked against local data. Replay reads tiers from the bundled policy, not the installed one (so that updating the policy does not change past replay results).
 
 **P1**
 
 
-- **注入点は2箇所。** collaborateの参加者は`scheduler`を通らず`collaboration/turn.rs`でプロンプトを組むため、そちらにも入れた。どちらも新しいセッションの開始時だけ。
-- **分類器に渡す一覧はファイル順。** 注入は「手書き → 回数 → 新しさ」で並べるが、分類器が返す番号（`r1`など）は`apply`がファイル順で解決するので、一覧はファイル順で渡す。
-- **取得の上限はコードで強制。** 1応答あたり新規2件・1件200文字を`memory.rs`が切る。分類器への指示だけに頼らない。
-- **偽のメタデータは無害化。** 取得したテキストから`<!--` `-->`を除去するので、ユーザーの発言が`<!-- auto seen:999 -->`を含んでも回数を偽造できない。
+- **Two injection points.** collaborate participants do not go through `scheduler`; their prompts are built in `collaboration/turn.rs`, so injection was added there too. Both inject only at the start of a new session.
+- **The list passed to the classifier is in file order.** Injection sorts by "hand-written → count → recency", but the numbers the classifier returns (such as `r1`) are resolved by `apply` in file order, so the list is passed in file order.
+- **Capture caps are enforced in code.** `memory.rs` truncates to 2 new entries per response and 200 characters per entry. It does not rely only on the instructions to the classifier.
+- **Fake metadata is neutralized.** `<!--` and `-->` are stripped from captured text, so even if a user's statement contains `<!-- auto seen:999 -->`, it cannot forge the count.

@@ -1,136 +1,136 @@
-# 適応ルーティングとACP Gateway
+# Adaptive Routing and the ACP Gateway
 
-実装・検証: 2026-09-15〜16。
-実測の詳細は[実測と検証](real-validation-20260916.md)と[残タスクの実機検証](real-validation-20260916-2.md)、独立セッション間の通信は[セッション協議](session-collaboration.md)を参照。
+Implemented and verified: 2026-09-15–16.
+For measurement details, see [Measurement and Session Collaboration Validation (2026-09-16)](real-validation-20260916.md) and [Live Validation of Remaining Tasks (2026-09-16, part 2)](real-validation-20260916-2.md); for communication between independent sessions, see [Session Collaboration](session-collaboration.md).
 
-## 到達点
+## Status
 
-| 項目 | 実装・検証の状態 |
+| Item | Implementation and verification status |
 |---|---|
-| 選択精度の校正 | `calibrate`・`benchmark`・`benchmark-tune`を実装。Claude/Codexで同一課題8組を実測。2026-09-16に言語・難易度・規模の異なる6課題を追加実測し、context別EWMAでは異なる課題間で学習が共有されないことを確認。同じ候補の他context実績を使う`pooling`を追加（既定は無効）。小規模データのため、一般的な改善は未確立 |
-| 継続学習 | context別EWMAと、制約内のepsilon-greedy Banditを実装。既定はEWMA、探索は明示設定 |
-| サブスク残量 | Codex公式app-server、Claude公式statuslineと随時`/usage`を実機確認。Antigravityの`/usage`プローブは実装済み・認証後の実機確認待ち。Geminiは対象外 |
-| Antigravity実機E2E | CLI・公式ACP Serverを導入済み。認証要求まで確認、Googleログイン後の検証待ち |
-| Router／Frontier Judge | 判定役を`[[agents]]`のACPエージェントに統一（2026-09-16）。実Antigravity（未認証）→実Codexの交代を確認。成果物の意味的な合否判定は未実装 |
-| Council / セッション協議 | 独立ACPセッションによる司令塔→並列実装→統合、宛先指定の多往復通信、元の作業ツリーへの適用と競合解消。全役割に代替Agent／モデル選択、途中状態保存、`collaborate-resume`を実装。Router／Judge／Councilは代替判定役に対応し、ACPでの2ラウンドCouncilを実サービスで確認 |
-| OrochiのACP公開 | `serve`でACP v1 stdioに対応。fixtureでpermission・cancel等を検証。ACPクライアント→実Codexの実行・評価は成功。Zed 1.19.2のエージェントパネルから実Codexへの実行・評価まで確認（UI操作はSystem Eventsで自動化、画面キャプチャなし） |
+| Calibration of selection accuracy | Implemented `calibrate`, `benchmark` and `benchmark-tune`. Measured 8 pairs of identical tasks with Claude/Codex. On 2026-09-16, additionally measured 6 tasks differing in language, difficulty and size, and confirmed that per-context EWMA does not share learning across different tasks. Added `pooling`, which uses the same candidate's results from other contexts (disabled by default). Because the data set is small, a general improvement has not been established |
+| Continual learning | Implemented per-context EWMA and an epsilon-greedy bandit that stays within constraints. EWMA is the default; exploration must be configured explicitly |
+| Subscription quota | Codex's official app-server, Claude's official statusline and on-demand `/usage` verified against the real CLI. The Antigravity `/usage` probe is implemented and awaiting verification against the real CLI after authentication. Gemini is out of scope |
+| Antigravity live E2E | CLI and official ACP Server installed. Confirmed up to the authentication request; verification after Google login is pending |
+| Router / Frontier Judge | Advisers unified onto ACP agents from `[[agents]]` (2026-09-16). Confirmed the handover from a real Antigravity (unauthenticated) to a real Codex. Semantic pass/fail judgment of deliverables is not implemented |
+| Council / session collaboration | Coordinator → parallel implementation → integration over independent ACP sessions, addressed multi-round communication, and application to the original working tree with conflict resolution. Implemented fallback agent/model selection for every role, saving of intermediate state, and `collaborate-resume`. Router / Judge / Council support fallback advisers, and a 2-round Council over ACP was confirmed against the real services |
+| Exposing Orochi over ACP | `serve` supports ACP v1 stdio. Permission, cancel, etc. verified with fixtures. Execution and evaluation from an ACP client to a real Codex succeeded. Confirmed execution and evaluation from the agent panel of Zed 1.19.2 through to a real Codex (UI operation automated with System Events; no screen capture) |
 
-## 1. 校正と比較
+## 1. Calibration and comparison
 
 ```sh
 orochi calibrate --limit 10000
 orochi benchmark --input paired-cases.json --seed 42 --failure-penalty 100000
 orochi benchmark-tune --input paired-cases.json --training-cases 4
 
-# 比較コマンドの動作確認用。実Providerの性能データではない。
+# For checking that the comparison commands work. Not performance data from a real provider.
 python3 examples/benchmark_fixture.py > /tmp/orochi-synthetic.json
 orochi benchmark --input /tmp/orochi-synthetic.json
 ```
 
-`calibrate`は、その実行より前に保存された成功確率・推定tokensと実測結果を比較する。成功確率の二乗誤差（Brier score）、初期priorとの比較、10区間の予測と成功率、tokensの総絶対誤差／実測総tokens（WAPE）を出力する。低い誤差ほどよい。サンプルなし・usageなしは`null`。既存DBの予測がないrunは校正に含めない。
+`calibrate` compares the success probability and estimated tokens saved before each run with the measured results. It outputs the squared error of the success probability (Brier score), a comparison with the initial prior, predictions and success rates over 10 bins, and the total absolute token error / total measured tokens (WAPE). Lower error is better. No samples or no usage yields `null`. Runs in an existing DB that have no prediction are not included in calibration.
 
-選ばれた候補の観測だけでは「別の候補ならもっとよかったか」は判定できない。`benchmark`には各課題を**同じ開始状態から独立に**各候補で実行した測定結果を与える。失敗も保存し、課題IDは一意にする。課題の順番を時系列として使い、各方策は自分が選んだ候補の結果だけで学習する。全候補の結果は、比較対象となる最良の実測結果の算出に使う。
+Observing only the chosen candidate cannot tell whether "a different candidate would have done better". `benchmark` is given measurement results from running each task on each candidate **independently from the same starting state**. Failures are saved too, and task IDs must be unique. The order of the tasks is used as the time series, and each policy learns only from the results of the candidates it chose itself. The results of all candidates are used to compute the best measured result that serves as the baseline for comparison.
 
-入力は`schema_version: 1`、`provenance`（出典）、`synthetic`（合成データか）、`cases`のJSON。caseは`id`、`TaskDescriptor`形式の`descriptor`、`arms`を持つ。armには初期priorの`ExecutionCandidate`形式の`candidate`、評価済みの`success`、実測`tokens`、`duration_ms`を入れる。[生成例](../examples/benchmark_fixture.py)を参照。
+The input is JSON with `schema_version: 1`, `provenance` (source), `synthetic` (whether the data is synthetic) and `cases`. A case has an `id`, a `descriptor` in `TaskDescriptor` form, and `arms`. An arm holds a `candidate` in `ExecutionCandidate` form carrying the initial prior, the evaluated `success`, the measured `tokens`, and `duration_ms`. See the [generation example](../examples/benchmark_fixture.py).
 
-Static / EWMA / Banditの成功数、選択・棄権数、総tokens、成功1件あたりtokens、失敗ペナルティ込みのコストと最良結果との差を出力する。失敗ペナルティは資源換算の比較パラメーターであり料金ではない。棄権にも同じペナルティを課し、基準は全候補と棄権の最小コストとする。成功数を保たずにtokensだけ減った結果を改善とはみなさない。
+For Static / EWMA / Bandit it outputs the number of successes, the number of selections and abstentions, total tokens, tokens per success, and the cost including the failure penalty together with its gap from the best result. The failure penalty is a comparison parameter expressed in resource terms, not a price. Abstaining incurs the same penalty, and the baseline is the minimum cost over all candidates and abstention. A result that reduces only tokens without keeping the number of successes is not regarded as an improvement.
 
-通常ルーティングとreplayはEWMA、探索、資源スコア関数を共有する。`candidate.prediction.cost_features`がある入力はcache/context/quota項を再利用し、ない入力は与えた初期コストから比例係数を復元する。quota/capability/Policyによる候補の適格性は入力側で確認する。replayは実Agentに接続せず、運用DBに学習結果を書き込まない。
+Normal routing and replay share the EWMA, exploration and resource scoring functions. Input that has `candidate.prediction.cost_features` reuses its cache/context/quota terms; input without it recovers the proportionality coefficient from the given initial cost. Candidate eligibility by quota/capability/Policy is checked on the input side. Replay does not connect to real agents and does not write learning results to the operational DB.
 
-**合成データの比較成功は実Providerでの選択精度改善や最適性の証明ではない。** まず代表的な課題を難易度・言語・規模別に用意し、独立した開始状態、固定したadapter/model/設定、同一の評価コマンドで測定する必要がある。
+**A successful comparison on synthetic data does not prove improved selection accuracy or optimality on real providers.** Representative tasks must first be prepared by difficulty, language and size, and measured from independent starting states with a fixed adapter/model/configuration and the same evaluation command.
 
-## 2. EWMA・Bandit
+## 2. EWMA and Bandit
 
 ```toml
 [learning]
 strategy = "ewma"       # static / ewma / bandit
-alpha = 0.1             # 大きいほど最近の実績に追従
+alpha = 0.1             # larger values follow recent results more closely
 prior_weight = 16.0
-exploration = 0.1       # banditのみ
+exploration = 0.1       # bandit only
 max_cost_ratio = 1.25
-pooling = 0.0           # 0〜1。同じ候補の他context実績の反映度。既定は無効
+pooling = 0.0           # 0–1. How much the same candidate's results from other contexts are reflected. Disabled by default
 ```
 
-Agent・model・reasoning・mode・task type・language・framework・complexityが一致する直近500runを、古いものから処理する。照合後に件数を制限する。初期priorの重みと古い観測の重みは`1-alpha`倍ずつ減衰する。tokensは実測値／その課題の初期tokens推定値を学習し、今回の課題規模に適用する。単一実行の影響を制限するため、この比率は0.05〜20に制限する。usageのないrunはtokens学習には使わない。
+The most recent 500 runs whose agent, model, reasoning, mode, task type, language, framework and complexity all match are processed oldest first. The count is limited after matching. The weight of the initial prior and of older observations decays by a factor of `1-alpha` at each step. For tokens, it learns the ratio of the measured value to that task's initial token estimate and applies it to the size of the current task. To limit the influence of a single run, this ratio is clamped to 0.05–20. Runs without usage are not used for token learning.
 
-`pooling`を0より大きくすると、同じAgent・model・reasoning・modeの**他context**の直近500runから、初期推定に対するtokensの比と成功の差分（実測−初期prior）を求める。これを`prior_weight`で縮小し、`pooling`倍して今回のcontextの初期値へ反映する。そのcontext自身の実績は、補正後の初期値からさらに更新する。tokensの超過はシステムプロンプト・tool loop・cacheなど、課題より候補に依存する部分が大きいという実測に基づくOrochi独自の補正であり、Providerの公表値ではない。Staticでは使わない。
+When `pooling` is greater than 0, the ratio of tokens to the initial estimate and the success difference (measured − initial prior) are computed from the most recent 500 runs of the same agent, model, reasoning and mode in **other contexts**. These are shrunk by `prior_weight`, multiplied by `pooling`, and applied to the current context's initial value. That context's own results then update further from the corrected initial value. This is Orochi's own correction, based on the measurement that token overrun depends more on the candidate than on the task (system prompt, tool loop, cache, etc.); it is not a value published by any provider. Static does not use it.
 
-2026-09-16の6課題の実測では、context別EWMA（`pooling = 0`）は課題間で学習が共有されず、Staticと同じ選択になった。この6課題を720通りの順番でreplayし、同コストの候補の並び順を両方向で平均した。`pooling = 0.5`で平均成功数は5.5から5.8、平均tokensは約64万から約41万に改善した。一方、実際の時系列順では既定の並びが最良の候補を選んでいた。そのため、前半で係数を選び後半で検証しても、改善はなかった。データが小さいため既定値は変えない。詳細は[残タスクの実機検証](real-validation-20260916-2.md)。
+In the 2026-09-16 measurement of 6 tasks, per-context EWMA (`pooling = 0`) shared no learning between tasks and made the same selections as Static. These 6 tasks were replayed in all 720 orders, averaging over both orderings of equal-cost candidates. With `pooling = 0.5`, the mean number of successes improved from 5.5 to 5.8 and mean tokens from about 640,000 to about 410,000. On the other hand, in the actual chronological order the default ordering picked the best candidate. As a result, choosing the coefficient on the first half and validating on the second half produced no improvement. Because the data is small, the default is not changed. For details, see [Live Validation of Remaining Tasks (2026-09-16, part 2)](real-validation-20260916-2.md).
 
-未検証の完了、キャンセル、認証・rate-limit・接続不能・設定エラー、実行中にmodel/reasoning/modeが切り替わったrunは品質学習から除外する。Router/Judge/Councilのusageも別purposeに記録し、実装品質の学習に混ぜない。旧runの`complexity`が不明な場合はcontext別学習から除外する。
+Unverified completions, cancellations, authentication / rate-limit / unreachable / configuration errors, and runs in which model/reasoning/mode switched during execution are excluded from quality learning. Router/Judge/Council usage is also recorded under a separate purpose and is not mixed into learning of implementation quality. Old runs whose `complexity` is unknown are excluded from per-context learning.
 
-Banditはcontextごとに推定した候補のうち、成功確率の基準を通過し、最小期待コストの`max_cost_ratio`倍以内の候補を対象に探索する。既定の探索率は10%。同じ候補が最良である場合も探索の一部に含むため、最良候補の確率は`1-epsilon+epsilon/N`、他候補は`epsilon/N`。選択確率を実行前の予測と一緒に保存する。LLMの推薦を採用した場合の選択確率は算出できないため`null`。
+Among the candidates estimated for each context, the bandit explores those that pass the success-probability threshold and are within `max_cost_ratio` times the minimum expected cost. The default exploration rate is 10%. Because exploration can also land on the best candidate, the best candidate's probability is `1-epsilon+epsilon/N` and each other candidate's is `epsilon/N`. The selection probability is saved together with the pre-execution prediction. When an LLM recommendation is adopted, the selection probability cannot be computed, so it is `null`.
 
-これはcontextを区分したepsilon-greedyであり、特徴量を共有するLinUCBやThompson Samplingではない。成功確率の下限は推定値に対する制約であり、実際の成功の保証や信頼区間ではない。下限未満になった候補は探索対象にもならない。confidence・cache割引など残る係数も今後の実測校正対象。
+This is epsilon-greedy partitioned by context, not LinUCB or Thompson Sampling with shared features. The success-probability lower bound is a constraint on the estimate, not a guarantee of actual success or a confidence interval. Candidates that fall below the lower bound are not explored either. The remaining coefficients, such as confidence and the cache discount, are also to be calibrated against future measurements.
 
-### 弱いラベル
+### Weak labels
 
-実装: 2026-09-18（P3）。**重みは未較正のOrochiヒューリスティック。実利用での効果は未検証。**
+Implemented: 2026-09-18 (P3). **The weights are Orochi's own uncalibrated heuristic. Their effect in real use is unverified.**
 
-学習ラベルは自動チェックが通ったか落ちたかでしか生まれないので、設計・議論・調査、テストの無いリポジトリでは何回使っても学習が進まなかった。コンソールでは、答えの直後にユーザーがしたことを弱いラベルとして記録する。新しい操作は求めない。
+Learning labels arise only from automatic checks passing or failing, so for design, discussion and research, and in repositories without tests, learning made no progress however often Orochi was used. In the console, what the user does right after an answer is recorded as a weak label. No new action is asked of the user.
 
-| 直後の行動 | ラベル | 重み |
+| Action right after | Label | Weight |
 |---|---|---|
-| 答えを見てから次のメッセージを送った | 成功 | 0.2 |
-| `/reroute`（答えの後でも、Escで止めた後でも） | 失敗 | 0.3 |
-| Escで止めて、同じエージェントのまま次を送った | なし | — |
-| `/new`、終了、答えを見る前にキューしたメッセージ | なし | — |
+| Sent the next message after seeing the answer | Success | 0.2 |
+| `/reroute` (whether after the answer or after stopping with Esc) | Failure | 0.3 |
+| Stopped with Esc, then sent the next message with the same agent | None | — |
+| `/new`, exiting, a message queued before seeing the answer | None | — |
 
-「失敗」はタスクが失敗したという意味ではなく、「この種類の仕事にこのエージェント×モデルは合わなかったかもしれない」という弱い証拠。Sonnetの初期値0.88で試算すると、1回で0.863、5回で0.798まで下がる（検証済みの失敗なら5回で0.614）。
+"Failure" does not mean that the task failed; it is weak evidence that "this agent × model may not have suited this kind of work". Working it through from Sonnet's initial value of 0.88, it drops to 0.863 after one and to 0.798 after five (0.614 after five verified failures).
 
-**Escだけではラベルにしない**（2026-09-19変更）。止める理由は、エージェントが的外れなこともあれば、ユーザーが言い忘れに気づいただけのこともあり、止めた時点では区別できない。その後に`/reroute`したら前者、同じエージェントのまま補足を送ったら後者とみなす。
+**Esc alone is not turned into a label** (changed 2026-09-19). The reason for stopping may be that the agent was off target, or merely that the user noticed they had forgotten to say something, and the two cannot be told apart at the moment of stopping. A subsequent `/reroute` is taken as the former; a follow-up sent with the same agent is taken as the latter.
 
-- **検証済みの結果は上書きしない。** 弱いラベルが効くのは未検証の完了と中断だけ
-- 記録は実行記録への追記で、最初の1回だけ。実行前に凍結した予測には触れない
-- 重みは減衰に`decay^w`で効かせる。重み1なら従来と同じ計算。確信度は検証済みだけを数える
-- `orochi calibrate`は、従来の数値（検証済みのみ）とは別に`weak`としてシグナルごとの件数とBrierを出す。弱いラベルから学ぶことが効いているかは、時間を追って**検証済みの**Brierが下がるかで見る
+- **Verified results are never overwritten.** Weak labels apply only to unverified completions and interruptions
+- The label is appended to the run record, and only the first one counts. The prediction frozen before execution is not touched
+- The weight takes effect through the decay as `decay^w`. A weight of 1 gives the same calculation as before. Confidence counts only verified results
+- `orochi calibrate` reports, separately from the existing figures (verified only), the count and Brier for each signal under `weak`. Whether learning from weak labels is working is judged by whether the **verified** Brier falls over time
 
-### tier pooling（既定で無効）
+### Tier pooling (off by default)
 
-実装: 2026-09-18。**合成データのreplayでのみ確認。既定では無効。**
+Implemented: 2026-09-18. **Confirmed only by replay on synthetic data. Disabled by default.**
 
-学習はモデルIDの完全一致で引くので、モデルが更新されると実績がすべて失われ、新しいIDは静的な事前分布からやり直しになる。`learning.tier_pooling`を0より大きくすると、実績の無いモデルの出発点を、**同じprovider・同じtier・同じタスク種別・同じ複雑度・同じreasoningの、他のモデルIDの実績**でずらす。
+Learning looks results up by exact model ID, so when a model is updated all of its history is lost and the new ID starts over from the static prior. When `learning.tier_pooling` is greater than 0, the starting point of a model with no history is shifted by **the results of other model IDs with the same provider, same tier, same task type, same complexity and same reasoning**.
 
-- tierはpolicyの部分文字列パターン（`opus` → frontier）から読み出し時に求めるので、既存の記録もそのまま使える
-- `unknown` tierは束ねない（どのパターンにも当たらなかったIDの寄せ集めなので）
-- 動かすのは出発点だけで、そのモデル自身の実績が溜まるほど寄与は減る。既存の`pooling`（同じ候補の別文脈）と証拠が重ならないので併用できる
+- The tier is derived at read time from the policy's substring patterns (`opus` → frontier), so existing records can be used as they are
+- The `unknown` tier is not pooled (it is a grab bag of IDs that matched no pattern)
+- Only the starting point moves, and its contribution shrinks as the model's own results accumulate. Its evidence does not overlap with the existing `pooling` (same candidate, other contexts), so the two can be used together
 
-合成データでの確認（`tests/adaptive.rs`、`tier_pooling_carries_evidence_across_a_model_replacement`）: frontierモデルを途中で新IDに差し替え、新IDの事前分布を成功率の床より下に置くと、無効では差し替え後の30件すべてで棄権し、有効では棄権0件・60件中58件成功。**実データでの効果は未確認**なので既定は無効のまま。`benchmark-tune`の探索対象に`tier_pooling`（0 / 0.5 / 1）を加えたので、手元の測定データで効くかを確かめてから有効にする。
+Check on synthetic data (`tests/adaptive.rs`, `tier_pooling_carries_evidence_across_a_model_replacement`): when the frontier model is replaced with a new ID partway through and the new ID's prior is placed below the success floor, with pooling disabled all 30 cases after the replacement abstain, and with it enabled there are 0 abstentions and 58 of 60 cases succeed. **The effect on real data has not been confirmed**, so it stays disabled by default. `tier_pooling` (0 / 0.5 / 1) has been added to what `benchmark-tune` searches, so confirm that it helps on your own measurement data before enabling it.
 
-## 3. 残量
+## 3. Quota
 
 ```sh
 orochi quota --refresh
-orochi quota                  # 保存されたsnapshotとstaleフラグ
+orochi quota                  # saved snapshots and stale flags
 orochi quota-ingest --agent claude < claude-statusline.json
 ```
 
 ```toml
 [quota]
-refresh_before_run = true     # 既定false。dry-run時も取得する
+refresh_before_run = true     # default false. Also fetches on dry-run
 max_age_secs = 300
 timeout_secs = 30
 ```
 
 ### Codex
 
-既知の`codex` Agentのnative CLIが検出できた場合、`quota --refresh`は公式`codex app-server`の`account/rateLimits/read`を呼ぶ。promptは送らない。CLI自身の認証を利用する。
+When the native CLI of the known `codex` agent is detected, `quota --refresh` calls `account/rateLimits/read` on the official `codex app-server`. No prompt is sent. The CLI's own authentication is used.
 
-複数windowを保存し、期限内のものだけを適用する。`rateLimitsByLimitId`を優先し、`codex`以外のbucketはmodelへの対応が不明なため表示だけに留める。`usedPercent`が欠けているwindowを残量100%と解釈しない。quota情報が期限切れになるとルーティングへの適用を止める。実行で観測した別のcooldownは維持する。
+Multiple windows are saved, and only those still within their validity period are applied. `rateLimitsByLimitId` takes precedence, and buckets other than `codex` are only displayed, because their mapping to models is unknown. A window missing `usedPercent` is not interpreted as 100% remaining. Once quota information expires, it stops being applied to routing. Separate cooldowns observed during execution are kept.
 
-2026-09-15、ログイン済みの実Codex CLIからprimary / secondaryの残量・reset時刻の取得を確認した。証跡は`.orochi/live-e2e/adaptive/quota-live.json`。取得後に残量は変動するため、このファイルは現在値ではない。
+On 2026-09-15, retrieval of the primary / secondary quota and reset times from a logged-in real Codex CLI was confirmed. The evidence is `.orochi/live-e2e/adaptive/quota-live.json`. Quota changes after retrieval, so this file does not hold current values.
 
 ### Claude
 
-`quota-ingest`はClaude Codeがstatuslineに渡す`rate_limits.five_hour` / `seven_day` / `spend_limit`を取り込む。これはCLIのイベント観測であり、任意の時点で残量を再取得するAPIではない。ユーザーが設定するstatuslineスクリプトから入力を渡す。既存のClaude設定ファイルは変更しない。入力の会話・path・その他のフィールドは保存しない。context windowの残量をサブスク残量と取り違えない。
+`quota-ingest` ingests the `rate_limits.five_hour` / `seven_day` / `spend_limit` that Claude Code passes to the statusline. This is an observation of CLI events, not an API for re-fetching quota at an arbitrary time. The input is passed from a statusline script that the user configures. Existing Claude configuration files are not modified. The conversation, paths and other fields in the input are not saved. The remaining context window is not mistaken for remaining subscription quota.
 
-この形式は対応するClaude Codeバージョンとアカウントでのみ提供される。欠落時は不明として扱う。Claude Code 2.1.272の実statuslineを取り込み、別の検証DBへの保存も確認済み。
+This format is provided only by supporting Claude Code versions and accounts. When it is missing, quota is treated as unknown. Ingesting a real statusline from Claude Code 2.1.272 and saving it to a separate verification DB have been confirmed.
 
-随時取得は`claude_usage`プローブで公式CLIの`/usage`をPOSIX PTY越しに読み取る。Python 3が必要。標準ClaudeプリセットではネイティブCLIから自動検出し、`quota --refresh`で実取得・保存できることを確認した。専用の空の一時ディレクトリで起動し、raw画面やアカウント名を保存しない。
+On-demand retrieval uses the `claude_usage` probe, which reads the official CLI's `/usage` over a POSIX PTY. Python 3 is required. With the standard Claude preset it is auto-detected from the native CLI, and real retrieval and saving via `quota --refresh` was confirmed. It starts in a dedicated empty temporary directory and does not save the raw screen or the account name.
 
-Antigravityには同様の`antigravity_usage`プローブを実装。未認証時はOAuthを起動せずunknownとする。実アカウントの残量表示との照合はログイン後に必要。
+A similar `antigravity_usage` probe is implemented for Antigravity. When unauthenticated, it does not start OAuth and reports unknown. Checking it against the real account's quota display is still needed after login.
 
-### その他・独自取得コマンド
+### Other sources and custom probe commands
 
 ```toml
 [[quota.probes]]
@@ -140,150 +140,150 @@ command = "/absolute/path/to/your-quota-reader"
 args = []
 ```
 
-コマンドは次のJSONをstdoutに返す。shell展開は行わず、一時ディレクトリで実行する。1 MiBの出力上限とtimeoutを適用し、stderrや返却JSON全文は保存しない。失敗時は期限内の以前のsnapshotを維持する。
+The command returns the following JSON on stdout. No shell expansion is performed, and it runs in a temporary directory. A 1 MiB output limit and a timeout are applied, and neither stderr nor the full returned JSON is saved. On failure, the previous snapshot is kept while it is still valid.
 
 ```json
 {"schema_version":1,"windows":[{"bucket":"daily","remaining":0.35,"reset_at":2000000000,"model":null,"affects_routing":true}]}
 ```
 
-`model:null`はAgent全体。modelを指定する場合はACPから取得した実際のIDを使う。Gemini専用プローブは未実装で、今回の追加対応の対象外。非公開APIの呼び出しや認証token抽出は行わない。
+`model:null` means the whole agent. When specifying a model, use the actual ID obtained over ACP. A Gemini-specific probe is not implemented and is out of scope for this round of additions. No private APIs are called and no authentication tokens are extracted.
 
-出典: [Codex app-server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)、[Claude公式statusline](https://code.claude.com/docs/en/statusline)、[Antigravityの対話式usage表示](https://www.antigravity.google/docs/cli/commands/usage)。
+Sources: [Codex app-server](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md), [Claude official statusline](https://code.claude.com/docs/en/statusline), [Antigravity interactive usage display](https://www.antigravity.google/docs/cli/commands/usage).
 
-## 4. Router・Frontier Judge・Council
+## 4. Router, Frontier Judge and Council
 
-判定役は、実行前に「どの候補（Agent × モデル × reasoning）で実行するか」を選ぶ補助。タスク自体は実行しない。すべて`[[agents]]`のエージェントをACPで使う。2026-09-16まであったOpenAI互換HTTP endpoint版は、ACPへの統一により削除した（旧設定の`endpoint`・`api_key_env`は移行案内付きのエラーになる）。
+An adviser helps choose, before execution, "which candidate (agent × model × reasoning) to run on". It does not execute the task itself. All advisers use agents from `[[agents]]` over ACP. The OpenAI-compatible HTTP endpoint version that existed until 2026-09-16 was removed when everything was unified onto ACP (the old `endpoint` and `api_key_env` settings produce an error with migration guidance).
 
 ```toml
-# 判定役だけに使うエージェント。実行候補にはならない
+# An agent used only as an adviser. It never becomes an execution candidate
 [[agents]]
 id = "judge-claude"
 provider = "anthropic"
 command = "claude"
 routing_only = true
 
-# 低confidenceの課題で候補の順番を相談する
+# Consulted on candidate order for low-confidence tasks
 [router]
-agent = "codex"                   # [[agents]]のID
-model = "gpt-5.6-luna"            # 任意。ACPで取得できるモデルID
-reasoning = "low"                 # 任意
-session_overhead_tokens = 24000   # 実測値に合わせる。省略時は20000
+agent = "codex"                   # ID from [[agents]]
+model = "gpt-5.6-luna"            # optional. A model ID obtainable over ACP
+reasoning = "low"                 # optional
+session_overhead_tokens = 24000   # match to measured values. 20000 if omitted
 
-# Extreme、またはambiguity 0.7以上の課題
+# Extreme tasks, or tasks with ambiguity 0.7 or higher
 [frontier]
 agent = "codex"
 model = "gpt-5.6-sol"
 
-# 上の判定役が使えない場合の代替（最大3件、ネスト不可）
+# Fallback when the adviser above cannot be used (up to 3, no nesting)
 [[frontier.fallbacks]]
 agent = "judge-claude"
 model = "haiku"
 session_overhead_tokens = 29000
 ```
 
-| 項目 | 既定値 | 内容 |
+| Field | Default | Description |
 |---|---|---|
-| `model` | 自動 | 省略すると、そのエージェントが提供するモデルからOrochiが選ぶ（下記） |
-| `timeout_secs` | 120 | CLIの起動を含む1回の上限 |
-| `max_resource_fraction` | 1.0 | 判定に使うtokensの上限。最小期待コスト候補の推定tokensに対する割合 |
-| `max_output_tokens` | 512 | 予算計算に使う回答の想定サイズ。ACPでは途中で打ち切れない |
-| `session_overhead_tokens` | 20000 | システムプロンプト等による1ターンあたりの追加分 |
+| `model` | automatic | If omitted, Orochi chooses from the models that agent offers (see below) |
+| `timeout_secs` | 120 | Limit for one call, including CLI startup |
+| `max_resource_fraction` | 1.0 | Upper limit on the tokens used for advice, as a fraction of the estimated tokens of the minimum-expected-cost candidate |
+| `max_output_tokens` | 512 | Assumed size of the answer, used in the budget calculation. It cannot be cut off midway over ACP |
+| `session_overhead_tokens` | 20000 | Additional tokens per turn from the system prompt and the like |
 
-- `agent`は有効な`[[agents]]`のIDでなければならない。`routing_only = true`のエージェントは実行のdiscovery・候補・`--agent`・`collaborate`の対象にならず、判定役だけに使われる。
-- 認証は各CLIに従う（サブスクリプションのログイン、またはCLIが対応するAPIキー）。Orochi自身は認証情報を読まない。Orochiの環境変数と`[agents.env]`はCLIへ引き継ぐ。
-- 毎回、空の一時ディレクトリで新しいセッションを開始し、permissionは常に拒否する。送る内容は課題属性・最大12件の候補要約・peer votesだけ。タスク本文・ファイル名・リポジトリのパスは送らない。ただし、許可を求めずに作業ディレクトリ外を読めるCLIもあるため、ツールを使わないことは指示であり、OSレベルの保証ではない。
-- 例外は`[classifier]`のみ（次節）。分類だけはタスク本文なしには成立しないため、明示的にopt-inした場合に限りタスク本文を送る。
+- `agent` must be the ID of an enabled `[[agents]]` entry. An agent with `routing_only = true` is excluded from execution discovery, candidates, `--agent` and `collaborate`, and is used only as an adviser.
+- Authentication follows each CLI (a subscription login, or an API key the CLI supports). Orochi itself does not read credentials. Orochi's environment variables and `[agents.env]` are passed on to the CLI.
+- Every call starts a new session in an empty temporary directory, and permission requests are always denied. Only task attributes, at most 12 candidate summaries and peer votes are sent. Task text, filenames and repository paths are not sent. However, some CLIs can read outside the working directory without asking for permission, so not using tools is an instruction, not an OS-level guarantee.
+- The only exception is `[classifier]` (next section). Classification alone cannot work without the task text, so the task text is sent only when explicitly opted in.
 
-## 4.1. Classifier（タスク分類）
+## 4.1. Classifier (task classification)
 
-`router::profiler`のタスク種別・複雑度の判定はキーワードマッチで、語彙から外れた言い回しは`implementation` / `Normal`に落ちる。「CIが赤いので直して」は`bug_fix`にならず、「全部TypeScriptに書き換えて」は`Extreme`にならない。これをACPエージェントの分類で上書きする。
+`router::profiler` decides task type and complexity by keyword matching, so phrasings outside its vocabulary fall through to `implementation` / `Normal`. 「CIが赤いので直して」 ("CI is red, so fix it") does not become `bug_fix`, and 「全部TypeScriptに書き換えて」 ("rewrite it all in TypeScript") does not become `Extreme`. This is overridden by an ACP agent's classification.
 
-**既定で有効。設定は不要。** `agent`を書かなければ、有効な（`routing_only`でない）エージェントを設定順に、合計で1エージェント分の時間内で試す。実行に使うエージェントに送るということは、どのみちタスク本文が行く先に送るということなので、既定の送り先をそこに限っている。
+**Enabled by default. No configuration needed.** Without `agent`, it tries the enabled (non-`routing_only`) agents in configured order, within one agent's worth of time in total. Sending to an agent used for execution means sending the task text where it was going anyway, which is why the default recipients are limited to those.
 
 ```toml
 [classifier]
-enabled = false        # 止める
-agent = "claude"       # 送り先を固定する
-model = "haiku"        # 省略時はSimple難易度としてpolicyから自動選択（＝最安の候補）
+enabled = false        # turn it off
+agent = "claude"       # pin the recipient
+model = "haiku"        # if omitted, chosen automatically from the policy at Simple difficulty (= the cheapest candidate)
 timeout_secs = 60
 ```
 
-**選ぶ余地がないものはエージェントを起動しない。** `--dry-run`、読み取り専用の席、`--agent`と`--model`の両方が指定されたルートは、ヒューリスティックの判定のまま進む。
+**Nothing with no choice left to make starts an agent.** A `--dry-run`, a read-only seat, and a route with both `--agent` and `--model` specified proceed with the heuristic's label.
 
-**タスク本文を送る唯一の経路。** 送り先は他のAgentと同じくローカルで起動したCLIであり、認証はそのCLI自身のもの。Orochiは本文をどこにも保存しない。キャッシュのキーはタスク本文のsalted hashで、DBに残るのは分類ラベルだけ（`tests/core.rs`の`classifier_sees_the_task_but_caches_only_a_hash_of_it`が、DBファイルの生バイト列に本文が現れないことを確認する）。
+**The only path that sends the task text.** Like any other agent, the recipient is a locally started CLI, authenticated as that CLI itself. Orochi does not save the text anywhere. The cache key is a salted hash of the task text, and only the classification label remains in the DB (`classifier_sees_the_task_but_caches_only_a_hash_of_it` in `tests/core.rs` checks that the text does not appear in the raw bytes of the DB file).
 
-マージは**一方向のみ**。
+The merge goes **one way only**.
 
-| 項目 | 挙動 |
+| Field | Behavior |
 |---|---|
-| `task_type` | 分類結果で置換。`classifier::TASK_TYPES`の11種以外は破棄（未知のラベルは学習の層を割ってしまうため） |
-| `complexity` | `max(heuristic, classifier)`。**下げない** |
-| `requires_*` / `long_horizon` / `requires_architecture_change` | 論理和。heuristicが立てたフラグを**降ろさない** |
-| `ambiguity` | 大きい方 |
-| `collaborative` / `seats` | 分類対象外。何体のAgentを使うかはユーザーの指定のみ |
+| `task_type` | Replaced by the classification. Anything other than the 11 types in `classifier::TASK_TYPES` is discarded (an unknown label would split the learning strata) |
+| `complexity` | `max(heuristic, classifier)`. **Never lowered** |
+| `requires_*` / `long_horizon` / `requires_architecture_change` | Logical OR. A flag the heuristic set is **never cleared** |
+| `ambiguity` | The larger of the two |
+| `collaborative` / `seats` | Not classified. How many agents to use is set only by the user |
 
-過小評価は「実行できないモデルに回して失敗する」という実害になるが、過大評価は割高で済む、という非対称性に合わせている。
+This follows the asymmetry that underestimating does real harm ("routed to a model that cannot do it, and it fails"), while overestimating only costs more.
 
-**コストへの影響。** 失敗（cooldown・rate limit・timeout・不正な応答）は常にheuristicの結果にfallbackし、分類が原因で実行が止まることはない。ただし1回のCLI起動分のレイテンシが全実行に乗る。同一本文の2回目以降はキャッシュを引く（30日）。また`complexity`が`Complex`/`Extreme`に上がると`roles::seats`が読み取り専用の2人目を着席させるため、chatでは1ターンのコストが倍になりうる。
-- 回答末尾のJSON `{"candidate_id": "..."}`だけを受け付ける（CLIが先頭に出す通知文は無視）。提示した候補IDで、最小期待コストの1.25倍以内でなければ採用しない。
-- 判定役がアカウント単位の制限・認証エラー・接続不能になった場合は、そのエージェントのcooldownに記録する。実行側も同じアカウントのため、Schedulerは実行前にquotaを再確認する。cooldown中の判定役は起動しない。
-- `model`を省略した場合、判定の難しさを役割ごとに決め、実行候補と同じPolicy（成功確率の下限・制約・コスト）と残量で、最も安い適格なモデルとreasoningを選ぶ。Routerは簡単（simple）、Councilの各席は普通（normal）、Frontier Judgeは難しい（complex）として扱う。現在のPolicyでは、Routerは小型モデル・reasoning low、Councilは小型モデル・reasoning medium、Frontier Judgeは中位モデル・reasoning highになる。役割と難しさの対応はOrochi独自の目安で、コーディングの実績は選択に使わない。cooldown中のモデルは選ばない。`reasoning`だけを指定すると、そのreasoningに対応するモデルから選ぶ。
-- 判定の記録は`runs`に、実際の判定役のAgent・（実際に使われた）モデル・usageと、失敗理由（`rate_limit`、`authentication`、`timeout`、`cooldown`、`invalid_advice`など）を残す。purposeが`execution`ではないため、実装品質の学習には使わない。
+**Effect on cost.** A failure (cooldown, rate limit, timeout, invalid reply) always falls back to the heuristic result, so classification never stops a run. However, the latency of one CLI startup is added to every run. From the second time onward, the same text is served from the cache (30 days). Also, when `complexity` is raised to `Complex`/`Extreme`, `roles::seats` seats a second, read-only agent, so in chat the cost of a turn can double.
+- Only the JSON `{"candidate_id": "..."}` at the end of the answer is accepted (notices the CLI prints first are ignored). It is not adopted unless it is one of the presented candidate IDs and within 1.25× the minimum expected cost.
+- When an adviser hits an account-wide limit or an authentication error, or is unreachable, this is recorded in that agent's cooldown. Because the execution side uses the same account, the scheduler rechecks quota before execution. An adviser in cooldown is not started.
+- When `model` is omitted, the difficulty of advising is fixed per role, and the cheapest eligible model and reasoning are chosen under the same Policy (success-probability lower bound, constraints, cost) and quota as execution candidates. The Router is treated as simple, each Council seat as normal, and the Frontier Judge as complex. Under the current Policy this gives the Router a small model with reasoning low, the Council a small model with reasoning medium, and the Frontier Judge a mid-tier model with reasoning high. The mapping from role to difficulty is Orochi's own rule of thumb, and coding track records are not used for the choice. Models in cooldown are not chosen. If only `reasoning` is specified, the choice is made among the models that support that reasoning.
+- Advice is recorded in `runs` with the actual adviser's agent, the model (actually used), usage, and the failure reason (`rate_limit`, `authentication`, `timeout`, `cooldown`, `invalid_advice`, etc.). Because its purpose is not `execution`, it is not used for learning implementation quality.
 
-Councilは`[[council.members]]`に同じ形式で2〜4席を登録し、`orochi --council "タスク"`で明示実行する。常時使う場合は`[council] enabled = true`。
+The Council registers 2–4 seats in `[[council.members]]` in the same format and is run explicitly with `orochi --council "task"`. To use it all the time, set `[council] enabled = true`.
 
-1. 各席が独立に候補を選ぶ。
-2. 第1ラウンドの有効な候補ID一覧を各席へ渡し、再検討させる。第1ラウンドに答えたセッションはそのまま使い、票だけを送る。
-3. 設定した席数の過半数が一致した候補を採用する。失敗した席があっても必要票数は減らさない。
+1. Each seat chooses a candidate independently.
+2. The list of valid candidate IDs from round 1 is passed to each seat for reconsideration. The session that answered round 1 is reused as is, and only the votes are sent.
+3. The candidate agreed on by a majority of the configured number of seats is adopted. Failed seats do not reduce the number of votes required.
 
-席ごとの代替判定役には同じ課題属性・候補・peer votesを渡す。第1ラウンドで交代した席は、第2ラウンドもその代替から続ける。第2ラウンドで初めて使う代替には、候補一覧とpeer votesをまとめて渡す。
+Each seat's fallback adviser is given the same task attributes, candidates and peer votes. A seat that switched to its fallback in round 1 continues with that fallback in round 2. A fallback first used in round 2 is given the candidate list and the peer votes together.
 
-開始前に、全席・全代替・2ラウンド分の最大推定tokensを合計し、全判定役の最小`max_resource_fraction`で予算を検査する。第2ラウンドはセッションを使い回すため、1回目の依頼と回答を含む大きさで見積もる。予算外・不一致・全席失敗のときはローカルの選択へ戻る。Router・Judge・Councilは同時には呼ばない。
+Before starting, the maximum estimated tokens for all seats, all fallbacks and both rounds are summed, and the budget is checked against the smallest `max_resource_fraction` among all advisers. Because round 2 reuses the session, it is estimated at a size that includes the first request and answer. When over budget, without agreement, or when every seat fails, it falls back to the local choice. The Router, Judge and Council are never called at the same time.
 
-2026-09-16の実測（ACP判定役、各アダプターの報告値）では、1回あたりCodex gpt-5.6-lunaが約2.3万tokens・約5〜7秒、Claude Haikuが約2.8万tokens・約7〜8秒だった。詳細は[残タスクの実機検証](real-validation-20260916-2.md)。
+In the 2026-09-16 measurement (ACP advisers, values reported by each adapter), one call took about 23,000 tokens and about 5–7 seconds on Codex gpt-5.6-luna, and about 28,000 tokens and about 7–8 seconds on Claude Haiku. For details, see [Live Validation of Remaining Tasks (2026-09-16, part 2)](real-validation-20260916-2.md).
 
-判定役はルーティングだけを決める。最終的な編集は1つのACP Agentが実行する。独立セッションで実装・レビュー・統合する場合は、別コマンドの[`collaborate`](session-collaboration.md)を使う。
+Advisers decide only the routing. The final edits are made by a single ACP agent. To implement, review and integrate in independent sessions, use the separate [`collaborate`](session-collaboration.md) command.
 
-### ローカルモデル
+### Local models
 
-判定役・実行とも、ACPで接続できるCLIがローカルモデルに対応していれば使える。Orochiは接続先のモデルがクラウドかローカルかを区別しない。CLI側でローカルモデルを設定し、ACPで報告されるモデルIDを`model`に指定する。`provider`はPolicyの選択（priorや制約）に使う。未知のモデルIDは、そのProvider Policyの既定ルール（`*`、tier unknown）で評価される。ローカルモデルでの実機確認はまだ行っていない。
+For both advisers and execution, local models can be used if a CLI reachable over ACP supports them. Orochi does not distinguish whether the model it connects to is in the cloud or local. Configure the local model on the CLI side and set `model` to the model ID reported over ACP. `provider` is used to select the Policy (priors and constraints). An unknown model ID is evaluated with that Provider Policy's default rule (`*`, tier unknown). Nothing has yet been verified against a real CLI with a local model.
 
-## 4.2. チーム編成の自動導出
+## 4.2. Deriving the team automatically
 
-`collaborate`は`--plan`でチーム構成（Coordinator / Implementer / Reviewer / Integrator）をJSONで宣言する必要があったが、省略するとタスクから導出する。
+`collaborate` used to require the team (Coordinator / Implementer / Reviewer / Integrator) to be declared as JSON with `--plan`; when that is omitted, the team is now derived from the task.
 
 ```sh
-orochi collaborate "アーキテクチャを全面的に刷新したい" --dry-run   # 編成だけ見る
-orochi collaborate "..." --output report/                          # そのまま実行
-orochi collaborate "..." --dry-run > team.json                     # 保存して手で直す
+orochi collaborate "I want to overhaul the entire architecture" --dry-run   # only show the lineup
+orochi collaborate "..." --output report/                                   # run it as is
+orochi collaborate "..." --dry-run > team.json                              # save it and edit by hand
 orochi collaborate "..." --plan team.json --output report/
 ```
 
-`--dry-run`はplanファイルと同じ形式で出力するので、そのまま`--plan`に渡せる。`[classifier]`が有効なら、導出に使う`task_type` / `complexity`はそちらを通ったものになる。
+`--dry-run` prints in the same format as a plan file, so its output can be passed straight to `--plan`. If `[classifier]` is enabled, the `task_type` / `complexity` used for the derivation are the ones that went through it.
 
-| 役割 | 人数の決まり方 |
+| Role | How the count is decided |
 |---|---|
-| Coordinator | Implementerが2人以上、または`long_horizon`、または`Extreme`のとき1人 |
-| Implementer | `Extreme`3 / `Complex`2 / それ以外1。ただし**担当を分けられる領域数が上限** |
-| Reviewer | 1人 + 構造変更なら+1 + `Extreme`なら+1（最大4） |
-| Integrator | 常に1人 |
-| Discussion | `collaborative`または`Complex`以上のとき。`Extreme`は3ラウンド、それ以外2 |
+| Coordinator | 1 when there are 2 or more Implementers, or `long_horizon`, or `Extreme` |
+| Implementer | `Extreme` 3 / `Complex` 2 / otherwise 1, but **capped by the number of areas the work can be divided into** |
+| Reviewer | 1, +1 for a structural change, +1 for `Extreme` (at most 4) |
+| Integrator | Always 1 |
+| Discussion | When `collaborative` or `Complex` and above. 3 rounds for `Extreme`, otherwise 2 |
 
-`seats`（「5人のエージェントで」）が指定されていれば、その人数に合わせて増減する。増やす順はCoordinator → Implementer → Reviewer、減らす順はその逆。
+If `seats` is given (「5人のエージェントで」, "with five agents"), the team grows or shrinks to that number. Roles are added in the order Coordinator → Implementer → Reviewer and removed in the reverse order.
 
-**Implementerの上限が領域数なのが要点。** 同じディレクトリに2人のImplementerを置いても、仕事が半分になるのではなく衝突するだけなので、`candidate_files`の最上位ディレクトリ（タスクがファイルに言及していなければリポジトリ直下のディレクトリ）の数を超えては増やさない。2人以上になる場合は、その領域を`paths`として重複なく配る。
+**The key point is that Implementers are capped by the number of areas.** Putting two Implementers in the same directory does not halve the work; they only collide. So the count is never raised beyond the number of top-level directories of `candidate_files` (the directories at the repository root if the task mentions no files). When there are 2 or more, those areas are handed out as `paths` without overlap.
 
-各参加者の`agent`は空（自動選択）。どのエージェント×モデルを割り当てるかはschedulerの仕事で、`scorer`が他の席が使用中のエージェントを1.4倍で見積もるため、並行する席は自然に別アカウントへ散る。
+Each participant's `agent` is empty (automatic selection). Which agent × model to assign is the scheduler's job, and because `scorer` prices an agent that another seat is using at 1.4×, concurrent seats naturally spread across different accounts.
 
-## 4.3. コンソールからのチーム昇格
+## 4.3. Team escalation from the console
 
-`orochi`（または`orochi chat`）でプロンプトを打つだけで、必要なら協業まで行く。ユーザーが`chat`と`collaborate`を選び分ける必要はない。
+Just typing a prompt into `orochi` (or `orochi chat`) goes as far as collaboration when needed. The user does not have to choose between `chat` and `collaborate`.
 
-1ターンにつき分類は1回。その結果が、昇格の判断・フェーズ分割・ルーティングのすべてに使われる（`RunOptions::descriptor`で渡すので、schedulerが装飾後のテキストを再分類することはない）。
+Classification happens once per turn. That one result is used for the escalation decision, the phase split and routing alike (it is passed as `RunOptions::descriptor`, so the scheduler never reclassifies the decorated text).
 
-昇格の条件は`Plan::splits_work()` — 導出したチームのImplementerが2人以上のとき、つまり**作業が実際に分割できるとき**だけ。1人なら、別ワークスペースを用意しても得るものがないので、コンソールが自分の作業ツリーで1〜2席で回す。
+The escalation condition is `Plan::splits_work()` — only when the derived team has 2 or more Implementers, that is, **when the work can actually be split**. With one, nothing is gained by preparing separate workspaces, so the console handles it with 1–2 seats in your own working tree.
 
-昇格するときは**一度だけ確認する**。
+When escalating, it **asks once**.
 
 ```
 ◆ This is more than one agent's worth of work
@@ -292,99 +292,99 @@ orochi collaborate "..." --plan team.json --output report/
   ⎿ Enter or y to start the team · any other key runs it as a normal turn
 ```
 
-数体のエージェントが同時に走り、検証を通れば作業ツリーに書き戻る唯一の経路なので、ここだけは黙って実行しない。端末がない場合（stdinがパイプ）は昇格しない。各行が1メッセージとして読まれる環境では、確認プロンプトが次のメッセージを食べてしまうため。
+This is the only path on which several agents run at once and, once verification passes, write back to the working tree, so this alone is never run silently. Without a terminal (stdin is a pipe) there is no escalation, because in an environment where each line is read as one message, the confirmation prompt would swallow the next message.
 
-`/solo`と`/team`を明示したターンは昇格の対象外。レポートは`<data>/collaborations/<id>/`に残るので、中断しても`orochi collaborate-resume --output <path>`で続けられる。
+Turns that explicitly use `/solo` or `/team` are not subject to escalation. The report remains in `<data>/collaborations/<id>/`, so an interrupted run can be continued with `orochi collaborate-resume --output <path>`.
 
-## 4.4. 記憶
+## 4.4. Memory
 
-実装: 2026-09-18（P1）。設計の経緯・未実装部分は[個人最適化の設計](personalization-design.md)。**自動テストのみで、実エージェントでの取得精度は未検証。**
+Implemented: 2026-09-18 (P1). For the design history and what is not implemented, see [Personalization Design](personalization-design.md). **Automated tests only; capture accuracy with real agents is unverified.**
 
-采配されるエージェントは毎回変わり、Claudeの`CLAUDE.md`はCodexに見えない。エージェントを跨いで保つべきものをOrochi側で覚える。
+The agent a task is routed to changes every time, and Claude's `CLAUDE.md` is invisible to Codex. What should hold across agents is remembered on Orochi's side.
 
 ```
-<data>/memory/USER.md                          ユーザー全体
-<data>/memory/repos/<repository_id>/MEMORY.md  リポジトリ単位（ディレクトリ名はsalted hash）
+<data>/memory/USER.md                          whole user
+<data>/memory/repos/<repository_id>/MEMORY.md  per repository (the directory name is a salted hash)
 ```
 
-**取得に追加のLLM呼び出しはない。** 分類器は毎ターン依頼を読んでいるので、その返答に「このタスクが終わっても有効な、ユーザー自身の指示や事実」を最大2件載せる。保存すると1行出る。
+**Capture needs no extra LLM call.** The classifier reads the request every turn anyway, so its reply carries up to 2 items of "the user's own instructions or facts that stay valid after this task is done". When one is saved, a line is printed.
 
 ```
 ⎿ classified as bug_fix / normal
-⎿ remembered: パッケージマネージャはpnpm
+⎿ remembered: the package manager is pnpm
 ```
 
-**注入は新しいセッションの開始時だけ。** chat・one-shot・席・collaborateの参加者すべてに入り、`resume`するターンには入らない（そのセッションは開始時に聞いている）。前置きで「タスクの指示とリポジトリの指示に優先しない」と位置づける。
+**Injected only when a new session starts.** It goes into chat, one-shot runs, seats and every `collaborate` participant, and not into a turn that uses `resume` (that session heard it when it started). A preamble positions it as "not taking precedence over the task's instructions or the repository's instructions".
 
-**忘れ方。** Orochiが書いた行は`<!-- auto seen:N last:T -->`を持ち、1回だけ聞いたものは90日、2回以上は180日で消える。言い直しは回数を増やし、反対のことを言えば置き換わる。**手で書いた行（印なし）は消えず、置き換わらず、最優先で注入される。**
+**How it forgets.** Lines Orochi wrote carry `<!-- auto seen:N last:T -->`; something heard only once disappears after 90 days, twice or more after 180 days. Saying it again increases the count, and saying the opposite replaces it. **Lines written by hand (unmarked) never disappear, are never replaced, and are injected first.**
 
 ```sh
-orochi memory                 # 一覧（u1, r2 ... のID付き）
-orochi memory --forget r2     # 1件消す
+orochi memory                 # list (with IDs u1, r2 ...)
+orochi memory --forget r2     # forget one item
 ```
 
-コンソールでは`/memory`、`/memory forget r2`。ファイルを直接編集してもよい。`memory.enabled = false`で取得も注入も止まる。
+In the console, `/memory` and `/memory forget r2`. You may also edit the files directly. `memory.enabled = false` stops both capture and injection.
 
-**守っていること**（`tests/core.rs`の`mod memory`と`a_remembered_note_opens_each_fresh_session_once`）
+**What is guaranteed** (`mod memory` in `tests/core.rs` and `a_remembered_note_opens_each_fresh_session_once`)
 
-- 記憶のテキストは`telemetry.sqlite3`に入らない。分類キャッシュにも残らない
-- リポジトリAの覚え書きはリポジトリBのプロンプトに出ない
-- router / judge / councilには渡らない。見るのは分類器だけで、現在のリポジトリの一覧のみ
-- **対象リポジトリ内の`MEMORY.md`・`USER.md`は読まない。** リポジトリが全プロンプトに文を植え付けられないようにするため
-- **エージェントに記憶を書かせるツールは無い。** エージェントの出力はリポジトリの内容に影響されるため
+- Memory text does not go into `telemetry.sqlite3`. Nor does it remain in the classification cache
+- Notes from repository A do not appear in repository B's prompts
+- It is not passed to the router / judge / council. Only the classifier sees it, and only the current repository's listing
+- **`MEMORY.md` and `USER.md` inside the target repository are never read.** This keeps a repository from planting text in every prompt
+- **No tool lets an agent write memory.** Agent output is influenced by the repository's content
 
-**セッションの振り返り**（P2）。1メッセージでは恒久的な好みか判断できないもの（同じ訂正の繰り返しなど）のために、2メッセージ以上あったコンソールセッションの終了時に1回だけ、そのセッションでユーザーが言ったこと（`/new`を跨ぐ・エージェントの返答は含まない）を分類器と同じ経路で見直す。
+**Session look-back** (P2). For things a single message cannot reveal to be a lasting preference (such as the same correction repeated), at the end of a console session that had 2 or more messages, what the user said in that session (across `/new`; agents' replies not included) is reviewed once, through the same path as the classifier.
 
 ```
 ⎿ looking back over this session · Esc skips
-⎿ remembered: キーワードマッチで判定しない
+⎿ remembered: don't classify by keyword matching
 ```
 
-LLM呼び出しは1セッション1回。1メッセージだけのセッションでは呼ばない（送った時点で分類器が読んでいる）。発言はメモリ上にだけ置き、送り先は分類器と同じ。
+One LLM call per session. It is not made for a session with only one message (the classifier read it when it was sent). What was said is kept only in process memory, and it goes to the same recipient as the classifier.
 
-**采配の好み**（P3）。「設計はFableで」のように、どの種類の仕事にどのエージェント・モデルを使いたいかを言えば（あるいは記憶に手で書けば）、分類器がそれを今回のタスクに当てはめて名前の断片を返し、一致する候補の期待コストを0.8倍にする。
+**Route preferences** (P3). If you say which agent or model you want for which kind of work, like "use Fable for design" (or write it into memory by hand), the classifier applies it to the current task and returns a name fragment, and the expected cost of matching candidates is multiplied by 0.8.
 
 ```
 ⎿ classified as architecture / complex · you prefer fable
 ```
 
-- **ゲートは開けない。** ケイパビリティ・クォータ・成功率の床で落ちた候補は、好みでも戻らない。大幅に安い・成功しやすい候補がある場合はそちらが勝つ
-- 名前の断片（`fable`）で照合するので、モデルが`fable-6`に更新されても効く。発見されていないIDを作ることには使わない
-- 0.8はOrochiのヒューリスティックで、測定した値ではない
-- 今回だけの指定（`--model`）は従来どおりハード制約で、記憶には入らない
+- **It does not open gates.** A candidate dropped by capability, quota or the success floor does not come back because of a preference. If a candidate is much cheaper or much more likely to succeed, that one wins
+- Matching is by name fragment (`fable`), so it keeps working when the model is updated to `fable-6`. It is never used to create an ID that was not discovered
+- 0.8 is Orochi's own heuristic, not a measured value
+- A one-off choice (`--model`) is a hard constraint as before, and does not go into memory
 
-**限界。** 何を覚えるかは分類器の判断に依存し、保証ではない。外部から貼り付けたテキストに「これを覚えろ」と書かれていた場合に拾わないのは指示によるもので、件数・文字数の上限と取得時の表示が防御の残り。分類器が動かないターン（`--dry-run`、agentとmodelの両方をピン留めしたone-shot）では取得しない。
+**Limits.** What gets remembered depends on the classifier's judgment and is not guaranteed. Not picking up text pasted in from outside that says "remember this" relies on an instruction; the rest of the defense is the caps on item count and length and the display at capture time. Nothing is captured on turns where the classifier does not run (`--dry-run`, a one-shot with both agent and model pinned).
 
-## 5. ACP公開
+## 5. Exposing Orochi over ACP
 
 ```sh
 orochi --config /absolute/path/config.toml --data-dir /absolute/path/data serve
 ```
 
-ACP Client側には上記をstdio Agentとして登録する。SDKは公式Rust ACP 2.0.0、公開プロトコルはv1。`initialize`、`session/new`、`session/prompt`、`session/cancel`とrequest cancellationに対応する。stdoutはJSON-RPC、進捗はstderr。backendの回答をストリームし、既定ask時はpermission要求を上位Clientへ中継する。deny/allowの明示設定を優先し、許可はallow_onceに限定する。
+Register the above as a stdio agent on the ACP client side. The SDK is the official Rust ACP 2.0.0, and the exposed protocol is v1. It supports `initialize`, `session/new`, `session/prompt`, `session/cancel` and request cancellation. stdout carries JSON-RPC; progress goes to stderr. The backend's answer is streamed, and under the default ask, permission requests are relayed to the upstream client. Explicit deny/allow settings take precedence, and permission is granted only as allow_once.
 
-セッション内の直前のユーザー入力と回答を最大約24 KiBのメモリに保持し、次のpromptの文脈として利用する。各promptでは通常のSchedulerを実行する。会話全文の保持、永続session/load、model/mode切り替え、MCP設定の転送、追加workspace、画像・audio入力には未対応。未対応capabilityは広告せず、対応しない入力はエラーにする。Sessionは128件まで。
+The previous user input and answer in the session are kept in memory, up to about 24 KiB, and used as context for the next prompt. Each prompt runs the normal scheduler. Keeping the full conversation, persistent session/load, model/mode switching, forwarding MCP configuration, additional workspaces, and image/audio input are not supported. Unsupported capabilities are not advertised, and unsupported input is an error. Up to 128 sessions.
 
-同一sessionの同時promptを拒否し、同じrepositoryへの実行も通常のworkspace lockで排他する。キャンセル・切断時はworkerとbackendの子プロセスを終了する。途中で中断されたgateway実行は、最終telemetryが保存されない場合がある。完了済みの実行は通常の評価・telemetryへ記録する。
+Concurrent prompts on the same session are rejected, and runs against the same repository are also made mutually exclusive by the normal workspace lock. On cancellation or disconnection, the worker and the backend's child processes are terminated. A gateway run interrupted midway may not have its final telemetry saved. Completed runs are recorded to the normal evaluation and telemetry.
 
-## 6. 実機E2E
+## 6. Live E2E
 
 ```sh
-# CLI接続とモデル取得のみ
+# CLI connection and model discovery only
 python3 examples/live_e2e.py --agent gemini --output .orochi/live-e2e/gemini
 
-# ログイン済みCLIで、隔離した一時repoに1ファイル作成＋内容検証
+# With a logged-in CLI, create one file in an isolated temporary repo and verify its content
 python3 examples/live_e2e.py --agent gemini --execute --output .orochi/live-e2e/gemini
 python3 examples/live_e2e.py --agent antigravity --command /absolute/path/agy_acp_server.par --execute --output .orochi/live-e2e/antigravity
 ```
 
-`--command`と反復可能な`--arg`で実環境のACPコマンドを指定できる。例: `--arg=--acp`。各CLIの公式手順でインストール・ログインする必要がある。スクリプトは自動ログインせず、既存プロジェクトも変更しない。`--execute`は実アカウントのquotaを消費する。
+`--command` and the repeatable `--arg` specify the ACP command of the real environment. Example: `--arg=--acp`. Each CLI must be installed and logged in following its official instructions. The script does not log in automatically and does not modify existing projects. `--execute` consumes the real account's quota.
 
-CLI未導入、接続不可、未実行、実行失敗、検証成功を区別して`result.json`へ記録する。discovery成功だけでE2E完了とは表示しない。AntigravityはCLI 1.2.3・ACP Server 1.1.1の導入後、`Authentication required`まで確認。最新の証跡は`.orochi/live-e2e/session-work/antigravity/result.json`。Geminiの追加検証はユーザー指示により対象外。
+CLI not installed, cannot connect, not executed, execution failed, and verification succeeded are distinguished and recorded in `result.json`. Discovery success alone is not reported as E2E completion. For Antigravity, after installing CLI 1.2.3 and ACP Server 1.1.1, confirmed up to `Authentication required`. The latest evidence is `.orochi/live-e2e/session-work/antigravity/result.json`. Further verification of Gemini is out of scope at the user's instruction.
 
-Geminiの起動方式は[公式ACPモード](https://geminicli.com/docs/cli/acp-mode/)を参照。
+For how Gemini is launched, see the [official ACP mode](https://geminicli.com/docs/cli/acp-mode/).
 
-## 検証結果
+## Verification results
 
-- 担当交代・再開・制限の範囲・途中状態保持の検証は[実測と検証](real-validation-20260916.md)、判定役のACP統一後を含む検証は[残タスクの実機検証](real-validation-20260916-2.md)に記録。判定役のテストはACP fixtureを利用。
-- 実測・実機・未検証事項の一覧は[実測と検証](real-validation-20260916.md)を参照。
+- Verification of handover, resumption, limit scope and preservation of intermediate state is recorded in [Measurement and Session Collaboration Validation (2026-09-16)](real-validation-20260916.md), and verification including the period after advisers were unified onto ACP in [Live Validation of Remaining Tasks (2026-09-16, part 2)](real-validation-20260916-2.md). Adviser tests use ACP fixtures.
+- For a list of what was measured, what was verified against the real CLI, and what is unverified, see [Measurement and Session Collaboration Validation (2026-09-16)](real-validation-20260916.md).

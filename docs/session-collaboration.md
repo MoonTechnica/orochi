@@ -1,103 +1,103 @@
-# 独立セッションによる協議と担当交代
+# Collaboration and Handoff Between Independent Sessions
 
-作業者の単位は**独立したACPセッション**です。同じCLI・モデルでも、セッションが異なれば別の作業者として扱います。司令塔・実装・レビュー・統合の全役割に同じ交代処理を適用します。
+The unit of a worker is an **independent ACP session**. Even with the same CLI and model, a different session is treated as a different worker. The same handoff process applies to every role: coordinator, implementer, reviewer and integrator.
 
-Orochiがタスク・工程・計画・判断・未解決事項・回答・メッセージ・検証結果を保持します。あるAIの会話だけに進行状態を依存させません。
+Orochi holds the task, stages, plan, decisions, open questions, responses, messages and verification results. Progress never depends on any single AI's conversation alone.
 
-実装者は最大4人まで同時に作業でき、Orochiが結果をマージします。参加者は任意の相手へ宛先付きのメッセージを送れます。協議ラウンドでは、未回答のメッセージがある参加者が返信します。`--apply`を指定すると、検証に成功した結果を元の作業ツリーへマージします。競合は解消用のセッションで解決します。
+Up to 4 implementers can work at the same time, and Orochi merges their results. Participants can send addressed messages to any other participant. In discussion rounds, participants with unanswered messages reply. With `--apply`, a result that passed verification is merged into the original working tree. Conflicts are resolved in a dedicated resolution session.
 
 ```mermaid
 sequenceDiagram
-    participant O as Orochiと保存済み状態
-    participant M as 司令塔セッションA
-    participant N as 交代する司令塔セッションB
-    participant W as 実装・レビュー・統合セッション
-    O->>M: タスク・工程・直前までの状態
-    M-->>O: 計画・判断の途中回答
-    O->>O: report.jsonへ保存
-    M-->>O: 利用制限／クレジット不足
-    O->>O: cooldown保存・利用可能な候補を選択
-    O->>N: 同じ役割・計画・途中回答・進捗
-    N-->>O: 更新した計画・判断・未解決事項
-    O->>W: タスク・管理状態・担当工程
-    W-->>O: 成果物・説明
-    O->>O: 検証・次工程を保存
+    participant O as Orochi and saved state
+    participant M as Coordinator session A
+    participant N as Replacement coordinator session B
+    participant W as Implementer, reviewer and integrator sessions
+    O->>M: Task, stages, state so far
+    M-->>O: Interim response with plan and decisions
+    O->>O: Save to report.json
+    M-->>O: Rate limit / insufficient credits
+    O->>O: Save cooldown, choose an available candidate
+    O->>N: Same role, plan, interim response, progress
+    N-->>O: Updated plan, decisions, open questions
+    O->>W: Task, management state, assigned stage
+    W-->>O: Deliverables, explanation
+    O->>O: Save verification and next stage
 ```
 
-## 実行と再開
+## Running and resuming
 
 ```sh
 orochi --permission allow -C /path/to/project collaborate \
-  '入力検証を実装して' \
+  'Implement input validation' \
   --plan /absolute/path/to/session-plan.json \
   --output /path/to/results/run-001 \
-  --apply          # 省略時は元の作業ツリーを変更しない
+  --apply          # without it, the original working tree is not modified
 
-# 全候補の利用制限、試行上限、明示キャンセル後に同じ工程から再開
+# Resume from the same stage after every candidate hit a rate limit, the attempt limit was reached, or an explicit cancellation
 orochi --permission allow -C /path/to/project collaborate-resume \
   --output /path/to/results/run-001
 
-# 完了済みの協議の結果を、後から作業ツリーへ適用する
+# Apply the result of a completed collaboration to the working tree afterwards
 orochi -C /path/to/project collaborate-resume --output /path/to/results/run-001 --apply
 ```
 
-終了コードは、完了（`--apply`指定時は適用まで完了）で`0`、キャンセルで`130`、それ以外は`1`です。
+The exit code is `0` on completion (with `--apply`, completion includes applying), `130` on cancellation, and `1` otherwise.
 
-設定例は [`examples/session-plan.json`](../examples/session-plan.json)と、並列実装・協議ラウンドを使う[`examples/session-plan-parallel.json`](../examples/session-plan-parallel.json)。司令塔を先頭に置き、その後に実装者1〜4人・レビュー者1〜4人・統合者1人を指定します。司令塔は省略可能です。
+Example configurations are [`examples/session-plan.json`](../examples/session-plan.json) and [`examples/session-plan-parallel.json`](../examples/session-plan-parallel.json), which uses parallel implementation and discussion rounds. Put the coordinator first, followed by 1–4 implementers, 1–4 reviewers and 1 integrator. The coordinator is optional.
 
-司令塔は最初と各工程の終了後に呼ばれ、`plan`・`decisions`・`open_questions`・`next_step`をJSONで更新します。その都度独立したセッションを用い、前回までの管理状態と成果物・検証結果を渡します。工程の順番と最終的な評価はOrochiが管理します。AIの提案だけでレビュー工程を省略したり、未検証の成果を成功扱いしたりしません。
+The coordinator is called at the start and after each stage, and updates `plan`, `decisions`, `open_questions` and `next_step` as JSON. Each call uses an independent session and receives the management state so far together with the deliverables and verification results. Orochi manages the order of stages and the final evaluation. An AI's suggestion alone never skips a review stage or treats an unverified result as a success.
 
-## 工程
+## Stages
 
 ```text
-[司令塔] → 実装者（全員を同時に実行） → [司令塔] → [マージ] → レビュー者1 → [司令塔] → …
-→ 協議ラウンド1〜N → [再マージ] → 統合者 → [司令塔] → [作業ツリーへの適用]
+[coordinator] → implementers (all run concurrently) → [coordinator] → [merge] → reviewer 1 → [coordinator] → …
+→ discussion rounds 1–N → [re-merge] → integrator → [coordinator] → [apply to working tree]
 ```
 
-`[マージ]`は実装者が2人以上の場合、協議ラウンドは`discussion`を指定した場合、適用は`--apply`の場合だけ入ります。従来の計画（実装者1人・協議なし）の工程番号は変わりません。
+`[merge]` appears only with 2 or more implementers, discussion rounds only when `discussion` is set, and applying only with `--apply`. Stage numbering for existing plans (one implementer, no discussion) does not change.
 
-### 並列実装とマージ
+### Parallel implementation and merging
 
 ```json
 {"id": "alice", "role": "implementer", "agent": "claude", "model": "haiku", "paths": ["textstats/words.py"]}
 ```
 
-- 実装者はそれぞれ開始状態のコピーで同時に作業します。`paths`は担当範囲の指示として伝えるだけで、編集の禁止はしません。
-- 全員の完了後、開始状態を基準に1人ずつ3-wayマージします（`git merge-file`をリポジトリ外で実行）。重なる編集は競合マーカー付きで`merged/`に書き込みます。バイナリ、1 MiB超、削除と変更の衝突、symlinkはマーカーを付けず、競合として記録します。
-- レビュー者・統合者は`merged/`のコピーで作業します。統合者の評価には、競合があったファイルにマーカーが残っていないかの確認（`git_conflict_markers`）を加えます。残っていれば評価失敗として、別の担当に交代します。
-- 並列実装では各実装者の作業コピーだけで全体のチェックは通らないことがあるため、実装者の工程では評価を必須にしません。統合後に評価します。1人の場合は従来どおり実装者の工程でも評価します。
-- 一部の実装者だけが失敗した場合、完了した実装者の結果は保持します。再開時は未完了の実装者だけを実行します。
+- Each implementer works concurrently in its own copy of the starting state. `paths` is only passed on as guidance about the assigned scope; it does not forbid edits.
+- After everyone finishes, the results are three-way merged one at a time against the starting state (`git merge-file` run outside any repository). Overlapping edits are written to `merged/` with conflict markers. Binaries, files over 1 MiB, delete/modify conflicts and symlinks get no markers and are recorded as conflicts.
+- Reviewers and the integrator work in copies of `merged/`. The integrator's evaluation adds a check that no markers remain in files that had conflicts (`git_conflict_markers`). If any remain, the evaluation fails and the work is handed off to another worker.
+- In parallel implementation, each implementer's working copy alone may not pass the checks for the whole project, so evaluation is not required at the implementer stage. Evaluation happens after integration. With a single implementer, the implementer stage is evaluated as before.
+- If only some implementers fail, the results of those that completed are kept. On resume, only the implementers that did not complete are run.
 
-### 宛先指定の通信と協議ラウンド
+### Addressed messages and discussion rounds
 
-各参加者は回答の末尾に次のJSONを付けて、任意の参加者へメッセージを送れます。司令塔は管理状態JSONの`messages`欄を使います。
+Each participant can send messages to any participant by appending the following JSON to the end of its response. The coordinator uses the `messages` field of its management state JSON.
 
 ```json
-{"messages": [{"to": "reviewer", "body": "入力検証を追加しました。確認してください。"}]}
+{"messages": [{"to": "reviewer", "body": "I added input validation. Please take a look."}]}
 ```
 
 ```json
 {"participants": [...], "discussion": {"max_rounds": 2}}
 ```
 
-- 宛先は参加者ID（大文字小文字を区別しない）。存在しない宛先、自分宛て、空または8 KiB超の本文は`rejected`として記録し、届けません。1回の回答で8件まで、受理は全体で32件、記録は64件までです。
-- 協議ラウンドでは、未回答のメッセージがある司令塔・実装者・レビュー者が同時に返信します。実装者は自分の作業コピーを更新でき、レビュー者は編集しません。新しいメッセージがなければ残りのラウンドは飛ばします。協議後、実装者が2人以上なら再マージします。
-- 統合者は全メッセージを統合時に読みます。司令塔も全メッセージを参照します。他の参加者には自分が送受信したものだけを渡します。
-- メッセージは作業上のメモとして扱い、元の依頼やリポジトリの指示を上書きする権限は持たせません。
+- Addresses are participant IDs (case-insensitive). Messages to a nonexistent address or to oneself, and messages with an empty body or a body over 8 KiB, are recorded as `rejected` and not delivered. Up to 8 per response, 32 accepted in total, and 64 recorded.
+- In a discussion round, the coordinator, implementers and reviewers that have unanswered messages reply concurrently. Implementers may update their own working copies; reviewers do not edit. If there are no new messages, the remaining rounds are skipped. After the discussion, the results are re-merged if there are 2 or more implementers.
+- The integrator reads all messages at integration time. The coordinator also sees all messages. Other participants receive only the messages they sent or received.
+- Messages are treated as working notes and carry no authority to override the original request or the repository's instructions.
 
-### 元の作業ツリーへの適用
+### Applying to the original working tree
 
-`--apply`は、統合結果の評価が**実際のチェックの合格**（`success`）の場合だけ動きます。チェックがない`partial_success`では適用せず、`application.status = "skipped"`として終了コード`1`を返します。
+`--apply` runs only when the evaluation of the integrated result is a **real check pass** (`success`). A `partial_success` without checks is not applied; the run ends with `application.status = "skipped"` and exit code `1`.
 
-1. 同じリポジトリを使う他のOrochi実行と排他するロックを取ります。
-2. 開始状態・現在の作業ツリー・統合結果で3-wayマージします。開始後にユーザーが編集した内容も保持します。
-3. 競合がなければ、全ファイルを一時ファイルに書き出してから置き換えます。書き込み直前に各ファイルが計算時の状態のままか確認し、変わっていれば何も書きません。
-4. 競合があれば、現在の作業ツリーを`resolve-base/`（固定用）と`resolve/`へコピーし、マーカー付きのマージ結果を置きます。統合者と同じ担当設定で解消用のセッションを実行し、チェックとマーカー確認に合格した結果だけを適用します。
-5. 解消中に作業ツリーが変わった場合は上書きせず、`blocked`で停止します。再開すると最新の状態で再度マージし、新しい解消セッションを実行します。
+1. Take a lock that excludes other Orochi runs using the same repository.
+2. Three-way merge the starting state, the current working tree and the integrated result. Edits the user made after the start are kept too.
+3. If there are no conflicts, write every file to a temporary file first, then replace. Right before writing, check that each file is still in the state it had when the merge was computed; if any changed, write nothing.
+4. If there are conflicts, copy the current working tree to `resolve-base/` (the fixed copy) and `resolve/`, and place the merge result with markers there. Run a resolution session with the same assignment settings as the integrator, and apply only a result that passes the checks and the marker check.
+5. If the working tree changes during resolution, do not overwrite it; stop with `blocked`. Resuming merges again against the latest state and runs a new resolution session.
 
-`.git`・`.env*`・`node_modules`など、コピー対象外のパスは読み書きしません。適用したファイルは`application.files`に記録します。
+Paths excluded from copying, such as `.git`, `.env*` and `node_modules`, are never read or written. Applied files are recorded in `application.files`.
 
-## 候補選択と切り替え
+## Candidate selection and switching
 
 ```json
 {
@@ -110,66 +110,66 @@ orochi -C /path/to/project collaborate-resume --output /path/to/results/run-001 
 }
 ```
 
-- `agent`・`model`・`reasoning`・`mode`は最初に試す希望設定。`agent`を省略すると最初から自動選択。
-- `fallback`は既定で`true`。利用不能・制限・クレジット不足・接続切断・タイムアウト・評価失敗時に、利用可能な別候補を試す。
-- `allowed_agents`は交代先を含む候補の範囲。省略するとユーザー設定の有効なAgentが対象。範囲外へは送信しない。
-- 固定したい場合は`fallback: false`。明示キャンセル・権限拒否でも交代せず停止する。
-- モデル単位の制限はそのモデルを除外。アカウント単位の制限はAgent全体を除外し、後続工程でも同じcooldownを参照する。
-- 交代先はPolicy、推定成功率の下限、機能、残量、期待コスト、設定済みの学習方式で選ぶ。異なるProviderのモデル名や推論設定を強制的に引き継がない。
-- 1工程あたりの試行上限は`scheduler.max_attempts`（既定3）。範囲内の全候補が使えなければ`blocked`として保存。再開コマンドでは完了済み工程を飛ばし、未完了工程に新しい試行枠を与える。
+- `agent`, `model`, `reasoning` and `mode` are the preferred settings to try first. Omitting `agent` means automatic selection from the start.
+- `fallback` defaults to `true`. On unavailability, a limit, insufficient credits, a dropped connection, a timeout or an evaluation failure, another available candidate is tried.
+- `allowed_agents` is the range of candidates, including handoff targets. When omitted, the enabled Agents in the user's config are the targets. Nothing is sent outside that range.
+- To pin the choice, use `fallback: false`. An explicit cancellation or a permission denial also stops the run without a handoff.
+- A model-scoped limit excludes that model. An account-scoped limit excludes the whole Agent, and later stages refer to the same cooldown.
+- The handoff target is chosen by Policy, the lower bound on estimated success rate, capabilities, quota, expected cost and the configured learning strategy. Model names and reasoning settings from a different Provider are never forcibly carried over.
+- The attempt limit per stage is `scheduler.max_attempts` (default 3). If no candidate in range is usable, the run is saved as `blocked`. The resume command skips completed stages and gives unfinished stages a fresh attempt budget.
 
-残量を各工程の前に更新する場合は`[quota] refresh_before_run = true`を設定します。既定では保存済みの有効な観測と実行時エラーを使います。未知の残量はゼロとみなしません。全サービスが利用不能な間はAIによる処理は進みませんが、保存状態から後で再開できます。
+To refresh quota before each stage, set `[quota] refresh_before_run = true`. By default, saved valid observations and runtime errors are used. Unknown quota is not treated as zero. While every service is unavailable, no AI work proceeds, but the run can be resumed later from the saved state.
 
-参加者IDは大小文字を区別せず一意で、`baseline`・`control`は予約名です。Agent・モデルは複数参加者で同一にできます。
+Participant IDs must be unique (case-insensitive), and `baseline` and `control` are reserved names. Several participants can use the same Agent and model.
 
-## 保存と引き継ぎ
+## Saving and handoff
 
-`report.json`（schema version 2）を、同じディレクトリ内の一時ファイルからアトミックに置換します。途中の回答は受信ごとに保存し、完了した工程だけ`next_stage`を進めます。1回の回答は64 KiB、全体で256試行までです。
+`report.json` (schema version 2) is replaced atomically from a temporary file in the same directory. Interim responses are saved as each one is received, and `next_stage` advances only for completed stages. A single response is limited to 64 KiB, and a run to 256 attempts in total.
 
-- `task`・`plan`: 元の依頼と担当・工程の設定。
-- `management`: 司令塔の計画・判断・未解決事項・次の提案。
-- `messages`: 宛先付きメッセージ（送信工程・送信者・宛先・本文・拒否理由）。
-- `merges`: 並列実装のマージ結果と競合。
-- `apply_requested`・`application`: 作業ツリーへの適用の要否、状態（`pending / resolving / resolved / applied / skipped`）、適用ファイル、競合、解消回数。
-- `next_stage`・`status`: 再開位置と`running / blocked / cancelled / completed`。
-- `sessions`: 成功・失敗・途中中断を含む全実行。各回に別の`worker_id`・`session_id`を記録。`turn`は`scheduled / discussion / resolution`。
-- `response`・`checks`・`error_kind`・`usage`: 途中回答、検証結果、交代理由、実usage。
-- `final_workspace`: 統合した成果物の場所。
+- `task`, `plan`: the original request and the assignment and stage configuration.
+- `management`: the coordinator's plan, decisions, open questions and next proposal.
+- `messages`: addressed messages (sending stage, sender, recipient, body, rejection reason).
+- `merges`: merge results and conflicts from parallel implementation.
+- `apply_requested`, `application`: whether applying to the working tree was requested, its state (`pending / resolving / resolved / applied / skipped`), applied files, conflicts and the number of resolutions.
+- `next_stage`, `status`: the resume position and `running / blocked / cancelled / completed`.
+- `sessions`: every run, including successes, failures and interruptions. Each one records its own `worker_id` and `session_id`. `turn` is `scheduled / discussion / resolution`.
+- `response`, `checks`, `error_kind`, `usage`: interim response, verification results, handoff reason, actual usage.
+- `final_workspace`: the location of the integrated deliverables.
 
-別の担当への交代時は、**同じ担当の作業ディレクトリを使って編集途中のファイルを維持**し、前任者の途中回答・エラー・検証結果を渡します。交代前には旧ACPプロセスを終了します。Agentからの回答は作業上の情報として渡し、元の依頼やリポジトリ指示を上書きする権限は持たせません。
+When handing off to another worker, **the same assignment's working directory is reused so partially edited files are kept**, and the predecessor's interim response, errors and verification results are passed on. The old ACP process is terminated before the handoff. Responses from an Agent are passed on as working information and carry no authority to override the original request or the repository's instructions.
 
-再開時は同じ`--cwd`を指定します。設定・認証・利用可否は現在のものを使い、保存した計画の候補範囲を守ります。出力ディレクトリの排他ロックで二重再開を防ぎます。schema version 1の過去レポートは再開対象外です。新しい項目を持たないschema version 2のレポートも再開できます。
+When resuming, specify the same `--cwd`. The current config, authentication and availability are used, and the candidate range of the saved plan is respected. An exclusive lock on the output directory prevents resuming twice. Past reports with schema version 1 cannot be resumed. Schema version 2 reports without the newer fields can still be resumed.
 
-### 強制終了からの復旧
+### Recovering from a forced termination
 
-ACP Agentは`orochi`自身の監視プロセス経由で起動します。監視プロセスはAgentのプロセスグループを率い、Agentと観測した子孫プロセス（プロセスグループを離れたものも含む）をデータディレクトリの`processes/`に記録します。各プロセスはPIDと開始時刻の組で識別し、再利用されたPIDには信号を送りません。
+ACP Agents are started through `orochi`'s own supervisor process. The supervisor leads the Agent's process group and records the Agent and the descendant processes it observes (including those that left the process group) under `processes/` in the data directory. Each process is identified by its PID and start time pair, and a reused PID is never signaled.
 
-- Orochiが`SIGKILL`等で終了すると、監視プロセスが親の消失を検知し、記録したプロセスへSIGTERM、2秒後にSIGKILLを送ります。
-- 監視プロセスも同時に終了した場合は、次に起動したOrochiが、所有者が存在しない記録を回収します。所有者が動作中の記録には触れません。
-- 通常の停止時も、プロセスグループの終了後に、記録されたグループ外の子孫を終了します。
-- 実行中の工程は`running`のまま残るため、再開時に`interrupted`として扱い、途中回答と作業コピーを次のセッションへ渡します。
-- 記録の取得はmacOSとLinuxに対応します。プロセスの記録より先に終了・再親子付けされた短命のプロセスは対象外です。
+- When Orochi is terminated by `SIGKILL` or similar, the supervisor detects that its parent is gone and sends SIGTERM to the recorded processes, then SIGKILL 2 seconds later.
+- If the supervisor is terminated at the same time, the next Orochi to start reclaims records whose owner no longer exists. Records whose owner is still running are left alone.
+- On a normal stop as well, recorded descendants outside the process group are terminated after the process group exits.
+- A stage that was running remains `running`, so on resume it is treated as `interrupted`, and its interim response and working copy are passed to the next session.
+- Recording is supported on macOS and Linux. Short-lived processes that exit or are reparented before they are recorded are not covered.
 
-## 成果物の隔離
+## Isolation of outputs
 
-`--output`は新規ディレクトリを指定します。ソース外、またはソース内の`.orochi/`配下に置けます。
+`--output` takes a new directory. It can be outside the source tree, or under `.orochi/` inside it.
 
-- `baseline/`: 開始状態のコピー。
-- `control/<工程番号>/`: 司令塔ごとの独立した作業コピー。
-- `<参加者ID>/`: 実装・レビュー・統合の作業コピー。
-- `merged/`: 並列実装のマージ結果。
-- `resolve-base/`・`resolve/`: 作業ツリーとの競合を解消する際の固定コピーと作業コピー。
-- `report.json`: 再開に必要な状態と実行履歴。
+- `baseline/`: a copy of the starting state.
+- `control/<stage number>/`: an independent working copy for each coordinator call.
+- `<participant ID>/`: working copies for implementers, reviewers and the integrator.
+- `merged/`: the merge result of parallel implementation.
+- `resolve-base/`, `resolve/`: the fixed copy and the working copy used when resolving conflicts with the working tree.
+- `report.json`: the state needed to resume, and the run history.
 
-元の作業ツリーは`--apply`指定時だけ変更します。司令塔・レビュー中の編集は統合元に使わず、実装者の成果物と申し送りを統合者へ渡します。`.git`・`.orochi`・`target`・`node_modules`・`.venv`・`.env*`・`__pycache__`を除外し、symlink・特殊ファイルを拒否します。コピーは100 MiB・20,000ファイルまでです。
+The original working tree is changed only when `--apply` is given. Edits made by the coordinator or during review are not used as integration input; the implementers' deliverables and handoff notes are passed to the integrator. `.git`, `.orochi`, `target`, `node_modules`, `.venv`, `.env*` and `__pycache__` are excluded, and symlinks and special files are rejected. Copies are limited to 100 MiB and 20,000 files.
 
-レポートにはタスク本文と回答が含まれます。通常のSQLite telemetryとは保存範囲が異なります。役割ごとの成功・失敗を通常の実装品質の学習には混ぜませんが、利用制限は共有runtimeに記録します。Agent自体はOS sandboxではありません。
+The report contains the task text and responses. Its storage scope differs from the regular SQLite telemetry. Per-role successes and failures are not mixed into the regular learning of implementation quality, but rate limits are recorded in the shared runtime state. The Agent itself is not an OS sandbox.
 
-## 現時点の範囲
+## Current scope
 
-- 固定工程での計画更新・担当交代・状態引き継ぎ・再開、最大4人の並列実装とマージ、宛先指定の多往復通信、検証済み結果の作業ツリーへの適用と競合解消に対応。
-- 実Claude／Codexで、並列実装・協議・統合・作業ツリーとの競合解消・適用を確認済み。強制終了からの回収と再開も実Claudeで確認済み（[実機検証](real-validation-20260916-2.md)）。
-- 同じディレクトリを複数のセッションが同時に編集する方式ではなく、各自のコピーで作業してマージする方式。既存の外部セッションへの参加は未対応。
-- 協議ラウンドはレビュー後の1箇所。統合者からの質問に実装者が答える往復は、統合後の司令塔への申し送りまで。
-- `ask`で発生する権限要求は非対話のイベント収集中には拒否。明示的な`--permission allow`を使うと、一度限りの要求に自動応答する。
-- Router／Judge／`--council`は別機能。ACPエージェントを判定役として、代替先付きで設定できる。詳細は[適応ルーティング](adaptive-routing.md)を参照。
+- Supported: plan updates, handoffs, state carry-over and resuming over fixed stages; parallel implementation by up to 4 implementers with merging; multi-round addressed messaging; applying a verified result to the working tree, with conflict resolution.
+- Parallel implementation, discussion, integration, conflict resolution against the working tree and applying were verified against the real Claude and Codex CLIs. Recovery and resuming after a forced termination were also verified against the real Claude CLI ([Live Validation of Remaining Tasks (2026-09-16, part 2)](real-validation-20260916-2.md)).
+- Instead of several sessions editing the same directory at once, each works in its own copy and the copies are merged. Joining an existing external session is not supported.
+- Discussion rounds happen in one place, after review. An exchange in which implementers answer the integrator's questions goes only as far as the handoff notes to the coordinator after integration.
+- Permission requests raised under `ask` are denied while events are collected non-interactively. With an explicit `--permission allow`, one-time requests are answered automatically.
+- Router/Judge/`--council` is a separate feature. ACP agents can be configured as advisers, with fallbacks. See [Adaptive Routing and the ACP Gateway](adaptive-routing.md) for details.

@@ -1,8 +1,8 @@
-# 実測・セッション協議の検証（2026-09-16）
+# Measurement and Session Collaboration Validation (2026-09-16)
 
-## 1. 選択精度の実測
+## 1. Measuring selection accuracy
 
-`examples/collect_benchmark.py`を追加。同じ開始ファイルから各候補を実行し、毎回独立したACPセッション・作業ディレクトリ・telemetry DBを用意します。モデル・reasoning・modeの一致、実評価、実usageが確認できた完全な組だけをデータセットへ出力します。候補の実行順を交互にし、失敗・欠落・認証エラーを記録します。
+Added `examples/collect_benchmark.py`. It runs each candidate from the same starting files, preparing an independent ACP session, working directory and telemetry DB each time. Only complete pairs for which matching model, reasoning and mode, a real evaluation, and real usage were confirmed are written to the dataset. It alternates the execution order of the candidates and records failures, missing data and authentication errors.
 
 ```sh
 python3 examples/collect_benchmark.py \
@@ -13,44 +13,44 @@ orochi benchmark --input /path/to/new/measurement/dataset.json
 orochi benchmark-tune --input /path/to/new/measurement/dataset.json --training-cases 4
 ```
 
-係数探索は時系列の前半だけでalpha・prior_weight・explorationを選択し、選択履歴を引き継いだ後半で検証します。成功数を優先し、同じ成功数なら失敗ペナルティ込みコストを比較します。設定は自動変更しません。validationのラベルを変えても係数選択が変わらないことをテストしています。
+The coefficient search selects alpha, prior_weight and exploration using only the first half of the time series, and validates on the second half, carrying over the selection history. It prioritizes the number of successes; at an equal number of successes, it compares cost including the failure penalty. It does not change the configuration automatically. A test asserts that changing the validation labels does not change the coefficient selection.
 
-### 実データ
+### Real data
 
-Pythonの区間マージ課題を8回、Claude HaikuとCodex gpt-5.6-luna / mediumでそれぞれ実行しました。初回の課題文には「接する区間」の曖昧さがあったため採用せず、「[1,4]と[5,9]は別区間」と明記した再測定を採用しました。
+A Python interval-merge task was run 8 times each with Claude Haiku and with Codex gpt-5.6-luna / medium. The first round's task text was ambiguous about "touching intervals", so it was not used; the re-measurement, whose task text stated explicitly that "[1,4] and [5,9] are separate intervals", was used instead.
 
-| 実行候補 | 成功 | 総tokens | 1回あたり平均tokens |
+| Candidate | Success | Total tokens | Average tokens per run |
 |---|---:|---:|---:|
 | Claude Haiku | 8/8 | 869,494 | 108,686.75 |
 | Codex gpt-5.6-luna / medium | 8/8 | 207,058 | 25,882.25 |
 
-以下は同じ実測データを使い、各方式が選んだ候補の結果だけで学習させた時系列replayです。
+Below is a time-series replay on the same measured data, in which each strategy learned only from the results of the candidates it chose.
 
-| replay方式 | 成功 | 総tokens | 成功1件あたりtokens |
+| Replay strategy | Success | Total tokens | Tokens per success |
 |---|---:|---:|---:|
 | Static | 8/8 | 207,058 | 25,882.25 |
 | EWMA | 8/8 | 264,746 | 33,093.25 |
-| Bandit（seed=42） | 8/8 | 264,746 | 33,093.25 |
+| Bandit (seed=42) | 8/8 | 264,746 | 33,093.25 |
 
-前半4回で探索した係数は既定値から変わらず、後半4回では3方式とも4/4成功・105,234 tokensでした。**今回のデータではEWMA/Banditの優位性は確認できません。既定の係数は変更していません。**
+The coefficients searched over the first 4 runs did not change from the defaults, and over the last 4 runs all three strategies had 4/4 successes and 105,234 tokens. **With this data, no advantage for EWMA/Bandit can be confirmed. The default coefficients have not been changed.**
 
-8種類の独立課題ではなく、同じ課題族の反復です。小規模な動作確認であり、Provider間の一般的な性能比較や全タスクへの校正完了を意味しません。tokensは各ACPアダプターの報告値であり、料金ではありません。異なるProviderのcache/usage報告の差が含まれます。
+These are repetitions of the same task family, not 8 independent tasks. This is a small-scale functional check; it does not mean a general performance comparison between Providers, nor that calibration is complete for all tasks. The tokens are the values each ACP adapter reported, not charges. They include differences in how different Providers report cache/usage.
 
-証拠: `.orochi/live-e2e/session-work/paired-unambiguous/{dataset,evidence}.json`、`analysis/{replay,tuning}.json`。初回診断データは`paired-live/`に保存。
+Evidence: `.orochi/live-e2e/session-work/paired-unambiguous/{dataset,evidence}.json`, `analysis/{replay,tuning}.json`. The first round's diagnostic data is saved in `paired-live/`.
 
-## 2. 実測で見つかった選択の不具合
+## 2. Selection bugs found by measurement
 
-- ACPの`data.details`に埋め込まれた429が単なる`Other: Internal error`になっていた。内部詳細を表示せずRateLimitとして分類。
-- モデル明示時も全モデルの設定を試していたため、無関係なモデルの利用制限で接続全体が失敗していた。明示モデルだけを探索。
-- `entirely`を`entire`として拾い、小関数をComplex判定していた。英単語の境界を区別。
+- A 429 embedded in ACP's `data.details` had become a plain `Other: Internal error`. It is now classified as RateLimit, without displaying the internal details.
+- Even when a model was specified explicitly, the configuration of every model was tried, so a usage limit on an unrelated model made the whole connection fail. Now only the explicitly specified model is explored.
+- `entirely` was picked up as `entire`, so a small function was classified as Complex. English word boundaries are now distinguished.
 
-## 3. 残量
+## 3. Quota
 
-Claude Code 2.1.272の公式`/usage`とstatuslineを実機確認。statuslineの5時間・週間の割合とリセット時刻を取り込みました。
+Verified the official `/usage` and the statusline of Claude Code 2.1.272 against the real CLI. The statusline's 5-hour and weekly percentages and reset times are now ingested.
 
-`claude_usage`と`antigravity_usage`のネイティブCLIプローブを追加。Python 3 / POSIX PTYを使い、公式CLIの`/usage`表示だけを読み取ります。認証tokenの抽出やProviderの非公開API呼び出しは行いません。画面本文・アカウント名は保存しません。
+Added the `claude_usage` and `antigravity_usage` native CLI probes. Using Python 3 / a POSIX PTY, they read only the official CLI's `/usage` display. They do not extract auth tokens or call a Provider's non-public APIs. They do not store the screen text or account names.
 
-Claudeはプローブ単体と`orochi quota --refresh`の両方で実残量を取得・保存できました。採取した実statusline JSONの`quota-ingest`取り込みも別の検証DBで確認しています。Antigravityは未認証のため、残量表示の実機パースは未検証です。未知のUIや取得不能はunknown/unavailableとして扱い、空の取得で既存の有効な観測を上書きしません。
+For Claude, the real quota was retrieved and saved both with the probe alone and with `orochi quota --refresh`. Ingesting a captured real statusline JSON with `quota-ingest` was also confirmed, in a separate verification DB. Antigravity is not signed in, so parsing its quota display against the real CLI is unverified. An unknown UI or a failure to retrieve is treated as unknown/unavailable, and an empty retrieval does not overwrite an existing valid observation.
 
 ```toml
 [quota]
@@ -61,62 +61,62 @@ kind = "antigravity_usage"
 command = "/absolute/path/to/agy"
 ```
 
-Codex・Claudeは標準プリセットから自動検出。Antigravityは`agy`がPATHにあれば自動検出。未ログインのAntigravityで`quota --refresh`がOAuthを開始しないよう、先に`agy models`で認証を確認します。モデル名を推測せず、明示的なモデルIDとremaining/used方向が読み取れる場合だけ使用します。
+Codex and Claude are auto-detected from the standard presets. Antigravity is auto-detected if `agy` is on PATH. So that `quota --refresh` does not start OAuth for an Antigravity that is not logged in, authentication is checked first with `agy models`. Model names are not guessed; a reading is used only when an explicit model ID and the remaining/used direction can be read.
 
-## 4. セッション協議
+## 4. Session collaboration
 
-[`session-collaboration.md`](session-collaboration.md)を参照。同じAgent・同じモデルの3つの独立セッション、レビュー受け渡し、レビュー中の編集の隔離、統合後の評価をfixtureで確認。
+See [`session-collaboration.md`](session-collaboration.md). Three independent sessions of the same Agent and the same model, the review handoff, isolation of edits made during review, and evaluation after integration were confirmed with a fixture.
 
-**実Claude Haikuでも実装→レビュー→統合が成功しました。** ASCII slug関数を作成し、最終ローカル評価を通過しました。実装者・レビュー者・統合者のACPセッションIDはすべて別です。レビュー役はファイル評価の対象ではないため、単独のoutcomeは`partial_success`、最終成果物は`success`です。
+**Implement → review → integrate also succeeded with the real Claude Haiku.** It created an ASCII slug function and passed the final local evaluation. The implementer's, reviewer's and integrator's ACP session IDs are all different. The reviewer role is not subject to file evaluation, so its own outcome is `partial_success`, and the final deliverable is `success`.
 
-証拠は`.orochi/live-e2e/session-work/council-live/report-final.json`、成果物は`council-live/result-final/integrator/slug.py`。
+Evidence is in `.orochi/live-e2e/session-work/council-live/report-final.json`; the deliverable is `council-live/result-final/integrator/slug.py`.
 
 ## 5. Antigravity / Gemini
 
-- Antigravity CLI 1.2.3と公式ACP Server 1.1.1を`.orochi/tools/antigravity/`へ導入。
-- ACP接続は`Authentication required`まで到達。タスク実行・モデル選択・評価はGoogleログイン後の検証が必要。
-- Gemini CLIはユーザー指示により以降の対応対象から除外。導入確認時点の0.59.0はAPIキー未設定で止まっており、ログイン・実行は行っていない。
-- Antigravityの公式インストーラは専用インストール先のPATHを`.zshrc`・`.zprofile`・`.bash_profile`へ追加した。
+- Installed Antigravity CLI 1.2.3 and the official ACP Server 1.1.1 into `.orochi/tools/antigravity/`.
+- The ACP connection got as far as `Authentication required`. Task execution, model selection and evaluation need to be verified after a Google login.
+- Gemini CLI was excluded from further support at the user's instruction. At the time the installation was checked, 0.59.0 had stopped because no API key was set; it was neither logged in nor run.
+- Antigravity's official installer added the PATH of its dedicated install location to `.zshrc`, `.zprofile` and `.bash_profile`.
 
 ## 6. ACP gateway
 
-`examples/gateway_live_e2e.py`で公開`orochi serve`を実Codexに接続。ACP initialize/new/prompt、102件のstream update、生成ファイル、ローカル評価の成功を確認。証拠は`.orochi/live-e2e/session-work/gateway-live.json`。
+`examples/gateway_live_e2e.py` connected the public `orochi serve` to the real Codex. Confirmed ACP initialize/new/prompt, 102 stream updates, the generated file, and a successful local evaluation. Evidence is in `.orochi/live-e2e/session-work/gateway-live.json`.
 
-Zed UIでのE2Eは、全体設定への一時的な外部エージェント追加が自動承認レビューに拒否されたため、明示承認待ち。設定例は`zed-gateway/zed-agent-entry.json`に作成済み。このACPクライアントによる実サービス試験をIDE UI試験と同一扱いしない。
+E2E in the Zed UI is awaiting explicit approval, because temporarily adding an external agent to the global settings was rejected by the auto-approval review. An example configuration has been created at `zed-gateway/zed-agent-entry.json`. A live-service test through this ACP client is not treated as equivalent to an IDE UI test.
 
-## 7. 担当交代追加前のチェック
+## 7. Checks before adding role failover
 
-- `cargo test --locked`: Rust統合テスト66件、および内部から実行するPython残量パーサー4件が成功。
-- `cargo clippy --locked --all-targets -- -D warnings`、`cargo fmt --check`が成功。
-- キャンセル試験は起動確認の2秒上限を超えて失敗したため、状態を確認しながら最大10秒待つ形へ変更。起動失敗時は子プロセスを回収し、診断ログを表示する。
-- セッションの作業コピーから`.env*`を除外し、大小文字違いの参加者ID衝突と予約ディレクトリ名の使用を拒否。隔離・除外の回帰テストを追加。
+- `cargo test --locked`: 66 Rust integration tests and the 4 Python quota-parser tests run from within them passed.
+- `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --check` passed.
+- The cancellation test failed by exceeding the 2-second limit on the startup check, so it was changed to wait up to 10 seconds while checking the state. On a startup failure, it reaps the child process and prints the diagnostic log.
+- `.env*` is excluded from a session's working copy, and participant IDs that collide when differing only in case, as well as the use of reserved directory names, are rejected. Added regression tests for isolation and exclusion.
 
-残る外部条件はAntigravityのGoogleログイン、Zedの一時設定追加の承認、HTTP Judge/Councilの実サービス接続設定。多様な課題による追加校正、任意の宛先への多往復協議は今回の小規模実測・固定フローの範囲を超える残タスク。
+The remaining external conditions are a Google login for Antigravity, approval to temporarily add the Zed setting, and configuring the HTTP Judge/Council connections to a real service. Further calibration on diverse tasks and multi-round collaboration with arbitrary recipients are remaining tasks beyond the scope of this small-scale measurement and fixed flow.
 
-## 8. 司令塔を含む担当交代の追加実装
+## 8. Additional implementation of role failover, including the coordinator
 
-`collaborate`に任意の`coordinator`役を追加。最初と各工程の終了後に計画・判断・未解決事項を更新する。司令塔・実装・レビュー・統合の全役割で、指定した候補が利用不能になった場合に利用可能なAgent／モデルへ交代する。候補範囲・固定指定・Policy・推定成功率・残量・試行上限を守る。
+Added an optional `coordinator` role to `collaborate`. It updates the plan, decisions and open issues at the start and after each step finishes. In every role (coordinator, implementation, review and integration), when the specified candidate becomes unavailable, the role is handed over to an available Agent/model. The handover respects the candidate range, pinned selections, Policy, estimated success rate, quota and attempt limit.
 
-`report.json`をschema version 2の再開可能な状態としてアトミック保存する。途中回答は受信ごとに保存し、失敗した担当の編集済みファイルと回答・検証結果を次の独立セッションへ渡す。全候補失敗・キャンセル後は`collaborate-resume`で未完了工程から再開する。完了済み工程は再実行せず、明示キャンセル時には自動で代替AIを起動しない。
+`report.json` is saved atomically as resumable state with schema version 2. Partial replies are saved as each one is received, and the failed assignee's edited files, reply and verification results are passed to the next independent session. After every candidate has failed, or after a cancellation, `collaborate-resume` resumes from the incomplete steps. Completed steps are not re-run, and an explicit cancellation does not automatically launch a replacement AI.
 
-HTTP Router／Frontier Judge／Councilにも最大3個の代替endpointを設定できるようにした。402／429等のエラーや無効回答時に同じ判断材料を渡し、Councilでは1担当1票と過半数を維持する。代替候補を含む総予算を事前に制限する。これらのHTTP交代はfixture検証であり、実HTTPサービスの認証・接続確認とは区別する。
+HTTP Router/Frontier Judge/Council can now also be configured with up to 3 fallback endpoints. On an error such as 402/429 or an invalid reply, the same decision inputs are passed on, and the Council keeps one vote per member and a majority. The total budget, including the fallback candidates, is capped in advance. These HTTP failovers are fixture verification, and are kept distinct from verifying authentication and connectivity against a real HTTP service.
 
-### 実Codexによる継続確認
+### Continuation check with the real Codex
 
-司令塔のクレジット不足をfixtureで発生させ、ログイン済み実Codexへ自動で交代した。初回はCodexのCLI警告が回答の先頭に混ざり、厳密なJSON読み取りが失敗した。末尾の完全な管理状態JSONを検証して読み取る処理に修正し、**保存済みレポートから再開して7工程すべてを完了**した。
+A fixture caused insufficient credits for the coordinator, and the role was automatically handed over to the real, logged-in Codex. On the first try, a Codex CLI warning was mixed into the start of the reply, and strict JSON parsing failed. After fixing the parsing to validate and read the complete management-state JSON at the end, **it resumed from the saved report and completed all 7 steps**.
 
-実Codexが司令塔4回・実装1回・レビュー1回・統合1回を担当し、統合後の`result.txt`が`OROCHI_FAILOVER_OK`＋改行1文字と完全一致することをローカル評価と独立確認の両方で検証した。元のテスト作業ツリーに変更がないことも確認済み。
+The real Codex served as coordinator 4 times, implementer once, reviewer once and integrator once, and both the local evaluation and an independent check verified that the integrated `result.txt` exactly matches `OROCHI_FAILOVER_OK` plus a single newline character. It was also confirmed that the original test working tree was unchanged.
 
-これは**模擬的な制限エラー→実Codexの継続実行**の検証であり、実Claudeアカウントのクレジットを枯渇させた試験ではない。
+This is a validation of **a simulated limit error → continued execution on the real Codex**, not a test that exhausted the credits of a real Claude account.
 
-証拠: `.orochi/live-e2e/session-failover/verification.json`、`result/report.json`、`before-resume.json`。使用方法と保存範囲は[セッション協議](session-collaboration.md)を参照。
+Evidence: `.orochi/live-e2e/session-failover/verification.json`, `result/report.json`, `before-resume.json`. For usage and what is stored, see [Session Collaboration](session-collaboration.md).
 
-追加実装後はRustテスト81件、内部から呼び出すPython残量パーサー4件がすべて成功。司令塔のCtrl-C中断、途中回答の保存、同じ工程からの再開、モデル限定の制限を検出して他モデルを残すケースも含む。Clippy（`--all-targets -- -D warnings`）と`cargo fmt --check`も成功。
+After the additional implementation, all 81 Rust tests and the 4 Python quota-parser tests called from within them passed. These include the cases of a Ctrl-C interruption of the coordinator, saving partial replies, resuming from the same step, and detecting a model-scoped limit while keeping the other models. Clippy (`--all-targets -- -D warnings`) and `cargo fmt --check` also passed.
 
-## 公式資料
+## Official references
 
 - [Claude statusline](https://code.claude.com/docs/en/statusline)
 - [Antigravity /usage](https://www.antigravity.google/docs/cli/commands/usage)
-- [Antigravity CLI導入](https://www.antigravity.google/docs/cli/install)
+- [Antigravity CLI installation](https://www.antigravity.google/docs/cli/install)
 - [ACP Registry](https://github.com/agentclientprotocol/registry)
-- [Zedの外部Agent設定](https://zed.dev/docs/ai/external-agents)
+- [Zed external Agent configuration](https://zed.dev/docs/ai/external-agents)

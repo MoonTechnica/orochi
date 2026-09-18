@@ -5,58 +5,58 @@
 **Target:** Local CLI / OSS  
 **Language:** Rust  
 **Protocol:** Agent Client Protocol (ACP)  
-**Primary use case:** 複数のAI Coding Agentとモデルを、利用可能性・性能・トークン効率・Provider公式推奨に基づいて自動選択する
+**Primary use case:** Automatically select among multiple AI coding agents and models based on availability, performance, token efficiency and official provider recommendations
 
 ---
 
 ## 1. Overview
 
-**Orochi** は、Claude Code、Codex、Gemini CLI、Antigravity等の複数Coding Agentを単一CLIから利用し、タスクごとに最適な
+**Orochi** is a local execution platform that lets a single CLI use multiple coding agents such as Claude Code, Codex, Gemini CLI and Antigravity, and automatically selects, for each task, the optimal
 
 **Agent × Model × Reasoning Level × Session Strategy**
 
-を自動選択するローカル実行基盤である。
+for that task.
 
-ユーザーは原則としてAgentやModelを指定しない。
+As a rule, the user does not specify an agent or a model.
 
 ```bash id="txqo5n"
-orochi "認証処理をrefresh token方式に変更して"
+orochi "Switch the authentication logic to a refresh-token scheme"
 ```
 
-のみを実行する。
+is all they run.
 
-Orochiは内部で現在の利用制限、タスク難易度、モデル特性、Provider公式Best Practice、過去の実行成績、Context/Cache状態を考慮し、最も効率的な実行構成を選択する。
+Internally, Orochi takes into account current usage limits, task difficulty, model characteristics, official provider best practices, past execution results and context/cache state, and selects the most efficient execution configuration.
 
-本プロジェクトの目的は単純な「最安モデル選択」ではない。
+The goal of this project is not simply "picking the cheapest model".
 
-> **成功するまでに必要となる期待総リソース消費量を最小化する。**
+> **Minimize the expected total resource consumption required to reach success.**
 
-これを最適化対象とする。
+This is the optimization target.
 
 ---
 
 # 2. Goals
 
-| Goal | 内容 |
+| Goal | Description |
 |---|---|
-| Agent自動選択 | Claude / Codex / Gemini / Antigravity等から選択 |
-| Model自動選択 | Sonnet / Fable / Astra / Flash等をタスクに応じて選択 |
-| Reasoning自動選択 | low / medium / high等を自動設定 |
-| Quota-aware | 利用制限中のAgentを自動的に除外 |
-| Token-aware | token消費、cache、retryを考慮 |
-| Provider-aware | OpenAI / Anthropic / Google公式推奨に従う |
-| Adaptive | 実際の成功率・消費量から徐々に最適化 |
-| ACP-native | Agent固有実装を最小限にする |
-| Local-first | 原則としてユーザーPC上で実行 |
-| Zero-decision UX | 通常利用時はモデル選択をユーザーに要求しない |
+| Automatic agent selection | Choose from Claude / Codex / Gemini / Antigravity, etc. |
+| Automatic model selection | Choose Sonnet / Fable / Astra / Flash, etc. according to the task |
+| Automatic reasoning selection | Set low / medium / high, etc. automatically |
+| Quota-aware | Automatically exclude agents that are under a usage limit |
+| Token-aware | Account for token consumption, cache and retries |
+| Provider-aware | Follow official OpenAI / Anthropic / Google recommendations |
+| Adaptive | Gradually optimize from actual success rates and consumption |
+| ACP-native | Keep agent-specific implementation to a minimum |
+| Local-first | Run on the user's PC as a rule |
+| Zero-decision UX | Do not ask the user to choose a model in normal use |
 
 ---
 
 # 3. Non-Goals
 
-MVPでは独自Coding Agent自体は実装しない。
+The MVP does not implement a coding agent of its own.
 
-Claude CodeやCodex等の既存Agentを置き換えるのではなく、
+Rather than replacing existing agents such as Claude Code and Codex, Orochi sits in the chain
 
 ```text id="ooiuhx"
 User
@@ -66,9 +66,9 @@ Orochi
 Existing Coding Agents
 ```
 
-というControl Planeとして動作する。
+and operates as a control plane.
 
-また、MVPでは複数AgentによるCouncil/多数決をデフォルト動作にしない。複数Agent実行はtoken効率を大幅に悪化させるため、単一Agentでの成功可能性が十分高い限り利用しない。
+In addition, the MVP does not make a multi-agent council / majority vote the default behavior. Running multiple agents significantly worsens token efficiency, so it is not used as long as a single agent's likelihood of success is high enough.
 
 ---
 
@@ -76,19 +76,19 @@ Existing Coding Agents
 
 ## 4.1 Rust
 
-Orochi本体はRustで実装する。
+The Orochi core is implemented in Rust.
 
-今回のシステムはLLMアプリケーションというより、
+This system is less an LLM application and much more a
 
 **Process Supervisor + Scheduler + Protocol Gateway**
 
-という性質が強い。
+in nature.
 
-長時間動作する複数subprocess、stdio、JSON-RPC、timer、SQLite、signal処理、並列sessionを安全に扱う必要があるためRustとの相性が良い。
+It has to safely handle multiple long-running subprocesses, stdio, JSON-RPC, timers, SQLite, signal handling and parallel sessions, which makes it a good fit for Rust.
 
-ACPには公式Rust SDKがあり、Client / Agent / Proxy / Conductorが提供されている。 ([github.com](https://github.com/agentclientprotocol/rust-sdk?utm_source=chatgpt.com))
+ACP has an official Rust SDK, which provides Client / Agent / Proxy / Conductor. ([github.com](https://github.com/agentclientprotocol/rust-sdk?utm_source=chatgpt.com))
 
-主要技術は以下を想定する。
+The main technologies are expected to be the following.
 
 | Purpose | Technology |
 |---|---|
@@ -105,9 +105,9 @@ ACPには公式Rust SDKがあり、Client / Agent / Proxy / Conductorが提供�
 
 # 5. ACP Strategy
 
-ACPを**Agent Execution Abstraction**として利用する。
+ACP is used as an **Agent Execution Abstraction**.
 
-ACP自体にrouting logicを持たせない。
+ACP itself carries no routing logic.
 
 ```mermaid id="976xsh"
 flowchart TD
@@ -128,17 +128,17 @@ flowchart TD
     A4 --> AGY[Antigravity]
 ```
 
-ACP v1は現在stableである。Session Config Optionsもstable化されており、Agentは`model`、`mode`、`thought_level`などのsession-level configurationを公開できる。したがってモデル名やreasoning levelをOrochi側に完全ハードコードする必要はない。 ([agentclientprotocol.com](https://agentclientprotocol.com/announcements/session-config-options-stabilized?utm_source=chatgpt.com))
+ACP v1 is currently stable. Session Config Options have also been stabilized, and agents can expose session-level configuration such as `model`, `mode` and `thought_level`. Model names and reasoning levels therefore do not need to be fully hard-coded on Orochi's side. ([agentclientprotocol.com](https://agentclientprotocol.com/announcements/session-config-options-stabilized?utm_source=chatgpt.com))
 
-AntigravityについてもACP ecosystem上から利用可能なintegrationが存在するため、同一Control Planeへ統合対象とする。 ([zed.dev](https://zed.dev/acp/agent/antigravity-acp?utm_source=chatgpt.com))
+Antigravity also has an integration usable from the ACP ecosystem, so it is in scope for integration into the same control plane. ([zed.dev](https://zed.dev/acp/agent/antigravity-acp?utm_source=chatgpt.com))
 
 ---
 
-# 6. ACPでは解決しない領域
+# 6. What ACP Does Not Solve
 
-ACPだけではOrochiは完成しない。
+ACP alone does not complete Orochi.
 
-特に現在のACP stable仕様では、以下が十分標準化されていない。
+In particular, the current stable ACP specification does not sufficiently standardize the following.
 
 | Capability | ACP |
 |---|---|
@@ -149,13 +149,13 @@ ACPだけではOrochiは完成しない。
 | Token usage | Draft |
 | Context consumption | Draft |
 | API cost | Draft |
-| Subscription quota | 非標準 |
-| Rate-limit reset | 非標準 |
-| Weekly / 5h usage limit | 非標準 |
+| Subscription quota | Non-standard |
+| Rate-limit reset | Non-standard |
+| Weekly / 5h usage limit | Non-standard |
 
-ACPのSession Usage proposalはtoken usage、cached tokens、thought tokens、context usage等を標準化する方向だが、現時点ではDraftである。 ([agentclientprotocol.com](https://agentclientprotocol.com/rfds/session-usage?utm_source=chatgpt.com))
+ACP's Session Usage proposal moves toward standardizing token usage, cached tokens, thought tokens, context usage and so on, but it is still a Draft at this point. ([agentclientprotocol.com](https://agentclientprotocol.com/rfds/session-usage?utm_source=chatgpt.com))
 
-したがって以下の構造を採用する。
+The following structure is therefore adopted.
 
 ```text id="oww8v5"
 Agent Integration
@@ -220,7 +220,7 @@ flowchart TD
 
 # 8. Execution Unit
 
-OrochiはAgentとModelを別々に選択するのではなく、最終的には以下を一つのCandidateとして扱う。
+Orochi does not select the agent and the model separately; ultimately it treats the following as a single candidate.
 
 ```text id="q8okk8"
 ExecutionCandidate
@@ -233,7 +233,7 @@ session_strategy
 context_strategy
 ```
 
-例えば、
+For example,
 
 ```text id="6e0gm1"
 Codex + GPT-5.6 Sol + medium
@@ -246,17 +246,17 @@ Gemini + Flash + low
 Gemini + Pro + high
 ```
 
-が別Candidateになる。
+are separate candidates.
 
-これにより、
+This way, instead of asking
 
-> 「ClaudeかCodexか」
+> "Claude or Codex?"
 
-ではなく、
+Orochi asks
 
-> 「このタスクを成功させる期待コストが最も低いexecution configurationは何か」
+> "Which execution configuration has the lowest expected cost of getting this task to succeed?"
 
-を直接最適化できる。
+and can optimize that directly.
 
 ---
 
@@ -264,9 +264,9 @@ Gemini + Pro + high
 
 ## 9.1 Task Profiler
 
-最初からLLMへタスク全文とrepositoryを渡さない。
+The full task text and the repository are not handed to an LLM up front.
 
-可能な限りローカル情報からTask Descriptorを生成する。
+As far as possible, the Task Descriptor is generated from local information.
 
 ```text id="fcc344"
 TaskDescriptor
@@ -286,7 +286,7 @@ ambiguity
 long_horizon
 ```
 
-Task type例：
+Example task types:
 
 ```text id="r4tuv1"
 bug_fix
@@ -301,17 +301,17 @@ documentation
 investigation
 ```
 
-repositoryのgit diff、file tree、manifest、test環境等から自動推定する。
+These are inferred automatically from the repository's git diff, file tree, manifests, test environment and so on.
 
 ---
 
 # 10. Three-Level Routing
 
-Routing自体によるtoken消費を最小化する。
+Minimize the token consumption of routing itself.
 
 ## Level 0 — Deterministic Router
 
-LLMを使用しない。
+Uses no LLM.
 
 ```text id="3hllib"
 Task
@@ -326,15 +326,15 @@ confidence >= threshold
 Execute
 ```
 
-十分なconfidenceがある場合は即座に実行する。
+When confidence is sufficient, the task is executed immediately.
 
 ---
 
 ## Level 1 — Lightweight Router Model
 
-判断が曖昧な場合のみ小型モデルを使用する。
+A small model is used only when the decision is ambiguous.
 
-Router Model poolは例えば、
+The router model pool consists of, for example,
 
 ```text id="srho6f"
 Gemini Flash
@@ -342,40 +342,40 @@ GPT Luna
 Claude Haiku
 ```
 
-等の低コスト / 高速モデルから構成する。
+and similar low-cost / fast models.
 
-Routerへの入力はTask Descriptorと候補一覧だけに制限する。
+Input to the router is limited to the Task Descriptor and the candidate list.
 
-repository全文は渡さない。
+The full repository is not passed.
 
-Routerは選択肢を推薦するだけであり、**最終決定権を持たない**。
+The router only recommends options; it **does not have the final say**.
 
 ---
 
 ## Level 2 — Frontier Judge
 
-極めて難しい判断のみ使用する。
+Used only for extremely difficult decisions.
 
-例：
+Examples:
 
 ```text id="ghqwzw"
-大規模architecture migration
-未知のrepository
-非常に高いambiguity
-複数frontier modelの期待性能が拮抗
+Large-scale architecture migration
+Unfamiliar repository
+Very high ambiguity
+Several frontier models with closely matched expected performance
 ```
 
-この場合のみAstra / Fable等へplanning / routing判断を問い合わせる。
+Only in these cases are Astra / Fable, etc. consulted for planning / routing decisions.
 
-通常は使用しない。
+It is not used normally.
 
 ---
 
 # 11. Provider Policy Engine
 
-Orochi独自の感覚ではなく、各Provider公式推奨をfirst-class policyとして扱う。
+Rather than Orochi's own intuition, each provider's official recommendations are treated as first-class policy.
 
-優先順位は以下とする。
+The order of precedence is as follows.
 
 1. Provider hard constraints
 2. Provider official recommendations
@@ -386,9 +386,9 @@ Orochi独自の感覚ではなく、各Provider公式推奨をfirst-class policy
 
 ### OpenAI
 
-OpenAIはモデルごとのreasoning effortを明示的に調整することを推奨しており、最新model guidanceでも高いeffortを常に使用するのではなく、evalで改善が確認できる場合にのみ上げる方針を示している。 ([developers.openai.com](https://developers.openai.com/api/docs/guides/latest-model?utm_source=chatgpt.com))
+OpenAI recommends explicitly tuning reasoning effort per model, and its latest model guidance also states a policy of raising effort only when evals confirm an improvement, rather than always using high effort. ([developers.openai.com](https://developers.openai.com/api/docs/guides/latest-model?utm_source=chatgpt.com))
 
-したがってOpenAI Policyは、
+The OpenAI policy therefore uses
 
 ```text id="x56470"
 simple
@@ -401,24 +401,24 @@ complex
 → high
 
 extremely difficult / long-horizon
-→ xhigh等
+→ xhigh, etc.
 ```
 
-を初期priorとする。
+as its initial prior.
 
-Astra等のfrontier modelも「高価だから最後」という扱いにはしない。
+Frontier models such as Astra are not treated as "expensive, so last" either.
 
-高性能モデルを最初から使用した方がretryを減らせる場合は、その方が期待token消費量が少なくなるためである。
+This is because, when using a high-performance model from the start reduces retries, doing so results in lower expected token consumption.
 
 ---
 
 ### Anthropic
 
-Claude最新世代ではadaptive thinkingが推奨されている。
+Adaptive thinking is recommended for the latest Claude generation.
 
-Anthropicはadaptive thinkingについて、query complexityと`effort`からClaude自身がthinking量を動的調整する方式を推奨し、complex codingやlong-horizon agent loopsに適するとしている。 ([docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/prompt-templates-and-variables?utm_source=chatgpt.com))
+Anthropic recommends adaptive thinking, in which Claude itself dynamically adjusts the amount of thinking based on query complexity and `effort`, and describes it as suited to complex coding and long-horizon agent loops. ([docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/prompt-templates-and-variables?utm_source=chatgpt.com))
 
-したがってAnthropic Policyでは、固定thinking budgetをOrochiが細かく指定するより、
+Rather than Orochi specifying a fixed thinking budget in detail, the Anthropic policy is therefore based on
 
 ```text id="b1wf1h"
 model selection
@@ -428,15 +428,15 @@ effort selection
 adaptive thinking
 ```
 
-を基本とする。
+as its baseline.
 
 ---
 
 ### Google
 
-Geminiはデフォルトでtask complexityに応じたdynamic thinkingを行い、`thinking_level`で制御できる。 ([ai.google.dev](https://ai.google.dev/gemini-api/docs/thinking?hl=ja&utm_source=chatgpt.com))
+By default, Gemini performs dynamic thinking according to task complexity, and this can be controlled with `thinking_level`. ([ai.google.dev](https://ai.google.dev/gemini-api/docs/thinking?hl=ja&utm_source=chatgpt.com))
 
-したがって、
+Therefore,
 
 ```text id="ntunv6"
 simple → minimal / low
@@ -444,13 +444,13 @@ normal → medium
 complex → high
 ```
 
-をinitial priorとする。
+is used as the initial prior.
 
 ---
 
 # 12. Policy Distribution
 
-Provider PolicyはRust binaryへ完全ハードコードしない。
+Provider policies are not fully hard-coded into the Rust binary.
 
 ```text id="xkugvn"
 policies/
@@ -460,37 +460,37 @@ anthropic.json
 google.json
 ```
 
-としてversion管理する。
+They are kept under version control as the files above.
 
-Policyは少なくとも以下を持つ。
+A policy contains at least the following.
 
 | Field | Description |
 |---|---|
 | provider | Provider |
 | version | Policy version |
-| source | 公式document |
-| updated_at | 更新日時 |
-| models | モデル情報 |
-| task_profiles | 推奨用途 |
-| reasoning_rules | reasoning設定 |
-| context_rules | context戦略 |
-| cache_rules | cache戦略 |
-| hard_constraints | 禁止設定 |
-| fallback_rules | fallback方針 |
+| source | Official documentation |
+| updated_at | Last updated |
+| models | Model information |
+| task_profiles | Recommended uses |
+| reasoning_rules | Reasoning settings |
+| context_rules | Context strategy |
+| cache_rules | Cache strategy |
+| hard_constraints | Prohibited settings |
+| fallback_rules | Fallback policy |
 
-CLIからPolicy更新を可能にする。
+Policies can be updated from the CLI.
 
 ```bash id="wdbi46"
 orochi policy update
 ```
 
-Provider documentation更新に追従できる構造にする。
+The structure should be able to keep up with updates to provider documentation.
 
 ---
 
 # 13. Quota Manager
 
-Agent単位・Model単位でruntime stateを保持する。
+Runtime state is kept per agent and per model.
 
 ```text id="emz2jr"
 AVAILABLE
@@ -504,7 +504,7 @@ PROBE
 AVAILABLE
 ```
 
-内部状態：
+Internal state:
 
 ```text id="7wmnrl"
 AgentRuntimeState
@@ -523,15 +523,15 @@ consecutive_failures
 rate_limit_count
 ```
 
-rate-limit responseからreset時刻が取得できれば、
+If the reset time can be obtained from the rate-limit response, then
 
 ```text id="c9hr9w"
 cooldown_until = reset_at
 ```
 
-とする。
+is set.
 
-取得できない場合はexponential backoffを利用する。
+If it cannot be obtained, exponential backoff is used.
 
 ```text id="2o8lus"
 5m
@@ -540,15 +540,15 @@ cooldown_until = reset_at
 60m
 ```
 
-COOLDOWN中のAgentはCandidate Generatorから完全に除外する。
+An agent in COOLDOWN is completely excluded from the Candidate Generator.
 
 ---
 
 # 14. Quota Shadow Price
 
-Subscription利用時はAPI価格だけでは最適化できない。
+With subscriptions, API prices alone are not enough to optimize against.
 
-残り利用枠そのものを仮想的なコストとして扱う。
+The remaining usage allowance itself is treated as a virtual cost.
 
 ```text id="nr0j0j"
 effective_resource_cost
@@ -557,7 +557,7 @@ expected_tokens
 × quota_shadow_price
 ```
 
-例えば、
+For example, if
 
 ```text id="b6fev8"
 Claude
@@ -569,23 +569,23 @@ estimated remaining = 75%
 reset = 1h
 ```
 
-なら、性能差が小さいタスクではCodexを優先する。
+then Codex is preferred for tasks where the performance difference is small.
 
-一方でClaude / Fableでなければ成功率が大きく低下するタスクならClaudeを選択可能とする。
+On the other hand, for a task whose success rate drops sharply without Claude / Fable, Claude can still be selected.
 
 ---
 
 # 15. Optimization Objective
 
-最適化対象はtoken単価ではない。
+The optimization target is not the per-token price.
 
 ```text id="alpro0"
 Expected Resource Cost To Successful Completion
 ```
 
-とする。
+is the target.
 
-概念的には、
+Conceptually,
 
 ```text id="ktlca4"
 expected_cost =
@@ -600,15 +600,15 @@ expected_input_tokens
 + latency_penalty
 ```
 
-を最小化する。
+is minimized.
 
-制約条件：
+Constraint:
 
 ```text id="wy8zb8"
 P(success) >= required_confidence
 ```
 
-これにより、
+This avoids wasting tokens on sequences like
 
 ```text id="6lsete"
 cheap model
@@ -618,21 +618,19 @@ cheap model
 → frontier
 ```
 
-というtoken浪費を避け、
-
-必要なタスクでは最初からFable / Astra等を利用する。
+and instead uses Fable / Astra, etc. from the start on tasks that need them.
 
 ---
 
 # 16. Cache-Aware Scheduling
 
-ProviderごとのPrompt / Context Cacheを利用する。
+Each provider's prompt / context cache is used.
 
-Google Geminiではimplicit context cachingがデフォルトで有効であり、共通する大きなcontentをprefix側へ置くことでcache hit probabilityを上げられる。 ([ai.google.dev](https://ai.google.dev/gemini-api/docs/caching?authuser=01&hl=en&utm_source=chatgpt.com))
+In Google Gemini, implicit context caching is enabled by default, and placing large shared content toward the prefix raises the cache hit probability. ([ai.google.dev](https://ai.google.dev/gemini-api/docs/caching?authuser=01&hl=en&utm_source=chatgpt.com))
 
-OpenAIもprompt cache keyおよびcache breakpointを提供している。 ([developers.openai.com](https://developers.openai.com/api/reference/cli/resources/responses/methods/create?utm_source=chatgpt.com))
+OpenAI also provides a prompt cache key and cache breakpoints. ([developers.openai.com](https://developers.openai.com/api/reference/cli/resources/responses/methods/create?utm_source=chatgpt.com))
 
-したがってSchedulerは、
+The scheduler therefore gives tasks with
 
 ```text id="4waio4"
 same repository
@@ -641,17 +639,17 @@ same tool set
 same model
 ```
 
-を持つtaskについてcache affinityをscoreへ加える。
+a cache-affinity bonus in their score.
 
-必要以上にProvider / Modelを切り替えない。
+It does not switch provider / model more than necessary.
 
 ---
 
 # 17. Context Management
 
-Agent間でconversation history全体を受け渡さない。
+The full conversation history is not passed between agents.
 
-Orochiが独立した`TaskEnvelope`を保持する。
+Orochi keeps its own independent `TaskEnvelope`.
 
 ```text id="n3f6g5"
 TaskEnvelope
@@ -671,35 +669,35 @@ completed_items
 remaining_items
 ```
 
-repository自体はfilesystemをsingle source of truthとする。
+For the repository itself, the filesystem is the single source of truth.
 
-例えばCodexが利用制限に到達した場合、
+For example, when Codex reaches its usage limit,
 
 ```text id="ynikhy"
 Codex
  ↓
 COOLDOWN
  ↓
-TaskEnvelope生成
+Generate TaskEnvelope
  ↓
-Claudeへhandoff
+Hand off to Claude
  ↓
-Claudeがfilesystem / gitから再認識
+Claude rebuilds its understanding from filesystem / git
 ```
 
-とする。
+is what happens.
 
-これによりAgent変更時のtoken消費を抑える。
+This keeps token consumption down when the agent changes.
 
 ---
 
 # 18. Evaluator
 
-Orochiの学習には実行結果の評価が必要になる。
+Orochi's learning requires evaluating execution results.
 
-LLM Judgeを最初から使用しない。
+An LLM judge is not used from the outset.
 
-優先順位：
+Order of precedence:
 
 ```text id="7y14sl"
 tests
@@ -710,9 +708,9 @@ runtime checks
 git diff validation
 ```
 
-これらで評価できない場合のみLLM Judgeを利用する。
+An LLM judge is used only when these cannot evaluate the result.
 
-結果は、
+Each result is classified as one of the following.
 
 ```text id="hf11qp"
 success
@@ -720,15 +718,13 @@ partial_success
 failure
 ```
 
-に分類する。
-
 ---
 
 # 19. Telemetry
 
-SQLiteへ各runを記録する。
+Each run is recorded in SQLite.
 
-主要項目：
+Main fields:
 
 | Category | Fields |
 |---|---|
@@ -741,13 +737,13 @@ SQLiteへ各runを記録する。
 | Outcome | success/partial/failure |
 | User signal | retry/revert/follow-up |
 
-個人情報やsource codeそのものはTelemetry DBへ保存しない。
+Personal information and the source code itself are not stored in the telemetry DB.
 
 ---
 
 # 20. Adaptive Learning
 
-初期段階ではProvider Policyとheuristicを利用する。
+In the initial stage, provider policies and heuristics are used.
 
 ```text id="xgu7r3"
 Phase 1
@@ -764,9 +760,9 @@ Phase 3
 Contextual Bandit
 ```
 
-最終的にはContextual Thompson Sampling等を検討する。
+Eventually, Contextual Thompson Sampling or similar will be considered.
 
-Context：
+Context:
 
 ```text id="jjnior"
 task_type
@@ -780,13 +776,13 @@ quota_state
 cache_affinity
 ```
 
-Arm：
+Arm:
 
 ```text id="aqzd0y"
 Agent + Model + Reasoning
 ```
 
-Reward：
+Reward:
 
 ```text id="vv61pb"
 successful completion
@@ -794,15 +790,15 @@ successful completion
 effective resource usage
 ```
 
-とする。
+These are the definitions used.
 
-ただしProvider hard constraintは学習によって上書きしない。
+However, provider hard constraints are never overridden by learning.
 
 ---
 
 # 21. Official Policy vs Learning
 
-Policyと実測値が競合した場合、以下の階層を維持する。
+When policy and measured values conflict, the following hierarchy is maintained.
 
 ```text id="gckmb2"
 Provider Hard Constraint
@@ -812,15 +808,15 @@ Official Recommendation
 Empirical Optimization
 ```
 
-初期状態ではOfficial Policyを強くpriorとして利用し、観測データが増えるにつれてlocal telemetryのweightを増加させる。
+Initially, the official policy is used as a strong prior, and the weight of local telemetry increases as observed data accumulates.
 
-ただし例えばProviderが特定parameterを使用しないことを明示している場合、そのparameterは探索対象にしない。
+However, if, for example, a provider explicitly states that a particular parameter is not to be used, that parameter is not explored.
 
 ---
 
 # 22. Agent Adapter
 
-Provider固有処理をOrochi本体へ入れない。
+Provider-specific processing is kept out of the Orochi core.
 
 ```text id="mtsm5w"
 AgentAdapter
@@ -842,7 +838,7 @@ create_session()
 resume_session()
 ```
 
-共通部分はACPへdelegateする。
+Common parts are delegated to ACP.
 
 ```text id="865xnj"
 ACP
@@ -853,7 +849,7 @@ ACP
  └─ streaming
 ```
 
-不足部分のみAdapterが実装する。
+Adapters implement only what is missing.
 
 ```text id="f3mc8x"
 ClaudeAdapter
@@ -862,13 +858,13 @@ GeminiAdapter
 AntigravityAdapter
 ```
 
-ACPのSession Usageが将来stable化した場合はProvider固有コードを段階的に削除可能にする。 ([agentclientprotocol.com](https://agentclientprotocol.com/rfds/session-usage?utm_source=chatgpt.com))
+If ACP's Session Usage becomes stable in the future, it should be possible to remove the provider-specific code step by step. ([agentclientprotocol.com](https://agentclientprotocol.com/rfds/session-usage?utm_source=chatgpt.com))
 
 ---
 
 # 23. Orochi as an ACP Agent
 
-将来的にはOrochi自身もACP Agentとして公開する。
+In the future, Orochi itself will also be exposed as an ACP agent.
 
 ```mermaid id="2m9j68"
 flowchart LR
@@ -883,41 +879,41 @@ flowchart LR
     OROCHI -->|ACP| A[Antigravity]
 ```
 
-外部Clientから見ると、
+From an external client's point of view,
 
 ```text id="ouekqj"
 Orochi
 ```
 
-という1つのAgentだけが存在する。
+is the only agent that exists.
 
-内部のAgent / Model選択は完全に隠蔽する。
+The internal agent / model selection is completely hidden.
 
-公式Rust ACP SDKはClient / AgentだけでなくProxy / Conductorも提供しており、このようなcompositionを実装しやすい。 ([github.com](https://github.com/agentclientprotocol/rust-sdk?utm_source=chatgpt.com))
+The official Rust ACP SDK provides not only Client / Agent but also Proxy / Conductor, which makes this kind of composition easy to implement. ([github.com](https://github.com/agentclientprotocol/rust-sdk?utm_source=chatgpt.com))
 
-これによりOrochiはCLIとしてだけでなく、
+This makes Orochi usable not only as a CLI but also as an
 
 **ACP-compatible Smart Agent Gateway**
 
-としても利用可能になる。
+in its own right.
 
 ---
 
 # 24. CLI UX
 
-通常利用：
+Normal use:
 
 ```bash id="4t0vuc"
-orochi "このIssueを実装して"
+orochi "Implement this issue"
 ```
 
-状態確認：
+Checking status:
 
 ```bash id="8d57mp"
 orochi status
 ```
 
-想定表示：
+Expected output:
 
 ```text id="pytzie"
 AGENT          MODEL             STATUS       QUOTA
@@ -936,7 +932,7 @@ Reason:
 - reusable context/cache
 ```
 
-明示指定もescape hatchとして残す。
+Explicit selection is also kept as an escape hatch.
 
 ```bash id="ud0syq"
 orochi --agent claude "..."
@@ -944,22 +940,22 @@ orochi --model fable "..."
 orochi --reasoning high "..."
 ```
 
-ただし通常利用では不要とする。
+In normal use, however, it should not be needed.
 
-Policy操作：
+Policy operations:
 
 ```bash id="z19q1d"
 orochi policy status
 orochi policy update
 ```
 
-Agent確認：
+Checking agents:
 
 ```bash id="ji628k"
 orochi agents
 ```
 
-Session確認：
+Checking sessions:
 
 ```bash id="diq3yk"
 orochi sessions
@@ -1040,7 +1036,7 @@ storage/
 
 # 26. MVP
 
-MVPでは以下までを実装する。
+The MVP implements everything up to the following.
 
 | Feature | MVP |
 |---|---|
@@ -1070,42 +1066,42 @@ MVPでは以下までを実装する。
 # 27. Core Design Principles
 
 1. **ACP is transport, not intelligence.**  
-   ACPはAgentとの共通I/Oだけを担う。
+   ACP handles only the common I/O with agents.
 
 2. **Provider recommendations are first-class.**  
-   OpenAI / Anthropic / Google公式Best Practiceを初期Policyとする。
+   Official OpenAI / Anthropic / Google best practices form the initial policy.
 
 3. **Frontier models are not last-resort models.**  
-   Fable / Astra等を使った方が成功までの総token量が少ないなら最初から使う。
+   If using Fable / Astra, etc. takes fewer total tokens to reach success, use them from the start.
 
 4. **Routing must be cheaper than execution.**  
-   Router Modelの利用を最小化する。
+   Minimize use of the router model.
 
 5. **Quota is a resource.**  
-   Subscription利用枠も経済的価値を持つものとして扱う。
+   Subscription allowances are also treated as having economic value.
 
 6. **Filesystem is the source of truth.**  
-   Agent間handoffでconversation historyをコピーしない。
+   Do not copy conversation history in handoffs between agents.
 
 7. **Measure outcomes.**  
-   ベンチマークだけではなく実際のrepositoryでの成功率を学習する。
+   Learn success rates on real repositories, not just from benchmarks.
 
 8. **Optimize cost-to-success, not cost-per-token.**
 
 9. **Orochi should disappear from the user's decision making.**  
-   ユーザーがAgent / Model / Reasoningを意識せずに済むことを成功条件とする。
+   The success criterion is that the user no longer has to think about agent / model / reasoning.
 
 ---
 
 # 28. Success Metrics
 
-最重要KPI：
+Primary KPI:
 
 ```text id="j2d45w"
 Effective Tokens per Successful Task
 ```
 
-補助指標：
+Secondary metrics:
 
 | Metric | Goal |
 |---|---|
@@ -1118,7 +1114,7 @@ Effective Tokens per Successful Task
 | User manual model selection | ≈ 0 |
 | Handoff overhead | ↓ |
 
-Router自体のtoken消費については、総token消費の**1%未満を目標値**とする。
+For the router's own token consumption, the **target is less than 1%** of total token consumption.
 
 ---
 
@@ -1126,29 +1122,27 @@ Router自体のtoken消費については、総token消費の**1%未満を目標
 
 | Question | Direction |
 |---|---|
-| Subscription quotaをどう取得するか | Provider別Adapter + runtime observation |
-| 成功判定 | test/build中心、必要時のみJudge |
-| Router model | Flash / Luna / Haiku級 |
+| How to obtain subscription quota | Per-provider adapter + runtime observation |
+| Success determination | Centered on test/build; judge only when needed |
+| Router model | Flash / Luna / Haiku class |
 | Router failure | deterministic fallback |
-| Policy更新 | remote signed policy registry検討 |
-| Model alias変更 | ACP discovery優先 |
-| Agent authentication | Agent自身の公式loginを利用 |
-| Multi-agent実行 | 高ambiguity時のみ将来対応 |
-| Telemetry sharing | Local onlyをdefault |
+| Policy updates | Consider a remote signed policy registry |
+| Model alias changes | Prefer ACP discovery |
+| Agent authentication | Use each agent's own official login |
+| Multi-agent execution | Future support, only for high ambiguity |
+| Telemetry sharing | Local only by default |
 
 ---
 
 # 30. Product Definition
 
-Orochiを単なる「複数AI CLIラッパー」として実装しない。
+Orochi is not to be implemented as a mere "wrapper around multiple AI CLIs".
 
-Orochiの本質は、
+At its core, Orochi is an
 
 > **Adaptive Agent & Model Scheduler for Coding Agents**
 
-である。
-
-構成責務は明確に分離する。
+Responsibilities are clearly separated among the components.
 
 ```text id="slez47"
 ACP
@@ -1180,15 +1174,15 @@ Telemetry
 
 # 31. Target User Experience
 
-ユーザー体験としては最終的に、
+In terms of user experience, the eventual aim is a state where
 
 ```bash id="07zj70"
-orochi "やって"
+orochi "Do it"
 ```
 
-だけでよい状態を目指す。
+is all that is needed.
 
-Orochiが内部で、
+Internally, Orochi carries out
 
 ```text id="cvo1xr"
 Task analysis
@@ -1214,44 +1208,44 @@ Evaluation
 Learning
 ```
 
-を自動実行する。
+automatically.
 
-つまり、
+In other words:
 
-> **利用可能なAIサブスク・Agent・Modelを一つの計算資源poolとして扱い、その時点で最も効率的な実行方法をOrochiが決定する。**
+> **Treat the available AI subscriptions, agents and models as a single pool of compute resources, and have Orochi decide the most efficient way to execute at any given moment.**
 
-これを最終的なProduct Visionとする。
+This is the ultimate product vision.
 
 ---
 
 # 32. Naming
 
-正式プロジェクト名：
+Official project name:
 
 **Orochi**
 
-説明名称：
+Descriptive name:
 
 **Orochi — Adaptive Agent & Model Scheduler**
 
-CLI binary：
+CLI binary:
 
 ```text id="oozjob"
 orochi
 ```
 
-Orochiという名称は、多数のAgent / Modelを一つのControl Planeから扱う構造を象徴するものとして使用する。
+The name Orochi is used to symbolize a structure in which many agents / models are handled from a single control plane.
 
 ---
 
 # 33. References
 
-ACPは現在stable protocol v1を持ち、公式Rust SDKとSession Config Optionsを提供している。 ([github.com](https://github.com/agentclientprotocol/rust-sdk?utm_source=chatgpt.com))
+ACP currently has a stable protocol v1 and provides an official Rust SDK and Session Config Options. ([github.com](https://github.com/agentclientprotocol/rust-sdk?utm_source=chatgpt.com))
 
-ACP Session Usageはtoken / context / cost reportingを標準化する提案が存在するが、現時点ではDraftである。 ([agentclientprotocol.com](https://agentclientprotocol.com/rfds/session-usage?utm_source=chatgpt.com))
+For ACP Session Usage, a proposal to standardize token / context / cost reporting exists, but it is currently a Draft. ([agentclientprotocol.com](https://agentclientprotocol.com/rfds/session-usage?utm_source=chatgpt.com))
 
-OpenAIはreasoning effortをタスク / evalに応じて調整し、高reasoningを無条件で使用しないことを推奨している。 ([developers.openai.com](https://developers.openai.com/api/docs/guides/latest-model?utm_source=chatgpt.com))
+OpenAI recommends adjusting reasoning effort according to the task / evals and not using high reasoning unconditionally. ([developers.openai.com](https://developers.openai.com/api/docs/guides/latest-model?utm_source=chatgpt.com))
 
-Anthropicは最新Claude世代でadaptive thinkingを推奨し、complex codingやlong-horizon agentic workloadsへの利用を案内している。 ([docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/prompt-templates-and-variables?utm_source=chatgpt.com))
+Anthropic recommends adaptive thinking for the latest Claude generation and advises using it for complex coding and long-horizon agentic workloads. ([docs.anthropic.com](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/prompt-templates-and-variables?utm_source=chatgpt.com))
 
-Geminiはdynamic thinkingと`thinking_level`を提供し、2.5以降ではimplicit context cachingも提供している。 ([ai.google.dev](https://ai.google.dev/gemini-api/docs/caching?authuser=01&hl=en&utm_source=chatgpt.com))
+Gemini provides dynamic thinking and `thinking_level`, and from 2.5 onward also provides implicit context caching. ([ai.google.dev](https://ai.google.dev/gemini-api/docs/caching?authuser=01&hl=en&utm_source=chatgpt.com))

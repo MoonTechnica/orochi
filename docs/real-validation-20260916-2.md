@@ -1,189 +1,189 @@
-# 残タスクの実機検証（2026-09-16 後半）
+# Live Validation of Remaining Tasks (2026-09-16, part 2)
 
-[前半の検証](real-validation-20260916.md)で残った7項目の対応結果。証拠は`.orochi/live-e2e/remaining-20260916/`に保存した（ローカルのみ・非追跡）。
+Results for the seven items left over from part 1, [Measurement and Session Collaboration Validation (2026-09-16)](real-validation-20260916.md). Evidence is stored in `.orochi/live-e2e/remaining-20260916/` (local only, untracked).
 
-| # | 項目 | 結果 |
+| # | Item | Result |
 |---|---|---|
-| 1 | 選択精度の追加校正 | 6課題を実測。context別EWMAの限界を確認し、`pooling`を追加（既定は無効） |
-| 2 | Antigravityの実機検証 | **未完了**。検証終了時点でもGoogleログイン前（`agy models`がサインインを要求） |
-| 3 | 実サービスの制限による交代 | 実Codexの利用上限→実Claudeへの交代を確認。分類の不具合を修正 |
-| 4 | Router／Judge／Councilの実サービス | CLIをACPで使う判定役を追加し、3方式とも実サービスで交代を確認。その後、判定役をACPに統一しHTTP endpoint版を削除（8章） |
-| 5 | ZedからのACP E2E | Zed 1.19.2のエージェントパネル→Orochi→実Codex→評価まで成功。設定は元に戻した |
-| 6 | 協議の拡張 | 並列実装・宛先指定の多往復通信・作業ツリーへの適用と競合解消を実装。実Claude／Codexで確認 |
-| 7 | 強制終了からの復旧 | 監視プロセスと記録による回収を実装。実ClaudeでSIGKILL→回収→再開を確認 |
+| 1 | Further calibration of selection accuracy | Measured 6 tasks. Confirmed the limits of per-context EWMA and added `pooling` (disabled by default) |
+| 2 | Live validation of Antigravity | **Not completed**. Even at the end of validation, Google sign-in had not been done (`agy models` asks to sign in) |
+| 3 | Failover caused by real-service limits | Confirmed failover from a real Codex usage limit to real Claude. Fixed a classification bug |
+| 4 | Router / Judge / Council on real services | Added advisers that use CLIs over ACP, and confirmed failover on real services for all three modes. Later, advisers were unified on ACP and the HTTP endpoint version was removed (section 8) |
+| 5 | ACP E2E from Zed | Succeeded from the Zed 1.19.2 agent panel → Orochi → real Codex → evaluation. Settings were restored afterward |
+| 6 | Extending collaboration | Implemented parallel implementation, addressed multi-round messaging, applying to the working tree, and conflict resolution. Confirmed with real Claude / Codex |
+| 7 | Recovery from forced termination | Implemented cleanup via a supervisor process and records. Confirmed SIGKILL → cleanup → resume with real Claude |
 
-## 1. 選択精度の追加校正
+## 1. Further calibration of selection accuracy
 
-`examples/diverse-suite.json`を追加。Python・JavaScript・Rust・ドキュメントで、難易度と規模が異なる6課題を用意した。各課題の判定スクリプトは、開始状態で失敗し参照解で成功することを事前に確認した。
+Added `examples/diverse-suite.json`. It provides six tasks in Python, JavaScript, Rust and documentation, differing in difficulty and scale. For each task, we confirmed in advance that its check script fails in the starting state and succeeds with the reference solution.
 
-Claudeの週間枠が残り約6%だったため、ユーザーの判断で候補を**Claude Haiku**と**Codex gpt-5.6-luna / medium**にした。Complexのリファクタリング課題は、両モデルの成功確率priorが`required_success`（0.7）未満で、Orochi自身が候補から除外した（期待どおりの動作）。この課題だけ、Policy上の候補になる**Claude Sonnet / high**と**Codex gpt-5.6-sol / high**で測定した。
+Because only about 6% of Claude's weekly allowance remained, the candidates were, at the user's decision, **Claude Haiku** and **Codex gpt-5.6-luna / medium**. For the Complex refactoring task, both models' success-probability prior was below `required_success` (0.7), so Orochi itself excluded them from the candidates (expected behavior). For this task only, we measured with **Claude Sonnet / high** and **Codex gpt-5.6-sol / high**, which are candidates under the Policy.
 
-| 課題 | Profiler | Haiku | luna / medium |
+| Task | Profiler | Haiku | luna / medium |
 |---|---|---|---|
-| 四則演算の評価器（Python） | implementation / normal | **失敗**（`"1 2"`を12として受理）・189,819 tokens | 成功・28,152 |
-| 時間文字列の解析（JavaScript） | implementation / normal | 成功・86,527 | 成功・25,565 |
-| 括弧の対応（Rust、cargo test） | test / normal ※ | 成功・211,159 | 成功・28,348 |
-| Decimalでの金額計算の修正（Python、2ファイル） | bug_fix / normal | 成功・323,755 | 成功・29,466 |
-| READMEの追記 | documentation / simple | 成功・80,429 | 成功・24,991 |
+| Arithmetic expression evaluator (Python) | implementation / normal | **Failed** (accepted `"1 2"` as 12), 189,819 tokens | Succeeded, 28,152 |
+| Parsing time strings (JavaScript) | implementation / normal | Succeeded, 86,527 | Succeeded, 25,565 |
+| Bracket matching (Rust, cargo test) | test / normal * | Succeeded, 211,159 | Succeeded, 28,348 |
+| Fixing monetary calculation with Decimal (Python, 2 files) | bug_fix / normal | Succeeded, 323,755 | Succeeded, 29,466 |
+| Adding to a README | documentation / simple | Succeeded, 80,429 | Succeeded, 24,991 |
 
-| 課題 | Profiler | Sonnet / high | sol / high |
+| Task | Profiler | Sonnet / high | sol / high |
 |---|---|---|---|
-| 出力を保つリファクタリング（JavaScript） | refactor / complex | 成功・219,615 tokens・16秒 | 成功・27,907 tokens・69秒 |
+| Refactoring that preserves output (JavaScript) | refactor / complex | Succeeded, 219,615 tokens, 16 s | Succeeded, 27,907 tokens, 69 s |
 
-※ 1行目で「単体テストも追加」と求めたため、実装課題がtestに分類された。「Implement …」で始まる英語の依頼は実装として扱うよう修正し、テストを追加した。
+\* Because the first line asked to "also add unit tests", the implementation task was classified as test. We fixed this so that English requests starting with "Implement …" are treated as implementation, and added a test.
 
-tokensは各ACPアダプターの報告値で、料金ではない。ProviderによってcacheやシステムプロンプトのtokensのUsage報告が異なる。初期推定（約9,500 tokens）との比は、Codexが約2.7〜3倍、Claudeが約8.5〜34倍だった。
+The tokens are the values reported by each ACP adapter, not charges. Providers differ in how their Usage reports count tokens for cache and the system prompt. Relative to the initial estimate (about 9,500 tokens), the ratio was about 2.7–3× for Codex and about 8.5–34× for Claude.
 
-### 分かったこと
+### Findings
 
-- 6課題はすべてcontext（task type・言語・framework・難易度）が異なる。context別EWMAでは課題間で学習が共有されず、Static・EWMA・Banditが同じ選択になった。
-- 初期priorが同じ候補の順番は候補IDで決まる。今回はたまたまCodexが先だったため、学習なしでも最良の結果になった。
-- tokensの超過率は課題よりAgent／モデルに依存する傾向が強い。
+- All six tasks differ in context (task type, language, framework, difficulty). With per-context EWMA, learning is not shared across tasks, and Static, EWMA and Bandit made the same choices.
+- The order of candidates with the same initial prior is determined by candidate ID. This time Codex happened to come first, so the best result was obtained even without learning.
+- The token overrun ratio tends to depend more on the agent / model than on the task.
 
-### 追加した改善と検証
+### Improvement added and its verification
 
-`[learning] pooling`（0〜1、既定0）を追加した。同じ候補の他contextの実績から、初期推定に対するtokensの比と成功の差分を求め、今回のcontextの初期値へ反映する。`benchmark`のreplayと`benchmark-tune`の探索範囲（0 / 0.5 / 1.0）にも同じ処理を入れた。
+Added `[learning] pooling` (0–1, default 0). From the same candidate's results in other contexts, it computes the ratio of tokens to the initial estimate and the difference in success, and reflects them in the initial values for the current context. The same processing was added to `benchmark` replay and to the `benchmark-tune` search range (0 / 0.5 / 1.0).
 
-6課題を全720通りの順番でreplayし、候補IDの並びを両方向で平均した（`analysis/order-robust-6.json`、`analysis/order_robust_replay.py`）。
+We replayed the six tasks in all 720 orders, averaging over both directions of candidate ID ordering (`analysis/order-robust-6.json`, `analysis/order_robust_replay.py`).
 
-| 方式 | 並び: 元のまま | 並び: 逆 | 平均 |
+| Strategy | Ordering: original | Ordering: reversed | Average |
 |---|---|---|---|
-| Static / EWMA / Bandit（pooling 0） | 6.0成功・164,429 tokens | 5.0成功・1,111,304 | 5.5成功・約64万 |
-| EWMA / Bandit（pooling 0.5または1.0） | 5.8成功・315,462 | 5.8成功・507,170 | **5.8成功・約41万** |
+| Static / EWMA / Bandit (pooling 0) | 6.0 successes, 164,429 tokens | 5.0 successes, 1,111,304 | 5.5 successes, about 640,000 |
+| EWMA / Bandit (pooling 0.5 or 1.0) | 5.8 successes, 315,462 | 5.8 successes, 507,170 | **5.8 successes, about 410,000** |
 
-- poolingは並び順の偶然に左右されにくくなり、平均では成功数・tokensとも改善した。一方、既定の並びがすでに最良だった場合は、一度Claudeを試す分だけ悪化した。
-- 実際の時系列順で前半2〜4課題から係数を選ぶと、いずれも既定値（alpha 0.1、prior_weight 16、exploration 0.1、pooling 0）のままで、後半の改善はなかった（`analysis/tune-6-train{2,3,4}.json`）。
-- BanditはEWMAと同じ結果になった。学習後は他の候補が最小コストの1.25倍以内に入らず、探索が起きなかった。
+- pooling made the result less dependent on the chance of the ordering, and on average improved both the number of successes and tokens. On the other hand, when the default ordering was already the best, it got worse by the cost of trying Claude once.
+- When coefficients were chosen from the first 2–4 tasks in actual chronological order, every choice stayed at the defaults (alpha 0.1, prior_weight 16, exploration 0.1, pooling 0), and there was no improvement on the later tasks (`analysis/tune-6-train{2,3,4}.json`).
+- Bandit gave the same result as EWMA. After learning, no other candidate came within 1.25× of the minimum cost, so no exploration occurred.
 
-**6課題・2候補の小規模データであり、一般的な改善は確立していない。既定値は変更しない。** 課題の種類が多く、tokensの傾向がAgentごとに大きく違う環境では、`pooling = 0.5`を明示して試す価値がある。
+**This is small-scale data (6 tasks, 2 candidates), and no general improvement has been established. The defaults are not changed.** In environments with many kinds of tasks, where token tendencies differ greatly between agents, it is worth trying `pooling = 0.5` explicitly.
 
-証拠: `calibration/{dataset,evidence}.json`、`calibration-complex/`、`analysis/`。
+Evidence: `calibration/{dataset,evidence}.json`, `calibration-complex/`, `analysis/`.
 
 ## 2. Antigravity
 
-`agy models`は、検証の開始時と終了時のどちらでも「Please sign in」を返した。ログイン後に次を確認する予定。
+`agy models` returned "Please sign in" both at the start and at the end of validation. After signing in, we plan to check the following.
 
 ```sh
-.orochi/tools/antigravity/agy          # 対話形式でGoogleログイン
-orochi quota --refresh                  # antigravity_usageプローブ
-orochi status --discover                # モデル一覧
-orochi --agent antigravity "..."        # 実行と評価
+.orochi/tools/antigravity/agy          # interactive Google sign-in
+orochi quota --refresh                  # antigravity_usage probe
+orochi status --discover                # model list
+orochi --agent antigravity "..."        # run and evaluate
 ```
 
-未認証の公式ACP Server（1.1.1）は、判定役の検証で`Authentication required`を返した。`authentication`として記録され、次の候補へ交代した（4章）。
+The official ACP Server (1.1.1), not signed in, returned `Authentication required` during adviser validation. This was recorded as `authentication`, and the run failed over to the next candidate (section 4).
 
-## 3. 実サービスの制限による交代
+## 3. Failover caused by real-service limits
 
-Codexのクレジットが切れていたため、**実Codexの利用上限→実Claude**の方向で確認した。実Claudeの週間枠は残り約5%で、上限には達していない。Claude→Codex方向の実サービスでの交代は未確認のまま。
+Because Codex's credits had run out, we confirmed the **real Codex usage limit → real Claude** direction. Real Claude's weekly allowance had about 5% remaining and had not reached its limit. Failover in the Claude → Codex direction on real services remains unconfirmed.
 
-codex-acp 1.10.0の実際の応答:
+Actual response from codex-acp 1.10.0:
 
 ```json
 {"code":-32603,"message":"Internal error","data":{"message":"You've hit your usage limit. ... try again at 9:11 PM.","codexErrorInfo":"usageLimitExceeded"}}
 ```
 
-1回目の実行では`Other: Internal error`と分類され、Claudeへの交代はしたものの、アカウント単位のcooldownが記録されなかった。`data.message`と`data.codexErrorInfo`を分類対象に加えた。「try again at 9:11 PM」をローカル時刻の次の9:11 PMとして解釈するようにし、実際のpayloadで回帰テストを追加した。
+On the first run this was classified as `Other: Internal error`; the run failed over to Claude, but no account-wide cooldown was recorded. We added `data.message` and `data.codexErrorInfo` to what gets classified. "try again at 9:11 PM" is now interpreted as the next 9:11 PM in local time, and a regression test using the actual payload was added.
 
-修正後（`failover-run2/`）:
+After the fix (`failover-run2/`):
 
-1. `codex / gpt-5.6-luna`: `RateLimit`（1.6秒）。`codex/*`に21:11までのcooldownを保存。
-2. 同じ実行内で`claude / haiku`へ交代し、チェックに合格（145,906 tokens）。
-3. 同じデータで2回目を実行すると、Codexは接続前に`agent/account is in cooldown`で除外され、Claudeで完了。同じcontextのHaikuのtokens実績が学習され、今回はSonnet / mediumが選ばれた。
+1. `codex / gpt-5.6-luna`: `RateLimit` (1.6 s). Saved a cooldown on `codex/*` until 21:11.
+2. Within the same run, failed over to `claude / haiku`, which passed the checks (145,906 tokens).
+3. On a second run with the same data, Codex was excluded before connecting with `agent/account is in cooldown`, and the run completed on Claude. Haiku's token results for the same context had been learned, and this time Sonnet / medium was selected.
 
-協議（6章）でも、司令塔の実Codexが同じ上限で失敗し、実Claudeが引き継いだ。Codexを希望した並列実装者は、cooldownによりClaudeで開始した。
+In collaboration (section 6) too, the coordinator's real Codex failed on the same limit and real Claude took over. The parallel implementer that requested Codex started on Claude because of the cooldown.
 
-## 4. Router／Judge／Council（ACP判定役）
+## 4. Router / Judge / Council (ACP advisers)
 
-HTTP endpoint版はOrochi自身がAPIキーで接続する。APIキーを使わない方針のため、実サービスでは未検証。代わりに`acp`設定を追加した（[設定](adaptive-routing.md#acp判定役)）。ACP判定役の認証は各CLIに従う。今回の環境にはProviderのAPIキーの環境変数がなく、Claudeは5時間・週間枠、Codexはプラン変更を促す上限表示が出ていた。どちらもサブスクリプションのログインで動作していた。実行Agentはfixtureで、判定役だけが実サービス。
+With the HTTP endpoint version, Orochi itself connects using an API key. Because of the policy of not using API keys, it is unverified on real services. Instead, we added an `acp` setting ([configuration](adaptive-routing.md#4-router-frontier-judge-and-council)). Authentication for ACP advisers follows each CLI. In this environment there were no Provider API key environment variables; Claude showed its 5-hour and weekly allowances, and Codex showed a limit message prompting a plan change. Both were running on subscription sign-ins. The executing agent was a fixture; only the advisers were real services.
 
-| 方式 | 判定役の順番 | 結果 |
+| Strategy | Adviser order | Result |
 |---|---|---|
-| Frontier Judge | Antigravity → Codex luna → Claude Haiku | Antigravityが`authentication`で失敗し、Codexが有効な候補IDを返した（23,316 tokens・4.5秒）。推薦は制約を通過 |
-| Council（2席×2ラウンド） | 席1: Claude Haiku、席2: Antigravity → Codex luna | 第1ラウンドで席2がCodexに交代。第2ラウンドは交代先から開始。過半数の推薦が制約を通過。判定役の合計103,612 tokens |
-| 軽量Router（`routing_confidence = 1.0`で強制） | Antigravity → Claude Haiku | Haikuが推薦（28,326 tokens・6.6秒） |
+| Frontier Judge | Antigravity → Codex luna → Claude Haiku | Antigravity failed with `authentication`, and Codex returned a valid candidate ID (23,316 tokens, 4.5 s). The recommendation passed the constraints |
+| Council (2 seats × 2 rounds) | Seat 1: Claude Haiku; seat 2: Antigravity → Codex luna | In round 1, seat 2 failed over to Codex. Round 2 started from the failover target. The majority recommendation passed the constraints. Advisers used 103,612 tokens in total |
+| Lightweight Router (forced with `routing_confidence = 1.0`) | Antigravity → Claude Haiku | Haiku made the recommendation (28,326 tokens, 6.6 s) |
 
-- 1回あたりの消費はCodex約2.3万tokens、Claude Haiku約2.8万tokens。システムプロンプト等によるもので、推定予算に`session_overhead_tokens`を加える根拠にした。
-- Councilの予算検査（約15.5万tokens）を通すため、合成した長い移行仕様（約18万文字）を課題にした。課題本文は判定役へ送らず、ローカルの推定tokensを増やす目的だけに使った。
-- 判定役のプロンプトにタスク本文・リポジトリのパスが含まれないこと、作業ディレクトリがリポジトリ外の一時ディレクトリで、終了後に削除されることをfixtureテストで確認している。
+- Consumption per call was about 23,000 tokens for Codex and about 28,000 tokens for Claude Haiku. This comes from the system prompt and the like, and was the basis for adding `session_overhead_tokens` to the estimated budget.
+- To pass the Council budget check (about 155,000 tokens), a synthesized long migration specification (about 180,000 characters) was used as the task. The task text was not sent to the advisers; it was used only to increase the local token estimate.
+- Fixture tests confirm that adviser prompts contain neither the task text nor repository paths, and that the working directory is a temporary directory outside the repository that is deleted afterward.
 
-証拠: `advisers/`（設定・stderr・データディレクトリ）。
+Evidence: `advisers/` (configuration, stderr, data directory).
 
-## 5. ZedからのACP E2E
+## 5. ACP E2E from Zed
 
-ユーザー承認のもと、`~/.config/zed/settings.json`に`agent_servers`、`keymap.json`に`agent::NewExternalAgentThread`の一時バインドを追加した。専用プロジェクトのウィンドウを開き、System Eventsでキー入力した。
+With the user's approval, we added `agent_servers` to `~/.config/zed/settings.json` and a temporary binding for `agent::NewExternalAgentThread` to `keymap.json`. We opened a window for a dedicated project and sent keystrokes via System Events.
 
-1. Zedが`orochi serve`を起動（Zedログ: `connection; name="zed"`）。
-2. エージェントパネルからプロンプトを送信。
-3. OrochiがCodex gpt-5.6-luna / mediumを選択し、`zed_result.txt`（`OROCHI_ZED_OK\n`）を作成。評価に合格（24,170 tokens・23.8秒）。Zedのログに、Orochiが標準エラーへ出したルーティング結果が記録された。
-4. テスト用ウィンドウだけを閉じ、`serve`プロセスの終了を確認。設定2ファイルをバックアップから戻し、SHA-256の一致を確認した。
+1. Zed launched `orochi serve` (Zed log: `connection; name="zed"`).
+2. Sent a prompt from the agent panel.
+3. Orochi selected Codex gpt-5.6-luna / medium and created `zed_result.txt` (`OROCHI_ZED_OK\n`). It passed evaluation (24,170 tokens, 23.8 s). Zed's log recorded the routing result that Orochi wrote to standard error.
+4. Closed only the test window and confirmed that the `serve` process exited. Restored the two settings files from backup and confirmed that their SHA-256 hashes matched.
 
-この環境では画面キャプチャが許可されていないため、画面表示は目視・画像では確認していない。確認したのは、Zedのログ、Orochiの実行記録、生成ファイル。
+Screen capture is not permitted in this environment, so the on-screen display was not checked visually or by image. What was checked: Zed's log, Orochi's run records, and the generated file.
 
-証拠: `zed/`（バックアップ、gateway設定、データ）。
+Evidence: `zed/` (backups, gateway configuration, data).
 
-## 6. 協議の拡張（実Claude／Codex）
+## 6. Extending collaboration (real Claude / Codex)
 
-`collab-live/`: 司令塔（Codex希望）、実装者2人（alice: Claude Haiku、bob: Codex希望）、レビュー者、統合者（Claude Sonnet）、協議2ラウンド、`--apply`。開始直後に、元の作業ツリーの`textstats/__init__.py`と`README.md`を手で編集した。
+`collab-live/`: a coordinator (Codex preferred), two implementers (alice: Claude Haiku; bob: Codex preferred), a reviewer, an integrator (Claude Sonnet), 2 discussion rounds, `--apply`. Right after starting, `textstats/__init__.py` and `README.md` in the original working tree were edited by hand.
 
-- 司令塔: 実Codexが利用上限→Claude Haikuへ交代。
-- aliceとbobは同時に開始（26.6秒・36.3秒）。bobはCodexのcooldownによりClaudeで実行。マージの競合は0件。
-- メッセージ11件（拒否0件）。司令塔→各実装者、bob→alice、レビュー者→統合者などを送信。aliceは協議ラウンド1で返信し、その後に再マージした。
-- 統合者（Sonnet）はチェックに合格。
-- 作業ツリーへの適用で`__init__.py`が競合した（ユーザーの`__version__`追加と、協議側のexport追加）。解消セッション（Sonnet）が両方を残し、チェックとマーカー確認に合格。3ファイルを適用した。
-- 独立確認: 元の作業ツリーでチェックが通る。ユーザーのREADME編集と`__version__`が残っている。マーカーはない。11回の実行のセッションIDはすべて異なる。残存プロセス・記録はない。
-- 合計1,672,438 tokens（アダプター報告値）、エージェント実行時間は約223秒。
+- Coordinator: real Codex hit its usage limit → failed over to Claude Haiku.
+- alice and bob started at the same time (26.6 s, 36.3 s). bob ran on Claude because of the Codex cooldown. Zero merge conflicts.
+- 11 messages (0 rejected). Sent coordinator → each implementer, bob → alice, reviewer → integrator, and so on. alice replied in discussion round 1 and then re-merged.
+- The integrator (Sonnet) passed the checks.
+- Applying to the working tree produced a conflict in `__init__.py` (the user's `__version__` addition versus the collaboration's export addition). A resolution session (Sonnet) kept both, and passed the checks and the marker check. Three files were applied.
+- Independent check: the checks pass in the original working tree. The user's README edit and `__version__` remain. There are no markers. The session IDs of all 11 runs are distinct. No leftover processes or records.
+- 1,672,438 tokens in total (adapter-reported values); agent run time was about 223 s.
 
-## 7. 強制終了からの復旧（実Claude）
+## 7. Recovery from forced termination (real Claude)
 
-`kill-resume/`: 実装者（Claude Haiku）の応答中に、`orochi collaborate`をSIGKILLした。
+`kill-resume/`: while the implementer (Claude Haiku) was responding, `orochi collaborate` was killed with SIGKILL.
 
-- 記録にあったプロセスは4つ。監視プロセス、`claude-agent-acp`（node）、`claude` CLI、CLIが起動したMCPサーバー（別アプリ提供）。5秒後の確認では4つとも終了し、記録も削除されていた。
-- レポートには`running`の実行と93文字の途中回答が残っていた。
-- `collaborate-resume`で、その実行を`interrupted`とし、新しいセッションで同じ工程をやり直した。3工程が完了し、統合結果のチェックに合格。
+- Four processes had been recorded: the supervisor process, `claude-agent-acp` (node), the `claude` CLI, and an MCP server started by the CLI (provided by a separate app). A check 5 seconds later found all four terminated and their records deleted.
+- The report retained the `running` run and a 93-character partial response.
+- `collaborate-resume` marked that run `interrupted` and redid the same step in a new session. Three steps completed, and the integrated result passed the checks.
 
-監視プロセスごと終了させた場合の回収（次回起動時）、グループを離れた子孫の終了、所有者が動作中の記録に触れないことは、fixtureテストで確認している。
+Fixture tests confirm cleanup when the supervisor process itself is killed (on the next startup), termination of descendants that left the group, and that records whose owner is still running are left untouched.
 
-## 8. 追記: 判定役のACP統一
+## 8. Addendum: unifying advisers on ACP
 
-ユーザーの判断で、Router／Judge／CouncilのHTTP endpoint版を削除し、ACPに統一した。4章の`acp`設定は統一前の形式で、現在は次の形式になる。
+At the user's decision, the HTTP endpoint version of Router / Judge / Council was removed and everything was unified on ACP. The `acp` setting in section 4 is the pre-unification format; the current format is as follows.
 
-- 判定役は`[[agents]]`のIDとモデルで指定する（`agent`・`model`・任意の`reasoning`）。判定役だけに使うエージェントは`routing_only = true`で、実行の候補にはならない。
-- `endpoint`・`api_key_env`・`acp`を含む旧設定は、移行方法を示すエラーになる。既定値は`timeout_secs = 120`、`max_resource_fraction = 1.0`、`max_output_tokens = 512`（予算計算用）。
-- 判定役がアカウント単位の制限・認証エラー・接続不能になった場合は、そのエージェントのcooldownに記録し、cooldown中は起動しない。記録には実際の判定役のAgent・モデルを残す。
-- Councilの第2ラウンドは、第1ラウンドに答えたセッションへ票だけを送る。
-- `model`は任意。省略すると、役割ごとの難しさ（Router: simple、Council: normal、Frontier Judge: complex）で、エージェントのモデルをPolicyに基づいて選ぶ。実Codexでは、Frontier Judgeが`gpt-5.6-sol` / high（24,927 tokens・5.2秒）、Routerが`gpt-5.6-luna` / low（23,332 tokens・5.5秒）を選んだ。途中の実装で一時的にCLIの既定モデルを使ったときは`gpt-6-astra`（20,830 tokens）だった。合計tokensの大部分はシステムプロンプトで、モデルによる差は小さい。tokensは料金ではなく、モデルごとの単価や利用枠の消費率の違いは含まない。
+- Advisers are specified by an `[[agents]]` ID and model (`agent`, `model`, optional `reasoning`). An agent used only as an adviser has `routing_only = true` and is not a candidate for execution.
+- Old settings containing `endpoint`, `api_key_env` or `acp` produce an error that explains how to migrate. Defaults are `timeout_secs = 120`, `max_resource_fraction = 1.0` and `max_output_tokens = 512` (for budget calculation).
+- When an adviser hits an account-wide limit or an authentication error, or cannot be connected to, this is recorded in that agent's cooldown, and the agent is not launched during the cooldown. Records keep the agent and model of the adviser actually used.
+- Council round 2 sends only the votes to the session that answered in round 1.
+- `model` is optional. If omitted, the agent's model is chosen based on Policy at a per-role difficulty (Router: simple, Council: normal, Frontier Judge: complex). With real Codex, the Frontier Judge chose `gpt-5.6-sol` / high (24,927 tokens, 5.2 s) and the Router chose `gpt-5.6-luna` / low (23,332 tokens, 5.5 s). When an intermediate implementation temporarily used the CLI's default model, it was `gpt-6-astra` (20,830 tokens). Most of the total tokens are the system prompt, and the differences between models are small. Tokens are not charges, and do not reflect per-model unit prices or differences in how fast usage allowances are consumed.
 
-統一後の実サービス確認（`advisers-acp/`、実行Agentはfixture、判定役はすべて`routing_only`）:
+Real-service check after unification (`advisers-acp/`; the executing agent is a fixture; all advisers are `routing_only`):
 
-| 方式 | 結果 |
+| Strategy | Result |
 |---|---|
-| Frontier Judge: Antigravity → Codex luna → Claude Haiku | Antigravityが`authentication`で失敗し、`antigravity/*`にcooldownを記録。Codex lunaが推薦（23,374 tokens・5.5秒） |
-| Council: 席1 Codex luna、席2 Antigravity → Codex sol（同じデータディレクトリ） | 席2のAntigravityはcooldownのため起動せずに交代（0秒）。過半数の推薦が制約を通過 |
+| Frontier Judge: Antigravity → Codex luna → Claude Haiku | Antigravity failed with `authentication`, and a cooldown was recorded on `antigravity/*`. Codex luna made the recommendation (23,374 tokens, 5.5 s) |
+| Council: seat 1 Codex luna; seat 2 Antigravity → Codex sol (same data directory) | Seat 2's Antigravity was in cooldown, so it failed over without being launched (0 s). The majority recommendation passed the constraints |
 
-Councilのセッション再利用（各アダプターの報告値）:
+Council session reuse (values reported by each adapter):
 
-| 判定役 | 第1ラウンド（新規） | 第2ラウンド（同じセッション） |
+| Adviser | Round 1 (new) | Round 2 (same session) |
 |---|---|---|
-| Codex luna | 23,387 tokens（cache 11,008）・4.9秒 | 29,323 tokens（cache 22,272、非cache入力 7,003）・2.4秒 |
-| Codex sol | 24,897 tokens（cache 0）・4.4秒 | 30,806 tokens（cache 24,704、非cache入力 6,081）・2.5秒 |
+| Codex luna | 23,387 tokens (cache 11,008), 4.9 s | 29,323 tokens (cache 22,272, non-cache input 7,003), 2.4 s |
+| Codex sol | 24,897 tokens (cache 0), 4.4 s | 30,806 tokens (cache 24,704, non-cache input 6,081), 2.5 s |
 
-再利用により所要時間はおよそ半分になり、入力の大部分がcacheになった。一方、履歴を含むため合計tokens（cache読み込みを含む）は増えた。予算検査はこの増加を含めて見積もる。
+Reuse roughly halved the elapsed time, and most of the input became cache. On the other hand, because it includes the history, total tokens (including cache reads) increased. The budget check includes this increase in its estimate.
 
-ローカルモデルは、ACP対応CLIが対応していれば実行・判定役のどちらにも使える設計だが、実機では確認していない。
+Local models are designed to be usable for both execution and advisers if the ACP-capable CLI supports them, but this has not been verified against a real CLI.
 
-## 9. 追記: エージェント間メールボックス（2026-09-17）
+## 9. Addendum: agent-to-agent mailbox (2026-09-17)
 
-複数のOrochiプロセスが起動したエージェント同士のメッセージ機能を追加した。仕様と実機確認は[エージェント間メールボックス](agent-mailbox.md)を参照。同じディレクトリで同時に動かした2つの実Codexが、関数名と辞書のキーを伝え合って実装を合わせた。
+Added messaging between agents launched by multiple Orochi processes. For the specification and verification against the real CLIs, see [Agent Mailbox](agent-mailbox.md). Two real Codex agents running concurrently in the same directory told each other function names and dictionary keys, and aligned their implementations.
 
-## テスト
+## Tests
 
-- `cargo test --locked`: Rust統合テスト103件（ACP統一・判定役のモデル自動選択・メールボックス追加後）、および内部から実行するPython残量パーサー4件が成功。
-- `cargo clippy --locked --all-targets -- -D warnings`、`cargo fmt --check`が成功。
-- 追加したテスト: 強制終了後の回収（監視あり／なし）、並列実装のマージと統合時のマーカー確認、宛先指定メッセージの多往復、作業ツリーへの適用・競合解消・解消中の編集の保護・未検証結果の不適用、ACP判定役のJudge・Council（`tests/router_acp.rs`へ移行。セッション再利用・cooldown記録・routing_only・旧設定の移行エラーを含む）、Codexの利用上限payloadの分類、poolingの推定値とreplay、同梱プランの検証。
+- `cargo test --locked`: 103 Rust integration tests (after ACP unification, automatic adviser model selection and the mailbox addition) and 4 Python quota parser tests run from within them passed.
+- `cargo clippy --locked --all-targets -- -D warnings` and `cargo fmt --check` passed.
+- Tests added: cleanup after forced termination (with / without the supervisor), merging parallel implementations and the marker check at integration, addressed multi-round messages, applying to the working tree / conflict resolution / protecting edits made during resolution / not applying unverified results, the ACP adviser Judge and Council (moved to `tests/router_acp.rs`; includes session reuse, cooldown recording, routing_only, and the migration error for old settings), classification of Codex's usage-limit payload, pooling estimates and replay, and validation of the bundled plans.
 
-## 公式資料
+## Official references
 
-- [Zedの外部Agent設定](https://zed.dev/docs/ai/external-agents)
+- [Zed external agent configuration](https://zed.dev/docs/ai/external-agents)
 - [Codex ACP](https://github.com/agentclientprotocol/codex-acp)
 - [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp)
-- [Antigravity CLI導入](https://www.antigravity.google/docs/cli/install)
+- [Antigravity CLI installation](https://www.antigravity.google/docs/cli/install)
