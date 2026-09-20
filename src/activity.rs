@@ -1272,6 +1272,11 @@ impl Activity {
         old: Option<&str>,
         new: &str,
     ) -> Result<()> {
+        // A real agent names the file with an absolute path; a review pane wants the one the
+        // repository uses. A file outside the thread's own directory keeps the only name it
+        // has, because there is nothing to make it relative to.
+        let relative = self.thread_relative(turn, path);
+        let path = relative.as_deref().unwrap_or(path);
         let change = match old {
             None => "add",
             Some(_) if new.is_empty() => "delete",
@@ -1432,6 +1437,32 @@ impl Activity {
             )
             .optional()?
             .map(|answer| (!answer.is_empty()).then_some(answer)))
+    }
+
+    /// `path` as the thread's directory would name it, when it is inside it.
+    fn thread_relative(&self, turn: &str, path: &str) -> Option<String> {
+        let candidate = Path::new(path);
+        if candidate.is_relative() {
+            return None;
+        }
+        let cwd: String = self
+            .connection
+            .query_row(
+                "SELECT t.cwd FROM threads t JOIN turns tn ON tn.thread_id=t.id WHERE tn.id=?1",
+                [turn],
+                |r| r.get(0),
+            )
+            .ok()?;
+        let cwd = Path::new(&cwd);
+        let strip = |base: &Path| {
+            candidate
+                .strip_prefix(base)
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        };
+        // `/tmp` and `/private/tmp` are the same directory on macOS, and an agent may name
+        // either, so a failed strip is retried against the resolved path.
+        strip(cwd).or_else(|| strip(&cwd.canonicalize().ok()?))
     }
 
     /// Registers this process as the thread's owner. The unique index is what stops two hosts

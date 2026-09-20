@@ -1,70 +1,99 @@
-# Orochi Against Each Agent Used Alone (2026-09-20, pilot)
+# Live Validation of the Conversation Store and the Desktop Window (2026-09-20)
 
-A first measurement of the question Orochi exists to answer: does routing beat using one CLI on its own? Three tasks, three arms, real Claude Code and Codex. Evidence is in `.orochi/live-e2e/compare-20260920-*` (local only, untracked). The harness is [`examples/compare_live.py`](../examples/compare_live.py) with [`examples/compare-suite.json`](../examples/compare-suite.json); every case fails as handed to the agents and passes with the reference solution kept beside it (`--validate`, checked by `tests/cli_e2e.rs`).
+What [Desktop App Design](desktop-app-design.md) left unverified, measured against the real
+CLIs. Everything below was run through the installed, authenticated `claude` and `codex`, not
+the fixture agent. Evidence is the store itself; the scratch directory is local only.
 
-**This is a pilot of 3 of the suite's 10 tasks, one sample each.** Codex's weekly allowance was at 7% (resetting 2026-09-22 17:29), so the full suite is still to be run. Nothing here establishes a general result.
+| # | Item | Result |
+|---|---|---|
+| 1 | A real rate limit is classified, not quoted | **Confirmed.** Codex's account was spent; the store recorded `rate_limit` and the runtime went to an account-wide cooldown. The provider's message reached the conversation and **not** telemetry |
+| 2 | A real turn is recorded losslessly | **Confirmed** against Claude Haiku. Every ACP kind P0 added appears, including ones the fixture never sends |
+| 3 | The ACP fields `acp.rs` stopped dropping | **Confirmed.** Real Claude sends `available_commands_update`, `usage_update`, and tool calls with `kind` and `rawInput` |
+| 4 | A patch's path | **Bug found and fixed.** A real agent names the file absolutely; the pane wanted the repository's own name |
+| 5 | P4: does an agent act on a note left mid-turn? | **Confirmed with Sonnet, not with Haiku.** The mechanism works; whether it is read depends on the model |
 
-## Arms
+Cost: four runs, about 771,000 tokens by the adapters' own figures, all on the cheapest models
+that could answer.
 
-| Arm | What it is |
-|---|---|
-| `claude-alone` | Claude Code as its owner had configured it: `claude-fable-5-1[1m]`, effort xhigh, one attempt, no classifier |
-| `codex-alone` | Codex as its owner had configured it: `gpt-6-astra`, reasoning high, one attempt, no classifier |
-| `orochi` | Both agents, classifier on, up to 3 attempts, verified by the repository's visible tests |
+## 1. A real rate limit reports its kind, not the text it was read from
 
-Every arm is the same binary and is scored only by a hidden check run afterwards; the repository's visible tests are what the agents and Orochi's evaluator can see. An arm is charged every token its runs recorded.
+Codex's account was exhausted (`You've hit your usage limit… try again at Sep 22nd`), which
+made this the first real test of the invariant that a classified failure reports its kind.
 
-## Result
-
-| Task | claude-alone | codex-alone | orochi |
-|---|---|---|---|
-| Fixing decimal money handling (Python, 2 files) | ✓ 436,255 / 142 s | ✓ 23,848 / 70 s | ✓ 58,322 / 80 s |
-| Adding a README section (docs) | ✓ 202,348 / 21 s | ✓ 21,882 / 26 s | ✓ 54,931 / 29 s |
-| TTL + LRU cache (Python, many edge cases) | ✓ 319,099 / 279 s | ✓ 23,665 / 77 s | ✓ 59,071 / 98 s |
-| **Total** | **3/3, 957,702** | **3/3, 69,395** | **3/3, 172,324** |
-
-The `orochi` numbers are its own re-run with the classifier's usage recorded (`.orochi/live-e2e/compare-20260920-pilot-orochi`); the first pass of the same three tasks (`compare-20260920-pilot`) was measured with a binary that did not yet record what the classifier spent, and showed 80,450 tokens for the same three passes.
-
-- **Accuracy did not separate the arms**: every arm passed every task. These three tasks are not hard enough to tell the arms apart, which is itself a finding about the suite.
-- Orochi routed all three tasks to `codex / gpt-5.6-luna` — the cheapest model that cleared the policy floor — and passed with it.
-- Tokens are what each ACP adapter reported, not charges, and most of them are cache reads (Claude: 371,125 of 436,255 on the money task; Codex: 23,040 of 23,848). **Totals compare arms within one provider far better than across providers.**
-
-## What the classifier costs
-
-Orochi asks an agent what the task is before routing it. That question is one more ACP session, and a session costs about as much as the work on a small task:
-
-| Who classified | Classification | Execution | Total |
-|---|---|---|---|
-| `claude / haiku` | 37,630 | 24,356 | 61,986 |
-| `codex / gpt-5.6-luna` | 23,800 | 24,148 | 47,948 |
-
-Almost all of it is the session's fixed cost — system prompt and cache reads — not the question. So on these tasks Orochi pays roughly twice what the same work costs on `codex-alone`, and the classifier's agent is currently chosen by the order agents appear in the configuration, not by what asking each one costs.
-
-## Standing conclusions
-
-1. **Against `claude-alone` Orochi was 5.6× cheaper in reported tokens** (172,324 vs 957,702) at the same accuracy, by choosing a cheaper provider and model for work that did not need the expensive one.
-2. **Against `codex-alone` Orochi was 2.5× more expensive** (172,324 vs 69,395) at the same accuracy. The gap is the classifier's extra session, not the executions (24k vs 24k per task).
-3. **Neither result is yet the goal**: to be better than the best single agent, Orochi must stop paying for a question whose answer cannot change what it does. Options measured here: ask the agent that answers cheapest (24k instead of 38k), or ask only when the label could change the chosen candidate.
-
-## Changed because of this
-
-`classifier::agents` now asks whichever agent has answered most cheaply, from what its `classification` runs recorded (`storage::advice_cost`), instead of following the order agents appear in the configuration; an agent nobody has priced yet is asked once first. On the machine measured here that is 23,800 tokens instead of 37,630 per classification. What the classifier spends is recorded at all only since 2026-09-20 (`what_the_classifier_spent_is_recorded_beside_the_run_it_decided`); before that a run's cost left out what deciding it took.
-
-Since then Orochi also **stops asking where the question is not worth its price**: `classifier::worth_asking` weighs what asking costs here against what work like this has cost here (`storage::typical_tokens`), and keeps the local profile when asking would take more than `classifier.max_cost_share` (0.25) of the work. With nothing measured yet it asks — asking is how both costs become known — so the rule takes hold after about three runs and never applies to a cached answer, which is free. The evaluator still checks the result, and a failure still moves the work to another candidate.
-
-On the numbers above that turns Orochi's ~24k-per-task classification into a one-off: the arm that spent 172,324 tokens on three tasks would spend about 24k less on every task after the third. **Unverified with real agents**: the rule is covered by tests only (`a_question_that_costs_more_than_the_work_it_decides_is_not_asked`, `it_stops_paying_to_ask_what_a_request_is_once_that_costs_more_than_the_work`), and the pilot was too short for it to take hold.
-
-## Still to do
-
-The full 10-task suite, after Codex's weekly allowance resets (2026-09-22 17:29), with the `orochi` arm keeping one data directory across the suite as a user's own Orochi does:
-
-```sh
-python3 examples/compare_live.py --suite examples/compare-suite.json \
-  --output .orochi/live-e2e/compare-<date> --binary target/release/orochi \
-  --adapter-cache ~/.local/share/orochi/adapters \
-  --agent-path-prepend ~/.local/bin --agent-path-prepend ~/.bun/bin \
-  --agent-path-prepend /Applications/ChatGPT.app/Contents/Resources \
-  --agent-path-prepend ~/.cargo/bin --timeout 900 --execute
+```
+attempts:  codex | gpt-5.6-luna | failure | rate_limit | "RateLimit: Internal error"
+v_runs:    codex | gpt-5.6-luna | failure | rate_limit
+v_runtime: codex | *            | cooldown, still cooling
 ```
 
-That run should show whether the classifier's price stops being paid per task, whether the harder tasks separate accuracy at all, and whether Orochi's verify-and-retry recovers a failure that a single agent does not.
+The provider's own message — which names the account's plan and carries two URLs — appears in
+`activity.sqlite3` as what the agent said, and **nowhere** in `telemetry.sqlite3` or its WAL
+(checked on the raw bytes). The cooldown is on `codex/*`, the account-wide scope, which is
+what a rate limit without `data.scope = "model"` is supposed to do.
+
+This also exercised the new telemetry views (`v_runs`, `v_runtime`) against a real failure.
+
+## 2 and 3. A real turn, and the ACP fields that were being dropped
+
+One task on Claude Haiku (`Create a file called hello.txt whose only content is the word:
+orochi`), which the agent completed in about 9 seconds. What the store holds:
+
+| Item | Where it came from |
+|---|---|
+| `user_message` | the task as typed |
+| `route` | claude / haiku / agent-default |
+| `commands` | **`available_commands_update`** — Claude sends its own slash commands |
+| `context` | **`usage_update`** — the context gauge |
+| `tool_call` | `title: "Write hello.txt"`, **`tool_kind: "edit"`**, `detail` from `rawInput.file_path` |
+| `agent_message` | "Done. Created `hello.txt` with content "orochi"." |
+| `checks` | `partial_success` — nothing to verify, correctly not called a success |
+
+The three in bold are the ACP kinds and fields `acp.rs` dropped before P0 and which the
+fixture agent does not send. This is the first evidence that P0 reads what a real agent
+actually emits. `attempts.run_id` linked to the telemetry run, with 70,479 tokens recorded.
+
+## 4. A patch is filed under the path the repository uses
+
+The one defect this validation found. Real Claude names the file it changed with an **absolute**
+path in its ACP diff, so a patch was stored as
+`/private/tmp/.../scratchpad/live/repo/hello.txt` — which a review pane would show in full and
+`v_turn_files` would group by. The design says the path is relative to the seat's workspace.
+
+Fixed in `activity::patch`: a path inside the thread's own directory is made relative to it,
+and one outside keeps the only name it has. The thread's `cwd` is also resolved, because
+`/tmp` and `/private/tmp` are the same directory on macOS and an agent may name either.
+Pinned by `a_patch_is_filed_under_the_path_the_repository_uses`.
+
+## 5. P4: a note left in the room while a turn is running
+
+The question the design refused to answer without a real run: a person leaves a note
+mid-turn, and it is delivered the way every mailbox message is — when the agent next calls
+`read_messages`. Does an agent ever call it?
+
+The harness starts a turn whose task tells the agent to call `read_messages` and write down
+what it hears, waits for its session to appear in the room, leaves a note with
+`orochi peers --say "the magic word is beryl"`, and reads back what the agent wrote.
+
+| Model | Read the note? | What it wrote |
+|---|---|---|
+| Claude Haiku | **No** | `none`. It never called the tool, and spent the turn describing the repository instead |
+| Claude Sonnet | **Yes** | `the magic word is beryl` |
+
+The store shows why this is a result about the agent and not about the delivery: the note was
+in the room three seconds after the peer joined, addressed to `all`, with the peer's
+`last_read` still at 0 — visible by every rule `read` applies. Sonnet's peer ended with
+`last_read = 2`, so it read and marked it.
+
+So the mechanism is sound and **a capable model does act on a mid-turn note**. What cannot be
+claimed is that any agent will: Haiku, told plainly to call the tool, did not. The Team pane's
+wording — "delivered when the agent next checks" — is the honest one, and it should stay.
+
+## What is still not established
+
+- **Antigravity and Gemini** remain unvalidated here, as in earlier records.
+- **The desktop window inside Tauri.** Its page was checked by rendering the same `app.js` and
+  `app.css` in a browser (`desktop/dist/preview.html`), which found and fixed four layout
+  defects; the packaged window uses the same WebKit but its own chrome, and has not been
+  looked at.
+- **A collaboration on real agents under the store.** `collaborate` records rows in the
+  fixture tests only; Codex's account was spent before a two-agent run could be measured.

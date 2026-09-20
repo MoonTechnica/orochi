@@ -574,6 +574,77 @@ fn an_older_binarys_writes_still_work_after_the_telemetry_migration() {
     assert_eq!(runs[0].id, "old");
 }
 
+/// A real agent names the file it changed with an absolute path (confirmed against Claude on
+/// 2026-09-20). A review pane wants the path the repository uses, so it is made relative to
+/// the thread's own directory — and left alone when it is somewhere else entirely.
+#[test]
+fn a_patch_is_filed_under_the_path_the_repository_uses() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    activity.project("proj", &repo).unwrap();
+    let thread = activity
+        .create_thread(
+            "proj",
+            &repo,
+            None,
+            "repo-hash",
+            Origin::Run,
+            &Overrides::default(),
+            "allow",
+        )
+        .unwrap();
+    let turn = activity
+        .queue_turn(&thread, "write it", &[], "solo", "stdin")
+        .unwrap();
+    let seat = activity
+        .create_seat(&turn, 0, "implementer", true, false, None, None)
+        .unwrap();
+    let attempt = activity
+        .create_attempt(&seat, &candidate("claude", "haiku"), false, None)
+        .unwrap();
+    let item = activity
+        .item(
+            &thread,
+            &turn,
+            Some(&attempt),
+            ItemKind::ToolCall,
+            Some("completed"),
+            Some("call-1"),
+            "",
+            None,
+        )
+        .unwrap();
+
+    let inside = repo.join("src/hello.txt");
+    activity
+        .patch(item, &turn, &inside.display().to_string(), None, "orochi\n")
+        .unwrap();
+    let outside = dir.path().join("elsewhere.txt");
+    activity
+        .patch(item, &turn, &outside.display().to_string(), None, "x\n")
+        .unwrap();
+
+    let paths: Vec<String> = activity
+        .connection()
+        .prepare("SELECT path FROM patches ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        paths[0], "src/hello.txt",
+        "a file in the thread's own directory is named the way the repository names it"
+    );
+    assert_eq!(
+        paths[1],
+        outside.display().to_string(),
+        "and one outside it keeps the only name it has"
+    );
+}
+
 /// §2 and §9 asked for these to be measured rather than estimated. They are bounds, not
 /// benchmarks: they fail if the store becomes slow enough to be felt, and the numbers they
 /// print are what `docs/desktop-app-design.md` records.

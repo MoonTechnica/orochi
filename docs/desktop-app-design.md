@@ -10,7 +10,7 @@ Written: 2026-09-20.
 | P1 Control | **Implemented; automated tests only.** Prompts and controls through the store, `orochi host`, `chat --continue`, the mailbox move, the failed-check tail |
 | P2 App | **Implemented; automated tests only.** A Tauri 2 window: sidebar, thread, composer with a folder picker, approval cards, Team and Changes panes |
 | P3 Supervising | **Implemented; automated tests only.** Mission control, Agents, Insights (over the telemetry views of §5), the work-graph board and Settings |
-| P4 The user in the room | **Implemented; unverified where it matters.** `Mailbox::speak`, `orochi peers --say` and the Team pane's message box. Whether an agent acts on a note left mid-turn is **not** established — it needs a run against real CLIs before it is presented as steering |
+| P4 The user in the room | **Implemented and validated against a real CLI** ([2026-09-20](real-validation-20260920.md)). Claude Sonnet read a note left mid-turn and acted on it; Haiku, told plainly to, did not. The mechanism is sound; whether it is read depends on the model, so "delivered when the agent next checks" stays the wording |
 
 The window's **appearance** was checked on 2026-09-20 by rendering the same `app.js` and
 `app.css` in a browser against the recorded view output (`desktop/dist/preview.html`), which
@@ -22,7 +22,12 @@ itself, which uses the same WebKit but its own chrome.
 Still out of scope, as §6.5 says: staging, reverting, committing and opening a pull request.
 The Changes pane reads the tree; it does not drive git.
 
-Behavior against real agent CLIs is **unverified**: everything above is exercised by the fixture agent only, because a test must never spend the user's quota. The measurements §2 and §9 call for **have** been taken (§2) and are asserted as bounds in `tests/activity.rs`.
+Behavior against real agent CLIs was validated on [2026-09-20](real-validation-20260920.md): a
+real turn on Claude, a real rate limit on Codex, and P4's mid-turn note. That run found one
+defect (patch paths arrived absolute) and confirmed that the ACP fields `acp.rs` had been
+dropping are ones real agents actually send. The automated tests still use the fixture agent
+only, because a test must never spend the user's quota. The measurements §2 and §9 call for
+have been taken and are asserted as bounds in `tests/activity.rs`.
 
 The four open points were decided on 2026-09-20 (§10). The invariant text in `CLAUDE.md`, `README.md` and `docs/agent-mailbox.md` is updated as part of P0/P1.
 
@@ -617,7 +622,7 @@ A form over `config.toml` (`orochi config show` / validated writes through `Conf
 | **P1 Control** ✅ | Prompts and controls through the store; `orochi host`; `chat --continue`; the mailbox move; the failed-check tail (`evaluator` hands it to the recorder, `CheckResult` and `RunRecord` stay as they are) | Terminal test: a second process answers a permission question and interrupts a turn the terminal owns; a queued turn inserted from outside runs next; a killed host leaves a thread that reads *interrupted* and resumes |
 | **P2 App, observing and conversing** ✅ | Tauri shell, sidebar, thread, composer, folder picker, prompts, Team tab read-only (notifications remain) | The app's Rust commands tested against fixture databases; the WebView tested against recorded view output. No agent account needed, as everywhere else |
 | **P3 Review and supervise** ✅ | Changes with its git scopes and line comments, mission control, Agents, Insights, work-graph board, Settings | Client tests over fixture stores (including a real `git init` for the scopes); UI tests over recorded view output |
-| **P4 The user in the room** ✅ (unverified) | `via='user'` messages, from the terminal and the window | Library test: a note reaches a peer's `read_messages`. **Against real CLIs: do agents read and act on a mid-turn note? Not yet run** |
+| **P4 The user in the room** ✅ | `via='user'` messages, from the terminal and the window | Library test: a note reaches a peer's `read_messages`. **Against a real CLI (2026-09-20): Sonnet read one mid-turn and acted on it; Haiku did not** |
 
 P0 and P1 are worth having with no app at all: persistent history, `--continue`, and answering a prompt from another terminal.
 
