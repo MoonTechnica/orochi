@@ -7,6 +7,7 @@
 //! place, Esc interrupts, and Shift-Tab cycles the approval mode the running agent actually
 //! supports. Keys, the queue and questions behave as Claude Code documents them.
 mod banner;
+pub mod host;
 pub mod term;
 
 use crate::{
@@ -389,6 +390,11 @@ impl Recorded {
         self.thread = None;
         self.turn = None;
     }
+}
+
+/// The console answers its own permission questions; a client may answer them first.
+fn answerer(mode: PermissionMode) -> crate::activity::recorder::Answerer {
+    crate::activity::recorder::Answerer::Local(mode)
 }
 
 /// What `Recorded::thread` needs from the session without borrowing all of it.
@@ -1899,6 +1905,7 @@ impl Session<'_> {
                     read_only: !seats[0].writes,
                     place: Some(order.place(0)),
                     seat: recorded_seats[0].clone(),
+                    answerer: answerer(approval.confirm),
                 },
                 Some(events),
                 &mut continuation,
@@ -1932,6 +1939,7 @@ impl Session<'_> {
                                 read_only: true,
                                 place: Some(order.place(index + 1)),
                                 seat: aside_seat,
+                                answerer: answerer(PermissionMode::Allow),
                             },
                             Some(sender),
                             slot,

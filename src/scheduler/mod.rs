@@ -214,6 +214,8 @@ pub struct RunOptions {
     /// The seat this run fills in the conversation store. `None` records nothing, which is
     /// what an adviser, a classifier and `activity.enabled = false` all are.
     pub seat: Option<crate::activity::SeatRef>,
+    /// Who answers a permission request that nothing on the event stream is listening for.
+    pub answerer: crate::activity::recorder::Answerer,
 }
 #[derive(Debug, Serialize)]
 pub struct RoutePlan {
@@ -276,6 +278,7 @@ pub async fn run_turn(
             // Nothing is listening: this run's reply belongs on stdout, as it did before the
             // store sat in the path.
             events.is_none(),
+            options.answerer,
         )
     });
     let downstream = match &tee {

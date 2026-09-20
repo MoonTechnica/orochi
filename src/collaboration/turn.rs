@@ -548,6 +548,7 @@ async fn select(
                 config.activity.thinking,
                 Some(tx.clone()),
                 false,
+                crate::activity::recorder::Answerer::Local(config.scheduler.permission),
             )
         });
         let sink = tee.as_ref().map_or(tx, |tee| tee.sink());

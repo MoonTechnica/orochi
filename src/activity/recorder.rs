@@ -434,14 +434,22 @@ impl Tee {
     /// `echo` takes over what `acp.rs` does when nothing is listening: a one-shot run prints
     /// the agent's reply to stdout. Without it, putting the store in the path would silence
     /// the very output the run exists to produce.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         store: Shared,
         place: Seat,
         thinking: bool,
         downstream: Option<EventSink>,
         echo: bool,
+        answerer: Answerer,
     ) -> Self {
         let (sink, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let asking = Asking {
+            store: store.clone(),
+            thread: place.thread.clone(),
+            turn: place.turn.clone(),
+            answerer,
+        };
         let mut recorder = Recorder::new(store, place, thinking);
         let current = recorder.current.clone();
         let (close, mut closed) = tokio::sync::oneshot::channel();
@@ -473,6 +481,12 @@ impl Tee {
                     use std::io::Write;
                     print!("{}", text.replace('\u{1b}', "\\x1b"));
                     let _ = std::io::stdout().flush();
+                }
+                // A question is a row as well as an event, so a client can see it and answer
+                // it. Whoever answers first wins; the agent waits for exactly one answer.
+                if let ExecutionEvent::Permission(request, reply) = event {
+                    asking.open(recorder.place.attempt.clone(), request, reply, &downstream);
+                    continue;
                 }
                 if let Some(downstream) = &downstream {
                     let _ = downstream.send(event);
@@ -514,5 +528,130 @@ impl Drop for Tee {
         if let Some(close) = self.close.take() {
             let _ = close.send(());
         }
+    }
+}
+
+/// Who settles a permission question when nobody is listening on the event stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answerer {
+    /// This run decides for itself, as it did before a store sat in the path: the terminal is
+    /// asked, or the configured mode answers.
+    Local(crate::config::PermissionMode),
+    /// A headless host: the question stays open until a client answers it. Nobody here can,
+    /// so guessing would be worse than waiting.
+    Store,
+}
+
+/// Opens permission questions as rows and settles them.
+struct Asking {
+    store: Shared,
+    thread: String,
+    turn: String,
+    answerer: Answerer,
+}
+
+impl Asking {
+    fn open(
+        &self,
+        attempt: Option<String>,
+        request: serde_json::Value,
+        reply: tokio::sync::oneshot::Sender<Option<String>>,
+        downstream: &Option<EventSink>,
+    ) {
+        let row = self
+            .store
+            .lock()
+            .expect("activity store")
+            .open_prompt(
+                &self.thread,
+                &self.turn,
+                attempt.as_deref(),
+                None,
+                "permission",
+                &request.to_string(),
+            )
+            .map_err(|error| tracing::debug!(%error, "permission not recorded"))
+            .ok();
+        let downstream = match (downstream, self.answerer) {
+            (Some(downstream), _) => Some(downstream),
+            (None, Answerer::Local(permission)) => {
+                let store = self.store.clone();
+                tokio::spawn(async move {
+                    let answer = crate::acp::choose_permission(&request, permission).await;
+                    if let Some(row) = row {
+                        let _ = store.lock().expect("activity store").answer_prompt(
+                            &row,
+                            answer.as_deref(),
+                            "policy",
+                        );
+                    }
+                    let _ = reply.send(answer);
+                });
+                return;
+            }
+            // Headless: the row is the only answerer, so wait for it.
+            (None, Answerer::Store) => None,
+        };
+        // With someone listening, they and the store race, and the loser's dialog closes when
+        // it sees the row answered. With nobody, the row is the only answerer — and then there
+        // must be no terminal channel at all, or dropping its unused sender would read as an
+        // instant refusal.
+        let mut terminal = None;
+        if let Some(downstream) = downstream {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if downstream
+                .send(ExecutionEvent::Permission(request, tx))
+                .is_err()
+            {
+                let _ = reply.send(None);
+                return;
+            }
+            terminal = Some(rx);
+        }
+        let Some(row) = row else {
+            tokio::spawn(async move {
+                let answer = match terminal {
+                    Some(rx) => rx.await.ok().flatten(),
+                    None => None,
+                };
+                let _ = reply.send(answer);
+            });
+            return;
+        };
+        let store = self.store.clone();
+        tokio::spawn(async move {
+            let mut poll = tokio::time::interval(std::time::Duration::from_millis(150));
+            poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let answer = loop {
+                tokio::select! {
+                    answered = async {
+                        match &mut terminal {
+                            Some(rx) => rx.await.ok().flatten(),
+                            // Nobody to hear from: wait for the row instead of resolving.
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let _ = store.lock().expect("activity store").answer_prompt(
+                            &row,
+                            answered.as_deref(),
+                            "terminal",
+                        );
+                        break answered;
+                    }
+                    _ = poll.tick() => {
+                        let stored = store
+                            .lock()
+                            .expect("activity store")
+                            .prompt_answer(&row)
+                            .ok()
+                            .flatten();
+                        if let Some(answer) = stored {
+                            break answer;
+                        }
+                    }
+                }
+            };
+            let _ = reply.send(answer);
+        });
     }
 }

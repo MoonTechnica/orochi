@@ -186,7 +186,7 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
                         // conversation is, so gateway work appears beside terminal work.
                         let recorded = open_turn(&config, &store, &root, thread, &prompt_text);
                         let _ = opened_tx.send(recorded.as_ref().map(|(_, seat, _)| seat.thread.clone()));
-                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None, seat: recorded.as_ref().map(|(_, seat, _)| seat.clone()) };
+                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None, seat: recorded.as_ref().map(|(_, seat, _)| seat.clone()), answerer: crate::activity::recorder::Answerer::Local(config.scheduler.permission) };
                         let code = tokio::select! {
                             result = scheduler::run_with_events(&config, &policies, &store, &root, options, Some(events)) => result,
                             _ = worker_cancel.wait_for(|v| *v) => Ok(130),

@@ -118,6 +118,13 @@ pub enum Command {
         #[arg(long)]
         messages: bool,
     },
+    /// Run a thread with no terminal, for a client that reads the store. Hidden: a client
+    /// starts it, and `orochi chat` is what a person runs.
+    #[command(hide = true)]
+    Host {
+        #[arg(long)]
+        thread: String,
+    },
     /// Read the conversation store: the same views a desktop client renders.
     Threads {
         #[command(subcommand)]
@@ -210,6 +217,14 @@ pub enum PolicyCommand {
 pub enum ThreadCommand {
     /// Show one thread's timeline, seats and changed files.
     Show { id: String },
+    /// Start a thread in this directory without running it; `orochi host` picks it up.
+    New,
+    /// Queue a message in a thread. A running host takes it next; otherwise start one.
+    Send { id: String, text: String },
+    /// Stop the turn a host is running, as Esc does in the console.
+    Interrupt { id: String },
+    /// End the host running a thread. The thread and its history stay.
+    Stop { id: String },
     /// Delete a thread and everything under it. This cannot be undone.
     Delete {
         id: String,
@@ -407,7 +422,12 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     let shared = config.scheduler.shared_workspace;
     let joins = matches!(
         cli.command,
-        Some(Command::Chat | Command::Collaborate { .. } | Command::CollaborateResume { .. })
+        Some(
+            Command::Chat
+                | Command::Host { .. }
+                | Command::Collaborate { .. }
+                | Command::CollaborateResume { .. }
+        )
     ) || (cli.command.is_none() && cli.task.is_some() && !cli.dry_run);
     let _membership = if joins && config.mailbox.enabled {
         let membership = crate::mailbox::join(
@@ -418,7 +438,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             &store.salt()?,
             cli.peer_name.as_deref(),
         )?;
-        if !matches!(cli.command, Some(Command::Chat))
+        if !matches!(cli.command, Some(Command::Chat | Command::Host { .. }))
             && let Some(name) = crate::mailbox::name_prefix()
         {
             eprintln!("Mailbox peer: {name}");
@@ -686,6 +706,13 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 }
             }
         }
+        Some(Command::Host { thread }) => {
+            ensure!(
+                config.activity.enabled,
+                "activity.enabled is false, so there is no thread to host"
+            );
+            return crate::chat::host::run(&config, &paths.data, &thread).await;
+        }
         Some(Command::Threads {
             command,
             all,
@@ -747,6 +774,43 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                             println!("  {} +{} -{}", file.path, file.added, file.removed);
                         }
                     }
+                }
+                Some(ThreadCommand::New) => {
+                    let project = activity.project_for(&root, &store.salt()?)?;
+                    let branch = crate::context::git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
+                        .map(|b| b.trim().to_owned())
+                        .filter(|b| !b.is_empty() && b != "HEAD");
+                    let id = activity.create_thread(
+                        &project,
+                        &root,
+                        branch.as_deref(),
+                        &store.repository_id(&root)?,
+                        crate::activity::Origin::Desktop,
+                        &Overrides {
+                            agent: cli.agent.clone(),
+                            model: cli.model.clone(),
+                            reasoning: cli.reasoning.clone(),
+                            mode: cli.mode.clone(),
+                        },
+                        cli.permission.unwrap_or(config.scheduler.permission).key(),
+                    )?;
+                    if cli.json {
+                        println!("{}", json!({ "thread": id }));
+                    } else {
+                        println!("{id}");
+                    }
+                }
+                Some(ThreadCommand::Send { id, text }) => {
+                    let turn = activity.queue_turn(&id, &text, &[], "auto", "desktop")?;
+                    if cli.json {
+                        println!("{}", json!({ "turn": turn }));
+                    }
+                }
+                Some(ThreadCommand::Interrupt { id }) => {
+                    activity.control(&id, "interrupt", None)?;
+                }
+                Some(ThreadCommand::Stop { id }) => {
+                    activity.control(&id, "stop", None)?;
                 }
                 Some(ThreadCommand::Delete { id, all }) => {
                     if all {
@@ -1082,6 +1146,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     read_only: false,
                     place: None,
                     seat: recorded.as_ref().map(|(_, seat, _)| seat.clone()),
+                    answerer: crate::activity::recorder::Answerer::Local(permission),
                 },
             )
             .await;

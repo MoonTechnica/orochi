@@ -1295,6 +1295,122 @@ impl Activity {
         Ok(())
     }
 
+    /// The next turn waiting to run in a thread, oldest first.
+    pub fn next_queued(&self, thread: &str) -> Result<Option<(String, String)>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT t.id, COALESCE((SELECT i.text FROM items i WHERE i.turn_id=t.id
+                    AND i.kind='user_message' ORDER BY i.id LIMIT 1), '')
+                 FROM turns t WHERE t.thread_id=?1 AND t.state='queued'
+                 ORDER BY t.ordinal LIMIT 1",
+                [thread],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// What a thread was left routed to, for a turn that continues it.
+    pub fn continuation(&self, thread: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT continuation FROM threads WHERE id=?1 AND continuation IS NOT NULL",
+                [thread],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| serde_json::from_str(&value).ok()))
+    }
+
+    pub fn thread_settings(&self, thread: &str) -> Result<Option<(String, String, String)>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT cwd, overrides, permission FROM threads WHERE id=?1",
+                [thread],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    /// A control a client asked for, and marking it taken. Controls are how the app presses
+    /// the keys the terminal has: interrupt, change mode, start again.
+    pub fn take_control(&self, thread: &str) -> Result<Option<(String, Option<String>)>> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let next: Option<(i64, String, Option<String>)> = tx
+            .query_row(
+                "SELECT id, kind, payload FROM controls
+                 WHERE thread_id=?1 AND consumed_at IS NULL ORDER BY id LIMIT 1",
+                [thread],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((id, ..)) = &next {
+            tx.execute(
+                "UPDATE controls SET consumed_at=?2 WHERE id=?1",
+                params![id, millis()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(next.map(|(_, kind, payload)| (kind, payload)))
+    }
+
+    pub fn control(&self, thread: &str, kind: &str, payload: Option<&str>) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO controls (thread_id, kind, payload, created_at) VALUES (?1,?2,?3,?4)",
+            params![thread, kind, payload, millis()],
+        )?;
+        Ok(())
+    }
+
+    /// Opens a question the user has to answer. `answer` is NULL while it is open, the empty
+    /// string when it was refused, and otherwise the ACP option that was chosen.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_prompt(
+        &self,
+        thread: &str,
+        turn: &str,
+        attempt: Option<&str>,
+        item: Option<i64>,
+        kind: &str,
+        request: &str,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.connection.execute(
+            "INSERT INTO prompts (id, thread_id, turn_id, attempt_id, item_id, kind, request,
+                created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![id, thread, turn, attempt, item, kind, request, millis()],
+        )?;
+        Ok(id)
+    }
+
+    /// Answers one. Whoever gets here first decides: the row count is the race, so a terminal
+    /// dialog and a client's card cannot both answer the same question.
+    pub fn answer_prompt(&self, id: &str, answer: Option<&str>, by: &str) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE prompts SET answer=?2, answered_by=?3, answered_at=?4
+             WHERE id=?1 AND answer IS NULL",
+            params![id, answer.unwrap_or(""), by, millis()],
+        )? == 1)
+    }
+
+    /// What a question was answered, if it has been.
+    pub fn prompt_answer(&self, id: &str) -> Result<Option<Option<String>>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT answer FROM prompts WHERE id=?1 AND answer IS NOT NULL",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|answer| (!answer.is_empty()).then_some(answer)))
+    }
+
     /// Registers this process as the thread's owner. The unique index is what stops two hosts
     /// from running one thread; a dead owner's row is cleared first, judged the way
     /// `mailbox::prune` judges a peer's.

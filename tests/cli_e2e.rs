@@ -2080,3 +2080,159 @@ fn a_gateway_session_is_a_thread_whose_prompts_are_its_turns() {
         "named after what it was opened to do"
     );
 }
+
+/// Recording a run puts the store in the path of its events, including permission requests.
+/// It must not change who answers them: a one-shot run with nothing listening still refuses,
+/// and says why, rather than waiting for an answer that cannot come.
+#[test]
+fn a_recorded_run_still_answers_its_own_permission_requests() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "permission".into());
+    let output = workspace.run(&["--permission", "ask", "Implement endpoint"]);
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("without a terminal"),
+        "it says why it refused: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!workspace.dir.path().join("repo/completed.txt").exists());
+
+    // And the question is on the thread's timeline, answered, for a client to show.
+    let activity =
+        orochi::activity::Activity::open(&workspace.dir.path().join("data"), 30).unwrap();
+    let (kind, answered_by): (String, Option<String>) = activity
+        .connection()
+        .query_row("SELECT kind, answered_by FROM prompts", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .expect("the permission question is recorded");
+    assert_eq!(kind, "permission");
+    assert_eq!(answered_by.as_deref(), Some("policy"));
+}
+
+/// R2 and R7: a client queues a message, a headless host runs it, and the question it raises
+/// waits for that client rather than being guessed at. This is the whole control path of the
+/// desktop app, and it is testable without a GUI because every step is a row.
+#[test]
+fn a_headless_host_runs_queued_turns_and_leaves_its_questions_for_a_client() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "permission".into());
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+
+    let new = workspace.run(&["--permission", "ask", "threads", "new", "--json"]);
+    success(&new);
+    let thread = serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    success(&workspace.run(&["threads", "send", &thread, "Implement endpoint"]));
+
+    let mut host = workspace
+        .command()
+        .args(["host", "--thread", &thread])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // The client sees the question and answers it. Nothing else can: the host has no terminal.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no permission question appeared"
+        );
+        let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+        let open: Option<(String, String)> = activity
+            .connection()
+            .query_row(
+                "SELECT id, request FROM v_open_prompts WHERE kind='permission'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        if let Some((id, request)) = open {
+            let value: serde_json::Value = serde_json::from_str(&request).unwrap();
+            let option = value["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|o| o["kind"] == "allow_once")
+                .expect("the question carries the agent's own options");
+            assert!(
+                activity
+                    .answer_prompt(&id, option["optionId"].as_str(), "desktop")
+                    .unwrap(),
+                "answering an open question succeeds"
+            );
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // The turn finishes, and the host stays up for the next message rather than exiting.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the turn did not finish after the question was answered"
+        );
+        let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+        let state: String = activity
+            .connection()
+            .query_row("SELECT state FROM turns", [], |r| r.get(0))
+            .unwrap();
+        if state != "running" && state != "queued" {
+            assert_eq!(state, "completed");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        workspace.dir.path().join("repo/completed.txt").exists(),
+        "the agent was allowed to do the work"
+    );
+
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let (by, kind): (String, String) = activity
+        .connection()
+        .query_row(
+            "SELECT p.answered_by, h.kind FROM prompts p, hosts h",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(by, "desktop", "the client is the only one who could answer");
+    assert_eq!(
+        kind, "headless",
+        "and the host is still there for the next message"
+    );
+
+    // Ending it is a row too. `interrupt` stops a turn, as Esc does; `stop` ends the host.
+    success(&workspace.run(&["threads", "stop", &thread]));
+    let stopped = std::time::Instant::now() + Duration::from_secs(30);
+    while host.try_wait().unwrap().is_none() {
+        assert!(
+            std::time::Instant::now() < stopped,
+            "the host ignored the request to stop"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let left: i64 = orochi::activity::Activity::attach(&data, 30)
+        .unwrap()
+        .connection()
+        .query_row("SELECT count(*) FROM hosts", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "a host that ends releases its thread");
+}

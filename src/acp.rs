@@ -1134,7 +1134,10 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-async fn choose_permission(request: &Value, mode: PermissionMode) -> Option<String> {
+/// How a run with nobody listening answers a permission request. The conversation store sits
+/// in the path of every event now, so it answers this way too rather than swallowing the
+/// question: putting a recorder between an agent and its user must not change who decides.
+pub(crate) async fn choose_permission(request: &Value, mode: PermissionMode) -> Option<String> {
     let id = allow_once_option(request)?;
     match mode {
         PermissionMode::Allow => Some(id),
