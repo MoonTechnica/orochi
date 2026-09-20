@@ -331,3 +331,67 @@ fn sending_starts_a_host_only_when_the_thread_has_none() {
         "a thread nobody owns needs one before its messages can run"
     );
 }
+
+/// P3: one screen of every seat working anywhere, so many threads can be supervised without
+/// opening any of them.
+#[test]
+fn mission_control_shows_every_working_seat_across_threads() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+
+    let working = client.working().unwrap();
+    assert_eq!(working.len(), 2, "both seats of the running turn are on it");
+    assert_eq!(working[0].role, "implementer");
+    assert_eq!(working[0].thread_title, "Fix the flaky mailbox test");
+    assert_eq!(working[0].project, "orochi");
+    assert!(
+        working.iter().any(|seat| seat.read_only),
+        "and it says which of them only reads"
+    );
+}
+
+/// P4: a person can leave a note in the room, and the room is what the Team pane shows.
+#[test]
+fn the_room_carries_what_agents_and_the_person_said() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+
+    assert!(client.room(&thread).unwrap().is_empty(), "nobody has spoken yet");
+    client.say(&thread, None, "prefer the simpler shape").unwrap();
+
+    let room = client.room(&thread).unwrap();
+    assert_eq!(room.len(), 1);
+    assert_eq!(room[0].who, "user");
+    assert_eq!(room[0].via, "user");
+    assert_eq!(room[0].text, "prefer the simpler shape");
+    assert_eq!(room[0].whom.as_deref(), Some("all"));
+}
+
+/// P3: the agents screen, and the numbers behind Insights. Both are telemetry's own views, so
+/// what a window shows is what `orochi status` and `orochi calibrate` show.
+#[test]
+fn the_agents_and_insights_screens_read_telemetry_through_its_views() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let store = orochi::storage::Store::open(dir.path()).unwrap();
+    store
+        .save_runtime(&orochi::types::RuntimeState {
+            status: orochi::types::RuntimeStatus::Cooldown,
+            cooldown_until: Some(orochi::types::now() + 300),
+            ..orochi::types::RuntimeState::new("codex", "*")
+        })
+        .unwrap();
+    let client = Client::open(dir.path()).unwrap();
+
+    let agents = client.agents().unwrap();
+    let codex = agents.iter().find(|a| a.agent == "codex").unwrap();
+    assert_eq!(codex.status, "cooldown");
+    assert!(codex.cooling > 0, "with the time left on it");
+
+    assert!(
+        client.insights().unwrap().is_empty(),
+        "no runs yet means no numbers to show, rather than zeroes to misread"
+    );
+}

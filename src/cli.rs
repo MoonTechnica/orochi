@@ -117,6 +117,13 @@ pub enum Command {
     Peers {
         #[arg(long)]
         messages: bool,
+        /// Leave a note in the room. The agents find it when they next read their messages,
+        /// so it is a note on the table rather than an interruption.
+        #[arg(long, value_name = "TEXT")]
+        say: Option<String>,
+        /// Leave it for one agent instead of everyone.
+        #[arg(long, value_name = "NAME", requires = "say")]
+        to: Option<String>,
     },
     /// Run a thread with no terminal, for a client that reads the store. Hidden: a client
     /// starts it, and `orochi chat` is what a person runs.
@@ -493,9 +500,17 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             )
             .await;
         }
-        Some(Command::Peers { messages }) => {
+        Some(Command::Peers { messages, say, to }) => {
             let mailbox = crate::mailbox::Mailbox::open(&paths.data, &config.mailbox)?;
             let channel = crate::mailbox::channel(&root, &store.salt()?);
+            if let Some(text) = say {
+                let sent = mailbox.speak(&channel, to.as_deref(), &text, None)?;
+                println!(
+                    "Left for {}; they will see it when they next read their messages.",
+                    sent.to
+                );
+                return Ok(0);
+            }
             let peers = mailbox.peers(&channel)?;
             let history = if messages {
                 mailbox.history(&channel, 50)?

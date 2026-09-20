@@ -334,6 +334,52 @@ impl Mailbox {
         })
     }
 
+    /// A note from the person, to one peer or to the room.
+    ///
+    /// It is delivered the way every message here is — when the agent next calls
+    /// `read_messages` — so it is a note left on the table rather than an interruption, and
+    /// nothing about the agent-facing protocol changes. `via` marks it as the user's so a
+    /// client can draw it differently; the agents see only that `user` said it.
+    ///
+    /// Whether an agent acts on a note left mid-turn is **unverified** against real CLIs.
+    pub fn speak(
+        &self,
+        channel: &str,
+        to: Option<&str>,
+        body: &str,
+        thread: Option<&str>,
+    ) -> Result<Message> {
+        ensure!(
+            !body.trim().is_empty() && body.len() <= MAX_BODY,
+            "message body must be 1-{MAX_BODY} bytes"
+        );
+        let (recipient, recipient_name) = match to {
+            None => ("*".to_owned(), "all".to_owned()),
+            Some(name) => {
+                let peer = self
+                    .peers(channel)?
+                    .into_iter()
+                    .find(|p| p.name.eq_ignore_ascii_case(name.trim()))
+                    .with_context(|| format!("no running peer named {name}"))?;
+                (peer.id, peer.name)
+            }
+        };
+        let sent_at = now();
+        self.connection.execute(
+            "INSERT INTO messages (project_id, thread_id, sender, sender_name, recipient,
+                recipient_name, via, body, sent_at)
+             VALUES (?1,?2,'user','user',?3,?4,'user',?5,?6)",
+            params![channel, thread, recipient, recipient_name, body, sent_at],
+        )?;
+        Ok(Message {
+            id: self.connection.last_insert_rowid(),
+            from: "user".to_owned(),
+            to: recipient_name,
+            body: body.into(),
+            sent_at,
+        })
+    }
+
     /// Unread direct messages and broadcasts (including recent broadcasts sent before this
     /// peer joined); marks them read.
     pub fn read(&self, id: &str, limit: usize) -> Result<Vec<Message>> {

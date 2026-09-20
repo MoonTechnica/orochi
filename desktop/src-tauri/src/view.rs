@@ -53,6 +53,67 @@ pub struct Folder {
     pub updated_at: Option<i64>,
 }
 
+/// A seat working somewhere, for the one screen that watches every thread at once.
+#[derive(Debug, Clone, Serialize)]
+pub struct Working {
+    pub thread_id: String,
+    pub thread_title: String,
+    pub project: String,
+    pub role: String,
+    pub read_only: bool,
+    pub state: String,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub status: Option<String>,
+    pub doing: Option<String>,
+    pub since: i64,
+}
+
+/// One line in the room: an agent's message, a person's note, or someone arriving or leaving.
+#[derive(Debug, Clone, Serialize)]
+pub struct Said {
+    pub seq: i64,
+    pub kind: String,
+    pub who: String,
+    pub whom: Option<String>,
+    pub via: String,
+    pub text: String,
+    pub at: i64,
+    pub role: Option<String>,
+    pub model: Option<String>,
+}
+
+/// An agent's readiness, as `orochi status` reports it.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentRow {
+    pub agent: String,
+    pub model: String,
+    pub status: String,
+    pub cooling: i64,
+    pub reset_at: Option<i64>,
+    pub quota_estimate: Option<f64>,
+    pub failures: i64,
+    pub windows: Vec<(String, f64, Option<i64>)>,
+}
+
+/// What a route has actually done. Verified evidence and weak signals are separate columns
+/// here for the same reason `calibrate` keeps them apart: one is measured, the other is a
+/// guess about what the user meant by carrying on.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteStats {
+    pub agent: String,
+    pub model: String,
+    pub task_type: String,
+    pub reasoning: Option<String>,
+    pub verified: i64,
+    pub failures: i64,
+    pub weak: i64,
+    pub success_rate: f64,
+    pub mean_tokens: f64,
+    pub mean_duration_ms: f64,
+    pub last_at: Option<i64>,
+}
+
 pub struct Client {
     activity: Activity,
     /// Telemetry, for the salt a project's identity is derived from — the same one the CLI
@@ -60,6 +121,8 @@ pub struct Client {
     store: Store,
     /// Where this window has read the change feed up to.
     cursor: i64,
+    /// The room's limits, as configured.
+    mailbox: orochi::config::MailboxConfig,
 }
 
 impl Client {
@@ -79,6 +142,7 @@ impl Client {
             activity,
             store: Store::open(data)?,
             cursor: 0,
+            mailbox: orochi::config::MailboxConfig::default(),
         })
     }
 
@@ -127,6 +191,168 @@ impl Client {
             &orochi::types::Overrides::default(),
             "ask",
         )
+    }
+
+    /// Every seat working right now, anywhere. Threads whose host has died are not working,
+    /// however their rows read, so the reaper runs first.
+    pub fn working(&self) -> Result<Vec<Working>> {
+        self.activity.reap_hosts()?;
+        let connection = self.activity.connection();
+        let mut statement = connection.prepare(
+            "SELECT r.thread_id, t.title, p.name, r.role, r.read_only, r.state, r.agent,
+                    r.model, r.peer_status, r.doing, r.started_at
+             FROM v_roster r
+             JOIN threads t ON t.id = r.thread_id
+             JOIN projects p ON p.id = t.project_id
+             WHERE r.ended_at IS NULL
+             ORDER BY r.started_at, r.ordinal",
+        )?;
+        let rows = statement.query_map([], |r| {
+            Ok(Working {
+                thread_id: r.get(0)?,
+                thread_title: r.get(1)?,
+                project: r.get(2)?,
+                role: r.get(3)?,
+                read_only: r.get::<_, i64>(4)? != 0,
+                state: r.get(5)?,
+                agent: r.get(6)?,
+                model: r.get(7)?,
+                status: r.get(8)?,
+                doing: r.get(9)?,
+                since: r.get(10)?,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// What has been said in this thread's room, oldest first.
+    pub fn room(&self, thread: &str) -> Result<Vec<Said>> {
+        let connection = self.activity.connection();
+        let mut statement = connection.prepare(
+            "SELECT seq, kind, who, whom, via, text, at, role, model FROM v_room
+             WHERE project_id = (SELECT project_id FROM threads WHERE id=?1)
+               AND (thread_id IS NULL OR thread_id=?1)
+             ORDER BY at, seq",
+        )?;
+        let rows = statement.query_map([thread], |r| {
+            Ok(Said {
+                seq: r.get(0)?,
+                kind: r.get(1)?,
+                who: r.get(2)?,
+                whom: r.get(3)?,
+                via: r.get(4)?,
+                text: r.get(5)?,
+                at: r.get(6)?,
+                role: r.get(7)?,
+                model: r.get(8)?,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// Leaves a note in the room, for one seat or for everyone. It reaches them when they next
+    /// read their messages — a note on the table, not an interruption.
+    pub fn say(&self, thread: &str, to: Option<&str>, text: &str) -> Result<()> {
+        let project: String = self.activity.connection().query_row(
+            "SELECT project_id FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )?;
+        let mailbox = orochi::mailbox::Mailbox::open(self.store.data_dir(), &self.mailbox)?;
+        mailbox.speak(&project, to, text, Some(thread))?;
+        Ok(())
+    }
+
+    /// Each agent's readiness and what is left of its quota.
+    pub fn agents(&self) -> Result<Vec<AgentRow>> {
+        let connection = self.store.connection();
+        let mut windows: std::collections::BTreeMap<String, Vec<(String, f64, Option<i64>)>> =
+            Default::default();
+        let mut statement =
+            connection.prepare("SELECT agent, bucket, remaining, reset_at FROM v_quota")?;
+        for row in statement.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, f64>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })? {
+            let (agent, bucket, remaining, reset) = row?;
+            windows
+                .entry(agent)
+                .or_default()
+                .push((bucket, remaining, reset));
+        }
+        let mut statement = connection.prepare(
+            "SELECT agent, model, status, cooling, reset_at, quota_estimate,
+                    consecutive_failures
+             FROM v_runtime ORDER BY agent, model",
+        )?;
+        let rows = statement.query_map([], |r| {
+            let agent: String = r.get(0)?;
+            Ok(AgentRow {
+                windows: windows.get(&agent).cloned().unwrap_or_default(),
+                agent,
+                model: r.get(1)?,
+                status: r.get(2)?,
+                cooling: r.get(3)?,
+                reset_at: r.get(4)?,
+                quota_estimate: r.get(5)?,
+                failures: r.get(6)?,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// What each route has actually done, best evidence first.
+    pub fn insights(&self) -> Result<Vec<RouteStats>> {
+        let connection = self.store.connection();
+        let mut statement = connection.prepare(
+            "SELECT agent, model, task_type, reasoning_level, verified, failures, weak,
+                    success_rate, mean_tokens, mean_duration_ms, last_at
+             FROM v_route_stats ORDER BY verified DESC, agent, model",
+        )?;
+        let rows = statement.query_map([], |r| {
+            Ok(RouteStats {
+                agent: r.get(0)?,
+                model: r.get(1)?,
+                task_type: r.get(2)?,
+                reasoning: r.get(3)?,
+                verified: r.get(4)?,
+                failures: r.get(5)?,
+                weak: r.get(6)?,
+                success_rate: r.get(7)?,
+                mean_tokens: r.get(8)?,
+                mean_duration_ms: r.get(9)?,
+                last_at: r.get(10)?,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// The work graph of a turn, when it has one.
+    pub fn board(&self, thread: &str) -> Result<Vec<serde_json::Value>> {
+        let connection = self.activity.connection();
+        let mut statement = connection.prepare(
+            "SELECT id, brief, paths, after, wave, state, strays, seat_id FROM v_board
+             WHERE thread_id=?1 ORDER BY COALESCE(wave, 0), id",
+        )?;
+        let rows = statement.query_map([thread], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "brief": r.get::<_, String>(1)?,
+                "paths": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(2)?)
+                    .unwrap_or_default(),
+                "after": serde_json::from_str::<serde_json::Value>(&r.get::<_, String>(3)?)
+                    .unwrap_or_default(),
+                "wave": r.get::<_, Option<i64>>(4)?,
+                "state": r.get::<_, String>(5)?,
+                "strays": r.get::<_, Option<i64>>(6)?,
+                "seat": r.get::<_, Option<String>>(7)?,
+            }))
+        })?;
+        rows.map(|row| Ok(row?)).collect()
     }
 
     pub fn sidebar(&self, limit: usize, archived: bool) -> Result<Vec<ProjectRow>> {

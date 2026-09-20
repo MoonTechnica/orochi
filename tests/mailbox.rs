@@ -1042,3 +1042,90 @@ fn the_room_outlives_its_peers_and_records_who_came_and_went() {
         "and the message is there with its sender: {room:?}"
     );
 }
+
+/// P4: a person can leave a note in the room. It is delivered the way every mailbox message
+/// is — when the agent next calls `read_messages` — so it is a note left on the table, not an
+/// interruption, and the agents cannot tell it apart from a peer's except by who sent it.
+#[test]
+fn a_person_can_leave_a_note_in_the_room_for_the_agents_to_find() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = MailboxConfig::default();
+    let activity = orochi::activity::Activity::open(dir.path(), 30).unwrap();
+    activity.project("room", dir.path()).unwrap();
+    let thread = activity
+        .create_thread(
+            "room",
+            dir.path(),
+            None,
+            "repo",
+            orochi::activity::Origin::Desktop,
+            &orochi::types::Overrides::default(),
+            "ask",
+        )
+        .unwrap();
+    let mailbox = Mailbox::open(dir.path(), &config).unwrap();
+    let alice = mailbox
+        .register("room", "alice", dir.path(), None, me())
+        .unwrap();
+    let bob = mailbox
+        .register("room", "bob", dir.path(), None, me())
+        .unwrap();
+
+    let sent = mailbox
+        .speak("room", None, "prefer the simpler shape", Some(&thread))
+        .unwrap();
+    assert_eq!(sent.from, "user");
+
+    let heard = |peer: &str| -> Vec<(String, String)> {
+        mailbox
+            .read(peer, 20)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.from, m.body))
+            .collect()
+    };
+    assert_eq!(
+        heard(&alice.id),
+        vec![("user".to_owned(), "prefer the simpler shape".to_owned())],
+        "a note to the room reaches everyone in it"
+    );
+    assert_eq!(heard(&bob.id).len(), 1);
+
+    mailbox
+        .speak("room", Some("bob"), "you take the parser", None)
+        .unwrap();
+    assert!(
+        heard(&alice.id).is_empty(),
+        "a note to one peer is for that peer"
+    );
+    assert_eq!(heard(&bob.id).len(), 1);
+
+    assert!(
+        mailbox.speak("room", Some("nobody"), "lost", None).is_err(),
+        "a note can only be left for someone who is there"
+    );
+
+    // It is marked as the user's, so a client can draw it differently from an agent's.
+    let via: Vec<String> = activity
+        .connection()
+        .prepare("SELECT via FROM messages ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(via, vec!["user", "user"]);
+    let recorded: Option<String> = activity
+        .connection()
+        .query_row(
+            "SELECT thread_id FROM messages ORDER BY id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        recorded.as_deref(),
+        Some(thread.as_str()),
+        "and it belongs to the conversation it was left in"
+    );
+}

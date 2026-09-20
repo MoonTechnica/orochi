@@ -122,6 +122,30 @@ export function page(ids, markup = "") {
     document.all.add(node);
     document.byId.set(id, node);
   }
+  // The buttons the markup declares, under the container they are declared in. Without them
+  // the app would find no tabs and no screens to switch between — and the test would be
+  // passing over a page that does not exist.
+  let container = null;
+  for (const tag of markup.match(/<(div|button|section|aside|main|header)\b[^>]*>/g) || []) {
+    const id = tag.match(/\bid="([^"]+)"/)?.[1];
+    if (!tag.startsWith("<button")) {
+      if (id && document.byId.has(id)) container = document.byId.get(id);
+      continue;
+    }
+    // A button with its own id was registered above; only the anonymous ones belong here.
+    if (id) continue;
+    const node = new Node("button");
+    const className = tag.match(/\bclass="([^"]+)"/)?.[1];
+    if (className) node.className = className;
+    for (const [, key, value] of tag.matchAll(/\bdata-([a-z-]+)="([^"]+)"/g)) {
+      node.dataset[key.replace(/-(\w)/g, (_, c) => c.toUpperCase())] = value;
+    }
+    for (const [, key, value] of tag.matchAll(/\b(aria-[a-z]+)="([^"]+)"/g)) {
+      node.setAttribute(key, value);
+    }
+    document.all.add(node);
+    if (container) container.append(node);
+  }
 }
 
 export { Node };

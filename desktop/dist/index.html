@@ -13,6 +13,12 @@
       <button id="new-thread" title="Start a thread here">+ New thread</button>
     </header>
     <nav id="projects" aria-label="Projects"></nav>
+    <div id="sidebar-screens">
+      <button type="button" class="screen" data-screen="threads" aria-current="true">Threads</button>
+      <button type="button" class="screen" data-screen="working">Working</button>
+      <button type="button" class="screen" data-screen="agents">Agents</button>
+      <button type="button" class="screen" data-screen="insights">Insights</button>
+    </div>
     <footer id="sidebar-foot"></footer>
   </aside>
 
@@ -23,6 +29,7 @@
       <span id="thread-status"></span>
     </header>
     <div id="timeline" role="log" aria-live="polite"></div>
+    <div id="screen" hidden></div>
     <form id="composer" autocomplete="off">
       <textarea id="message" rows="1" placeholder="Message…" aria-label="Message"></textarea>
       <div id="composer-row">
@@ -43,9 +50,18 @@
     <div id="tabs" role="tablist">
       <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
       <button class="tab" data-pane="changes" role="tab" aria-selected="false">Changes</button>
+      <button class="tab" data-pane="plan" role="tab" aria-selected="false">Plan</button>
     </div>
-    <section id="pane-team" class="pane"></section>
+    <section id="pane-team" class="pane">
+      <div id="roster"></div>
+      <div id="room"></div>
+      <form id="say-form">
+        <input id="say" placeholder="Message the team…" aria-label="Message the team">
+      </form>
+      <p id="say-hint" class="empty">Delivered when the agent next checks.</p>
+    </section>
     <section id="pane-changes" class="pane" hidden></section>
+    <section id="pane-plan" class="pane" hidden></section>
   </aside>
 </div>
 <script type="module" src="app.js"></script>

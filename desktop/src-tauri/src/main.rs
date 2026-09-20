@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! The shell. It owns a window and a connection, and does nothing else: every command below
 //! is one call into `view`, which is where the app's behavior lives and where it is tested.
-use orochi_desktop::view::{Client, Folder, Prompt};
+use orochi_desktop::view::{AgentRow, Client, Folder, Prompt, RouteStats, Said, Working};
 use orochi::activity::{ProjectRow, Thread};
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -50,6 +50,48 @@ fn ensure_host(open: State<'_, Open>, thread: String) -> Result<bool, String> {
         .spawn()
         .map_err(|error| format!("could not start a host for this thread: {error}"))?;
     Ok(true)
+}
+
+/// One screen of every seat working anywhere, so many threads can be watched without opening
+/// any of them.
+#[tauri::command]
+fn working(open: State<'_, Open>) -> Result<Vec<Working>, String> {
+    open.0.lock().unwrap().working().map_err(fail)
+}
+
+#[tauri::command]
+fn room(open: State<'_, Open>, thread: String) -> Result<Vec<Said>, String> {
+    open.0.lock().unwrap().room(&thread).map_err(fail)
+}
+
+/// Leaves a note in the room. It reaches the agents when they next read their messages.
+#[tauri::command]
+fn say(
+    open: State<'_, Open>,
+    thread: String,
+    to: Option<String>,
+    text: String,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .say(&thread, to.as_deref(), &text)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn agents(open: State<'_, Open>) -> Result<Vec<AgentRow>, String> {
+    open.0.lock().unwrap().agents().map_err(fail)
+}
+
+#[tauri::command]
+fn insights(open: State<'_, Open>) -> Result<Vec<RouteStats>, String> {
+    open.0.lock().unwrap().insights().map_err(fail)
+}
+
+#[tauri::command]
+fn board(open: State<'_, Open>, thread: String) -> Result<Vec<serde_json::Value>, String> {
+    open.0.lock().unwrap().board(&thread).map_err(fail)
 }
 
 #[tauri::command]
@@ -129,6 +171,12 @@ fn main() {
             folders,
             new_thread,
             ensure_host,
+            working,
+            room,
+            say,
+            agents,
+            insights,
+            board,
             sidebar,
             thread,
             patch,

@@ -14,6 +14,73 @@ const CLASSIFICATION_TTL: i64 = 30 * 24 * 3600;
 /// it. `metadata.schema_minor` records them instead.
 const SCHEMA_MINOR: i64 = 1;
 
+/// What a client reads telemetry through, so the numbers on its screens are the ones this
+/// crate computes rather than a second calculation that can drift from them. Recreated on
+/// every open, because a view is a definition and not data.
+///
+/// The distinction `calibrate` makes is kept here: only a verified outcome is evidence, and a
+/// weak signal (what the user did next) is counted beside it, never inside it.
+const VIEWS: &str = r#"
+DROP VIEW IF EXISTS v_runs;
+CREATE VIEW v_runs AS
+SELECT id, task_id, repository_id, task_type, agent, model, started_at,
+       purpose, language, framework, complexity, provider, reasoning_level, mode,
+       outcome, error_kind, feedback_signal,
+       json_extract(record,'$.duration_ms') AS duration_ms,
+       json_extract(record,'$.usage.total_tokens') AS total_tokens,
+       json_extract(record,'$.attempt') AS attempt,
+       json_extract(record,'$.prediction.success') AS predicted_success,
+       json_extract(record,'$.prediction.tokens') AS predicted_tokens
+FROM runs;
+
+DROP VIEW IF EXISTS v_route_stats;
+CREATE VIEW v_route_stats AS
+SELECT agent, model, task_type, provider, reasoning_level, mode,
+       count(*) FILTER (WHERE outcome IN ('success','failure')) AS verified,
+       count(*) FILTER (WHERE outcome='failure') AS failures,
+       count(*) FILTER (WHERE outcome NOT IN ('success','failure')
+                          AND feedback_signal IS NOT NULL) AS weak,
+       COALESCE(avg(CASE WHEN outcome IN ('success','failure')
+                         THEN CASE WHEN outcome='success' THEN 1.0 ELSE 0.0 END END), 0.0)
+         AS success_rate,
+       COALESCE(avg(CASE WHEN outcome IN ('success','failure')
+                         THEN json_extract(record,'$.usage.total_tokens') END), 0.0)
+         AS mean_tokens,
+       COALESCE(avg(CASE WHEN outcome IN ('success','failure')
+                         THEN json_extract(record,'$.duration_ms') END), 0.0)
+         AS mean_duration_ms,
+       max(started_at) AS last_at
+FROM runs WHERE purpose='execution'
+GROUP BY agent, model, task_type, provider, reasoning_level, mode;
+
+DROP VIEW IF EXISTS v_runtime;
+CREATE VIEW v_runtime AS
+SELECT agent, model,
+       json_extract(record,'$.status') AS status,
+       json_extract(record,'$.quota_estimate') AS quota_estimate,
+       json_extract(record,'$.reset_at') AS reset_at,
+       json_extract(record,'$.cooldown_until') AS cooldown_until,
+       json_extract(record,'$.consecutive_failures') AS consecutive_failures,
+       json_extract(record,'$.rate_limit_count') AS rate_limit_count,
+       json_extract(record,'$.last_success_at') AS last_success_at,
+       -- Seconds of cooldown left, so a screen does not have to know the clock's units.
+       max(0, COALESCE(json_extract(record,'$.cooldown_until'), 0) - unixepoch()) AS cooling
+FROM runtime;
+
+DROP VIEW IF EXISTS v_quota;
+CREATE VIEW v_quota AS
+SELECT q.agent,
+       json_extract(q.record,'$.source') AS source,
+       json_extract(q.record,'$.observed_at') AS observed_at,
+       json_extract(q.record,'$.valid_until') AS valid_until,
+       json_extract(w.value,'$.bucket') AS bucket,
+       json_extract(w.value,'$.remaining') AS remaining,
+       json_extract(w.value,'$.reset_at') AS reset_at,
+       json_extract(w.value,'$.model') AS model,
+       json_extract(w.value,'$.affects_routing') AS affects_routing
+FROM quota_snapshots q, json_each(q.record,'$.windows') w;
+"#;
+
 /// Columns the learning queries filter on, so the planner has an index to use instead of
 /// evaluating `json_extract` per row.
 const GENERATED: &[(&str, &str)] = &[
@@ -65,7 +132,7 @@ fn minor_migrations(connection: &Connection) -> Result<()> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
     if applied >= SCHEMA_MINOR {
-        return Ok(());
+        return setup(connection, VIEWS);
     }
     // Another process may have applied these between the read and the write, and a column
     // already there is not an error worth failing an `open` over.
@@ -88,7 +155,10 @@ fn minor_migrations(connection: &Connection) -> Result<()> {
          INSERT INTO metadata VALUES ('schema_minor', '1') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
          COMMIT;",
     );
-    setup(connection, &sql)
+    setup(connection, &sql)?;
+    // A view is a definition, not data: recreating it costs nothing and keeps an older
+    // binary's copy from outliving the columns it was written against.
+    setup(connection, VIEWS)
 }
 
 pub struct Store {
@@ -145,6 +215,11 @@ impl Store {
     }
     pub fn data_dir(&self) -> &Path {
         &self.data
+    }
+    /// For reading the `v_*` views. Telemetry is written only through the methods below, so
+    /// this hands out a reader, not a way in.
+    pub fn connection(&self) -> &Connection {
+        &self.connection
     }
     pub fn salt(&self) -> Result<String> {
         Ok(self.connection.query_row(

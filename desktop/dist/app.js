@@ -21,6 +21,7 @@ const state = {
   folders: [],
   open: new Set(JSON.parse(localStorage.getItem("open") || "[]")),
   file: null,
+  screen: "threads",
 };
 
 function report(text) {
@@ -264,7 +265,7 @@ document.addEventListener("click", (event) => {
 
 // Side pane -----------------------------------------------------------------
 function drawTeam(thread) {
-  const host = el("pane-team");
+  const host = el("roster");
   host.replaceChildren();
   if (!thread.seats.length) {
     host.append(text("p", "empty", "No one is seated yet."));
@@ -318,6 +319,191 @@ async function drawChanges(thread) {
   }
 }
 
+// The room ------------------------------------------------------------------
+// Agents talk to each other here, and so can the person — delivered when the agent next reads
+// its messages, which is a note on the table rather than an interruption.
+async function drawRoom(thread) {
+  const host = el("room");
+  host.replaceChildren();
+  const said = await call("room", { thread: thread.thread.id });
+  if (!said || !said.length) {
+    host.append(text("p", "empty", "Nothing said yet."));
+    return;
+  }
+  for (const line of said) {
+    if (line.kind !== "message") {
+      const mark = line.kind === "joined" ? "●" : line.kind === "left" ? "○" : "⎿";
+      host.append(text("div", "said system", `${mark} ${line.who} ${line.kind === "status" ? line.text : line.kind}`));
+      continue;
+    }
+    const node = text("div", "said");
+    node.dataset.via = line.via;
+    node.append(text("div", "who", `${line.who} → ${line.whom || "all"}`));
+    node.append(text("div", "body", line.text));
+    host.append(node);
+  }
+}
+
+el("say-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const box = el("say");
+  const value = box.value.trim();
+  if (!value || !state.thread) return;
+  box.value = "";
+  await call("say", { thread: state.thread, to: null, text: value });
+  const thread = await call("thread", { id: state.thread });
+  if (thread) await drawRoom(thread);
+});
+
+// The work graph of a turn, when it has one.
+async function drawPlan(thread) {
+  const host = el("pane-plan");
+  host.replaceChildren();
+  const parts = await call("board", { thread: thread.thread.id });
+  if (!parts || !parts.length) {
+    host.append(text("p", "empty", "This conversation was not divided into parts."));
+    return;
+  }
+  let wave = null;
+  for (const part of parts) {
+    if (part.wave !== wave) {
+      wave = part.wave;
+      host.append(text("div", "wave", wave === null ? "Ungated" : `Wave ${wave + 1}`));
+    }
+    const node = text("div", "part");
+    node.dataset.state = part.state;
+    node.append(text("span", "id", part.id));
+    node.append(text("div", null, part.brief));
+    if (part.paths?.length) node.append(text("div", "paths", part.paths.join(", ")));
+    host.append(node);
+  }
+}
+
+// Screens --------------------------------------------------------------------
+// Everything that is not one conversation: what is working anywhere, which agents are ready,
+// and what the routes have actually done.
+function screenRows(head, rows) {
+  const table = document.createElement("table");
+  const header = document.createElement("tr");
+  for (const [label, numeric] of head) {
+    const cell = text("th", numeric ? "num" : null, label);
+    header.append(cell);
+  }
+  table.append(header);
+  for (const row of rows) {
+    const line = document.createElement("tr");
+    for (const [value, numeric] of row) {
+      if (value && value.tagName) {
+        const cell = text("td", numeric ? "num" : null);
+        cell.append(value);
+        line.append(cell);
+      } else {
+        line.append(text("td", numeric ? "num" : null, value));
+      }
+    }
+    table.append(line);
+  }
+  return table;
+}
+
+function gauge(fraction) {
+  const node = text("span", fraction < 0.2 ? "gauge low" : "gauge");
+  const fill = text("i");
+  fill.style.width = `${Math.round(Math.max(0, Math.min(1, fraction)) * 100)}%`;
+  node.append(fill);
+  return node;
+}
+
+async function drawScreen() {
+  const host = el("screen");
+  host.replaceChildren();
+  if (state.screen === "working") {
+    const seats = (await call("working", {})) || [];
+    host.append(text("h3", null, "Working now"));
+    if (!seats.length) {
+      host.append(text("p", "empty", "Nothing is running."));
+      return;
+    }
+    for (const seat of seats) {
+      const card = text("div", "card");
+      const who = text("div", "who");
+      who.append(text("span", null, seat.role));
+      if (seat.read_only) who.append(text("span", "ro", "RO"));
+      who.append(text("span", "where", `${seat.project} · ${seat.thread_title}`));
+      card.append(who);
+      card.append(text("div", "where", [seat.agent, seat.model, seat.state].filter(Boolean).join(" · ")));
+      if (seat.status) card.append(text("div", "where", `"${seat.status}"`));
+      card.addEventListener("click", () => {
+        state.screen = "threads";
+        select(seat.thread_id);
+      });
+      host.append(card);
+    }
+    return;
+  }
+  if (state.screen === "agents") {
+    const agents = (await call("agents", {})) || [];
+    host.append(text("h3", null, "Agents"));
+    if (!agents.length) {
+      host.append(text("p", "empty", "Nothing has been run yet."));
+      return;
+    }
+    host.append(
+      screenRows(
+        [["Agent"], ["Model"], ["State"], ["Cooling", true], ["Quota"]],
+        agents.map((a) => [
+          [a.agent],
+          [a.model === "*" ? "whole account" : a.model],
+          [a.status],
+          [a.cooling ? `${a.cooling}s` : "—", true],
+          [a.windows.length ? gauge(a.windows[0][1]) : "—"],
+        ]),
+      ),
+    );
+    return;
+  }
+  if (state.screen === "insights") {
+    const stats = (await call("insights", {})) || [];
+    host.append(text("h3", null, "What the routes have done"));
+    if (!stats.length) {
+      host.append(text("p", "empty", "No verified runs yet."));
+      return;
+    }
+    host.append(
+      screenRows(
+        [["Agent"], ["Model"], ["Task"], ["Verified", true], ["Failed", true], ["Success", true], ["Tokens", true], ["Weak", true]],
+        stats.map((s) => [
+          [s.agent],
+          [s.model],
+          [s.task_type],
+          [String(s.verified), true],
+          [String(s.failures), true],
+          [s.verified ? `${Math.round(s.success_rate * 100)}%` : "—", true],
+          [s.verified ? Math.round(s.mean_tokens).toLocaleString() : "—", true],
+          [String(s.weak), true],
+        ]),
+      ),
+    );
+    host.append(
+      text(
+        "p",
+        "caveat",
+        "Verified counts are measured; weak signals are what you did next, which Orochi weighs far less. These are its own estimates.",
+      ),
+    );
+  }
+}
+
+for (const button of document.querySelectorAll(".screen")) {
+  button.addEventListener("click", () => {
+    state.screen = button.dataset.screen;
+    for (const other of document.querySelectorAll(".screen")) {
+      other.setAttribute("aria-current", String(other === button));
+    }
+    refresh(true);
+  });
+}
+
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
     for (const other of document.querySelectorAll(".tab")) {
@@ -349,6 +535,15 @@ async function refresh(full) {
   }
   drawSidebar();
   folderLabel();
+  // A screen other than the conversation takes the middle column.
+  const conversation = state.screen === "threads";
+  el("timeline").hidden = !conversation;
+  el("composer").hidden = !conversation;
+  el("screen").hidden = conversation;
+  if (!conversation) {
+    await drawScreen();
+    return;
+  }
 
   if (!state.thread) {
     el("thread-title").textContent = "Nothing selected";
@@ -367,6 +562,8 @@ async function refresh(full) {
   drawTimeline(thread);
   drawTeam(thread);
   drawChanges(thread);
+  drawRoom(thread);
+  drawPlan(thread);
   // Looking at a conversation is what makes it read.
   await call("seen", { thread: state.thread });
 }

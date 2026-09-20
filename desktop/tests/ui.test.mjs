@@ -30,7 +30,9 @@ async function open(answers = {}) {
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
-    "tabs", "pane-team", "pane-changes",
+    "tabs", "pane-team", "pane-changes", "pane-plan",
+    "roster", "room", "say-form", "say", "say-hint",
+    "sidebar-screens", "screen",
   ], markup);
   const localStorage = {
     store: new Map(),
@@ -106,7 +108,7 @@ test("both messages of one conversation are drawn as separate turns", async () =
 
 test("the team pane seats everyone at the turn, read-only marked", async () => {
   const { el } = await open();
-  const drawn = el("pane-team").render();
+  const drawn = el("roster").render();
   assert.match(drawn, /fixer/);
   assert.match(drawn, /tester/);
   assert.match(drawn, /sol-test/, "each seat shows the route it took");
@@ -232,4 +234,93 @@ test("a sent message also makes sure something is running it", async () => {
     calls.some(([name]) => name === "ensure_host"),
     "a message is only a row until a host takes it",
   );
+});
+
+test("the room shows what agents and the person said, and lets the person answer", async () => {
+  const said = [
+    { seq: 1, kind: "joined", who: "reviewer", whom: null, via: "mailbox", text: "", at: 1, role: null, model: null },
+    { seq: 2, kind: "message", who: "reviewer", whom: "implementer", via: "mailbox", text: "the sleep hides it", at: 2, role: "reviewer", model: "opus" },
+  ];
+  const { el, calls } = await open({ room: said });
+  const drawn = el("room").render();
+  assert.match(drawn, /reviewer joined/, "arriving is a line in the room");
+  assert.match(drawn, /the sleep hides it/);
+  assert.match(drawn, /reviewer → implementer/, "and each message says who it was for");
+
+  el("say").value = "prefer the simpler shape";
+  el("say-form").dispatch("submit");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const note = calls.find(([name]) => name === "say");
+  assert.deepEqual(note[1].text, "prefer the simpler shape");
+  assert.equal(note[1].to, null, "a note with no name is for everyone");
+});
+
+test("mission control lists every seat working anywhere", async () => {
+  const working = [
+    {
+      thread_id: "t1", thread_title: "Fix the flaky test", project: "orochi",
+      role: "implementer", read_only: false, state: "working",
+      agent: "claude", model: "opus", status: "editing tests/mailbox.rs", doing: null, since: 1,
+    },
+  ];
+  const { el } = await open({ working });
+  el("sidebar-screens").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "working")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const drawn = el("screen").render();
+  assert.match(drawn, /Working now/);
+  assert.match(drawn, /orochi · Fix the flaky test/, "with the thread each seat belongs to");
+  assert.match(drawn, /editing tests\/mailbox\.rs/);
+  assert.equal(el("timeline").hidden, true, "and the conversation makes way for it");
+});
+
+test("insights keeps verified evidence and weak signals apart, and says so", async () => {
+  const insights = [
+    {
+      agent: "claude", model: "opus", task_type: "implementation", reasoning: "high",
+      verified: 7, failures: 1, weak: 3, success_rate: 6 / 7,
+      mean_tokens: 12000, mean_duration_ms: 42000, last_at: 1,
+    },
+  ];
+  const { el } = await open({ insights });
+  el("sidebar-screens").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "insights")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const drawn = el("screen").render();
+  assert.match(drawn, /86%/, "the success rate is of the verified runs");
+  assert.match(drawn, /12,000/);
+  assert.match(drawn, /its own estimates/, "and the screen says whose numbers these are");
+});
+
+test("agents shows readiness and what is left of a quota", async () => {
+  const agents = [
+    {
+      agent: "codex", model: "*", status: "cooldown", cooling: 300, reset_at: null,
+      quota_estimate: 0.1, failures: 2, windows: [["5h", 0.12, null]],
+    },
+  ];
+  const { el } = await open({ agents });
+  el("sidebar-screens").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "agents")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const drawn = el("screen").render();
+  assert.match(drawn, /codex/);
+  assert.match(drawn, /whole account/, "a `*` model is the account, not a model named star");
+  assert.match(drawn, /300s/);
+});
+
+test("the plan pane draws the waves a divided turn runs in", async () => {
+  const board = [
+    { id: "alpha", brief: "build alpha", paths: ["alpha"], after: [], wave: 0, state: "merged", strays: 0, seat: null },
+    { id: "beta", brief: "build beta", paths: ["beta"], after: [], wave: 0, state: "merged", strays: 0, seat: null },
+    { id: "gamma", brief: "build gamma", paths: ["gamma"], after: ["alpha"], wave: 1, state: "waiting", strays: null, seat: null },
+  ];
+  const { el } = await open({ board });
+  const drawn = el("pane-plan").render();
+  assert.match(drawn, /Wave 1/);
+  assert.match(drawn, /Wave 2/, "each wave is a heading of its own");
+  assert.match(drawn, /build gamma/);
 });

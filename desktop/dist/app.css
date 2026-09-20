@@ -240,3 +240,40 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 #folder-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
 #folder-menu .tick { margin-left: auto; color: var(--brand); }
 #folder-menu .where { color: var(--muted); font-size: 11px; }
+
+/* Screens ---------------------------------------------------------------- */
+#sidebar-screens { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px var(--gutter); border-top: 1px solid var(--line); }
+.screen { border: 0; padding: 3px 8px; color: var(--muted); font-size: 12px; }
+.screen[aria-current="true"] { color: var(--text); background: var(--line); }
+#screen { flex: 1; overflow: auto; padding: var(--gutter); }
+#screen table { width: 100%; border-collapse: collapse; }
+#screen th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 8px 4px 0; }
+#screen td { padding: 4px 8px 4px 0; border-top: 1px solid var(--line); }
+#screen .num { text-align: right; font-variant-numeric: tabular-nums; }
+#screen h3 { margin: 0 0 8px; font-size: 13px; }
+#screen .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }
+.gauge { display: inline-block; width: 90px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; vertical-align: middle; }
+.gauge i { display: block; height: 100%; background: var(--ok); }
+.gauge.low i { background: var(--danger); }
+.card { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; margin-bottom: 8px; }
+.card .who { display: flex; gap: 6px; align-items: baseline; }
+.card .where { color: var(--muted); font-size: 12px; }
+
+/* Room ------------------------------------------------------------------- */
+#room { margin-top: 8px; }
+.said { margin-bottom: 8px; }
+.said .who { font-size: 12px; color: var(--muted); }
+.said .body { white-space: pre-wrap; }
+.said[data-via="user"] .who { color: var(--brand); }
+.said.system { color: var(--muted); font-size: 12px; }
+#say-form { margin-top: 8px; }
+#say { width: 100%; background: var(--bg); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+#say-hint { font-size: 11px; margin: 4px 0 0; }
+
+/* Plan ------------------------------------------------------------------- */
+.wave { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin: 8px 0 4px; }
+.part { border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 6px; }
+.part .id { font-weight: 600; }
+.part[data-state="merged"] { border-color: var(--ok); }
+.part[data-state="failed"] { border-color: var(--danger); }
+.part .paths { color: var(--muted); font-size: 12px; }

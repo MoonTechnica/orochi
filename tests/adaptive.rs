@@ -679,3 +679,106 @@ fn a_question_that_costs_more_than_the_work_it_decides_is_not_asked() {
     };
     assert!(classifier::worth_asking(&eager, &store, &small));
 }
+
+/// §5: the Insights and Agents screens read telemetry through views, so the numbers a client
+/// shows are the ones `orochi calibrate` and `orochi status` show, not a second calculation.
+#[test]
+fn telemetry_is_readable_through_views_without_reaching_into_the_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+
+    // Two verified runs on one route, one failure on another, and one weak signal.
+    for n in 0..2 {
+        store.record(&run(n, true)).unwrap();
+    }
+    let mut failed = run(9, false);
+    failed.candidate = candidate("b", 1000.0);
+    store.record(&failed).unwrap();
+    let mut unverified = run(5, true);
+    unverified.outcome = Outcome::PartialSuccess;
+    store.record(&unverified).unwrap();
+    store
+        .feedback(&unverified.id, &Feedback::continued())
+        .unwrap();
+
+    let connection = rusqlite::Connection::open(dir.path().join("telemetry.sqlite3")).unwrap();
+    let (verified, rate, tokens, weak): (i64, f64, f64, i64) = connection
+        .query_row(
+            "SELECT verified, success_rate, mean_tokens, weak FROM v_route_stats
+             WHERE agent='a' AND task_type='implementation'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(verified, 2, "only verified outcomes count as evidence");
+    assert_eq!(rate, 1.0);
+    assert_eq!(tokens, 2000.0);
+    assert_eq!(
+        weak, 1,
+        "and a weak signal is counted apart, never mixed in"
+    );
+
+    let failures: i64 = connection
+        .query_row(
+            "SELECT failures FROM v_route_stats WHERE agent='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(failures, 1);
+
+    // `v_runs` is the same records with their labels as columns, for a table a client sorts.
+    let rows: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM v_runs WHERE purpose='execution'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 4);
+
+    // Runtime and quota are what the Agents screen shows.
+    store
+        .save_runtime(&RuntimeState {
+            status: RuntimeStatus::Cooldown,
+            cooldown_until: Some(now() + 600),
+            ..RuntimeState::new("b", "*")
+        })
+        .unwrap();
+    store
+        .save_quota_snapshot(&Snapshot {
+            agent: "b".into(),
+            source: "probe".into(),
+            observed_at: now(),
+            valid_until: now() + 3600,
+            windows: vec![Window {
+                bucket: "5h".into(),
+                remaining: 0.42,
+                reset_at: Some(now() + 1800),
+                model: None,
+                affects_routing: true,
+            }],
+        })
+        .unwrap();
+
+    let connection = rusqlite::Connection::open(dir.path().join("telemetry.sqlite3")).unwrap();
+    let (status, cooling): (String, i64) = connection
+        .query_row(
+            "SELECT status, cooling FROM v_runtime WHERE agent='b'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "cooldown");
+    assert!(cooling > 0, "with the time left on it");
+
+    let (bucket, remaining): (String, f64) = connection
+        .query_row(
+            "SELECT bucket, remaining FROM v_quota WHERE agent='b'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(bucket, "5h");
+    assert!((remaining - 0.42).abs() < 1e-9);
+}
