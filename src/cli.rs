@@ -1037,11 +1037,12 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             // nothing.
             let recorded = (config.activity.enabled && !cli.dry_run)
                 .then(|| -> Result<_> {
-                    let activity = crate::activity::Activity::open(
+                    let activity = crate::activity::share(crate::activity::Activity::open(
                         &paths.data,
                         config.activity.retention_days,
-                    )?;
-                    let (seat, host) = activity.start_turn(
+                    )?);
+                    let (seat, host) = crate::activity::start_turn(
+                        &activity,
                         &root,
                         &store.salt()?,
                         &repo,
@@ -1090,7 +1091,11 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     Ok(130) => crate::activity::TurnState::Interrupted,
                     _ => crate::activity::TurnState::Failed,
                 };
-                if let Err(error) = activity.end_turn(seat, host, state) {
+                if let Err(error) = activity
+                    .lock()
+                    .expect("activity store")
+                    .end_turn(seat, host, state)
+                {
                     tracing::debug!(%error, "turn not closed");
                 }
             }

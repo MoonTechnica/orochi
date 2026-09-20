@@ -267,28 +267,17 @@ pub async fn run_turn(
     // With a seat to fill, everything this run emits passes through the store on its way to
     // the caller. Without one nothing is written, which is what an adviser, a classifier and
     // `activity.enabled = false` all are.
-    let tee = options
-        .seat
-        .clone()
-        .filter(|_| config.activity.enabled)
-        .and_then(|seat| {
-            match crate::activity::Activity::open(store.data_dir(), config.activity.retention_days)
-            {
-                Ok(activity) => Some(crate::activity::recorder::Tee::start(
-                    activity,
-                    crate::activity::recorder::Seat::from(&seat),
-                    config.activity.thinking,
-                    events.clone(),
-                    // Nothing is listening: this run's reply belongs on stdout, as it did
-                    // before the store sat in the path.
-                    events.is_none(),
-                )),
-                Err(error) => {
-                    tracing::debug!(%error, "activity store unavailable; not recording");
-                    None
-                }
-            }
-        });
+    let tee = options.seat.clone().map(|seat| {
+        crate::activity::recorder::Tee::start(
+            seat.store.clone(),
+            crate::activity::recorder::Seat::from(&seat),
+            config.activity.thinking,
+            events.clone(),
+            // Nothing is listening: this run's reply belongs on stdout, as it did before the
+            // store sat in the path.
+            events.is_none(),
+        )
+    });
     let downstream = match &tee {
         Some(tee) => Some(tee.sink()),
         None => events,
@@ -660,19 +649,12 @@ async fn run_recorded(
                             "success": c.success_probability, "reasons": c.reasons})
                     })
                     .collect();
-                let opened = crate::activity::Activity::open(
-                    store.data_dir(),
-                    config.activity.retention_days,
-                )
-                .and_then(|activity| {
-                    let id = activity.create_attempt(
-                        &seat.seat,
-                        &candidate,
-                        resume.is_some(),
-                        Some(&serde_json::json!(considered).to_string()),
-                    )?;
-                    Ok(id)
-                });
+                let opened = seat.store.lock().expect("activity store").create_attempt(
+                    &seat.seat,
+                    &candidate,
+                    resume.is_some(),
+                    Some(&serde_json::json!(considered).to_string()),
+                );
                 match opened {
                     Ok(id) => {
                         tee.attempt(Some(id.clone()));
@@ -720,6 +702,8 @@ async fn run_recorded(
         let started = now();
         let clock = Instant::now();
         let mut checks = Vec::new();
+        // What the failed checks printed. It reaches the conversation store and nothing else.
+        let mut check_output = evaluator::Output::default();
         let before = if options.interactive {
             context::tree_fingerprint(root)
         } else {
@@ -776,8 +760,8 @@ async fn run_recorded(
                     if !loud && !evaluator::checks(&config.evaluator, root).is_empty() {
                         report(Progress::Checking);
                     }
-                    checks = tokio::select! {
-                        result = evaluator::evaluate_with(&config.evaluator, root, loud) => result,
+                    (checks, check_output) = tokio::select! {
+                        result = evaluator::detailed(&config.evaluator, root, loud) => result,
                         _ = since.wait() => {
                             store.record(&make_record(&task_id, &repository_id, &descriptor, candidate.clone(), clients[index].usage(), clock.elapsed(), attempt, Outcome::Cancelled, vec![], Some("cancelled".into()), started, "execution"))?;
                             return Ok(130);
@@ -795,6 +779,7 @@ async fn run_recorded(
             checks: checks.clone(),
             error: result.as_ref().err().map(|e| e.to_string()),
             usage: clients[index].usage(),
+            output: std::mem::take(&mut check_output.0),
         });
         let session_id = clients[index].capabilities.session_id.clone();
         let cache_key = context::cache_key(
@@ -831,25 +816,21 @@ async fn run_recorded(
         store.record(&record)?;
         // The one-way link between the two files, plus the labels and numbers a thread's UI
         // needs, so reading a conversation never has to open the telemetry file.
-        if let Some(attempt) = &recorded_attempt
-            && let Err(error) =
-                crate::activity::Activity::open(store.data_dir(), config.activity.retention_days)
-                    .and_then(|activity| {
-                        activity.attempt_finished(
-                            attempt,
-                            Some(&record.id),
-                            Some(match record.outcome {
-                                Outcome::Success => "success",
-                                Outcome::PartialSuccess => "partial_success",
-                                Outcome::Failure => "failure",
-                                Outcome::Cancelled => "cancelled",
-                            }),
-                            record.error_kind.as_deref(),
-                            result.as_ref().err().map(|e| e.to_string()).as_deref(),
-                            Some(&serde_json::to_string(&checks)?),
-                            Some(&record.usage),
-                        )
-                    })
+        if let (Some(attempt), Some(seat)) = (&recorded_attempt, &options.seat)
+            && let Err(error) = seat.store.lock().expect("activity store").attempt_finished(
+                attempt,
+                Some(&record.id),
+                Some(match record.outcome {
+                    Outcome::Success => "success",
+                    Outcome::PartialSuccess => "partial_success",
+                    Outcome::Failure => "failure",
+                    Outcome::Cancelled => "cancelled",
+                }),
+                record.error_kind.as_deref(),
+                result.as_ref().err().map(|e| e.to_string()).as_deref(),
+                serde_json::to_string(&checks).ok().as_deref(),
+                Some(&record.usage),
+            )
         {
             tracing::debug!(%error, "attempt outcome not recorded");
         }

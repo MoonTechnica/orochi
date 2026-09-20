@@ -318,7 +318,7 @@ struct Session<'a> {
 /// rather than at startup, so a session that asks nothing leaves nothing behind, and `/new`
 /// closes the old one so the next message opens another.
 struct Recorded {
-    activity: crate::activity::Activity,
+    activity: crate::activity::Shared,
     repository_id: String,
     thread: Option<String>,
     host: Option<String>,
@@ -331,8 +331,10 @@ impl Recorded {
             return None;
         }
         match (|| -> Result<Self> {
-            let activity =
-                crate::activity::Activity::open(store.data_dir(), config.activity.retention_days)?;
+            let activity = crate::activity::share(crate::activity::Activity::open(
+                store.data_dir(),
+                config.activity.retention_days,
+            )?);
             Ok(Self {
                 repository_id: store.repository_id(root)?,
                 activity,
@@ -354,12 +356,12 @@ impl Recorded {
             return Ok(thread.clone());
         }
         let project = self
-            .activity
+            .store()
             .project_for(session.root, &session.store.salt()?)?;
         let branch = crate::context::git(session.root, &["rev-parse", "--abbrev-ref", "HEAD"])
             .map(|b| b.trim().to_owned())
             .filter(|b| !b.is_empty() && b != "HEAD");
-        let thread = self.activity.create_thread(
+        let thread = self.store().create_thread(
             &project,
             session.root,
             branch.as_deref(),
@@ -368,15 +370,21 @@ impl Recorded {
             session.overrides,
             session.permission,
         )?;
-        self.host = self.activity.register_host(Some(&thread), "terminal").ok();
+        let host = self.store().register_host(Some(&thread), "terminal").ok();
+        self.host = host;
         self.thread = Some(thread.clone());
         Ok(thread)
+    }
+
+    /// The one connection, for the length of one statement.
+    fn store(&self) -> std::sync::MutexGuard<'_, crate::activity::Activity> {
+        self.activity.lock().expect("activity store")
     }
 
     /// `/new`: the next message opens a thread of its own.
     fn reset(&mut self) {
         if let Some(host) = self.host.take() {
-            let _ = self.activity.unregister_host(&host);
+            let _ = self.store().unregister_host(&host);
         }
         self.thread = None;
         self.turn = None;
@@ -1112,7 +1120,7 @@ impl Session<'_> {
         };
         let opened = (|| -> Result<()> {
             let thread = recorded.thread(&context)?;
-            let turn = recorded.activity.queue_turn(
+            let turn = recorded.store().queue_turn(
                 &thread,
                 &message.text,
                 &message.attachments,
@@ -1120,9 +1128,9 @@ impl Session<'_> {
                 "terminal",
             )?;
             if let Some(host) = &recorded.host {
-                recorded.activity.claim_turn(&turn, host)?;
+                recorded.store().claim_turn(&turn, host)?;
             }
-            recorded.activity.turn_shape(
+            recorded.store().turn_shape(
                 &turn,
                 (!steps.is_empty()).then_some("phases"),
                 serde_json::to_string(task).ok().as_deref(),
@@ -1153,16 +1161,17 @@ impl Session<'_> {
         let (Some(thread), Some(turn)) = (recorded.thread.clone(), recorded.turn.clone()) else {
             return rows;
         };
-        let _ = recorded.activity.turn_shape(&turn, Some(shape), None);
+        let _ = recorded.store().turn_shape(&turn, Some(shape), None);
         let seat = |ordinal: usize, role: &str, is_lead: bool, read_only: bool| {
             recorded
-                .activity
+                .store()
                 .create_seat(&turn, ordinal, role, is_lead, read_only, phase, None)
                 .ok()
                 .map(|seat| crate::activity::SeatRef {
                     thread: thread.clone(),
                     turn: turn.clone(),
                     seat,
+                    store: recorded.activity.clone(),
                 })
         };
         rows[0] = seat(0, lead, true, lead_read_only);
@@ -1177,7 +1186,7 @@ impl Session<'_> {
             return;
         };
         if let Some(turn) = recorded.turn.take()
-            && let Err(error) = recorded.activity.turn_state(&turn, state)
+            && let Err(error) = recorded.store().turn_state(&turn, state)
         {
             tracing::debug!(%error, "turn not closed");
         }
@@ -3339,6 +3348,7 @@ impl<'v> Screen<'v> {
                 checks,
                 error,
                 usage,
+                ..
             } => {
                 for (total, part) in [
                     (&mut self.usage.input_tokens, usage.input_tokens),

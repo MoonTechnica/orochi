@@ -1992,3 +1992,91 @@ fn a_conversation_is_one_thread_whose_turns_accumulate_until_new() {
         first.seats
     );
 }
+
+/// A `serve` session is a thread too, so work driven through the ACP gateway appears beside
+/// work started from a terminal instead of being invisible to a client.
+#[test]
+fn a_gateway_session_is_a_thread_whose_prompts_are_its_turns() {
+    use std::io::{BufRead, BufReader, Write};
+
+    let workspace = Workspace::new();
+    let repo = workspace.dir.path().join("repo");
+    let mut child = workspace
+        .command()
+        .arg("serve")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut call = |id: u32, method: &str, params: serde_json::Value| -> serde_json::Value {
+        writeln!(
+            stdin,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+        )
+        .unwrap();
+        stdin.flush().unwrap();
+        loop {
+            let mut line = String::new();
+            assert!(stdout.read_line(&mut line).unwrap() > 0, "gateway closed");
+            let message: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(message) => message,
+                Err(_) => continue,
+            };
+            // Notifications stream while a prompt runs; the response is the one with our id.
+            if message["id"] == id {
+                assert!(message["error"].is_null(), "{method}: {message}");
+                return message["result"].clone();
+            }
+        }
+    };
+
+    call(
+        1,
+        "initialize",
+        json!({"protocolVersion": 1, "clientCapabilities": {}}),
+    );
+    let session = call(
+        2,
+        "session/new",
+        json!({"cwd": repo.to_str().unwrap(), "mcpServers": []}),
+    );
+    let session_id = session["sessionId"].as_str().unwrap().to_owned();
+    for (id, text) in [(3, "first gateway request"), (4, "second gateway request")] {
+        call(
+            id,
+            "session/prompt",
+            json!({"sessionId": session_id, "prompt": [{"type": "text", "text": text}]}),
+        );
+    }
+    drop(stdin);
+    let _ = child.wait();
+
+    let activity =
+        orochi::activity::Activity::open(&workspace.dir.path().join("data"), 30).unwrap();
+    let listed = activity.sidebar(20, true).unwrap();
+    let row = listed
+        .iter()
+        .flat_map(|p| &p.threads)
+        .find(|t| t.origin == "serve")
+        .expect("a gateway session leaves a thread");
+    let thread = activity.thread(&row.id).unwrap().unwrap();
+    let asked: Vec<&str> = thread
+        .items
+        .iter()
+        .filter(|i| i.kind == "user_message")
+        .map(|i| i.text.as_str())
+        .collect();
+    assert_eq!(
+        asked,
+        vec!["first gateway request", "second gateway request"],
+        "one session is one thread; each prompt is a turn in it"
+    );
+    assert_eq!(
+        thread.thread.title, "first gateway request",
+        "named after what it was opened to do"
+    );
+}

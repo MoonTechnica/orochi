@@ -487,6 +487,10 @@ struct Cx<'a> {
     events: Option<crate::acp::EventSink>,
     /// Interrupts after this stop the run, even one that came between two waits.
     since: crate::interrupt::Since,
+    /// The thread and turn this collaboration is, and the one connection its members write
+    /// through. Members of a turn group run side by side, so they share it rather than each
+    /// opening one of their own.
+    record: Option<(String, String, crate::activity::Shared)>,
 }
 impl Cx<'_> {
     fn say(&self, text: String) {
@@ -552,6 +556,35 @@ pub async fn run(
         elapsed_ms: 0,
     };
     save(&output, &report)?;
+    // A collaboration is a thread of one turn whose seats are its participants, so a team's
+    // work reads as a conversation rather than as a report file nobody opens. `report.json`
+    // remains what a resume reads; these rows are a projection of it.
+    let record = config
+        .activity
+        .enabled
+        .then(|| -> Result<_> {
+            let activity = crate::activity::share(crate::activity::Activity::open(
+                store.data_dir(),
+                config.activity.retention_days,
+            )?);
+            let (thread, turn, _host) = activity.lock().expect("activity store").start_thread(
+                &report.root,
+                &store.salt()?,
+                &store.repository_id(&report.root)?,
+                crate::activity::Origin::Collaborate,
+                task,
+                &[],
+                &Overrides::default(),
+                config.scheduler.permission.key(),
+                "team",
+            )?;
+            Ok((thread, turn, activity))
+        })
+        .transpose()
+        .unwrap_or_else(|error: anyhow::Error| {
+            tracing::debug!(%error, "collaboration not recorded");
+            None
+        });
     let cx = Cx {
         config,
         policies,
@@ -559,6 +592,7 @@ pub async fn run(
         output: &output,
         events,
         since: crate::interrupt::mark(),
+        record,
     };
     if let Some(waves) = report.plan.waves() {
         cx.say(format!("Order: {}", graph::summary(&waves)));
@@ -630,6 +664,9 @@ pub async fn resume(
         output: &output,
         events: None,
         since: crate::interrupt::mark(),
+        // A resumed collaboration carries on in `report.json`, which is what a resume reads;
+        // it does not reopen the thread the original run wrote.
+        record: None,
     };
     drive(&cx, &mut report).await?;
     Ok(report)

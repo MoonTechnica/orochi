@@ -389,7 +389,7 @@ fn a_recorded_turn_reads_back_as_the_events_that_made_it() {
 
     {
         let mut recorder = Recorder::new(
-            Activity::open(dir.path(), 30).unwrap(),
+            orochi::activity::share(Activity::open(dir.path(), 30).unwrap()),
             Seat {
                 thread: thread.clone(),
                 turn: turn.clone(),

@@ -1667,3 +1667,95 @@ fn the_parts_of_one_wave_spread_over_accounts_that_are_otherwise_equal() {
         .collect();
     assert_eq!(agents.len(), 2, "both parts ran on {agents:?}");
 }
+
+/// A collaboration is a thread whose seats are its participants, each on its own lane, so the
+/// work of a team reads as one conversation rather than as a report file nobody opens.
+#[test]
+fn a_collaboration_records_its_participants_as_the_seats_of_one_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("repo");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("seed.txt"), "original").unwrap();
+    let config = temp.path().join("config.toml");
+    let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
+    fs::write(
+        &config,
+        format!(
+            r#"
+[discovery]
+auto_add = false
+[scheduler]
+permission = "allow"
+[evaluator]
+auto = false
+[classifier]
+enabled = false
+[[agents]]
+id = "same"
+provider = "openai"
+command = "python3"
+args = [{}]
+[agents.env]
+MOCK_BEHAVIOR = "session_collaboration"
+"#,
+            json!(fixture)
+        ),
+    )
+    .unwrap();
+    let plan_path = temp.path().join("plan.json");
+    fs::write(&plan_path, serde_json::to_vec(&plan()).unwrap()).unwrap();
+    let output = temp.path().join("result");
+    let result = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "--data-dir",
+            temp.path().join("data").to_str().unwrap(),
+            "-C",
+            root.to_str().unwrap(),
+            "collaborate",
+            "Implement the task",
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    let activity = orochi::activity::Activity::open(&temp.path().join("data"), 30).unwrap();
+    let listed = activity.sidebar(20, true).unwrap();
+    let row = listed
+        .iter()
+        .flat_map(|p| &p.threads)
+        .find(|t| t.origin == "collaborate")
+        .expect("a collaboration leaves a thread");
+    let thread = activity.thread(&row.id).unwrap().unwrap();
+
+    let roles: Vec<&str> = thread.seats.iter().map(|s| s.role.as_str()).collect();
+    assert_eq!(
+        roles,
+        vec!["author", "reviewer", "integrator"],
+        "each participant is a seat, named as the plan names it"
+    );
+    assert!(
+        thread.seats.iter().all(|s| s.model.is_some()),
+        "each seat records the route it took: {:?}",
+        thread.seats
+    );
+    let lanes: Vec<Option<i64>> = thread
+        .items
+        .iter()
+        .filter(|i| i.kind == "agent_message")
+        .map(|i| i.lane)
+        .collect();
+    assert!(
+        lanes.len() >= 3 && lanes.iter().all(Option::is_some),
+        "every participant's reply is on its own lane: {lanes:?}"
+    );
+}

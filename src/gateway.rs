@@ -11,7 +11,7 @@ use agent_client_protocol::schema::{ProtocolVersion, v1::*};
 use agent_client_protocol::{Agent, Client, ConnectionTo, Responder, Stdio};
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -23,6 +23,8 @@ struct Session {
     root: PathBuf,
     history: String,
     cancel: Option<watch::Sender<bool>>,
+    /// The thread this session is in the conversation store, opened by its first prompt.
+    thread: Option<String>,
 }
 type Sessions = Arc<Mutex<BTreeMap<String, Session>>>;
 struct Running {
@@ -40,6 +42,66 @@ impl Drop for Running {
 }
 fn invalid() -> agent_client_protocol::Error {
     Error::invalid_params()
+}
+
+/// Opens (or continues) the thread a gateway session is, and the turn this prompt is. A
+/// failure to record never stops the prompt from running.
+fn open_turn(
+    config: &Config,
+    store: &Store,
+    root: &Path,
+    thread: Option<String>,
+    text: &str,
+) -> Option<(crate::activity::Shared, crate::activity::SeatRef, String)> {
+    if !config.activity.enabled {
+        return None;
+    }
+    // The gateway joins prompt blocks with newlines; what is recorded is the message, not
+    // that joining.
+    let text = text.trim_end();
+    let opened = (|| -> anyhow::Result<_> {
+        let activity = crate::activity::share(crate::activity::Activity::open(
+            store.data_dir(),
+            config.activity.retention_days,
+        )?);
+        let repository_id = store.repository_id(root)?;
+        let opened = activity.lock().expect("activity store");
+        let (thread, turn, host) = match thread {
+            Some(thread) => {
+                let host = opened.register_host(Some(&thread), "serve")?;
+                let turn = opened.queue_turn(&thread, text, &[], "solo", "acp")?;
+                opened.claim_turn(&turn, &host)?;
+                opened.turn_shape(&turn, Some("solo"), None)?;
+                (thread, turn, host)
+            }
+            None => opened.start_thread(
+                root,
+                &store.salt()?,
+                &repository_id,
+                crate::activity::Origin::Serve,
+                text,
+                &[],
+                &Overrides::default(),
+                config.scheduler.permission.key(),
+                "solo",
+            )?,
+        };
+        let seat = opened.create_seat(&turn, 0, "implementer", true, false, None, None)?;
+        drop(opened);
+        Ok((
+            activity.clone(),
+            crate::activity::SeatRef {
+                thread,
+                turn,
+                seat,
+                store: activity,
+            },
+            host,
+        ))
+    })();
+    opened
+        .map_err(|error| tracing::debug!(%error, "gateway turn not recorded"))
+        .ok()
 }
 
 fn bounded_bytes(text: &str, limit: usize) -> &str {
@@ -75,7 +137,7 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
             let mut sessions = new_sessions.lock().unwrap();
             if sessions.len() >= 128 { return responder.respond_with_internal_error("session limit reached; restart the gateway"); }
             let id = uuid::Uuid::new_v4().to_string();
-            sessions.insert(id.clone(), Session { root, history: String::new(), cancel: None });
+            sessions.insert(id.clone(), Session { root, history: String::new(), cancel: None, thread: None });
             responder.respond(NewSessionResponse::new(id))
         }, agent_client_protocol::on_receive_request!())
         .on_receive_notification(async move |request: CancelNotification, _cx| {
@@ -98,18 +160,20 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
             if text.trim().is_empty() { return responder.respond_with_error(invalid()); }
             let id = request.session_id.to_string();
             let (cancel, cancellation) = watch::channel(false);
-            let (root, history) = {
+            let (root, history, thread) = {
                 let mut sessions = prompt_sessions.lock().unwrap();
                 let Some(session) = sessions.get_mut(&id) else { return responder.respond_with_error(invalid()); };
                 if session.cancel.is_some() { return responder.respond_with_error(invalid()); }
                 session.cancel = Some(cancel.clone());
-                (session.root.clone(), session.history.clone())
+                (session.root.clone(), session.history.clone(), session.thread.clone())
             };
             let running = Running { sessions: prompt_sessions.clone(), id: id.clone(), cancel };
             let task = if history.is_empty() { text.clone() } else { format!("Previous conversation (context):\n{history}\n\nCurrent user request:\n{text}") };
             let config = config.clone(); let data = data.clone();
             let (events, receiver) = mpsc::unbounded_channel();
             let (finished, done) = oneshot::channel();
+            let (opened_tx, opened_rx) = oneshot::channel();
+            let prompt_text = text.clone();
             let mut worker_cancel = cancellation.clone();
             let worker = std::thread::Builder::new().name("orochi-acp-run".into()).spawn(move || {
                 let result = (|| -> anyhow::Result<u8> {
@@ -118,11 +182,27 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
                         let store = Store::open(&data)?;
                         let _lock = workspace_lock(&data, &store.repository_id(&root)?, config.scheduler.shared_workspace)?;
                         let policies = Registry::load(&data)?;
-                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None, seat: None };
-                        tokio::select! {
+                        // A session is a thread and each prompt a turn in it, as a console
+                        // conversation is, so gateway work appears beside terminal work.
+                        let recorded = open_turn(&config, &store, &root, thread, &prompt_text);
+                        let _ = opened_tx.send(recorded.as_ref().map(|(_, seat, _)| seat.thread.clone()));
+                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None, seat: recorded.as_ref().map(|(_, seat, _)| seat.clone()) };
+                        let code = tokio::select! {
                             result = scheduler::run_with_events(&config, &policies, &store, &root, options, Some(events)) => result,
                             _ = worker_cancel.wait_for(|v| *v) => Ok(130),
+                        };
+                        if let Some((activity, seat, host)) = &recorded {
+                            let state = match &code {
+                                Ok(0) => crate::activity::TurnState::Completed,
+                                Ok(130) => crate::activity::TurnState::Interrupted,
+                                _ => crate::activity::TurnState::Failed,
+                            };
+                            let _ = activity
+                                .lock()
+                                .expect("activity store")
+                                .end_turn(seat, host, state);
                         }
+                        code
                     })
                 })();
                 let _ = finished.send(result.map_err(|e| e.to_string()));
@@ -139,7 +219,7 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
                 Err(error) => { drop(running); return responder.respond_with_internal_error(error); }
             }
             let output = cx.clone();
-            cx.spawn(async move { forward(output, responder, id, text, running, cancellation, receiver, done).await })?;
+            cx.spawn(async move { forward(output, responder, id, text, running, cancellation, receiver, done, opened_rx).await })?;
             Ok(())
         }, agent_client_protocol::on_receive_request!())
         .connect_to(Stdio::new()).await;
@@ -169,6 +249,7 @@ async fn forward(
     mut cancel: watch::Receiver<bool>,
     mut events: mpsc::UnboundedReceiver<ExecutionEvent>,
     mut done: oneshot::Receiver<Result<u8, String>>,
+    opened_rx: oneshot::Receiver<Option<String>>,
 ) -> agent_client_protocol::Result<()> {
     let request_cancel = responder.cancellation();
     let mut requested_cancel = false;
@@ -203,12 +284,32 @@ async fn forward(
             result = &mut done => break result.unwrap_or_else(|_| Err("scheduler worker stopped".into())),
         }
     };
+    // The worker has finished, and with it everything the store had in flight; what it
+    // forwarded last is still in the channel.
+    while let Ok(event) = events.try_recv() {
+        if let ExecutionEvent::Text(text, _) = event {
+            if response_text.len() < 16384 {
+                response_text.push_str(bounded_bytes(&text, 16384 - response_text.len()));
+            }
+            cx.send_notification(SessionNotification::new(
+                id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(text),
+                ))),
+            ))?;
+        }
+    }
+    let opened = opened_rx.await.ok().flatten();
     if let Some(session) = running.sessions.lock().unwrap().get_mut(&id) {
         session.history = format!(
             "User: {}\nAgent: {}",
             bounded_bytes(&text, 8192),
             response_text
         );
+        // The first prompt opened the thread; the ones after it are turns in the same thread.
+        if session.thread.is_none() {
+            session.thread = opened;
+        }
     }
     match code {
         Ok(0) => responder.respond(PromptResponse::new(StopReason::EndTurn)),

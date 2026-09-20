@@ -492,12 +492,15 @@ struct Selected {
     events: UnboundedReceiver<ExecutionEvent>,
     /// Keeps the route busy for the parts beside this one while the attempt runs.
     _claim: crate::mailbox::Claim,
+    /// Writes this participant's stream down on its way to the turn.
+    tee: Option<crate::activity::recorder::Tee>,
 }
 
 async fn select(
     cx: &Cx<'_>,
     report: &Report,
     turn: &Turn,
+    seat: Option<&crate::activity::SeatRef>,
     attempted: &BTreeSet<String>,
 ) -> Result<(Option<Selected>, Vec<String>)> {
     let config = cx.config;
@@ -536,8 +539,20 @@ async fn select(
             Overrides::default()
         };
         let (tx, events) = unbounded_channel();
+        // With a seat to fill, this participant's stream is written down on its way to the
+        // turn that reads it, so its replies land on its own lane of the timeline.
+        let tee = seat.map(|seat| {
+            crate::activity::recorder::Tee::start(
+                seat.store.clone(),
+                crate::activity::recorder::Seat::from(seat),
+                config.activity.thinking,
+                Some(tx.clone()),
+                false,
+            )
+        });
+        let sink = tee.as_ref().map_or(tx, |tee| tee.sink());
         let (mut clients, discovered) = tokio::select! {
-            result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(tx), overrides.model.as_deref(), Some(&participant.id), false) => result?,
+            result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(sink), overrides.model.as_deref(), Some(&participant.id), false) => result?,
             _ = cx.since.wait() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during discovery").into()),
         };
         failures.extend(
@@ -591,6 +606,7 @@ async fn select(
                     candidate,
                     events,
                     _claim: claim,
+                    tee,
                 }),
                 failures,
             ));
@@ -625,12 +641,42 @@ async fn attempt(
     let participant = &turn.participant;
     let mut attempted = BTreeSet::new();
     let mut history: Vec<SessionResult> = vec![];
+    // One seat per (participant, stage): a participant that runs again later is doing
+    // different work, so it takes a new place at the table.
+    let recorded = cx.record.as_ref().and_then(|(thread, turn_id, store)| {
+        let activity = store.lock().expect("activity store");
+        let seat = activity
+            .create_seat(
+                turn_id,
+                turn.index,
+                &participant.id,
+                participant.role == Role::Coordinator,
+                matches!(participant.role, Role::Reviewer),
+                None,
+                Some(&turn.workspace),
+            )
+            .ok()?;
+        let _ = activity.seat_work(
+            &seat,
+            turn.stage,
+            None,
+            turn.unit.as_ref().map(|unit| unit.id.as_str()),
+        );
+        drop(activity);
+        Some(crate::activity::SeatRef {
+            thread: thread.clone(),
+            turn: turn_id.clone(),
+            seat,
+            store: store.clone(),
+        })
+    });
+    let seat = recorded.as_ref();
     for number in 0..config.scheduler.max_attempts {
         ensure!(
             report.sessions.len() + history.len() < 256,
             "collaboration checkpoint reached 256 attempts"
         );
-        let (selected, failures) = select(cx, report, turn, &attempted).await?;
+        let (selected, failures) = select(cx, report, turn, seat, &attempted).await?;
         if !failures.is_empty() {
             let _ = updates.send(Update::Failures(failures));
         }
@@ -639,6 +685,7 @@ async fn attempt(
             candidate,
             mut events,
             _claim,
+            tee,
         }) = selected
         else {
             break;
@@ -703,6 +750,17 @@ async fn attempt(
             let _ = updates.send(Update::Session(slot, Box::new(session.clone())));
         };
         publish(&session);
+        let recorded_attempt = recorded.as_ref().and_then(|seat| {
+            let activity = seat.store.lock().expect("activity store");
+            let id = activity
+                .create_attempt(&seat.seat, &candidate, false, None)
+                .ok()?;
+            let _ = activity.attempt_session(&id, &session.session_id, None);
+            if let Some(tee) = &tee {
+                tee.attempt(Some(id.clone()));
+            }
+            Some(id)
+        });
         let start = Instant::now();
         let result = execute(
             &mut client,
@@ -712,6 +770,7 @@ async fn attempt(
             cx,
             &mut session,
             &publish,
+            tee,
         )
         .await;
         client.stop().await;
@@ -773,12 +832,35 @@ async fn attempt(
         if result.is_ok() && session.checks.iter().any(|c| !c.passed) {
             result = Err(anyhow::anyhow!("participant evaluation failed"));
         }
+        // What the seat shows a reader: the route it took and how it ended. A collaboration
+        // records no telemetry run of its own, so there is no run to point at.
+        let close = |session: &SessionResult, state: crate::activity::SeatState| {
+            if let (Some(seat), Some(attempt)) = (&recorded, &recorded_attempt) {
+                let activity = seat.store.lock().expect("activity store");
+                let _ = activity.attempt_finished(
+                    attempt,
+                    None,
+                    Some(match session.outcome {
+                        Outcome::Success => "success",
+                        Outcome::PartialSuccess => "partial_success",
+                        Outcome::Failure => "failure",
+                        Outcome::Cancelled => "cancelled",
+                    }),
+                    session.error_kind.map(|kind| kind.key()),
+                    session.error.as_deref(),
+                    serde_json::to_string(&session.checks).ok().as_deref(),
+                    Some(&session.usage),
+                );
+                let _ = activity.seat_state(&seat.seat, state);
+            }
+        };
         match result {
             Ok(()) => {
                 session.outcome = evaluator::outcome(true, &session.checks);
                 session.status = AttemptStatus::Completed;
                 scheduler::update_success(store, &candidate.agent, &candidate.model)?;
                 publish(&session);
+                close(&session, crate::activity::SeatState::Done);
                 return Ok(done);
             }
             Err(error) => {
@@ -800,6 +882,14 @@ async fn attempt(
                     Outcome::Failure
                 };
                 publish(&session);
+                close(
+                    &session,
+                    if cancelled {
+                        crate::activity::SeatState::Cancelled
+                    } else {
+                        crate::activity::SeatState::Failed
+                    },
+                );
                 if cancelled {
                     return Err(error.into());
                 }
@@ -822,6 +912,7 @@ async fn attempt(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     client: &mut Client,
     candidate: &ExecutionCandidate,
@@ -830,6 +921,7 @@ async fn execute(
     cx: &Cx<'_>,
     session: &mut SessionResult,
     publish: &dyn Fn(&SessionResult),
+    tee: Option<crate::activity::recorder::Tee>,
 ) -> Result<bool> {
     tokio::select! {
         result = client.configure(candidate) => result?,
@@ -865,6 +957,12 @@ async fn execute(
                 Some(event) = events.recv() => consume(event)?,
             }
         }
+    }
+    // The store sits between the agent and this loop, and forwards on a task of its own, so
+    // what the agent sent last may still be in flight. Waiting for it here is what keeps the
+    // drain below able to see it with `try_recv`.
+    if let Some(tee) = tee {
+        tee.finish().await;
     }
     // The final update can be enqueued in the same SDK turn as the prompt result.
     while let Ok(event) = events.try_recv() {

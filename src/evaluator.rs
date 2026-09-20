@@ -3,10 +3,21 @@ use crate::{
     types::{CheckResult, Outcome},
 };
 use std::{
+    collections::{BTreeMap, VecDeque},
     path::Path,
     process::Stdio,
     time::{Duration, Instant},
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+/// The last lines of a failed check, kept for the one place check output is allowed to live:
+/// the conversation store (§10.3 of `docs/desktop-app-design.md`). Telemetry never sees it.
+pub const TAIL_LINES: usize = 200;
+
+/// What the checks produced, beside their results: the tail of each **failed** check's output.
+/// A check that passed leaves nothing — nobody reads the output of a green test run.
+#[derive(Debug, Default, Clone)]
+pub struct Output(pub BTreeMap<String, String>);
 
 pub fn checks(config: &EvaluatorConfig, root: &Path) -> Vec<CheckCommand> {
     if !config.checks.is_empty() {
@@ -74,7 +85,17 @@ pub async fn evaluate_with(
     root: &Path,
     announce: bool,
 ) -> Vec<CheckResult> {
+    detailed(config, root, announce).await.0
+}
+
+/// The same run, also reporting what the failed checks printed.
+pub async fn detailed(
+    config: &EvaluatorConfig,
+    root: &Path,
+    announce: bool,
+) -> (Vec<CheckResult>, Output) {
     let mut results = Vec::new();
+    let mut output = Output::default();
     for check in checks(config, root) {
         let start = Instant::now();
         if announce {
@@ -86,17 +107,42 @@ pub async fn evaluate_with(
             .current_dir(root)
             .env("CI", "true")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
+            // Captured rather than discarded, and echoed line by line below, so a terminal
+            // still watches a long check run while its tail is kept for a failure.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        let mut tail: VecDeque<String> = VecDeque::new();
         let (passed, exit_code, timed_out) = match command.spawn() {
             Ok(mut child) => {
                 let _guard = ProcessGuard(child.id());
-                match tokio::time::timeout(Duration::from_secs(config.timeout_secs), child.wait())
-                    .await
-                {
+                let mut out = child.stdout.take().map(|o| BufReader::new(o).lines());
+                let mut err = child.stderr.take().map(|e| BufReader::new(e).lines());
+                let wait = async {
+                    loop {
+                        let line = tokio::select! {
+                            Ok(Some(line)) = async { match &mut out {
+                                Some(reader) => reader.next_line().await,
+                                None => std::future::pending().await,
+                            } } => line,
+                            Ok(Some(line)) = async { match &mut err {
+                                Some(reader) => reader.next_line().await,
+                                None => std::future::pending().await,
+                            } } => line,
+                            status = child.wait() => return status,
+                        };
+                        if announce {
+                            eprintln!("{line}");
+                        }
+                        tail.push_back(line);
+                        while tail.len() > TAIL_LINES {
+                            tail.pop_front();
+                        }
+                    }
+                };
+                match tokio::time::timeout(Duration::from_secs(config.timeout_secs), wait).await {
                     Ok(Ok(status)) => (status.success(), status.code(), false),
                     Ok(Err(_)) => (false, None, false),
                     Err(_) => {
@@ -107,6 +153,12 @@ pub async fn evaluate_with(
             }
             Err(_) => (false, None, false),
         };
+        if !passed && !tail.is_empty() {
+            output.0.insert(
+                check.name.clone(),
+                tail.into_iter().collect::<Vec<_>>().join("\n"),
+            );
+        }
         results.push(CheckResult {
             name: check.name,
             passed,
@@ -115,7 +167,7 @@ pub async fn evaluate_with(
             timed_out,
         });
     }
-    results
+    (results, output)
 }
 
 pub fn outcome(completed: bool, checks: &[CheckResult]) -> Outcome {

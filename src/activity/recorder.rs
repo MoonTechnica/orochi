@@ -5,7 +5,7 @@
 //! written down on the way past. A failure to write never fails a turn — the work is what
 //! matters, and a store that cannot be written degrades to the behavior Orochi had before one
 //! existed.
-use super::{Activity, ItemKind, SeatState};
+use super::{Activity, ItemKind, SeatState, Shared};
 use crate::acp::{EventSink, ExecutionEvent, Progress, ToolUpdate};
 use serde_json::json;
 use std::{
@@ -53,7 +53,7 @@ struct Stream {
 type Current = Arc<Mutex<Option<String>>>;
 
 pub struct Recorder {
-    activity: Activity,
+    store: Shared,
     place: Seat,
     current: Current,
     thinking: bool,
@@ -62,10 +62,10 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    pub fn new(activity: Activity, place: Seat, thinking: bool) -> Self {
+    pub fn new(store: Shared, place: Seat, thinking: bool) -> Self {
         let current = Arc::new(Mutex::new(place.attempt.clone()));
         Self {
-            activity,
+            store,
             place,
             current,
             thinking,
@@ -78,20 +78,24 @@ impl Recorder {
         &self.place.seat
     }
 
-    /// Records one event. Errors are swallowed on purpose: see the module note.
+    /// Records one event. The connection is locked **once** here and handed down: taking the
+    /// guard again inside would deadlock a plain mutex, and a deadlock here hangs every agent
+    /// this recorder is writing for. Errors are swallowed on purpose: see the module note.
     pub fn record(&mut self, event: &ExecutionEvent) {
+        let shared = self.store.clone();
+        let db = shared.lock().expect("activity store");
         let current = self.current.lock().expect("recorder attempt").clone();
         if current != self.place.attempt {
             // A failover: whatever the previous attempt was streaming ends with it.
-            self.finish_streams();
+            self.finish_streams(&db);
             self.place.attempt = current;
         }
-        if let Err(error) = self.write(event) {
+        if let Err(error) = self.write(&db, event) {
             tracing::debug!(%error, "activity not recorded");
         }
     }
 
-    fn write(&mut self, event: &ExecutionEvent) -> anyhow::Result<()> {
+    fn write(&mut self, db: &Activity, event: &ExecutionEvent) -> anyhow::Result<()> {
         match event {
             ExecutionEvent::Text(chunk, id) => {
                 // A different `messageId` is a different message, even mid-stream; without
@@ -100,39 +104,39 @@ impl Recorder {
                     && id.is_some()
                     && self.message.message_id.as_deref() != id.as_deref()
                 {
-                    self.close(true)?;
+                    self.close(db, true)?;
                 }
                 self.message.message_id.clone_from(id);
-                self.stream(true, chunk)?;
+                self.stream(db, true, chunk)?;
             }
             ExecutionEvent::Finished => {
-                self.finish_streams();
-                self.seat_state(SeatState::Done)?;
+                self.finish_streams(db);
+                self.seat_state(db, SeatState::Done)?;
             }
-            ExecutionEvent::Permission(..) => self.seat_state(SeatState::Asking)?,
-            ExecutionEvent::Progress(progress) => self.progress(progress)?,
+            ExecutionEvent::Permission(..) => self.seat_state(db, SeatState::Asking)?,
+            ExecutionEvent::Progress(progress) => self.progress(db, progress)?,
         }
         Ok(())
     }
 
-    fn progress(&mut self, progress: &Progress) -> anyhow::Result<()> {
+    fn progress(&mut self, db: &Activity, progress: &Progress) -> anyhow::Result<()> {
         match progress {
             Progress::Thinking(text) => {
                 if self.thinking {
-                    self.close(true)?;
-                    self.stream(false, text)?;
+                    self.close(db, true)?;
+                    self.stream(db, false, text)?;
                 }
             }
             Progress::Tool(update) => {
-                self.finish_streams();
-                self.tool(update)?;
+                self.finish_streams(db);
+                self.tool(db, update)?;
             }
             Progress::Plan(entries) => {
                 let entries: Vec<_> = entries
                     .iter()
                     .map(|(status, content)| json!({"status": status, "content": content}))
                     .collect();
-                self.item(ItemKind::Plan, None, None, "", Some(&json!(entries)))?;
+                self.item(db, ItemKind::Plan, None, None, "", Some(&json!(entries)))?;
             }
             Progress::Route {
                 agent,
@@ -142,6 +146,7 @@ impl Recorder {
                 resumed,
             } => {
                 self.item(
+                    db,
                     ItemKind::Route,
                     None,
                     None,
@@ -149,10 +154,11 @@ impl Recorder {
                     Some(&json!({"agent": agent, "provider": provider.to_string(),
                         "model": model, "reasoning": reasoning, "resumed": resumed})),
                 )?;
-                self.seat_state(SeatState::Working)?;
+                self.seat_state(db, SeatState::Working)?;
             }
             Progress::Unavailable { agent, error } => {
                 self.item(
+                    db,
                     ItemKind::Unavailable,
                     None,
                     None,
@@ -161,17 +167,31 @@ impl Recorder {
                 )?;
             }
             Progress::Note(text) => {
-                self.item(ItemKind::Note, None, None, text, None)?;
+                self.item(db, ItemKind::Note, None, None, text, None)?;
             }
-            Progress::Checking => self.seat_state(SeatState::Checking)?,
+            Progress::Checking => self.seat_state(db, SeatState::Checking)?,
             Progress::Attempt {
                 outcome,
                 checks,
                 error,
                 usage,
+                output,
             } => {
-                self.finish_streams();
+                self.finish_streams(db);
+                // A failed check's last lines, beside its result: the first thing a reviewer
+                // wants, and the one place check output is kept.
+                let checks: Vec<_> = checks
+                    .iter()
+                    .map(|check| {
+                        let mut value = json!(check);
+                        if let Some(tail) = output.get(&check.name) {
+                            value["tail"] = json!(tail);
+                        }
+                        value
+                    })
+                    .collect();
                 self.item(
+                    db,
                     ItemKind::Checks,
                     None,
                     None,
@@ -181,10 +201,18 @@ impl Recorder {
                 )?;
             }
             Progress::Mode(mode) => {
-                self.item(ItemKind::Mode, None, None, "", Some(&json!({"mode": mode})))?;
+                self.item(
+                    db,
+                    ItemKind::Mode,
+                    None,
+                    None,
+                    "",
+                    Some(&json!({"mode": mode})),
+                )?;
             }
             Progress::Context { used, size } => {
                 self.item(
+                    db,
                     ItemKind::Context,
                     None,
                     None,
@@ -197,12 +225,19 @@ impl Recorder {
                     .iter()
                     .map(|(name, description)| json!({"name": name, "description": description}))
                     .collect();
-                self.item(ItemKind::Commands, None, None, "", Some(&json!(commands)))?;
+                self.item(
+                    db,
+                    ItemKind::Commands,
+                    None,
+                    None,
+                    "",
+                    Some(&json!(commands)),
+                )?;
             }
             // A title the agent offered, which the user's own name for the thread outranks.
-            Progress::Info(title) => self.activity.title(&self.place.thread, title, false)?,
+            Progress::Info(title) => db.title(&self.place.thread, title, false)?,
             Progress::Other(value) => {
-                self.item(ItemKind::Acp, None, None, "", Some(value))?;
+                self.item(db, ItemKind::Acp, None, None, "", Some(value))?;
             }
         }
         Ok(())
@@ -210,7 +245,7 @@ impl Recorder {
 
     /// One row per tool call, found again by its ACP id so an update merges into the call it
     /// belongs to. Diffs become patches under it.
-    fn tool(&mut self, update: &ToolUpdate) -> anyhow::Result<()> {
+    fn tool(&mut self, db: &Activity, update: &ToolUpdate) -> anyhow::Result<()> {
         let Some(attempt) = self.place.attempt.clone() else {
             return Ok(());
         };
@@ -249,9 +284,12 @@ impl Recorder {
         set("raw_input", raw(&update.raw_input));
         set("raw_output", raw(&update.raw_output));
         let data = serde_json::Value::Object(data);
-        let item = match self.activity.tool_item(&attempt, &update.id)? {
+        // Bound first: a guard in a `match` scrutinee lives for the whole match, and the
+        // arms below lock again.
+        let existing = db.tool_item(&attempt, &update.id)?;
+        let item = match existing {
             Some(item) => {
-                self.activity.update_tool(
+                db.update_tool(
                     item,
                     update.status.as_deref(),
                     update.output.as_deref(),
@@ -259,7 +297,7 @@ impl Recorder {
                 )?;
                 item
             }
-            None => self.activity.item(
+            None => db.item(
                 &self.place.thread,
                 &self.place.turn,
                 Some(&attempt),
@@ -271,7 +309,7 @@ impl Recorder {
             )?,
         };
         for diff in &update.diffs {
-            self.activity.patch(
+            db.patch(
                 item,
                 &self.place.turn,
                 &diff.path,
@@ -284,13 +322,14 @@ impl Recorder {
 
     fn item(
         &self,
+        db: &Activity,
         kind: ItemKind,
         status: Option<&str>,
         key: Option<&str>,
         text: &str,
         data: Option<&serde_json::Value>,
     ) -> anyhow::Result<i64> {
-        self.activity.item(
+        db.item(
             &self.place.thread,
             &self.place.turn,
             self.place.attempt.as_deref(),
@@ -302,8 +341,8 @@ impl Recorder {
         )
     }
 
-    fn seat_state(&self, state: SeatState) -> anyhow::Result<()> {
-        self.activity.seat_state(&self.place.seat, state)
+    fn seat_state(&self, db: &Activity, state: SeatState) -> anyhow::Result<()> {
+        db.seat_state(&self.place.seat, state)
     }
 
     fn stream_of(&mut self, message: bool) -> &mut Stream {
@@ -316,14 +355,14 @@ impl Recorder {
 
     /// Opens the row if it is not open, buffers the chunk, and writes when the buffer has
     /// been waiting long enough.
-    fn stream(&mut self, message: bool, chunk: &str) -> anyhow::Result<()> {
+    fn stream(&mut self, db: &Activity, message: bool, chunk: &str) -> anyhow::Result<()> {
         if self.stream_of(message).item.is_none() {
             let kind = if message {
                 ItemKind::AgentMessage
             } else {
                 ItemKind::Thought
             };
-            let item = self.item(kind, Some("streaming"), None, "", None)?;
+            let item = self.item(db, kind, Some("streaming"), None, "", None)?;
             self.stream_of(message).item = Some(item);
             self.stream_of(message).since = Some(Instant::now());
         }
@@ -331,37 +370,37 @@ impl Recorder {
         stream.buffer.push_str(chunk);
         let due = stream.since.is_none_or(|since| since.elapsed() >= FLUSH);
         if due {
-            self.flush(message)?;
+            self.flush(db, message)?;
         }
         Ok(())
     }
 
-    fn flush(&mut self, message: bool) -> anyhow::Result<()> {
+    fn flush(&mut self, db: &Activity, message: bool) -> anyhow::Result<()> {
         let stream = self.stream_of(message);
         let (Some(item), false) = (stream.item, stream.buffer.is_empty()) else {
             return Ok(());
         };
         let chunk = std::mem::take(&mut stream.buffer);
         stream.since = Some(Instant::now());
-        self.activity.append(item, &chunk)
+        db.append(item, &chunk)
     }
 
     /// Writes what is buffered and marks the row finished.
-    fn close(&mut self, message: bool) -> anyhow::Result<()> {
-        self.flush(message)?;
+    fn close(&mut self, db: &Activity, message: bool) -> anyhow::Result<()> {
+        self.flush(db, message)?;
         let stream = self.stream_of(message);
         let item = stream.item.take();
         stream.message_id = None;
         stream.since = None;
         if let Some(item) = item {
-            self.activity.item_status(item, "completed")?;
+            db.item_status(item, "completed")?;
         }
         Ok(())
     }
 
-    fn finish_streams(&mut self) {
+    fn finish_streams(&mut self, db: &Activity) {
         for message in [true, false] {
-            if let Err(error) = self.close(message) {
+            if let Err(error) = self.close(db, message) {
                 tracing::debug!(%error, "activity stream not closed");
             }
         }
@@ -372,7 +411,9 @@ impl Drop for Recorder {
     /// A turn that ends without `Finished` — interrupted, or its agent gone — still leaves
     /// what was streamed before it stopped.
     fn drop(&mut self) {
-        self.finish_streams();
+        let shared = self.store.clone();
+        let db = shared.lock().expect("activity store");
+        self.finish_streams(&db);
     }
 }
 
@@ -394,14 +435,14 @@ impl Tee {
     /// the agent's reply to stdout. Without it, putting the store in the path would silence
     /// the very output the run exists to produce.
     pub fn start(
-        activity: Activity,
+        store: Shared,
         place: Seat,
         thinking: bool,
         downstream: Option<EventSink>,
         echo: bool,
     ) -> Self {
         let (sink, mut events) = tokio::sync::mpsc::unbounded_channel();
-        let mut recorder = Recorder::new(activity, place, thinking);
+        let mut recorder = Recorder::new(store, place, thinking);
         let current = recorder.current.clone();
         let (close, mut closed) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {

@@ -158,6 +158,9 @@ pub enum Progress {
         checks: Vec<crate::types::CheckResult>,
         error: Option<String>,
         usage: Usage,
+        /// The tail of each failed check's output, by check name. It exists for the one place
+        /// check output is kept — the conversation store — and never reaches telemetry.
+        output: std::collections::BTreeMap<String, String>,
     },
     /// The agent's own session mode changed (`current_mode_update`), by its doing or ours.
     Mode(String),

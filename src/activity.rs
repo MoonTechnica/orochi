@@ -329,14 +329,80 @@ pub struct Thread {
     pub files: Vec<FileRow>,
 }
 
-/// Where a run writes its rows. The caller decides the shape of a turn — one seat or several,
-/// phases, a collaboration — and hands the scheduler the one place it is filling; the
-/// scheduler only ever adds attempts under it.
-#[derive(Debug, Clone)]
+/// One connection, shared by everything in this process that writes the store.
+///
+/// A connection per writer looked cheaper and was not: SQLite serializes writers to a
+/// database anyway, so the connections contend; `busy_timeout` then *sleeps*, and on an async
+/// task that stops every agent the task is driving. Closing one is worse — `sqlite3_close` of
+/// a WAL connection takes the VFS's shared-memory mutex, so opening and closing them from
+/// several tasks at once deadlocked the seats of one collaboration against each other.
+///
+/// One connection behind a mutex has none of that: writes are short and local, and nothing is
+/// ever opened or closed while agents are running.
+pub type Shared = std::sync::Arc<std::sync::Mutex<Activity>>;
+
+pub fn share(activity: Activity) -> Shared {
+    std::sync::Arc::new(std::sync::Mutex::new(activity))
+}
+
+/// A run that is one agent doing one thing: a thread, a turn already claimed, and the seat
+/// that fills it. Free rather than a method because a `SeatRef` carries the store it writes
+/// through, and a method would hand out a handle to itself.
+#[allow(clippy::too_many_arguments)]
+pub fn start_turn(
+    store: &Shared,
+    root: &Path,
+    salt: &str,
+    repository_id: &str,
+    origin: Origin,
+    task: &str,
+    attachments: &[crate::types::Attachment],
+    overrides: &crate::types::Overrides,
+    permission: &str,
+    role: &str,
+) -> Result<(SeatRef, String)> {
+    let activity = store.lock().expect("activity store");
+    let (thread, turn, host) = activity.start_thread(
+        root,
+        salt,
+        repository_id,
+        origin,
+        task,
+        attachments,
+        overrides,
+        permission,
+        "solo",
+    )?;
+    let seat = activity.create_seat(&turn, 0, role, true, false, None, None)?;
+    Ok((
+        SeatRef {
+            thread,
+            turn,
+            seat,
+            store: store.clone(),
+        },
+        host,
+    ))
+}
+
+/// Where a run writes its rows, and what it writes through. The caller decides the shape of a
+/// turn — one seat or several, phases, a collaboration — and hands the scheduler the one place
+/// it is filling; the scheduler only ever adds attempts under it.
+#[derive(Clone)]
 pub struct SeatRef {
     pub thread: String,
     pub turn: String,
     pub seat: String,
+    pub store: Shared,
+}
+impl std::fmt::Debug for SeatRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeatRef")
+            .field("thread", &self.thread)
+            .field("turn", &self.turn)
+            .field("seat", &self.seat)
+            .finish()
+    }
 }
 
 pub struct Activity {
@@ -367,20 +433,44 @@ impl Activity {
             version <= USER_VERSION,
             "the activity database is newer than this Orochi version"
         );
-        crate::storage::setup(
-            &connection,
-            &format!(
-                "BEGIN IMMEDIATE; {SCHEMA} {TRIGGERS} {VIEWS}
-                 PRAGMA application_id={APPLICATION_ID};
-                 PRAGMA user_version={USER_VERSION}; COMMIT;"
-            ),
-        )?;
+        if version < USER_VERSION {
+            crate::storage::setup(
+                &connection,
+                &format!(
+                    "BEGIN IMMEDIATE; {SCHEMA} {TRIGGERS} {VIEWS}
+                     PRAGMA application_id={APPLICATION_ID};
+                     PRAGMA user_version={USER_VERSION}; COMMIT;"
+                ),
+            )?;
+        }
         let activity = Self {
             connection,
             retention_days,
         };
         activity.prune()?;
         Ok(activity)
+    }
+
+    /// A second connection to a store that is already set up: the writers inside one run —
+    /// a seat's recorder, a collaboration participant — each need their own, and a SQLite
+    /// connection is cheap. `open` is not: its schema step takes a write transaction and
+    /// retries a busy one by **sleeping**, which on an async task stops every agent that task
+    /// is driving. Attach does neither, so the seats of one turn cannot stall each other.
+    pub fn attach(data: &Path, retention_days: i64) -> Result<Self> {
+        let path = data.join("activity.sqlite3");
+        ensure!(path.exists(), "no activity database at {}", path.display());
+        let connection = Connection::open(&path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.execute_batch("PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;")?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        ensure!(
+            version == USER_VERSION,
+            "the activity database is not the version this Orochi set up"
+        );
+        Ok(Self {
+            connection,
+            retention_days,
+        })
     }
 
     /// A reader's connection: never writes, and never migrates. `query_only` is what makes
@@ -692,11 +782,11 @@ impl Activity {
         Ok(id)
     }
 
-    /// A run that is not a conversation — `orochi run`, a `serve` session, a collaboration
-    /// participant — is still a thread of one turn with one seat, because that is what a
-    /// client renders. The turn is opened already claimed by this process.
+    /// A run that is not a conversation — `orochi run`, a `serve` session, a collaboration —
+    /// is still a thread of one turn, because that is what a client renders. The turn is
+    /// opened already claimed by this process; its seats are the caller's to add.
     #[allow(clippy::too_many_arguments)]
-    pub fn start_turn(
+    pub fn start_thread(
         &self,
         root: &Path,
         salt: &str,
@@ -706,8 +796,8 @@ impl Activity {
         attachments: &[crate::types::Attachment],
         overrides: &crate::types::Overrides,
         permission: &str,
-        role: &str,
-    ) -> Result<(SeatRef, String)> {
+        shape: &str,
+    ) -> Result<(String, String, String)> {
         let project = self.project_for(root, salt)?;
         let branch = crate::context::git(root, &["rev-parse", "--abbrev-ref", "HEAD"])
             .map(|b| b.trim().to_owned())
@@ -722,11 +812,10 @@ impl Activity {
             permission,
         )?;
         let host = self.register_host(Some(&thread), "terminal")?;
-        let turn = self.queue_turn(&thread, task, attachments, "solo", "stdin")?;
+        let turn = self.queue_turn(&thread, task, attachments, shape, "stdin")?;
         ensure!(self.claim_turn(&turn, &host)?, "the turn was already taken");
-        self.turn_shape(&turn, Some("solo"), None)?;
-        let seat = self.create_seat(&turn, 0, role, true, false, None, None)?;
-        Ok((SeatRef { thread, turn, seat }, host))
+        self.turn_shape(&turn, Some(shape), None)?;
+        Ok((thread, turn, host))
     }
 
     /// What a finished turn leaves behind for a reader: the seat closed, the turn in its final
@@ -937,6 +1026,22 @@ impl Activity {
             ],
         )?;
         Ok(id)
+    }
+
+    /// Which step of a collaboration a seat belongs to, and which wave and part of the work
+    /// graph it is running.
+    pub fn seat_work(
+        &self,
+        seat: &str,
+        stage: usize,
+        wave: Option<usize>,
+        part: Option<&str>,
+    ) -> Result<()> {
+        self.connection.execute(
+            "UPDATE seats SET stage=?2, wave=?3, part_id=?4 WHERE id=?1",
+            params![seat, stage as i64, wave.map(|w| w as i64), part],
+        )?;
+        Ok(())
     }
 
     pub fn seat_state(&self, seat: &str, state: SeatState) -> Result<()> {
