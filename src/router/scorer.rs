@@ -143,10 +143,24 @@ pub fn candidates(
                 Some("xhigh" | "max" | "ultra") => 2.1,
                 _ => 1.2,
             };
-            let initial_tokens = (task.estimated_context as f64
-                + 1500.0 * task.estimated_scope as f64)
-                * rule.relative_tokens
-                * reasoning_factor;
+            // What a session there costs before any work, measured, plus what the work looks
+            // like. The size term is common to every candidate and so cannot tilt the choice;
+            // the floor is the seat's own and can.
+            let session = match floors.get(&(agent.id.clone(), model.model.clone())) {
+                Some(floor) => *floor,
+                None => {
+                    let floor = cx
+                        .store
+                        .session_floor(&agent.id, &model.model, 64)?
+                        .unwrap_or(0.0);
+                    floors.insert((agent.id.clone(), model.model.clone()), floor);
+                    floor
+                }
+            };
+            let initial_tokens = session
+                + (task.estimated_context as f64 + 1500.0 * task.estimated_scope as f64)
+                    * rule.relative_tokens
+                    * reasoning_factor;
             let runs = cx.store.learning_runs(&c, task)?;
             let pooled = if cx.config.learning.pooling > 0.0 {
                 cx.store.pooled_runs(&c, task)?
@@ -185,6 +199,7 @@ pub fn candidates(
                 strategy: format!("{:?}", cx.config.learning.strategy).to_lowercase(),
                 selection_probability: Some(1.0),
                 cost_features: None,
+                prior_basis: Some(crate::learning::PRIOR_BASIS.into()),
             });
             let cache_discount = if affinity {
                 policy.cache_rules.affinity_discount
@@ -201,17 +216,7 @@ pub fn candidates(
                 cache_discount,
                 context_restore_tokens: rehydration,
                 quota_multiplier: shadow,
-                session_tokens: match floors.get(&(c.agent.clone(), c.model.clone())) {
-                    Some(floor) => *floor,
-                    None => {
-                        let floor = cx
-                            .store
-                            .session_floor(&c.agent, &c.model, 64)?
-                            .unwrap_or(0.0);
-                        floors.insert((c.agent.clone(), c.model.clone()), floor);
-                        floor
-                    }
-                },
+                session_tokens: session,
             };
             c.expected_cost = crate::learning::resource_cost(
                 c.expected_tokens,

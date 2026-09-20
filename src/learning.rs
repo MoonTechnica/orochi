@@ -5,12 +5,19 @@ use crate::{
 };
 use serde::Serialize;
 
+/// What `Prediction::prior_tokens` is made of. Bump this whenever the prior changes shape:
+/// the EWMA learns `measured / predicted`, so ratios from a differently made prior are not
+/// ratios it can use. "session" is the measured cost of opening the seat, which the prior
+/// carried nothing of before.
+pub const PRIOR_BASIS: &str = "session+scope";
+
 pub fn resource_cost(tokens: f64, success: f64, features: &CostFeatures, latency_ms: f64) -> f64 {
-    // The session's own cost is not discounted: a cache hit saves re-reading the work, not the
-    // system prompt the seat opens with.
-    ((tokens * (1.0 - features.cache_discount)
-        + features.context_restore_tokens
-        + features.session_tokens)
+    // `tokens` already includes what opening the session costs, and that part is not
+    // discounted: a cache hit saves re-reading the work, not the prompt the seat opens with.
+    let work = (tokens - features.session_tokens).max(0.0);
+    ((work * (1.0 - features.cache_discount)
+        + features.session_tokens
+        + features.context_restore_tokens)
         * features.quota_multiplier
         + latency_ms / 1000.0 * 2.0)
         / success
@@ -184,6 +191,7 @@ pub fn estimate_evidence(
         mass = mass * decay + weight;
         latency = latency * decay + weight * run.duration_ms as f64;
         if let Some((tokens, prediction)) = run.usage.total().zip(run.prediction.as_ref())
+            && prediction.prior_basis.as_deref() == Some(PRIOR_BASIS)
             && prediction.prior_tokens.is_finite()
             && prediction.prior_tokens > 0.0
         {

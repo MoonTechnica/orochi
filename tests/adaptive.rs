@@ -33,6 +33,7 @@ fn candidate(id: &str, cost: f64) -> ExecutionCandidate {
             tokens: 1000.0,
             strategy: "ewma".into(),
             selection_probability: Some(1.0),
+            prior_basis: Some(orochi::learning::PRIOR_BASIS.into()),
             cost_features: None,
         }),
     }
@@ -781,4 +782,35 @@ fn telemetry_is_readable_through_views_without_reaching_into_the_json() {
         .unwrap();
     assert_eq!(bucket, "5h");
     assert!((remaining - 0.42).abs() < 1e-9);
+}
+
+/// The EWMA learns `measured / predicted`, which only means anything while the two are made
+/// the same way. A prediction from before the prior counted what opening a session costs is
+/// low by that whole amount — 2.8× on Codex and 15.5× on Claude in the runs recorded on
+/// 2026-09-20 — so mixing its ratio into a corrected prior would scale the new one by the old
+/// one's error. Such a run still says whether it succeeded and how long it took.
+#[test]
+fn a_ratio_learned_against_an_older_prior_is_not_mixed_into_the_new_one() {
+    let config = LearningConfig::default();
+    let older: Vec<RunRecord> = (0..100)
+        .map(|n| {
+            let mut record = run(n, true);
+            if let Some(prediction) = record.prediction.as_mut() {
+                prediction.prior_basis = None;
+            }
+            record
+        })
+        .collect();
+    let estimate = learning::estimate(&config, 0.9, 1000.0, &older);
+    assert!(
+        (estimate.tokens - 1000.0).abs() < 1.0,
+        "an older prior moved the estimate: {}",
+        estimate.tokens
+    );
+    assert!(estimate.success > 0.9, "but it still counts as a success");
+
+    // The same runs, predicted the way the prior is made now: the ratio is usable again.
+    let same: Vec<RunRecord> = (0..100).map(|n| run(n, true)).collect();
+    let current = learning::estimate(&config, 0.9, 1000.0, &same);
+    assert!((current.tokens - 2000.0).abs() < 1.0, "{}", current.tokens);
 }

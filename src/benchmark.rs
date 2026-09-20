@@ -240,6 +240,7 @@ fn replay_from(
                         strategy: format!("{strategy:?}"),
                         selection_probability: Some(1.0),
                         cost_features: Some(features.clone()),
+                        prior_basis: Some(crate::learning::PRIOR_BASIS.into()),
                     });
                     c.expected_cost = learning::resource_cost(
                         estimate.tokens,

@@ -507,6 +507,7 @@ fn pooled_evidence_moves_only_the_starting_point_of_an_unseen_context() {
             tokens: 1000.0,
             strategy: "ewma".into(),
             selection_probability: Some(1.0),
+            prior_basis: Some(orochi::learning::PRIOR_BASIS.into()),
             cost_features: None,
         }),
         feedback: None,
@@ -1032,6 +1033,7 @@ mod tier_pooling {
                 tokens: 1000.0,
                 strategy: "ewma".into(),
                 selection_probability: Some(1.0),
+                prior_basis: Some(orochi::learning::PRIOR_BASIS.into()),
                 cost_features: None,
             }),
             feedback: None,
@@ -1159,6 +1161,7 @@ mod weak_labels {
                 tokens: 1000.0,
                 strategy: "ewma".into(),
                 selection_probability: Some(1.0),
+                prior_basis: Some(orochi::learning::PRIOR_BASIS.into()),
                 cost_features: None,
             }),
             feedback,
@@ -1722,4 +1725,190 @@ fn a_new_model_starts_from_what_its_agent_s_sessions_have_cost() {
     );
     // Another agent's sessions say nothing about this one, whatever the policy prices them at.
     assert_eq!(store.session_floor("gemini", "pro", 64).unwrap(), None);
+}
+
+/// `expected_tokens` is what a run is expected to cost, and everything that budgets against it
+/// — the adviser seats, `calibrate` — reads it as real tokens. It therefore has to include
+/// what opening the session costs, which on the runs recorded on 2026-09-20 was most of what a
+/// small task cost at all.
+#[test]
+fn the_predicted_tokens_include_what_opening_the_session_costs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    let agent = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
+    let capabilities = caps(&["claude-haiku"]);
+    for (at, tokens) in [85_591u64, 145_906, 175_270, 184_422]
+        .into_iter()
+        .enumerate()
+    {
+        store
+            .record(&RunRecord {
+                id: format!("run-{at}"),
+                task_id: format!("task-{at}"),
+                repository_id: "repo".into(),
+                task_type: "implementation".into(),
+                language: "unknown".into(),
+                framework: None,
+                scope: 4,
+                context_size: 6_043,
+                prediction: None,
+                candidate: ExecutionCandidate {
+                    id: "seat".into(),
+                    agent: "claude".into(),
+                    model: "claude-haiku".into(),
+                    provider: Provider::Anthropic,
+                    reasoning_level: None,
+                    mode: None,
+                    session_strategy: "fresh".into(),
+                    context_strategy: "filesystem".into(),
+                    success_probability: 0.9,
+                    expected_tokens: tokens as f64,
+                    expected_cost: 1.0,
+                    confidence: 0.9,
+                    reasons: vec![],
+                    prediction: None,
+                },
+                usage: Usage {
+                    total_tokens: Some(tokens),
+                    ..Default::default()
+                },
+                duration_ms: 100,
+                attempt: 0,
+                outcome: Outcome::Success,
+                checks: vec![],
+                error_kind: None,
+                started_at: at as i64,
+                purpose: "execution".into(),
+                complexity: Some(Complexity::Normal),
+                feedback: None,
+            })
+            .unwrap();
+    }
+    let task = profiler::profile("add a health endpoint", dir.path());
+    let ranked = scorer::candidates(
+        &[(&agent, &capabilities)],
+        &ScoringContext {
+            task: &task,
+            overrides: &Overrides::default(),
+            config: &Config::default(),
+            policies: &Registry::bundled().unwrap(),
+            store: &store,
+            runtime: &RuntimeMap::new(),
+            sessions: &[],
+            busy: &[],
+            taken: &[],
+            root: dir.path(),
+            time: now(),
+        },
+    )
+    .unwrap();
+    let top = ranked.first().expect("a candidate");
+    assert!(
+        top.expected_tokens >= 85_591.0,
+        "a run there cannot cost less than opening the session: {}",
+        top.expected_tokens
+    );
+    let prediction = top.prediction.as_ref().expect("a frozen prediction");
+    assert!(
+        prediction.prior_tokens >= 85_591.0,
+        "{}",
+        prediction.prior_tokens
+    );
+    assert_eq!(
+        prediction.prior_basis.as_deref(),
+        Some(orochi::learning::PRIOR_BASIS),
+        "the prior says how it was made, so a later one can tell them apart"
+    );
+}
+
+/// `RunRecord` is stored as a JSON blob, so a record written before a field existed must still
+/// read back. Two were added while the cost model learned what opening a session costs, and a
+/// record from before them still says whether it succeeded — only its token ratio is unusable,
+/// because it was measured against a prior built another way.
+#[test]
+fn a_record_written_before_the_newest_fields_still_reads_back() {
+    let mut record = RunRecord {
+        id: "old".into(),
+        task_id: "task".into(),
+        repository_id: "repo".into(),
+        task_type: "implementation".into(),
+        language: "unknown".into(),
+        framework: None,
+        scope: 4,
+        context_size: 6_043,
+        prediction: Some(Prediction {
+            candidate_id: "seat".into(),
+            model: "claude-haiku".into(),
+            reasoning: None,
+            mode: None,
+            prior_success: 0.9,
+            prior_tokens: 9_413.0,
+            success: 0.9,
+            tokens: 9_413.0,
+            strategy: "ewma".into(),
+            selection_probability: Some(1.0),
+            cost_features: Some(CostFeatures {
+                cache_discount: 0.15,
+                context_restore_tokens: 604.0,
+                quota_multiplier: 1.0,
+                session_tokens: 85_591.0,
+            }),
+            prior_basis: Some(orochi::learning::PRIOR_BASIS.into()),
+        }),
+        candidate: ExecutionCandidate {
+            id: "seat".into(),
+            agent: "claude".into(),
+            model: "claude-haiku".into(),
+            provider: Provider::Anthropic,
+            reasoning_level: None,
+            mode: None,
+            session_strategy: "fresh".into(),
+            context_strategy: "filesystem".into(),
+            success_probability: 0.9,
+            expected_tokens: 9_413.0,
+            expected_cost: 1.0,
+            confidence: 0.9,
+            reasons: vec![],
+            prediction: None,
+        },
+        usage: Usage {
+            total_tokens: Some(145_906),
+            ..Default::default()
+        },
+        duration_ms: 100,
+        attempt: 0,
+        outcome: Outcome::Success,
+        checks: vec![],
+        error_kind: None,
+        started_at: 1,
+        purpose: "execution".into(),
+        complexity: Some(Complexity::Normal),
+        feedback: None,
+    };
+    let mut json = serde_json::to_value(&record).unwrap();
+    let prediction = json["prediction"].as_object_mut().unwrap();
+    prediction.remove("prior_basis");
+    prediction["cost_features"]
+        .as_object_mut()
+        .unwrap()
+        .remove("session_tokens");
+    let older: RunRecord = serde_json::from_value(json).unwrap();
+    let older_prediction = older.prediction.clone().expect("a prediction");
+    assert_eq!(older_prediction.prior_basis, None);
+    assert_eq!(
+        older_prediction.cost_features.unwrap().session_tokens,
+        0.0,
+        "a prior that carried no session cost reads back as carrying none"
+    );
+
+    // It trains success, and its 15.5× ratio against the older prior trains nothing.
+    let config = orochi::config::LearningConfig::default();
+    let plain = orochi::learning::estimate(&config, 0.5, 9_413.0, std::slice::from_ref(&older));
+    assert!(plain.success > 0.5, "{}", plain.success);
+    assert_eq!(plain.tokens, 9_413.0, "the older ratio was not mixed in");
+
+    // The same record, predicted the way the prior is made now, does train tokens.
+    record.id = "new".into();
+    let current = orochi::learning::estimate(&config, 0.5, 9_413.0, &[record]);
+    assert!(current.tokens > 9_413.0, "{}", current.tokens);
 }

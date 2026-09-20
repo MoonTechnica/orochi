@@ -298,6 +298,10 @@ pub struct Prediction {
     pub selection_probability: Option<f64>,
     #[serde(default)]
     pub cost_features: Option<CostFeatures>,
+    /// What `prior_tokens` is made of. `learning` reads a run's token ratio only against a
+    /// prior made the same way; records from before this existed carry `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_basis: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
