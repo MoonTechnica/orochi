@@ -320,7 +320,10 @@ impl Client {
                 whom: r.get(3)?,
                 via: r.get(4)?,
                 text: r.get(5)?,
-                at: r.get(6)?,
+                // The mailbox keeps seconds and the store keeps milliseconds. A client reads
+                // them as one conversation, so they leave here on one clock — taken as-is, a
+                // message sorted before every item ever written.
+                at: r.get::<_, i64>(6)? * 1000,
                 role: r.get(7)?,
                 model: r.get(8)?,
             })

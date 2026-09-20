@@ -627,3 +627,41 @@ fn a_host_that_stops_at_once_is_reported_rather_than_counted_as_running() {
         .to_string();
     assert!(missing.contains("nowhere"), "{missing}");
 }
+
+/// The conversation holds what the person said, what the agent replied and what the agents
+/// said to each other, in the order they were said. The two are written by clocks of different
+/// resolution — the store counts milliseconds, the mailbox counts seconds — so a room message
+/// read as-is sorts before every item ever written, which is where they all appeared.
+#[test]
+fn the_room_is_timed_on_the_same_clock_as_the_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _turn) = fixture(dir.path());
+    // A message as the mailbox writes one: seconds, because that is the clock it keeps.
+    {
+        let store = share(Activity::open(dir.path(), 30).unwrap());
+        let db = store.lock().unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO messages (project_id, thread_id, sender, sender_name, recipient,
+                                       recipient_name, via, body, sent_at)
+                 VALUES ('proj', ?1, 'p1', 'reviewer', 'p2', 'implementer', 'mailbox',
+                         'the retry never fires', ?2)",
+                rusqlite::params![&thread, 1_769_000_000i64],
+            )
+            .unwrap();
+    }
+    let client = Client::open(dir.path()).unwrap();
+    let said = client.room(&thread).unwrap();
+    assert!(!said.is_empty(), "the message is in the room");
+    let items = client.thread(&thread).unwrap().unwrap().items;
+    let newest = items.iter().map(|i| i.at).max().unwrap_or(0);
+    assert!(newest > 1_600_000_000_000, "the store counts milliseconds: {newest}");
+    for line in &said {
+        assert!(
+            line.at > 1_600_000_000_000,
+            "and so must everything it is read beside: {} at {}",
+            line.who,
+            line.at
+        );
+    }
+}

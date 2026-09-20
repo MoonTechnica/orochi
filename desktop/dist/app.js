@@ -168,6 +168,8 @@ function drawTimeline(thread, said = []) {
   const spoken = said
     .filter((line) => line.kind === "message")
     .map((line) => ({ ...line, kind: "said", at: line.at }));
+  // Who each peer is, so the one it is speaking to is named the same way it is.
+  const roles = new Map(said.map((line) => [line.who, line.role]).filter(([, r]) => r));
   const stream = [...thread.items, ...spoken].sort(
     (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
   );
@@ -176,25 +178,35 @@ function drawTimeline(thread, said = []) {
     if (item.kind === "said") {
       flush();
       if (!turn) {
-        turn = text("div", "turn");
+        turn = text("div", "turn loose");
         host.append(turn);
       }
-      turn.append(bubble(item, voice === item.who));
-      voice = item.who;
+      const who = named(item);
+      const whom =
+        !item.whom || item.whom === "all"
+          ? "everyone"
+          : `to ${roles.get(item.whom) || item.whom}`;
+      turn.append(
+        post(
+          { who, to: whom, model: item.model, at: item.at, text: item.text, mine: item.via === "user" },
+          voice === who,
+        ),
+      );
+      voice = who;
       continue;
     }
-    voice = null;
     // A read-only seat's own working notes stay out; what it had to say it said in the room.
     if (item.lane !== null && item.lane !== undefined && item.lane > 0) continue;
     if (item.kind === "user_message") {
       flush();
       turn = text("div", "turn");
-      turn.append(text("p", "you", item.text));
+      turn.append(post({ who: "you", at: item.at, text: item.text, mine: true }, false));
       host.append(turn);
+      voice = "you";
       continue;
     }
     if (!turn) {
-      turn = text("div", "turn");
+      turn = text("div", "turn loose");
       host.append(turn);
     }
     if (item.kind === "thought" || item.kind === "tool_call") {
@@ -207,7 +219,11 @@ function drawTimeline(thread, said = []) {
     }
     flush();
     if (item.kind === "route") turn.append(chip(item));
-    else if (item.kind === "agent_message") turn.append(text("p", "reply", item.text));
+    else if (item.kind === "agent_message") {
+      const who = item.role || item.agent || "agent";
+      turn.append(post({ who, model: item.model, at: item.at, text: item.text }, voice === who));
+      voice = who;
+    }
     else if (item.kind === "checks") turn.append(checks(item));
 
   }
@@ -218,27 +234,104 @@ function drawTimeline(thread, said = []) {
   if (stick) host.scrollTop = host.scrollHeight;
 }
 
-/// One message from one agent to another, in the conversation rather than beside it.
-function bubble(line, run) {
-  const node = text("div", "said");
-  node.dataset.via = line.via;
-  node.dataset.who = line.who;
-  node.dataset.tone = tone(line.who);
-  if (line.via === "user") node.dataset.mine = "true";
+/// Lucide, inlined: a window that runs offline fetches nothing, and a face would be a lie —
+/// nobody here has one. What is drawn is the job: a terminal for the one doing the work, an
+/// eye for the one reading it, a compass for the one shaping it.
+const ICONS = {
+  user: ["M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2", "circle:12,7,4"],
+  terminal: ["m4 17 6-6-6-6", "M12 19h8"],
+  eye: ["M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z", "circle:12,12,3"],
+  compass: ["m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36z", "circle:12,12,10"],
+  search: ["circle:11,11,8", "m21 21-4.3-4.3"],
+  users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "circle:9,7,4", "M22 21v-2a4 4 0 0 0-3-3.87"],
+  message: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
+  bot: ["M12 8V4H8", "rect:4,8,16,12", "M2 14h2", "M20 14h2", "M15 13v2", "M9 13v2"],
+};
+
+/// Which drawing a name gets. A role says what a seat is for, so the role picks the icon.
+function icon(name) {
+  const role = name.toLowerCase();
+  if (role === "you") return "user";
+  if (role.includes("review")) return "eye";
+  if (role.includes("architect") || role.includes("design")) return "compass";
+  if (role.includes("research") || role.includes("investigat")) return "search";
+  if (role.includes("partner") || role.includes("panel")) return "users";
+  if (role.includes("facilitator") || role.includes("discuss")) return "message";
+  if (
+    role.includes("implement") || role.includes("fix") || role.includes("edit") ||
+    role.includes("refactor") || role.includes("migrat") || role.includes("test") ||
+    role.includes("writ")
+  ) {
+    return "terminal";
+  }
+  return "bot";
+}
+
+/// The drawing itself, in the speaker's own colour.
+function mark(name) {
+  const which = icon(name);
+  const host = text("span", "mark");
+  host.dataset.icon = which;
+  host.dataset.tone = tone(name);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [key, value] of Object.entries({
+    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round",
+  })) {
+    svg.setAttribute(key, value);
+  }
+  for (const shape of ICONS[which]) {
+    if (shape.startsWith("circle:")) {
+      const [cx, cy, r] = shape.slice(7).split(",");
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      node.setAttribute("cx", cx);
+      node.setAttribute("cy", cy);
+      node.setAttribute("r", r);
+      svg.append(node);
+    } else if (shape.startsWith("rect:")) {
+      const [x, y, w, h] = shape.slice(5).split(",");
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      for (const [key, value] of [["x", x], ["y", y], ["width", w], ["height", h], ["rx", "2"]]) {
+        node.setAttribute(key, value);
+      }
+      svg.append(node);
+    } else {
+      const node = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      node.setAttribute("d", shape);
+      svg.append(node);
+    }
+  }
+  host.append(svg);
+  return host;
+}
+
+/// One thing one voice said. Every voice is drawn this way — the person, the agent doing the
+/// work, and the agents talking to each other — because they are all in the same conversation
+/// and drawing them differently made it look like two.
+function post(voice, run) {
+  const node = text("div", "post");
+  node.dataset.who = voice.who;
+  node.dataset.tone = tone(voice.who);
+  if (voice.mine) node.dataset.mine = "true";
   if (run) {
     node.dataset.run = "true";
   } else {
     const who = text("div", "who");
-    who.append(text("span", "avatar", line.who.slice(0, 1).toLowerCase()));
-    who.append(text("span", "name", line.who));
-    who.append(text("span", "to", !line.whom || line.whom === "all" ? "everyone" : `to ${line.whom}`));
-    if (line.model) who.append(text("span", "model", line.model));
-    who.append(text("span", "at", clock(line.at)));
+    who.append(mark(voice.who));
+    who.append(text("span", "name", voice.who));
+    if (voice.to) who.append(text("span", "to", voice.to));
+    if (voice.model) who.append(text("span", "model", voice.model));
+    if (voice.at) who.append(text("span", "at", clock(voice.at)));
     node.append(who);
   }
-  node.append(text("div", "body", line.text));
+  const body = text("div", "body", voice.text);
+  node.append(body);
   return node;
 }
+
+/// What to call a seat. A mailbox peer is named after the directory it started in and four
+/// random characters, which says nothing about who it is; what it is doing does.
+const named = (line) => line.role || line.who;
 
 function askCard(prompt) {
   const node = text("div", "ask");
@@ -347,9 +440,7 @@ function drawTeam(thread) {
     node.dataset.who = seat.role;
     node.dataset.tone = tone(seat.role);
     const who = text("div", "who");
-    const face = text("span", "avatar", seat.role.slice(0, 1).toLowerCase());
-    face.dataset.tone = node.dataset.tone;
-    who.append(face);
+    who.append(mark(seat.role));
     who.append(text("span", "name", seat.role));
     if (seat.read_only) who.append(text("span", "ro", "reads only"));
     node.append(who);
@@ -482,8 +573,10 @@ function tone(name) {
   return String(hash % 8);
 }
 
+/// Everything a client reads is timed in milliseconds; the mailbox's own seconds are turned
+/// into them before they leave the core, so there is one clock here.
 const clock = (at) =>
-  new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 /// Who is in the room, and what each of them is doing. What they said is in the conversation.
 async function drawRoom(thread) {
@@ -497,7 +590,7 @@ async function drawRoom(thread) {
   for (const line of events.slice(-12)) {
     const mark = line.kind === "joined" ? "●" : line.kind === "left" ? "○" : "⎿";
     const what = line.kind === "status" ? line.text : line.kind;
-    host.append(text("div", "said system", `${mark} ${line.who} ${what}`));
+    host.append(text("div", "said system", `${mark} ${named(line)} ${what}`));
   }
 }
 

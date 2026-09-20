@@ -116,6 +116,10 @@ export const document = {
     document.all.add(node);
     return node;
   },
+  // An icon is drawn, so the page reaches for the SVG namespace; the tag is all that differs.
+  createElementNS(_namespace, tag) {
+    return document.createElement(tag);
+  },
   createTextNode(value) { return new TextNode(String(value)); },
   listeners: new Map(),
   addEventListener(name, handler) {

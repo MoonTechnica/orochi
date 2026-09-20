@@ -109,9 +109,9 @@ test("the sidebar lists a project's threads with the mark for their state", asyn
 test("a turn reads as what was asked, who took it, and what came back", async () => {
   const { el } = await open();
   const drawn = el("timeline").render();
-  assert.match(drawn, /you\s+Fix the flaky mailbox placement test/);
+  assert.match(drawn, /you[\s\S]*Fix the flaky mailbox placement test/);
   assert.match(drawn, /⟡ test · sol-test/, "the route chip says which agent took it");
-  assert.match(drawn, /reply/, "and the reply is in the transcript");
+  assert.match(drawn, /Fixture completed\./, "and the reply is in the conversation");
   assert.equal(
     el("thread-title").textContent,
     "Fix the flaky mailbox placement test",
@@ -351,24 +351,25 @@ test("the conversation reads as a group chat: who is speaking, to whom, and when
   const drawn = room.render();
 
   // Every speaker is a face, and the same speaker is always the same face.
-  const avatars = room.querySelectorAll(".avatar");
-  assert.ok(avatars.length >= 3, `every speaker has one: ${drawn}`);
-  const faces = new Map();
-  for (const avatar of avatars) faces.set(avatar.textContent, (faces.get(avatar.textContent) || 0) + 1);
-  assert.equal(faces.get("i"), 1, "the implementer speaks once");
-  assert.ok(faces.get("r") >= 1, "and the reviewer is another face");
-  const tone = (name) => room.querySelectorAll(".said").find((n) => n.dataset.who === name)?.dataset.tone;
+  assert.ok(room.querySelectorAll(".mark").length >= 3, `every speaker is marked: ${drawn}`);
+  const tone = (name) => room.querySelectorAll(".post").find((n) => n.dataset.who === name)?.dataset.tone;
   assert.ok(tone("reviewer"), "a speaker's colour is decided from the name");
   assert.equal(
-    room.querySelectorAll(".said").filter((n) => n.dataset.who === "reviewer").map((n) => n.dataset.tone)
+    room.querySelectorAll(".post").filter((n) => n.dataset.who === "reviewer").map((n) => n.dataset.tone)
       .every((t, _, all) => t === all[0]),
     true,
     "and never changes between their messages",
   );
 
-  // One header for a run of messages from the same speaker, as a chat groups them.
-  const heads = room.querySelectorAll(".who");
-  assert.equal(heads.length, 3, `implementer, reviewer, you — not one per message: ${drawn}`);
+  // One header for a run of messages from the same speaker, as a chat groups them: the
+  // reviewer says two things and is named once.
+  const reviewer = room.querySelectorAll(".post").filter((n) => n.dataset.who === "reviewer");
+  assert.equal(reviewer.length, 2, `both are shown: ${drawn}`);
+  assert.equal(
+    reviewer.filter((n) => n.querySelectorAll(".who").length).length,
+    1,
+    "and named once between them",
+  );
   assert.match(drawn, /and the retry never fires/, "the follow-up is still shown");
 
   // Who it was for, in words rather than an arrow.
@@ -377,7 +378,7 @@ test("the conversation reads as a group chat: who is speaking, to whom, and when
   assert.match(drawn, /to implementer/, "a direct message names the one it was for");
 
   // The person is in the room too, and is marked as themselves.
-  const mine = room.querySelectorAll(".said").find((n) => n.dataset.who === "you");
+  const mine = room.querySelectorAll(".post").find((n) => n.dataset.who === "you");
   assert.equal(mine.dataset.mine, "true", `the person's own note is theirs: ${drawn}`);
 
   // Arriving and leaving are not messages, and are not in the conversation.
@@ -418,8 +419,8 @@ test("the conversation is the group chat: the agents talk to each other in it", 
 
   // Each voice is a face, and the reviewer is in the middle of the page rather than beside it.
   assert.ok(
-    el("timeline").querySelectorAll(".avatar").length >= 2,
-    `the agents have faces here: ${drawn}`,
+    el("timeline").querySelectorAll(".mark").length >= 2,
+    `the agents are marked here: ${drawn}`,
   );
 
   // The side pane is who is in the room, not a second copy of what was said.
@@ -427,6 +428,50 @@ test("the conversation is the group chat: the agents talk to each other in it", 
     el("room").render(),
     /the retry never fires/,
     "the same message is not shown twice in two places",
+  );
+});
+
+test("every voice is drawn the same way, and named by what it is doing", async () => {
+  const thread = structuredClone(recorded.thread);
+  thread.items = [
+    { seq: 1, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "sonnet", kind: "user_message", status: null, text: "split the parser", data: null, truncated: false, patches: 0, at: 1000 },
+    { seq: 2, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "sonnet", kind: "agent_message", status: null, text: "done, one function per rule", data: null, truncated: false, patches: 0, at: 4000 },
+  ];
+  const said = [
+    { seq: 1, kind: "message", who: "src-tauri-5e6a", whom: "all", via: "mailbox", text: "anything to know?", at: 2000, role: "implementer", model: "sonnet" },
+    { seq: 2, kind: "message", who: "orochi-8a60", whom: "src-tauri-5e6a", via: "mailbox", text: "the retry never fires", at: 3000, role: "reviewer", model: "opus" },
+  ];
+  const { el } = await open({ thread, room: said });
+  const timeline = el("timeline");
+  const drawn = timeline.render();
+
+  // A session's code is not a name anyone can use.
+  assert.doesNotMatch(drawn, /src-tauri-5e6a/, `no session codes: ${drawn}`);
+  assert.doesNotMatch(drawn, /orochi-8a60/, "nor in the reply to one");
+  assert.match(drawn, /implementer/, "what it is doing is its name");
+  assert.match(drawn, /to implementer/, "and that is what it is called when spoken to");
+  assert.match(drawn, /reviewer/);
+
+  // One shape for every voice: the person is a speaker like any other.
+  const posts = timeline.querySelectorAll(".post");
+  assert.equal(posts.length, 4, `you, two agents and the reply: ${drawn}`);
+  assert.deepEqual(
+    posts.map((p) => p.dataset.who),
+    ["you", "implementer", "reviewer", "implementer"],
+    "in the order they spoke",
+  );
+  for (const post of posts) {
+    const mark = post.querySelectorAll(".mark");
+    assert.equal(mark.length, 1, `everyone is marked, including you: ${post.render()}`);
+    assert.equal(mark[0].children[0].tagName.toLowerCase(), "svg", "with a drawing, not a letter");
+  }
+  // A role is a job, and the drawing says which: nobody in this app has a face.
+  const marks = posts.map((p) => p.querySelectorAll(".mark")[0].dataset.icon);
+  assert.deepEqual(marks, ["user", "terminal", "eye", "terminal"]);
+  assert.equal(
+    timeline.querySelectorAll(".you").length,
+    0,
+    "and nobody is drawn a second way",
   );
 });
 
@@ -489,12 +534,11 @@ test("the roster reads as who is in the room, not as a list of machines", async 
   const { el } = await open();
   const roster = el("roster");
   const drawn = roster.render();
-  const faces = roster.querySelectorAll(".avatar");
-  assert.ok(faces.length >= 1, `everyone at the table has a face: ${drawn}`);
+  assert.ok(roster.querySelectorAll(".mark").length >= 1, `everyone is marked: ${drawn}`);
   // The same name is the same colour here as it is in what they said.
   const seat = roster.querySelectorAll(".seat")[0];
   assert.ok(seat.dataset.tone, `a seat carries its speaker's colour: ${drawn}`);
-  assert.equal(seat.dataset.tone, seat.querySelectorAll(".avatar")[0].dataset.tone);
+  assert.equal(seat.dataset.tone, seat.querySelectorAll(".mark")[0].dataset.tone);
 });
 
 test("a working thread is marked in the list rather than given a page", async () => {

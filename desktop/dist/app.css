@@ -125,14 +125,15 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 #timeline { flex: 1; overflow: auto; padding: var(--gutter); }
 /* A conversation is read, so it keeps a comfortable measure however wide the window is. */
 #timeline .turn, #timeline .ask { max-width: 900px; }
-.turn { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
+/* The rule marks where the person spoke again, so it belongs above their message and nowhere
+   else: a turn opened by an agent's aside is not a new turn of the conversation. */
+.turn { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; }
+.turn.loose { border-top: 0; padding-top: 0; margin-top: 0; }
+.turn > .post:first-child { margin-top: 0; }
 .turn:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
-.you { white-space: pre-wrap; margin: 0 0 10px; max-width: 78ch; }
-.you::before { content: "You"; display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
 
 .route { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 .route .chip { color: var(--text); }
-.reply { white-space: pre-wrap; margin: 0 0 8px; max-width: 78ch; }
 .work { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
 .work summary { cursor: pointer; }
 .work pre { white-space: pre-wrap; margin: 4px 0 0; color: var(--text); }
@@ -188,6 +189,226 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 .tab { border: 0; border-radius: 0; padding: 8px 12px; color: var(--muted); }
 .tab[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--brand); }
 .pane { flex: 1; overflow: auto; padding: var(--gutter); }
+/* The room takes the height the roster and the box leave it, and scrolls on its own, so new
+   messages arrive at the bottom the way they do in a chat rather than pushing the page. */
+#pane-team { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#pane-team #roster { flex: none; }
+#pane-team #room { flex: 1; min-height: 0; }
+#pane-team #say-form, #pane-team #say-hint { flex: none; }
+
+/* Who is in the room, read as a chat header rather than as a list of machines. */
+.seat { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 8px; }
+.seat .who { display: flex; gap: 6px; align-items: center; }
+.seat .who .name { font-weight: 600; }
+.seat .ro { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.seat .what { color: var(--muted); font-size: 12px; padding-left: 26px; }
+.seat .doing { font-style: italic; }
+.seat[data-state="working"] .who .name::after { content: "●"; color: var(--ok); }
+.seat[data-state="done"] .who .name::after { content: "●"; color: var(--muted); }
+.seat[data-state="failed"] .who .name::after { content: "●"; color: var(--danger); }
+.seat[data-state="choosing"] .who .name::after,
+.seat[data-state="starting"] .who .name::after { content: "○"; color: var(--muted); }
+.seat[data-state="asking"] .who .name::after { content: "●"; color: var(--brand); }
+
+.file { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+.file .stat { margin-left: auto; font-size: 12px; }
+.file .add { color: var(--ok); }
+.file .del { color: var(--danger); }
+.diff {
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+  overflow: auto;
+  margin: 6px 0 12px;
+}
+.diff .i { color: var(--ok); }
+.diff .d { color: var(--danger); }
+.diff .h { color: var(--muted); }
+
+.empty { color: var(--muted); }
+
+/* Folder picker ---------------------------------------------------------- */
+#folder-picker { position: relative; }
+#folder::before { content: "🗀 "; }
+#folder-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 220px;
+  max-height: 50vh;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .35);
+  z-index: 10;
+}
+#folder-menu button {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  text-align: left;
+  padding: 6px 8px;
+}
+#folder-menu button:hover { background: var(--line); }
+#folder-menu .head {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 6px 8px 2px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+#folder-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
+#folder-menu .tick { margin-left: auto; color: var(--brand); }
+#folder-menu .where { color: var(--muted); font-size: 11px; }
+
+/* Screens ---------------------------------------------------------------- */
+/* One row at the foot, and a menu above it — everything that is not a conversation lives
+   behind it, rather than as a row of buttons competing with the threads. */
+#sidebar-foot { position: relative; padding: 8px 10px; border-top: 1px solid var(--line); }
+#notice { color: var(--muted); font-size: 12px; padding: 0 6px 6px; }
+#notice:empty { display: none; }
+#account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: left;
+}
+#account:hover { background: var(--line); }
+#account-mark { color: var(--brand); }
+#account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#account-chevron { margin-left: auto; color: var(--muted); font-size: 11px; }
+#account-menu {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 8px;
+  right: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .35);
+  z-index: 20;
+}
+#account-menu button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: left;
+}
+#account-menu button:hover { background: var(--line); }
+#account-menu .tick { margin-left: auto; color: var(--brand); }
+#account-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
+/* Agents, Insights and Settings are asked for and dismissed; they are not places the window
+   goes, so they do not take the conversation's place. */
+#panel {
+  width: min(720px, 90vw);
+  max-height: 80vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgb(0 0 0 / .5);
+}
+#panel::backdrop { background: rgb(0 0 0 / .45); }
+#panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px var(--gutter);
+  border-bottom: 1px solid var(--line);
+}
+#panel-title { margin: 0; font-size: 14px; }
+#panel-close { margin-left: auto; border: 0; color: var(--muted); padding: 2px 8px; }
+#panel-close:hover { color: var(--text); }
+#panel-body { padding: var(--gutter); overflow: auto; max-height: calc(80vh - 52px); }
+#screen { flex: 1; overflow: auto; padding: var(--gutter); }
+/* Sized to its content, not to the window: a five-column table stretched across a wide
+   screen puts a column at each edge and nothing in between. */
+#panel-body table { border-collapse: collapse; min-width: 480px; }
+#panel-body th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 24px 4px 0; white-space: nowrap; }
+#panel-body td { padding: 5px 24px 5px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+#panel-body .card { max-width: 620px; }
+/* The form controls are the page's, not the browser's: a default number box and textarea
+   arrive white and serif in the middle of a dark window. */
+#panel-body input[type="number"],
+#panel-body input[type="text"],
+#panel-body textarea {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 6px;
+  background: var(--bg);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+#panel-body textarea { max-width: 100%; resize: vertical; white-space: pre-wrap; }
+#panel-body input[type="checkbox"] { accent-color: var(--brand); margin-top: 6px; width: 16px; height: 16px; }
+#panel-body .card button { margin-top: 6px; }
+#panel-body .card button[data-sure="yes"] { border-color: var(--danger); color: var(--danger); }
+#panel-body .num { text-align: right; font-variant-numeric: tabular-nums; }
+#panel-body h3 { margin: 0 0 8px; font-size: 13px; }
+#panel-body .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }
+.gauge { display: inline-block; width: 90px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; vertical-align: middle; }
+.gauge i { display: block; height: 100%; background: var(--ok); }
+.gauge.low i { background: var(--danger); }
+.card { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; margin-bottom: 8px; }
+.card .who { display: flex; gap: 6px; align-items: baseline; }
+.card .where { color: var(--muted); font-size: 12px; }
+
+/* Room ------------------------------------------------------------------- */
+/* One conversation, read as a group chat: every voice the same shape — a face, a name, the
+   time, and what was said under it. Slack's arrangement rather than a messenger's bubbles,
+   because there are more than two here and what they say is often code. */
+.mark {
+  width: 22px; height: 22px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--tone) 18%, transparent);
+  color: var(--tone); flex: none;
+}
+.mark svg { width: 14px; height: 14px; }
+[data-tone="0"] { --tone: #7aa2f7; } [data-tone="1"] { --tone: #9ece6a; }
+[data-tone="2"] { --tone: #e0af68; } [data-tone="3"] { --tone: #bb9af7; }
+[data-tone="4"] { --tone: #7dcfff; } [data-tone="5"] { --tone: #f7768e; }
+[data-tone="6"] { --tone: #73daca; } [data-tone="7"] { --tone: #ff9e64; }
+
+.post { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 2px 10px; margin-top: 14px; }
+.seat .mark { margin-right: 2px; }
+.post[data-run="true"] { margin-top: 2px; }
+.post .who {
+  grid-column: 1 / -1; display: flex; gap: 8px; align-items: center;
+  font-size: 12px; color: var(--muted);
+}
+.post .who .name { color: var(--text); font-weight: 700; font-size: 13px; }
+.post .who .to::before { content: "→ "; }
+.post .who .model { opacity: 0.65; }
+.post .who .at { font-variant-numeric: tabular-nums; opacity: 0.7; }
+.post .body {
+  grid-column: 2; white-space: pre-wrap; word-break: break-word; max-width: 80ch;
+}
+.post[data-mine="true"] .who .name { color: var(--brand); }
+/* Anything a voice produced sits under it, at the body's own indent. */
+.turn .work, .turn .aside, .turn .route, .turn .checks { margin-left: 32px; }
+
+.said.system {
+  display: block; color: var(--muted); font-size: 12px;
+  margin: 8px 0 2px; opacity: 0.8;
+}
+
 /* The room takes the height the roster and the box leave it, and scrolls on its own, so new
    messages arrive at the bottom the way they do in a chat rather than pushing the page. */
 #pane-team { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
