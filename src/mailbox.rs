@@ -125,6 +125,34 @@ impl Mailbox {
         Ok(())
     }
 
+    /// Whether a name belonged to a peer that has since finished, so an agent is told that
+    /// rather than being sent to look for a name that is not coming back.
+    fn finished_peer(&self, channel: &str, name: &str) -> bool {
+        self.connection
+            .query_row(
+                "SELECT 1 FROM peers WHERE project_id = ?1 AND lower(name) = lower(?2)
+                 AND left_at IS NOT NULL LIMIT 1",
+                params![channel, name.trim()],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
+    /// The conversation a peer is working in, when it is working in one.
+    fn thread_of(&self, peer: &str) -> Option<String> {
+        self.connection
+            .query_row(
+                "SELECT t.thread_id FROM attempts a
+                 JOIN seats s ON s.id = a.seat_id
+                 JOIN turns t ON t.id = s.turn_id
+                 WHERE a.peer_id = ?1
+                 ORDER BY a.started_at DESC LIMIT 1",
+                [peer],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
     /// One line in the room: joined, left, or what a peer said it was doing.
     fn event(&self, peer: &str, kind: &str, text: &str) -> Result<()> {
         self.connection.execute(
@@ -315,15 +343,35 @@ impl Mailbox {
                 .peers(&channel)?
                 .into_iter()
                 .find(|p| p.name.eq_ignore_ascii_case(to.trim()))
-                .with_context(|| format!("no running peer named {to}; call list_peers"))?;
+                .with_context(|| {
+                    if self.finished_peer(&channel, to) {
+                        format!("{to} has finished its turn and is no longer in the room")
+                    } else {
+                        format!("no running peer named {to}; call list_peers")
+                    }
+                })?;
             ensure!(peer.id != from, "cannot send a message to yourself");
             (peer.id, peer.name)
         };
         let sent_at = now();
+        // The conversation the sender is working in, so a client can show this beside that
+        // turn and learn from the change feed that it arrived. `None` outside one, as in a
+        // collaboration participant's own workspace.
+        let thread = self.thread_of(from);
         self.connection.execute(
-            "INSERT INTO messages (project_id, sender, sender_name, recipient, recipient_name, body, sent_at)
-            VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![channel, from, sender.name, recipient, recipient_name, body, sent_at],
+            "INSERT INTO messages (project_id, thread_id, sender, sender_name, recipient,
+                recipient_name, body, sent_at)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                channel,
+                thread,
+                from,
+                sender.name,
+                recipient,
+                recipient_name,
+                body,
+                sent_at
+            ],
         )?;
         Ok(Message {
             id: self.connection.last_insert_rowid(),

@@ -725,6 +725,11 @@ impl Client {
         }
     }
     /// Coordination instructions naming this session's peer.
+    /// This session's identity in the room, so the seat it fills can be joined to what it
+    /// says there.
+    pub fn peer_id(&self) -> Option<&str> {
+        self.peer.as_ref().map(|peer| peer.id.as_str())
+    }
     pub fn peer_note(&self) -> Option<String> {
         self.peer.as_ref().and_then(crate::mailbox::prompt_note_for)
     }

@@ -1129,3 +1129,132 @@ fn a_person_can_leave_a_note_in_the_room_for_the_agents_to_find() {
         "and it belongs to the conversation it was left in"
     );
 }
+
+/// A message between agents belongs to the conversation its sender is working in, so a client
+/// can show it beside that turn and learns from the change feed that it arrived. Without the
+/// thread on the row, the feed names nothing and a window watching one conversation never
+/// notices the agents talking in it.
+#[test]
+fn a_message_between_agents_belongs_to_the_conversation_it_was_sent_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = orochi::activity::Activity::open(dir.path(), 30).unwrap();
+    activity.project("room", dir.path()).unwrap();
+    let thread = activity
+        .create_thread(
+            "room",
+            dir.path(),
+            None,
+            "repo",
+            orochi::activity::Origin::Console,
+            &orochi::types::Overrides::default(),
+            "ask",
+        )
+        .unwrap();
+    let turn = activity
+        .queue_turn(&thread, "split the work", &[], "auto", "terminal")
+        .unwrap();
+    let candidate = orochi::types::ExecutionCandidate {
+        id: "c".into(),
+        agent: "claude".into(),
+        provider: Provider::Anthropic,
+        model: "opus".into(),
+        reasoning_level: None,
+        mode: None,
+        session_strategy: "fresh".into(),
+        context_strategy: "none".into(),
+        success_probability: 0.8,
+        expected_tokens: 1.0,
+        expected_cost: 1.0,
+        confidence: 0.5,
+        reasons: vec![],
+        prediction: None,
+    };
+
+    let mailbox = Mailbox::open(dir.path(), &MailboxConfig::default()).unwrap();
+    let mut seats = Vec::new();
+    for (ordinal, role) in [(0, "implementer"), (1, "reviewer")] {
+        let seat = activity
+            .create_seat(&turn, ordinal, role, ordinal == 0, ordinal == 1, None, None)
+            .unwrap();
+        let attempt = activity
+            .create_attempt(&seat, &candidate, false, None)
+            .unwrap();
+        let peer = mailbox
+            .register("room", role, dir.path(), None, me())
+            .unwrap();
+        activity
+            .attempt_session(&attempt, "session", Some(&peer.id))
+            .unwrap();
+        seats.push(peer);
+    }
+
+    let cursor: i64 = activity
+        .connection()
+        .query_row("SELECT COALESCE(max(id),0) FROM changes", [], |r| r.get(0))
+        .unwrap();
+    mailbox
+        .send(&seats[1].id, "implementer", "the sleep hides it")
+        .unwrap();
+
+    let (belongs, body): (Option<String>, String) = activity
+        .connection()
+        .query_row(
+            "SELECT thread_id, body FROM messages ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(body, "the sleep hides it");
+    assert_eq!(
+        belongs.as_deref(),
+        Some(thread.as_str()),
+        "the message belongs to the conversation its sender is working in"
+    );
+
+    let named: Vec<Option<String>> = activity
+        .connection()
+        .prepare("SELECT thread_id FROM changes WHERE id > ?1 AND tbl='messages'")
+        .unwrap()
+        .query_map([cursor], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        named,
+        vec![Some(thread)],
+        "and the feed names it, so a window watching that conversation notices"
+    );
+}
+
+/// When a seat has finished, an agent looking for it is told so. Against the real CLIs on
+/// 2026-09-20 a reviewer answered in 25 seconds and left while the lead was still working, and
+/// "call list_peers" was no help: the name was never coming back.
+#[test]
+fn a_peer_that_has_finished_is_named_as_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = MailboxConfig::default();
+    let activity = orochi::activity::Activity::open(dir.path(), 30).unwrap();
+    let mailbox = Mailbox::open(dir.path(), &config).unwrap();
+    let lead = mailbox
+        .register("room", "implementer", dir.path(), None, me())
+        .unwrap();
+    let aside = mailbox
+        .register("room", "reviewer", dir.path(), None, me())
+        .unwrap();
+    mailbox.unregister(&aside.id).unwrap();
+
+    let error = mailbox
+        .send(&lead.id, "reviewer", "what did you find?")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("has finished"),
+        "it says the seat is over, not that the name is unknown: {error}"
+    );
+    let unknown = mailbox
+        .send(&lead.id, "nobody", "hello")
+        .unwrap_err()
+        .to_string();
+    assert!(unknown.contains("list_peers"), "{unknown}");
+    let _ = activity;
+}

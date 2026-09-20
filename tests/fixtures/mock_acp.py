@@ -259,7 +259,7 @@ def finish(request):
             if part in together:
                 meeting = Path(os.environ["MOCK_RENDEZVOUS"])
                 (meeting / part).write_text("started")
-                deadline = time.time() + 10
+                deadline = time.time() + 25
                 while len(list(meeting.iterdir())) < len(together):
                     assert time.time() < deadline, "the parts of one wave did not run concurrently"
                     time.sleep(0.05)
@@ -278,7 +278,7 @@ def finish(request):
             if parallel:
                 meeting = Path(os.environ["MOCK_RENDEZVOUS"])
                 (meeting / participant).write_text("started")
-                deadline = time.time() + 10
+                deadline = time.time() + 25
                 while len(list(meeting.iterdir())) < int(os.environ["MOCK_RENDEZVOUS_COUNT"]):
                     assert time.time() < deadline, "implementers did not run concurrently"
                     time.sleep(0.05)

@@ -21,12 +21,12 @@ use std::{path::Path, time::Duration};
 
 /// A change an older reader cannot survive moves this; additive ones do not (§5.3 of
 /// `docs/desktop-app-design.md`).
-const USER_VERSION: i64 = 1;
+const USER_VERSION: i64 = 2;
 /// `PRAGMA application_id`: "OROA" as a big-endian i32, so the file identifies itself.
 const APPLICATION_ID: i64 = 0x4f_52_4f_41;
 /// What the app is promised. A client that does not know this number refuses to read rather
 /// than rendering a view whose columns moved.
-pub const VIEW_API: i64 = 1;
+pub const VIEW_API: i64 = 2;
 
 /// Item text past this keeps its tail and is marked truncated: a runaway tool output must not
 /// be able to fill the disk, and nobody reads the middle of a megabyte of log.
@@ -1655,6 +1655,8 @@ CREATE TABLE IF NOT EXISTS attempts (
   usage TEXT,
   started_at INTEGER NOT NULL, ended_at INTEGER,
   UNIQUE (seat_id, n));
+-- Every message between agents asks which conversation its sender is working in.
+CREATE INDEX IF NOT EXISTS attempts_peer ON attempts(peer_id) WHERE peer_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

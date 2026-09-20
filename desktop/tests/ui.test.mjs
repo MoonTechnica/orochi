@@ -481,3 +481,31 @@ test("a thread nobody has written in yet says so, rather than being Untitled", a
   );
   assert.equal(el("thread-title").textContent, "New conversation");
 });
+
+test("the room fills in as the agents talk, without being asked", async () => {
+  const answers = {
+    room: [
+      { seq: 1, kind: "message", who: "reviewer", whom: "implementer", via: "mailbox",
+        text: "the sleep hides it", at: 1, role: "reviewer", model: "opus" },
+    ],
+    changed: [],
+  };
+  const { el, tick } = await open(answers);
+  assert.match(el("room").render(), /the sleep hides it/);
+
+  // A seat says something else while the window is open; the feed names the conversation.
+  answers.room = [
+    ...answers.room,
+    { seq: 2, kind: "message", who: "implementer", whom: "all", via: "mailbox",
+      text: "taking tests/mailbox.rs", at: 2, role: "implementer", model: "opus" },
+  ];
+  // The conversation the window is showing: the first in the sidebar.
+  answers.changed = [recorded.sidebar[0].threads[0].id];
+  await tick();
+
+  assert.match(
+    el("room").render(),
+    /taking tests\/mailbox\.rs/,
+    "what the agents say appears as they say it, not when you next click",
+  );
+});

@@ -660,6 +660,13 @@ async fn run_recorded(
                 );
                 match opened {
                     Ok(id) => {
+                        // Tie the seat to its place in the room, so what it says there can be
+                        // shown beside this turn.
+                        let _ = seat.store.lock().expect("activity store").attempt_session(
+                            &id,
+                            &clients[index].capabilities.session_id,
+                            clients[index].peer_id(),
+                        );
                         tee.attempt(Some(id.clone()));
                         Some(id)
                     }
