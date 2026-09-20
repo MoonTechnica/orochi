@@ -1330,3 +1330,95 @@ fn the_room_an_agent_reaches_is_the_one_orochi_is_in_whatever_its_working_direct
         "the agent built a room of its own under the repository"
     );
 }
+
+/// The same heavy turn, against a data directory that has measured work like it finishing for
+/// about what a bare session costs: there is too little work for a second reading to pay for
+/// another whole session, so the seat is not taken and the user is told why.
+#[test]
+fn a_heavy_turn_seats_one_agent_where_work_like_it_has_measured_small() {
+    use orochi::{
+        storage::Store,
+        types::{Complexity, ExecutionCandidate, Outcome, Provider, RunRecord, Usage},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    for at in 0..8 {
+        let candidate = ExecutionCandidate {
+            id: "seat".into(),
+            agent: "test".into(),
+            model: "sol-test".into(),
+            provider: Provider::Openai,
+            reasoning_level: None,
+            mode: None,
+            session_strategy: "fresh".into(),
+            context_strategy: "filesystem".into(),
+            success_probability: 0.9,
+            expected_tokens: 24_000.0,
+            expected_cost: 1.0,
+            confidence: 0.9,
+            reasons: vec![],
+            prediction: None,
+        };
+        store
+            .record(&RunRecord {
+                id: format!("run-{at}"),
+                task_id: format!("task-{at}"),
+                repository_id: "repo".into(),
+                task_type: "architecture".into(),
+                language: "unknown".into(),
+                framework: None,
+                scope: 1,
+                context_size: 500,
+                prediction: None,
+                candidate,
+                usage: Usage {
+                    total_tokens: Some(24_000),
+                    ..Default::default()
+                },
+                duration_ms: 100,
+                attempt: 0,
+                outcome: Outcome::Success,
+                checks: vec![],
+                error_kind: None,
+                started_at: at as i64,
+                purpose: "execution".into(),
+                complexity: Some(Complexity::Extreme),
+                feedback: None,
+            })
+            .unwrap();
+    }
+    drop(store);
+
+    let config = seats_config(dir.path());
+    let mut chat = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .arg("--config")
+        .arg(&config)
+        .arg("--data-dir")
+        .arg(dir.path().join("data"))
+        .arg("-C")
+        .arg(&repo)
+        .arg("chat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    chat.stdin
+        .take()
+        .unwrap()
+        .write_all(b"redesign the architecture of the storage layer so every caller goes through one interface\n")
+        .unwrap();
+    let output = chat.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("would cost more than work like this has"),
+        "the user was not told the seat was dropped: {stderr}"
+    );
+    assert!(
+        !repo.join("asked.txt").exists(),
+        "a second seat ran anyway: {stderr}"
+    );
+}

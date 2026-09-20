@@ -15,6 +15,7 @@ pub struct Config {
     pub evaluator: EvaluatorConfig,
     pub router: Option<RouterConfig>,
     pub classifier: ClassifierConfig,
+    pub roles: RolesConfig,
     pub memory: MemoryConfig,
     pub learning: LearningConfig,
     pub frontier: Option<RouterConfig>,
@@ -37,6 +38,7 @@ impl Default for Config {
             evaluator: EvaluatorConfig::default(),
             router: None,
             classifier: ClassifierConfig::default(),
+            roles: RolesConfig::default(),
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
             frontier: None,
@@ -385,6 +387,23 @@ impl Default for ClassifierConfig {
         }
     }
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RolesConfig {
+    /// How much work like this must have cost here before a second seat joins it. A seat is
+    /// another session beside the first, so it roughly doubles the turn; below about twice a
+    /// bare session there is too little work for a second reading to pay for that. Orochi's
+    /// own heuristic, from sessions measured at 21,882 and 37,630 tokens on 2026-09-20.
+    pub min_work_tokens: u64,
+}
+impl Default for RolesConfig {
+    fn default() -> Self {
+        Self {
+            min_work_tokens: 60_000,
+        }
+    }
+}
+
 impl ClassifierConfig {
     /// One adviser seat for `agent`, carrying this section's settings.
     pub fn seat(&self, agent: &str) -> RouterConfig {
@@ -508,6 +527,10 @@ impl Config {
         ensure!(
             (0.0..=100.0).contains(&self.classifier.max_cost_share),
             "classifier.max_cost_share must be in [0, 100]"
+        );
+        ensure!(
+            self.roles.min_work_tokens > 0,
+            "roles.min_work_tokens must be above zero"
         );
         for check in &self.evaluator.checks {
             ensure!(

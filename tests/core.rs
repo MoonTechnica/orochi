@@ -1553,3 +1553,101 @@ fn a_small_task_goes_where_a_session_has_measured_cheaper() {
         costs(&ranked)
     );
 }
+
+/// A second seat is another whole session beside the first, so it roughly doubles the turn
+/// however small the work turns out to be. Where history says work like this finishes for
+/// about what a bare session costs, there is too little work for a second reading to pay for
+/// that; where it is genuinely large the seat stays. A team asked for outright is never gated.
+#[test]
+fn a_second_seat_is_dropped_from_work_measured_smaller_than_a_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let heavy = profiler::profile(
+        "redesign the architecture of the storage layer so every caller goes through one interface",
+        dir.path(),
+    );
+    assert_eq!(
+        roles::seats(&heavy).len(),
+        2,
+        "the task itself asks for two"
+    );
+    let config = Config::default();
+
+    let store_with = |name: &str, work: u64| {
+        let store = Store::open(&dir.path().join(name)).unwrap();
+        for at in 0..8 {
+            let candidate = ExecutionCandidate {
+                id: "seat".into(),
+                agent: "claude".into(),
+                model: "claude-sonnet".into(),
+                provider: Provider::Anthropic,
+                reasoning_level: None,
+                mode: None,
+                session_strategy: "fresh".into(),
+                context_strategy: "filesystem".into(),
+                success_probability: 0.9,
+                expected_tokens: work as f64,
+                expected_cost: 1.0,
+                confidence: 0.9,
+                reasons: vec![],
+                prediction: None,
+            };
+            store
+                .record(&RunRecord {
+                    id: format!("{name}-{at}"),
+                    task_id: format!("task-{at}"),
+                    repository_id: "repo".into(),
+                    task_type: heavy.task_type.clone(),
+                    language: heavy.language.clone(),
+                    framework: None,
+                    scope: 1,
+                    context_size: 500,
+                    prediction: None,
+                    candidate,
+                    usage: Usage {
+                        total_tokens: Some(work),
+                        ..Default::default()
+                    },
+                    duration_ms: 100,
+                    attempt: 0,
+                    outcome: Outcome::Success,
+                    checks: vec![],
+                    error_kind: None,
+                    started_at: at as i64,
+                    purpose: "execution".into(),
+                    complexity: Some(heavy.complexity),
+                    feedback: None,
+                })
+                .unwrap();
+        }
+        store
+    };
+
+    // Nothing measured: unchanged, the seat stays.
+    let blank = Store::open(&dir.path().join("blank")).unwrap();
+    assert!(roles::worth_seating(&config, &blank, &heavy));
+
+    // Work like this has cost about what a bare session costs: too little to read twice.
+    assert!(!roles::worth_seating(
+        &config,
+        &store_with("small", 24_000),
+        &heavy
+    ));
+
+    // Work like this is large: a second reading has something to find.
+    assert!(roles::worth_seating(
+        &config,
+        &store_with("large", 300_000),
+        &heavy
+    ));
+
+    // Asked for outright: the user chose the team, so cost never takes it away.
+    let asked = TaskDescriptor {
+        collaborative: true,
+        ..heavy.clone()
+    };
+    assert!(roles::worth_seating(
+        &config,
+        &store_with("also", 24_000),
+        &asked
+    ));
+}

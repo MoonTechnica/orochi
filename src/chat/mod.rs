@@ -1783,7 +1783,15 @@ impl Session<'_> {
                 profile.task_type = "discussion".into();
             }
         }
-        let seats = crate::router::roles::seats(&profile);
+        let mut seats = crate::router::roles::seats(&profile);
+        // A seat is a whole session and costs like one however small the work turns out to be.
+        if seats.len() > 1
+            && !crate::router::roles::worth_seating(self.config, self.store, &profile)
+        {
+            seats.truncate(1);
+            self.view
+                .note("a second agent would cost more than work like this has; going with one");
+        }
         let beside: Vec<Role> = if !guest
             && self.feed.is_some()
             // `/solo` asks for one agent; a step of a plan carries Solo for its own reason.

@@ -1,4 +1,8 @@
-use crate::types::{Complexity, TaskDescriptor};
+use crate::{
+    config::Config,
+    storage::Store,
+    types::{Complexity, TaskDescriptor},
+};
 
 /// A seat at one turn: how it is named in the mailbox, what it is there for, and whether it
 /// may change the workspace. The first seat always owns the work.
@@ -68,6 +72,22 @@ pub const MAX_SEATS: usize = PANEL.len() + 1;
 /// Names the seats a task deserves, from the task itself rather than from a fixed pairing.
 /// Most work is one agent; a second, read-only seat joins when the task is big, structural
 /// or vague enough that being wrong costs more than the second opinion does.
+/// Whether a second seat can pay for itself. It is another whole session beside the first, so
+/// it roughly doubles the turn however small the work turns out to be — and a bare session is
+/// most of what small work costs at all (2026-09-20: 21,882 tokens for a trivial task, nearly
+/// all of it system prompt and cache). It earns that where the work is big enough for a second
+/// reading to change the outcome, measured by what work like this has cost here. Until that is
+/// measured Orochi seats it, and a team the user asked for outright is never gated.
+pub fn worth_seating(config: &Config, store: &Store, task: &TaskDescriptor) -> bool {
+    if task.collaborative {
+        return true;
+    }
+    let Ok(Some(work)) = store.typical_tokens(&task.task_type, task.complexity) else {
+        return true;
+    };
+    work >= config.roles.min_work_tokens as f64
+}
+
 pub fn seats(task: &TaskDescriptor) -> Vec<Role> {
     let lead = Role {
         name: match task.task_type.as_str() {
