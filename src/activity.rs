@@ -57,6 +57,46 @@ fn bounded_tail(text: &str, max: usize) -> (String, bool) {
     (text[start..].to_owned(), true)
 }
 
+/// A name for a conversation, from the first thing said in it. A message is often pasted —
+/// a heading, wrapped lines, trailing blanks — and a sidebar wants a line of prose, so the
+/// markup goes and the wrapping is undone. Nothing is asked of an agent to get this (R6).
+const TITLE_CHARS: usize = 60;
+
+fn derive_title(text: &str) -> String {
+    // The first paragraph, unwrapped: a pasted message is one thought across several lines,
+    // and the first of them alone ("## Fix the") names nothing.
+    let paragraph: String = text
+        .lines()
+        .map(|line| {
+            line.trim_start_matches(|c: char| {
+                matches!(c, '#' | '>' | '-' | '*' | '=' | '`') || c.is_whitespace()
+            })
+        })
+        .skip_while(|line| line.trim().is_empty())
+        .take_while(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words: Vec<&str> = paragraph.split_whitespace().collect();
+    let mut title = String::new();
+    for (index, word) in words.iter().enumerate() {
+        let separator = usize::from(!title.is_empty());
+        if title.chars().count() + separator + word.chars().count() > TITLE_CHARS {
+            title.push('…');
+            return title;
+        }
+        if separator == 1 {
+            title.push(' ');
+        }
+        title.push_str(word);
+        // Something was left behind, here or on a later line: say so, so two messages that
+        // begin the same way are still told apart.
+        if index + 1 == words.len() && paragraph.trim().len() < text.trim().len() {
+            title.push('…');
+        }
+    }
+    title
+}
+
 /// The last `lines` lines, for a failed check's output.
 pub fn tail_lines(text: &str, lines: usize) -> String {
     let all: Vec<&str> = text.lines().collect();
@@ -885,7 +925,11 @@ impl Activity {
     /// offer one through ACP `session_info_update`, which replaces only a name Orochi derived.
     /// No call of Orochi's own is ever made to write one (R6).
     pub fn title(&self, thread: &str, title: &str, from_user: bool) -> Result<()> {
-        let title = crate::context::bounded(title.lines().next().unwrap_or("").trim(), 120);
+        let title = if from_user {
+            crate::context::bounded(title.trim(), 120)
+        } else {
+            derive_title(title)
+        };
         self.connection.execute(
             "UPDATE threads SET title=?2, titled=?3, updated_at=?4
              WHERE id=?1 AND (?3=1 OR titled=0)",
@@ -897,7 +941,7 @@ impl Activity {
     /// The opening message names the conversation. Later messages do not: a thread is called
     /// after what it was started to do.
     fn autotitle(&self, thread: &str, text: &str) -> Result<()> {
-        let title = crate::context::bounded(text.lines().next().unwrap_or("").trim(), 120);
+        let title = derive_title(text);
         self.connection.execute(
             "UPDATE threads SET title=?2 WHERE id=?1 AND title=''",
             params![thread, title],

@@ -80,7 +80,7 @@ function drawSidebar() {
       row.dataset.status = thread.status;
       row.setAttribute("aria-current", String(thread.id === state.thread));
       row.append(text("span", "mark", MARKS[thread.status] || "○"));
-      row.append(text("span", "name", thread.title || "Untitled"));
+      row.append(text("span", "name", thread.title || "New conversation"));
       if (thread.status === "working" && thread.seats > 1) {
         row.append(text("span", "seats", `${thread.seats}`));
       }
@@ -727,7 +727,8 @@ async function refresh(full) {
   const thread = await call("thread", { id: state.thread });
   if (!thread) return;
   el("thread-where").textContent = `${thread.thread.project} · ${thread.thread.branch || "—"}`;
-  el("thread-title").textContent = thread.thread.title || "Untitled";
+  // The first message names it; until then it is a conversation you have not started.
+  el("thread-title").textContent = thread.thread.title || "New conversation";
   el("thread-status").textContent = thread.thread.status;
   el("interrupt").hidden = thread.thread.status !== "working";
   drawTimeline(thread);

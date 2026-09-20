@@ -469,3 +469,15 @@ test("everything that is not a conversation lives behind the row at the foot", a
   el("panel-close").dispatch("click");
   assert.equal(el("panel").open, false, "and dismissed is dismissed");
 });
+
+test("a thread nobody has written in yet says so, rather than being Untitled", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  projects[0].threads[0].title = "";
+  const { el } = await open({ sidebar: projects, thread: { ...recorded.thread, thread: { ...recorded.thread.thread, title: "" } } });
+  assert.match(
+    el("projects").render(),
+    /New conversation/,
+    "an empty thread is one you have not started, not one nobody named",
+  );
+  assert.equal(el("thread-title").textContent, "New conversation");
+});

@@ -784,3 +784,90 @@ fn a_recorded_turn_costs_about_what_its_text_costs() {
         "a heavy turn took {bytes} bytes; a day of work would not fit in the budget §9 assumes"
     );
 }
+
+/// The first message names the conversation, and nothing else does: no agent is asked for a
+/// title (R6), and later messages do not rename a thread after what it drifted into.
+#[test]
+fn the_first_message_names_the_conversation_and_later_ones_do_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    activity
+        .project("proj", std::path::Path::new("/tmp/repo"))
+        .unwrap();
+    let new_thread = || {
+        activity
+            .create_thread(
+                "proj",
+                std::path::Path::new("/tmp/repo"),
+                None,
+                "repo",
+                Origin::Desktop,
+                &Overrides::default(),
+                "ask",
+            )
+            .unwrap()
+    };
+    let title = |thread: &str| -> String {
+        activity
+            .connection()
+            .query_row("SELECT title FROM threads WHERE id=?1", [thread], |r| {
+                r.get(0)
+            })
+            .unwrap()
+    };
+
+    let thread = new_thread();
+    assert_eq!(
+        title(&thread),
+        "",
+        "a thread nobody has written in has no name"
+    );
+    activity
+        .queue_turn(
+            &thread,
+            "Fix the flaky mailbox test",
+            &[],
+            "auto",
+            "desktop",
+        )
+        .unwrap();
+    assert_eq!(title(&thread), "Fix the flaky mailbox test");
+    activity
+        .queue_turn(&thread, "and add a regression test", &[], "auto", "desktop")
+        .unwrap();
+    assert_eq!(
+        title(&thread),
+        "Fix the flaky mailbox test",
+        "a conversation keeps the name it was opened with"
+    );
+
+    // What a pasted message looks like: a heading, wrapped lines, trailing blank lines.
+    let pasted = new_thread();
+    activity
+        .queue_turn(
+            &pasted,
+            "## Fix   the\n  flaky mailbox test, which fails about one run in five on CI and\nnobody has looked at it\n\n",
+            &[],
+            "auto",
+            "desktop",
+        )
+        .unwrap();
+    let derived = title(&pasted);
+    assert!(
+        !derived.starts_with('#') && !derived.contains('\n') && !derived.contains("   "),
+        "the name is a line of prose, not the markup it was pasted from: {derived:?}"
+    );
+    assert!(
+        derived.starts_with("Fix the flaky mailbox test") && derived.ends_with('…'),
+        "long messages are cut where a reader can still tell them apart: {derived:?}"
+    );
+    assert!(derived.chars().count() <= 61, "and cut short: {derived:?}");
+
+    // A thread the user named themselves is never renamed.
+    let named = new_thread();
+    activity.title(&named, "Release checklist", true).unwrap();
+    activity
+        .queue_turn(&named, "start with the changelog", &[], "auto", "desktop")
+        .unwrap();
+    assert_eq!(title(&named), "Release checklist");
+}
