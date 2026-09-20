@@ -1,0 +1,51 @@
+{
+  "projects": [
+    {
+      "id": "13c40a5e642062fb89d0ce8be2c9f72566d003acf662bf447c5c90c25af6b574",
+      "name": "repo",
+      "root": "/private/tmp/claude-501/-Users-titabash-Development-orochi/b4ec589a-2112-4380-8a92-9b0c1426aa1f/scratchpad/demo/repo",
+      "pinned": false,
+      "collapsed": false,
+      "threads": [
+        {
+          "id": "dfe8040f-945c-4687-b2d2-f2ca7a08be5f",
+          "project": "repo",
+          "project_id": "13c40a5e642062fb89d0ce8be2c9f72566d003acf662bf447c5c90c25af6b574",
+          "project_root": "/private/tmp/claude-501/-Users-titabash-Development-orochi/b4ec589a-2112-4380-8a92-9b0c1426aa1f/scratchpad/demo/repo",
+          "title": "Refactor the scheduler retry loop",
+          "cwd": "/private/tmp/claude-501/-Users-titabash-Development-orochi/b4ec589a-2112-4380-8a92-9b0c1426aa1f/scratchpad/demo/repo",
+          "branch": null,
+          "origin": "run",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1789895833408,
+          "status": "unread",
+          "seats": 0,
+          "asking": 0,
+          "unread": 12,
+          "terminal": false
+        },
+        {
+          "id": "ac1154c1-3298-4ada-be14-4063b923a32c",
+          "project": "repo",
+          "project_id": "13c40a5e642062fb89d0ce8be2c9f72566d003acf662bf447c5c90c25af6b574",
+          "project_root": "/private/tmp/claude-501/-Users-titabash-Development-orochi/b4ec589a-2112-4380-8a92-9b0c1426aa1f/scratchpad/demo/repo",
+          "title": "Fix the flaky mailbox placement test",
+          "cwd": "/private/tmp/claude-501/-Users-titabash-Development-orochi/b4ec589a-2112-4380-8a92-9b0c1426aa1f/scratchpad/demo/repo",
+          "branch": null,
+          "origin": "console",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1789895833277,
+          "status": "unread",
+          "seats": 0,
+          "asking": 0,
+          "unread": 8,
+          "terminal": false
+        }
+      ]
+    }
+  ]
+}

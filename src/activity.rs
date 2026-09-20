@@ -464,8 +464,12 @@ impl Activity {
         connection.execute_batch("PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;")?;
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         ensure!(
+            version <= USER_VERSION,
+            "the activity database is newer than this Orochi version (v{version} against v{USER_VERSION})"
+        );
+        ensure!(
             version == USER_VERSION,
-            "the activity database is not the version this Orochi set up"
+            "the activity database has not been set up by this Orochi version yet"
         );
         Ok(Self {
             connection,

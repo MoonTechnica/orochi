@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orochi</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <header>
+      <button id="new-thread" title="Start a thread here">+ New thread</button>
+    </header>
+    <nav id="projects" aria-label="Projects"></nav>
+    <footer id="sidebar-foot"></footer>
+  </aside>
+
+  <main id="thread">
+    <header id="thread-head">
+      <span id="thread-where"></span>
+      <span id="thread-title">Nothing selected</span>
+      <span id="thread-status"></span>
+    </header>
+    <div id="timeline" role="log" aria-live="polite"></div>
+    <form id="composer" autocomplete="off">
+      <textarea id="message" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+      <div id="composer-row">
+        <div id="folder-picker">
+          <button type="button" id="folder" aria-haspopup="menu" aria-expanded="false">
+            <span id="folder-name">No folder</span>
+          </button>
+          <div id="folder-menu" role="menu" hidden></div>
+        </div>
+        <span id="composer-hint">Enter to send · Shift-Enter for a new line</span>
+        <button type="button" id="interrupt" hidden>Stop</button>
+        <button type="submit" id="send">Send</button>
+      </div>
+    </form>
+  </main>
+
+  <aside id="side">
+    <div id="tabs" role="tablist">
+      <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
+      <button class="tab" data-pane="changes" role="tab" aria-selected="false">Changes</button>
+    </div>
+    <section id="pane-team" class="pane"></section>
+    <section id="pane-changes" class="pane" hidden></section>
+  </aside>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
