@@ -305,6 +305,10 @@ pub struct CostFeatures {
     pub cache_discount: f64,
     pub context_restore_tokens: f64,
     pub quota_multiplier: f64,
+    /// What opening a session on this seat costs before any work: measured, never discounted,
+    /// and 0.0 where nothing has been measured yet. Records written before it existed have none.
+    #[serde(default)]
+    pub session_tokens: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

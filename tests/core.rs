@@ -1435,3 +1435,121 @@ fn several_runs_opening_one_store_at_once_migrate_it_exactly_once() {
         "{columns:?}"
     );
 }
+
+/// Two accounts of the same model: the policy prices them identically, so what separates them
+/// is what a session there has actually cost. The measured 2026-09-20 comparison found one
+/// trivial task costing 202,348 tokens on a frontier session and 21,882 on a small one —
+/// almost all of it the fixed cost of opening the session, which the policy's 1.6-against-0.65
+/// tier prices at less than a third of the real gap. A session's own floor is measured, so a
+/// small task goes where a session is cheap.
+#[test]
+fn a_small_task_goes_where_a_session_has_measured_cheaper() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    let dear = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
+    let cheap = AgentConfig::preset("claude-b", Provider::Anthropic, "test", &[]);
+    let capabilities = caps(&["claude-sonnet"]);
+    let registry = Registry::bundled().unwrap();
+    let config = Config::default();
+    let runtime = RuntimeMap::new();
+
+    // Recorded against another kind of work, so no EWMA of this task's own stratum applies:
+    // what a session costs is a property of the seat, not of the task.
+    let spent = |at: usize, agent: &str, tokens: u64| {
+        let candidate = ExecutionCandidate {
+            id: "other".into(),
+            agent: agent.into(),
+            model: "claude-sonnet".into(),
+            provider: Provider::Anthropic,
+            reasoning_level: None,
+            mode: None,
+            session_strategy: "fresh".into(),
+            context_strategy: "filesystem".into(),
+            success_probability: 0.9,
+            expected_tokens: tokens as f64,
+            expected_cost: 1.0,
+            confidence: 0.9,
+            reasons: vec![],
+            prediction: None,
+        };
+        RunRecord {
+            id: format!("{agent}-{at}"),
+            task_id: format!("task-{at}"),
+            repository_id: "repo".into(),
+            task_type: "documentation".into(),
+            language: "unknown".into(),
+            framework: None,
+            scope: 1,
+            context_size: 500,
+            prediction: None,
+            candidate,
+            usage: Usage {
+                total_tokens: Some(tokens),
+                ..Default::default()
+            },
+            duration_ms: 100,
+            attempt: 0,
+            outcome: Outcome::Success,
+            checks: vec![],
+            error_kind: None,
+            started_at: at as i64,
+            purpose: "execution".into(),
+            complexity: Some(Complexity::Simple),
+            feedback: None,
+        }
+    };
+    let mut task = profiler::profile("Implement a function", dir.path());
+    task.complexity = Complexity::Simple;
+    let route = || {
+        scorer::candidates(
+            &[(&dear, &capabilities), (&cheap, &capabilities)],
+            &ScoringContext {
+                task: &task,
+                overrides: &Overrides::default(),
+                config: &config,
+                policies: &registry,
+                store: &store,
+                runtime: &runtime,
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap()
+    };
+    let costs = |ranked: &[ExecutionCandidate]| -> Vec<(String, f64)> {
+        ranked
+            .iter()
+            .map(|c| (c.agent.clone(), c.expected_cost))
+            .collect()
+    };
+
+    // Nothing measured: the policy prices two accounts of one model identically, and the
+    // change adds nothing to a store that has seen nothing.
+    let blind = route();
+    assert_eq!(
+        blind[0].expected_cost,
+        blind[1].expected_cost,
+        "{:?}",
+        costs(&blind)
+    );
+
+    for at in 0..4 {
+        store.record(&spent(at, "claude", 202_348)).unwrap();
+        store.record(&spent(at + 4, "claude-b", 21_882)).unwrap();
+    }
+    let ranked = route();
+    assert_eq!(
+        ranked.first().map(|c| c.agent.as_str()),
+        Some("claude-b"),
+        "{:?}",
+        costs(&ranked)
+    );
+    assert!(
+        ranked[1].expected_cost > ranked[0].expected_cost * 2.0,
+        "the session's own cost is what separates them: {:?}",
+        costs(&ranked)
+    );
+}

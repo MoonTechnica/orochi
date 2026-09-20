@@ -6,7 +6,11 @@ use crate::{
 use serde::Serialize;
 
 pub fn resource_cost(tokens: f64, success: f64, features: &CostFeatures, latency_ms: f64) -> f64 {
-    ((tokens * (1.0 - features.cache_discount) + features.context_restore_tokens)
+    // The session's own cost is not discounted: a cache hit saves re-reading the work, not the
+    // system prompt the seat opens with.
+    ((tokens * (1.0 - features.cache_discount)
+        + features.context_restore_tokens
+        + features.session_tokens)
         * features.quota_multiplier
         + latency_ms / 1000.0 * 2.0)
         / success

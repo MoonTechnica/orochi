@@ -226,6 +226,7 @@ fn replay_from(
                             context_restore_tokens: 0.0,
                             quota_multiplier: c.expected_cost * c.success_probability
                                 / c.expected_tokens,
+                            session_tokens: 0.0,
                         });
                     c.prediction = Some(Prediction {
                         candidate_id: c.id.clone(),

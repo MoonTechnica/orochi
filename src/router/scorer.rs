@@ -8,7 +8,7 @@ use crate::{
     types::*,
 };
 use anyhow::Result;
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 /// Cost multiplier for a candidate the user said they want. An Orochi heuristic, not measured.
 const PREFERENCE: f64 = 0.8;
@@ -35,6 +35,8 @@ pub fn candidates(
     cx: &ScoringContext<'_>,
 ) -> Result<Vec<ExecutionCandidate>> {
     let mut candidates = Vec::new();
+    // One query per seat, not per reasoning level and mode of it.
+    let mut floors: BTreeMap<(String, String), f64> = BTreeMap::new();
     let task = cx.task;
     let overrides = cx.overrides;
     for (agent, capabilities) in agents {
@@ -199,6 +201,17 @@ pub fn candidates(
                 cache_discount,
                 context_restore_tokens: rehydration,
                 quota_multiplier: shadow,
+                session_tokens: match floors.get(&(c.agent.clone(), c.model.clone())) {
+                    Some(floor) => *floor,
+                    None => {
+                        let floor = cx
+                            .store
+                            .session_floor(&c.agent, &c.model, 64)?
+                            .unwrap_or(0.0);
+                        floors.insert((c.agent.clone(), c.model.clone()), floor);
+                        floor
+                    }
+                },
             };
             c.expected_cost = crate::learning::resource_cost(
                 c.expected_tokens,

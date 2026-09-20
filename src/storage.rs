@@ -292,6 +292,32 @@ impl Store {
         Ok(Some(measured[measured.len() / 2]))
     }
 
+    /// What a session of this seat costs before it does any work: the smallest tenth of the
+    /// tokens recent executions there have used. Nearly all of it is the system prompt and the
+    /// cache it reads, so it is a property of the agent and model, not of the task — a policy
+    /// tier cannot see it (2026-09-20: one trivial task cost 202,348 tokens on a frontier
+    /// session and 21,882 on a small one, against the 1.6-to-0.65 the tiers price it at).
+    /// `None` until enough sessions there have been measured.
+    pub fn session_floor(&self, agent: &str, model: &str, limit: usize) -> Result<Option<f64>> {
+        const SAMPLES: usize = 4;
+        let mut statement = self.connection.prepare(
+            "SELECT record FROM runs WHERE purpose='execution' AND agent=?1 AND model=?2
+             ORDER BY started_at DESC, rowid DESC LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![agent, model, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut measured: Vec<f64> = rows
+            .filter_map(|row| serde_json::from_str::<RunRecord>(&row.ok()?).ok())
+            .filter_map(|run| run.usage.total_tokens.map(|total| total as f64))
+            .collect();
+        if measured.len() < SAMPLES {
+            return Ok(None);
+        }
+        measured.sort_by(f64::total_cmp);
+        Ok(Some(measured[measured.len() / 10]))
+    }
+
     /// What asking each agent for advice has cost lately: the mean total tokens of its most
     /// recent records of that purpose. Advice is not execution and never teaches the router;
     /// this is only about what the question itself costs.
