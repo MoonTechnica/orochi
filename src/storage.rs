@@ -301,16 +301,30 @@ impl Store {
     pub fn session_floor(&self, agent: &str, model: &str, limit: usize) -> Result<Option<f64>> {
         const SAMPLES: usize = 4;
         let mut statement = self.connection.prepare(
-            "SELECT record FROM runs WHERE purpose='execution' AND agent=?1 AND model=?2
-             ORDER BY started_at DESC, rowid DESC LIMIT ?3",
+            "SELECT model, record FROM runs WHERE purpose='execution' AND agent=?1
+             ORDER BY started_at DESC, rowid DESC LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![agent, model, limit as i64], |row| {
-            row.get::<_, String>(0)
+        let rows = statement.query_map(params![agent, limit as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        let mut measured: Vec<f64> = rows
-            .filter_map(|row| serde_json::from_str::<RunRecord>(&row.ok()?).ok())
-            .filter_map(|run| run.usage.total_tokens.map(|total| total as f64))
-            .collect();
+        let (mut own, mut anywhere) = (vec![], vec![]);
+        for row in rows {
+            let (ran, record) = row?;
+            let Ok(run) = serde_json::from_str::<RunRecord>(&record) else {
+                continue;
+            };
+            let Some(total) = run.usage.total_tokens else {
+                continue;
+            };
+            anywhere.push(total as f64);
+            if ran == model {
+                own.push(total as f64);
+            }
+        }
+        // A model nobody has run opens the same kind of session as its agent's others, which
+        // is a better guess than the policy tier: `haiku` and `luna` are priced the same there
+        // and measured 6.3× apart. Another agent's sessions say nothing about this one.
+        let mut measured = if own.len() >= SAMPLES { own } else { anywhere };
         if measured.len() < SAMPLES {
             return Ok(None);
         }

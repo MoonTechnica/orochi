@@ -1651,3 +1651,75 @@ fn a_second_seat_is_dropped_from_work_measured_smaller_than_a_session() {
         &asked
     ));
 }
+
+/// A model nobody has run yet, on an agent that has been run: the policy prices `haiku` and
+/// `luna` identically (both `small`, 0.65) and they measured 6.3× apart on the same-sized task
+/// on 2026-09-20, so falling back to the policy is falling back to a number that can be wrong
+/// by that much. What a session on that *agent* costs is the better guess, and its cheapest
+/// end is the right end to take.
+#[test]
+fn a_new_model_starts_from_what_its_agent_s_sessions_have_cost() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    let spent = |at: usize, agent: &str, model: &str, tokens: u64| RunRecord {
+        id: format!("{agent}-{model}-{at}"),
+        task_id: format!("task-{at}"),
+        repository_id: "repo".into(),
+        task_type: "implementation".into(),
+        language: "unknown".into(),
+        framework: None,
+        scope: 4,
+        context_size: 6_043,
+        prediction: None,
+        candidate: ExecutionCandidate {
+            id: "seat".into(),
+            agent: agent.into(),
+            model: model.into(),
+            provider: Provider::Anthropic,
+            reasoning_level: None,
+            mode: None,
+            session_strategy: "fresh".into(),
+            context_strategy: "filesystem".into(),
+            success_probability: 0.9,
+            expected_tokens: tokens as f64,
+            expected_cost: 1.0,
+            confidence: 0.9,
+            reasons: vec![],
+            prediction: None,
+        },
+        usage: Usage {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        },
+        duration_ms: 100,
+        attempt: 0,
+        outcome: Outcome::Success,
+        checks: vec![],
+        error_kind: None,
+        started_at: at as i64,
+        purpose: "execution".into(),
+        complexity: Some(Complexity::Normal),
+        feedback: None,
+    };
+    for (at, tokens) in [85_591, 145_906, 175_270, 184_422].into_iter().enumerate() {
+        store.record(&spent(at, "claude", "haiku", tokens)).unwrap();
+    }
+    for (at, tokens) in [23_941, 24_170, 26_404, 26_606].into_iter().enumerate() {
+        store
+            .record(&spent(at + 10, "codex", "luna", tokens))
+            .unwrap();
+    }
+
+    // Measured for itself: its own sessions.
+    assert_eq!(
+        store.session_floor("claude", "haiku", 64).unwrap(),
+        Some(85_591.0)
+    );
+    // Never run: what a session on that agent has cost, taken at its cheapest end.
+    assert_eq!(
+        store.session_floor("claude", "opus", 64).unwrap(),
+        Some(85_591.0)
+    );
+    // Another agent's sessions say nothing about this one, whatever the policy prices them at.
+    assert_eq!(store.session_floor("gemini", "pro", 64).unwrap(), None);
+}
