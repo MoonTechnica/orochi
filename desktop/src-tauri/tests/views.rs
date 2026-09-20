@@ -395,3 +395,88 @@ fn the_agents_and_insights_screens_read_telemetry_through_its_views() {
         "no runs yet means no numbers to show, rather than zeroes to misread"
     );
 }
+
+/// §6.10: the window can read and change the settings, through the same validation the CLI
+/// uses — an invalid one is refused rather than written and discovered at the next run.
+#[test]
+fn settings_are_readable_and_only_valid_ones_are_written() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        r#"
+[activity]
+retention_days = 30
+[[agents]]
+id = "claude"
+provider = "anthropic"
+command = "claude-agent-acp"
+[agents.env]
+ANTHROPIC_API_KEY = "sk-secret-value"
+"#,
+    )
+    .unwrap();
+    let client = Client::open(dir.path()).unwrap().with_config(&config);
+
+    let shown = client.settings().unwrap();
+    assert_eq!(shown["activity"]["retention_days"], 30);
+    assert_eq!(
+        shown["agents"][0]["env"]["ANTHROPIC_API_KEY"], "[redacted]",
+        "a window never shows a secret it had no reason to read"
+    );
+
+    let mut changed = shown.clone();
+    changed["activity"]["retention_days"] = serde_json::json!(7);
+    client.save_settings(&changed).unwrap();
+    assert_eq!(client.settings().unwrap()["activity"]["retention_days"], 7);
+    assert!(
+        std::fs::read_to_string(&config).unwrap().contains("sk-secret-value"),
+        "and writing settings back does not overwrite the secret with its redaction",
+    );
+
+    let mut invalid = shown.clone();
+    invalid["activity"]["retention_days"] = serde_json::json!(-1);
+    let error = client.save_settings(&invalid).unwrap_err().to_string();
+    assert!(
+        error.contains("retention_days"),
+        "an invalid setting is refused, and says which one: {error}"
+    );
+    assert_eq!(
+        client.settings().unwrap()["activity"]["retention_days"],
+        7,
+        "and the file it would have broken is untouched"
+    );
+}
+
+/// Memory is the user's own text, so the window edits it as text and nothing else writes it.
+#[test]
+fn memory_is_readable_and_editable_as_the_text_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+
+    assert_eq!(client.memory().unwrap().user, "", "nothing is remembered yet");
+    client.save_memory("Prefers small commits.\n").unwrap();
+    assert_eq!(client.memory().unwrap().user, "Prefers small commits.\n");
+    assert!(
+        dir.path().join("memory/USER.md").exists(),
+        "written where the core reads it, not somewhere of the window's own"
+    );
+}
+
+/// R4: delete means gone, and the window can do it for everything at once.
+#[test]
+fn every_conversation_can_be_deleted_from_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+    assert_eq!(client.sidebar(20, true).unwrap()[0].threads.len(), 1);
+
+    let removed = client.forget_all().unwrap();
+    assert_eq!(removed, 1);
+    assert!(
+        client.sidebar(20, true).unwrap()[0].threads.is_empty(),
+        "the conversations are gone; the project keeps its place"
+    );
+}

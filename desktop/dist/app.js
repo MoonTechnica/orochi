@@ -462,6 +462,70 @@ async function drawScreen() {
     );
     return;
   }
+  if (state.screen === "settings") {
+    const [config, remembered] = await Promise.all([
+      call("settings", {}),
+      call("memory", {}),
+    ]);
+    host.append(text("h3", null, "Settings"));
+    if (!config) return;
+
+    // The conversation store is the one place Orochi keeps your own text, so it is the one
+    // place with a switch, a window and a way to remove what is there.
+    const activity = config.activity || {};
+    const field = (label, node) => {
+      const row = text("div", "card");
+      row.append(text("div", "where", label));
+      row.append(node);
+      return row;
+    };
+    const keep = document.createElement("input");
+    keep.type = "number";
+    keep.value = String(activity.retention_days ?? 30);
+    keep.addEventListener("change", async () => {
+      config.activity.retention_days = Number(keep.value);
+      await call("save_settings", { settings: config });
+      await drawScreen();
+    });
+    host.append(field("Keep conversations for (days; 0 keeps them until deleted)", keep));
+
+    const on = document.createElement("input");
+    on.type = "checkbox";
+    on.checked = activity.enabled !== false;
+    on.addEventListener("change", async () => {
+      config.activity.enabled = on.checked;
+      await call("save_settings", { settings: config });
+      await drawScreen();
+    });
+    host.append(field("Record conversations at all", on));
+
+    const wipe = document.createElement("button");
+    wipe.textContent = "Delete every conversation";
+    wipe.addEventListener("click", async () => {
+      if (wipe.dataset.sure !== "yes") {
+        wipe.dataset.sure = "yes";
+        wipe.textContent = "This cannot be undone — click again";
+        return;
+      }
+      const removed = await call("forget_all", {});
+      report(`Deleted ${removed} conversation${removed === 1 ? "" : "s"}.`);
+      state.thread = null;
+      await refresh(true);
+    });
+    host.append(field("History", wipe));
+
+    // Memory is the user's own text, so it is edited as text.
+    const notes = document.createElement("textarea");
+    notes.rows = 8;
+    notes.value = remembered?.user || "";
+    notes.addEventListener("change", () => call("save_memory", { text: notes.value }));
+    host.append(field("What Orochi remembers about you", notes));
+
+    host.append(
+      text("p", "caveat", "Agents never write this, and it is never sent to a routing adviser."),
+    );
+    return;
+  }
   if (state.screen === "insights") {
     const stats = (await call("insights", {})) || [];
     host.append(text("h3", null, "What the routes have done"));

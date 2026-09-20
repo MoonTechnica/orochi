@@ -324,3 +324,32 @@ test("the plan pane draws the waves a divided turn runs in", async () => {
   assert.match(drawn, /Wave 2/, "each wave is a heading of its own");
   assert.match(drawn, /build gamma/);
 });
+
+test("settings edit the conversation store and what is remembered", async () => {
+  const settings = { activity: { enabled: true, retention_days: 30, thinking: true } };
+  const { el, calls } = await open({
+    settings,
+    memory: { user: "Prefers small commits.\n", path: "/data/memory/USER.md" },
+  });
+  el("sidebar-screens").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "settings")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const host = el("screen");
+  assert.match(host.render(), /Keep conversations for/);
+  assert.match(host.render(), /Prefers small commits/, "memory is shown as the text it is");
+  assert.match(host.render(), /never sent to a routing adviser/);
+
+  const wipe = host.querySelectorAll("button").find((b) =>
+    b.textContent.startsWith("Delete every"),
+  );
+  wipe.dispatch("click");
+  assert.equal(
+    calls.some(([name]) => name === "forget_all"),
+    false,
+    "deleting everything takes two clicks, not one",
+  );
+  wipe.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(calls.some(([name]) => name === "forget_all"), "and then it happens");
+});

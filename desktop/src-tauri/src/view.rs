@@ -123,6 +123,18 @@ pub struct Client {
     cursor: i64,
     /// The room's limits, as configured.
     mailbox: orochi::config::MailboxConfig,
+    /// The configuration file this window reads and writes, and the data directory it was
+    /// opened on (memory lives beside the databases, as plain Markdown).
+    config: std::path::PathBuf,
+    data: std::path::PathBuf,
+}
+
+/// What Orochi remembers, as the text it is. The window edits it as text because that is what
+/// it is — the user's own words, which only Orochi writes and no agent ever does.
+#[derive(Debug, Clone, Serialize)]
+pub struct Remembered {
+    pub user: String,
+    pub path: String,
 }
 
 impl Client {
@@ -143,7 +155,86 @@ impl Client {
             store: Store::open(data)?,
             cursor: 0,
             mailbox: orochi::config::MailboxConfig::default(),
+            config: orochi::config::Paths::resolve(None, Some(data.to_path_buf()))
+                .map(|paths| paths.config)
+                .unwrap_or_else(|_| data.join("config.toml")),
+            data: data.to_path_buf(),
         })
+    }
+
+    /// Points this window at a particular configuration file, as `--config` does.
+    pub fn with_config(mut self, config: &Path) -> Self {
+        self.config = config.to_path_buf();
+        self
+    }
+
+    /// The settings, with `agent.env` values redacted: a window has no reason to read a
+    /// secret, so it is never given one to display.
+    pub fn settings(&self) -> Result<serde_json::Value> {
+        let mut config = orochi::config::Config::load(&self.config)?;
+        for agent in &mut config.agents {
+            for value in agent.env.values_mut() {
+                *value = "[redacted]".into();
+            }
+        }
+        Ok(serde_json::to_value(config)?)
+    }
+
+    /// Writes settings back, through the same validation the CLI uses, so an invalid one is
+    /// refused here rather than discovered at the next run. Redacted secrets are put back
+    /// from the file, never written as the word `[redacted]`.
+    pub fn save_settings(&self, settings: &serde_json::Value) -> Result<()> {
+        let mut config: orochi::config::Config = serde_json::from_value(settings.clone())?;
+        let current = orochi::config::Config::load(&self.config).unwrap_or_default();
+        for agent in &mut config.agents {
+            let Some(existing) = current.agents.iter().find(|a| a.id == agent.id) else {
+                continue;
+            };
+            for (key, value) in &mut agent.env {
+                if value == "[redacted]"
+                    && let Some(kept) = existing.env.get(key)
+                {
+                    *value = kept.clone();
+                }
+            }
+        }
+        config.validate()?;
+        if let Some(parent) = self.config.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&self.config, toml::to_string_pretty(&config)?)?;
+        Ok(())
+    }
+
+    pub fn memory(&self) -> Result<Remembered> {
+        let path = self.data.join("memory/USER.md");
+        Ok(Remembered {
+            user: std::fs::read_to_string(&path).unwrap_or_default(),
+            path: path.display().to_string(),
+        })
+    }
+
+    pub fn save_memory(&self, text: &str) -> Result<()> {
+        let path = self.data.join("memory/USER.md");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, text)?;
+        Ok(())
+    }
+
+    /// Deletes every conversation. R4: delete means gone, and `secure_delete` means the text
+    /// is overwritten rather than left in free pages.
+    pub fn forget_all(&self) -> Result<usize> {
+        let mut removed = 0;
+        for project in self.activity.sidebar(usize::MAX, true)? {
+            for thread in project.threads {
+                if self.activity.delete_thread(&thread.id)? {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// The folders this window offers: the projects already worked in, most recent first, so

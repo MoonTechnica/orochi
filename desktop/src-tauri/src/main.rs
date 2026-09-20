@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! The shell. It owns a window and a connection, and does nothing else: every command below
 //! is one call into `view`, which is where the app's behavior lives and where it is tested.
-use orochi_desktop::view::{AgentRow, Client, Folder, Prompt, RouteStats, Said, Working};
+use orochi_desktop::view::{
+    AgentRow, Client, Folder, Prompt, Remembered, RouteStats, Said, Working,
+};
 use orochi::activity::{ProjectRow, Thread};
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -95,6 +97,32 @@ fn board(open: State<'_, Open>, thread: String) -> Result<Vec<serde_json::Value>
 }
 
 #[tauri::command]
+fn settings(open: State<'_, Open>) -> Result<serde_json::Value, String> {
+    open.0.lock().unwrap().settings().map_err(fail)
+}
+
+#[tauri::command]
+fn save_settings(open: State<'_, Open>, settings: serde_json::Value) -> Result<(), String> {
+    open.0.lock().unwrap().save_settings(&settings).map_err(fail)
+}
+
+#[tauri::command]
+fn memory(open: State<'_, Open>) -> Result<Remembered, String> {
+    open.0.lock().unwrap().memory().map_err(fail)
+}
+
+#[tauri::command]
+fn save_memory(open: State<'_, Open>, text: String) -> Result<(), String> {
+    open.0.lock().unwrap().save_memory(&text).map_err(fail)
+}
+
+/// Deletes every conversation. The window asks first; this does it.
+#[tauri::command]
+fn forget_all(open: State<'_, Open>) -> Result<usize, String> {
+    open.0.lock().unwrap().forget_all().map_err(fail)
+}
+
+#[tauri::command]
 fn sidebar(open: State<'_, Open>, limit: usize, archived: bool) -> Result<Vec<ProjectRow>, String> {
     open.0.lock().unwrap().sidebar(limit, archived).map_err(fail)
 }
@@ -177,6 +205,11 @@ fn main() {
             agents,
             insights,
             board,
+            settings,
+            save_settings,
+            memory,
+            save_memory,
+            forget_all,
             sidebar,
             thread,
             patch,

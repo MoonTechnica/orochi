@@ -59,7 +59,8 @@ class Node {
   }
   // A flat, readable view of what was drawn, for assertions.
   render(depth = 0) {
-    const own = this.children.length ? "" : this._text;
+    // What a person would see: a field shows its value, not its (empty) text.
+    const own = this.children.length ? "" : this._text || this.value || "";
     const head = `${"  ".repeat(depth)}${this.tagName.toLowerCase()}${this.className ? "." + this.className : ""}${own ? " " + own : ""}`;
     return [head, ...this.children.map((c) => c.render(depth + 1))].filter(Boolean).join("\n");
   }
