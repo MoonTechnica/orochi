@@ -12,12 +12,16 @@ Written: 2026-09-20.
 | P3 Supervising | **Implemented; automated tests only.** Mission control, Agents, Insights (over the telemetry views of §5), the work-graph board and Settings |
 | P4 The user in the room | **Implemented; unverified where it matters.** `Mailbox::speak`, `orochi peers --say` and the Team pane's message box. Whether an agent acts on a note left mid-turn is **not** established — it needs a run against real CLIs before it is presented as steering |
 
-The window's **appearance** is unverified: no screen capture was available, so its behavior is
-covered by tests over fixture stores and recorded view output, and its looks by nothing. The
+The window's **appearance** was checked on 2026-09-20 by rendering the same `app.js` and
+`app.css` in a browser against the recorded view output (`desktop/dist/preview.html`), which
+found four things and fixed them: tables stretched to the window's width, form controls left
+in the browser's own style, a heading that named the conversation while showing a screen, and
+`---`/`+++` diff lines coloured as changes. It has not been looked at inside the Tauri window
+itself, which uses the same WebKit but its own chrome. The
 Changes pane shows the patches a turn recorded but not the working tree, and has no Apply
 button; git actions remain out of scope, as §6.5 says.
 
-Behavior against real agent CLIs is **unverified**: everything above is exercised by the fixture agent only. The measurements §2 and §9 call for (flush and poll latency, disk growth) have **not** been taken, and the figures there remain estimates.
+Behavior against real agent CLIs is **unverified**: everything above is exercised by the fixture agent only, because a test must never spend the user's quota. The measurements §2 and §9 call for **have** been taken (§2) and are asserted as bounds in `tests/activity.rs`.
 
 The four open points were decided on 2026-09-20 (§10). The invariant text in `CLAUDE.md`, `README.md` and `docs/agent-mailbox.md` is updated as part of P0/P1.
 
@@ -98,7 +102,9 @@ Rejected: *the app as an ACP client of `orochi serve`*. It gives streaming for f
 
 **D3. The app's Rust side links the `orochi` library** for one reason: row types and SQL live in one crate. The WebView calls typed commands (`threads()`, `timeline(thread, after)`, `send(thread, text)`), never SQL. Tauri over Electron because the data layer is already Rust (`rusqlite`, bundled SQLite, `types.rs`); over SwiftUI because CI already covers Linux and macOS. The repository becomes a Cargo workspace: `orochi` stays at the root, `desktop/src-tauri` depends on it by path.
 
-Latency budget: hosts flush streamed text at most every 80 ms (one transaction per flush); the app checks `PRAGMA data_version` every 100 ms while a thread is open and running, 1 s otherwise, and reads only what the change feed (§4.9) names. Worst case from token to pixel is under 200 ms, which is what a terminal reader perceives today. Heuristic figures; to be measured in P0.
+Latency budget: hosts flush streamed text at most every 80 ms (one transaction per flush); the app checks `PRAGMA data_version` every 200 ms and reads only what the change feed (§4.9) names. Worst case from token to pixel is therefore under 300 ms, which is about what a terminal reader perceives today.
+
+**Measured** (2026-09-20, this machine, `tests/activity.rs`): a flush costs **157 µs**, so six seats streaming at once spend about 1.2 % of a second writing. A quiet poll — the `data_version` header read plus an empty feed query — costs **4.7 µs**, so polling at 5 Hz is free. A deliberately heavy turn (40 tool calls with their output and patches, plus 20 KiB of reply) leaves a **256 KiB** file, so the 30-day window is tens of MB for ordinary use rather than the hundreds §9 was guarding against. The tests assert bounds an order of magnitude above these, so they fail if the store ever becomes slow enough to feel.
 
 ## 3. The invariant this changes
 
@@ -618,11 +624,11 @@ P0 and P1 are worth having with no app at all: persistent history, `--continue`,
 
 | Risk | Handling |
 |---|---|
-| **Write amplification while streaming** — several seats, each flushing every 80 ms, plus triggers | WAL with `synchronous=NORMAL`; one transaction per flush; measured in P0 with six mock seats. If it bites: widen the flush interval per seat count before anything cleverer |
+| **Write amplification while streaming** — several seats, each flushing every 80 ms, plus triggers | WAL with `synchronous=NORMAL`; one transaction per flush. **Measured with six seats**: 157 µs a flush, about 1.2 % of a second's wall clock. If it ever bites: widen the flush interval per seat count before anything cleverer |
 | **Checkpoint starvation** — a reader holding a transaction open keeps the WAL growing | The app opens short read transactions per poll and never holds a statement across ticks; a test asserts the WAL shrinks after a checkpoint with the app's reader attached |
 | **Two writers claim one thread** | `hosts_thread` is unique; a second host exits with "this thread is running in another process (pid …)". The workspace lock already prevents two runs in one directory unless `shared_workspace` |
 | **Version skew between the app's `orochi` and the CLI's** | §5.3; `activity.sqlite3` follows the same rule from its first version; the app reads views only and checks `view_api`; Settings shows both versions |
-| **Disk growth** | Per-item and per-patch caps, retention, thinking off switch. A heavy day is estimated at tens of MB — an estimate, to be replaced by P0 measurements |
+| **Disk growth** | Per-item and per-patch caps, retention, thinking off switch. **Measured**: a deliberately heavy turn costs 256 KiB, so a busy day is tens of MB |
 | **A user who relied on "nothing is kept"** | The change is announced in the release notes and `README`; `activity.enabled = false` is one line; `orochi threads delete --all` exists from P0 |
 | **The store becomes a second source of truth for `collaborate`** | It is declared a projection (§4.8); `report.json` decides on resume, and a mismatch is resolved in its favor |
 | **macOS App Sandbox** — a sandboxed app cannot read `~/.local/share/orochi`, and even with a user-selected file the sibling `-wal` / `-shm` files are a known failure ([Apple forum](https://developer.apple.com/forums/thread/670503)) | Ship outside the sandbox: Developer ID signing and notarization, no Mac App Store. The app spawns CLIs the user installed; a sandbox would forbid that too |

@@ -311,7 +311,9 @@ async function drawChanges(thread) {
         const patch = await call("patch", { id: file.latest_patch });
         diff.replaceChildren();
         for (const line of (patch || "").split("\n")) {
-          const kind = line.startsWith("+") ? "i" : line.startsWith("-") ? "d" : line.startsWith("@") ? "h" : null;
+          // `---` and `+++` name the file; they are not a line that changed.
+          const header = line.startsWith("@") || line.startsWith("+++") || line.startsWith("---");
+          const kind = header ? "h" : line.startsWith("+") ? "i" : line.startsWith("-") ? "d" : null;
           diff.append(text("span", kind, line + "\n"));
         }
       }
@@ -419,7 +421,6 @@ async function drawScreen() {
   host.replaceChildren();
   if (state.screen === "working") {
     const seats = (await call("working", {})) || [];
-    host.append(text("h3", null, "Working now"));
     if (!seats.length) {
       host.append(text("p", "empty", "Nothing is running."));
       return;
@@ -443,7 +444,6 @@ async function drawScreen() {
   }
   if (state.screen === "agents") {
     const agents = (await call("agents", {})) || [];
-    host.append(text("h3", null, "Agents"));
     if (!agents.length) {
       host.append(text("p", "empty", "Nothing has been run yet."));
       return;
@@ -467,7 +467,6 @@ async function drawScreen() {
       call("settings", {}),
       call("memory", {}),
     ]);
-    host.append(text("h3", null, "Settings"));
     if (!config) return;
 
     // The conversation store is the one place Orochi keeps your own text, so it is the one
@@ -605,6 +604,13 @@ async function refresh(full) {
   el("composer").hidden = !conversation;
   el("screen").hidden = conversation;
   if (!conversation) {
+    // The header follows the screen, so it never labels one thing while showing another.
+    el("thread-where").textContent = "";
+    el("thread-title").textContent =
+      { working: "Working now", agents: "Agents", insights: "Insights", settings: "Settings" }[
+        state.screen
+      ] || "";
+    el("thread-status").textContent = "";
     await drawScreen();
     return;
   }

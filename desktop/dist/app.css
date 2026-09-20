@@ -117,14 +117,14 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 #thread-status { margin-left: auto; color: var(--muted); font-size: 12px; }
 
 #timeline { flex: 1; overflow: auto; padding: var(--gutter); }
-.turn { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+.turn { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
 .turn:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
-.you { white-space: pre-wrap; margin: 0 0 10px; }
-.you::before { content: "You"; display: block; color: var(--muted); font-size: 12px; }
+.you { white-space: pre-wrap; margin: 0 0 10px; max-width: 78ch; }
+.you::before { content: "You"; display: block; color: var(--muted); font-size: 12px; margin-bottom: 2px; }
 
 .route { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 .route .chip { color: var(--text); }
-.reply { white-space: pre-wrap; margin: 0 0 8px; }
+.reply { white-space: pre-wrap; margin: 0 0 8px; max-width: 78ch; }
 .work { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
 .work summary { cursor: pointer; }
 .work pre { white-space: pre-wrap; margin: 4px 0 0; color: var(--text); }
@@ -139,6 +139,8 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
   border-radius: var(--radius);
   padding: 10px;
   margin: 8px 0;
+  /* A question is a card, not a banner: full width reads as an alert bar. */
+  max-width: 640px;
 }
 .ask h4 { margin: 0 0 4px; font-size: 13px; }
 .ask code { color: var(--muted); }
@@ -246,9 +248,32 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 .screen { border: 0; padding: 3px 8px; color: var(--muted); font-size: 12px; }
 .screen[aria-current="true"] { color: var(--text); background: var(--line); }
 #screen { flex: 1; overflow: auto; padding: var(--gutter); }
-#screen table { width: 100%; border-collapse: collapse; }
-#screen th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 8px 4px 0; }
-#screen td { padding: 4px 8px 4px 0; border-top: 1px solid var(--line); }
+#screen > h3 { margin-bottom: 12px; }
+/* Sized to its content, not to the window: a five-column table stretched across a wide
+   screen puts a column at each edge and nothing in between. */
+#screen table { border-collapse: collapse; min-width: 480px; }
+#screen th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 24px 4px 0; white-space: nowrap; }
+#screen td { padding: 5px 24px 5px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+#screen .card { max-width: 620px; }
+/* The form controls are the page's, not the browser's: a default number box and textarea
+   arrive white and serif in the middle of a dark window. */
+#screen input[type="number"],
+#screen input[type="text"],
+#screen textarea {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 6px;
+  background: var(--bg);
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+#screen textarea { max-width: 100%; resize: vertical; white-space: pre-wrap; }
+#screen input[type="checkbox"] { accent-color: var(--brand); margin-top: 6px; width: 16px; height: 16px; }
+#screen .card button { margin-top: 6px; }
+#screen .card button[data-sure="yes"] { border-color: var(--danger); color: var(--danger); }
 #screen .num { text-align: right; font-variant-numeric: tabular-nums; }
 #screen h3 { margin: 0 0 8px; font-size: 13px; }
 #screen .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }

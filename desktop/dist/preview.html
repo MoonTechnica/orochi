@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orochi — preview</title>
+<link rel="stylesheet" href="app.css">
+<script>
+// A preview of the window in an ordinary browser, answering with the same recorded view output
+// the tests use. It exists so the page can be *looked* at; the app itself gets these answers
+// from the core.
+window.__PREVIEW__ = true;
+</script>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <header><button id="new-thread" title="Start a thread here">+ New thread</button></header>
+    <nav id="projects" aria-label="Projects"></nav>
+    <div id="sidebar-screens">
+      <button type="button" class="screen" data-screen="threads" aria-current="true">Threads</button>
+      <button type="button" class="screen" data-screen="working">Working</button>
+      <button type="button" class="screen" data-screen="agents">Agents</button>
+      <button type="button" class="screen" data-screen="insights">Insights</button>
+      <button type="button" class="screen" data-screen="settings">Settings</button>
+    </div>
+    <footer id="sidebar-foot"></footer>
+  </aside>
+  <main id="thread">
+    <header id="thread-head">
+      <span id="thread-where"></span>
+      <span id="thread-title">Nothing selected</span>
+      <span id="thread-status"></span>
+    </header>
+    <div id="timeline" role="log" aria-live="polite"></div>
+    <div id="screen" hidden></div>
+    <form id="composer" autocomplete="off">
+      <textarea id="message" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+      <div id="composer-row">
+        <div id="folder-picker">
+          <button type="button" id="folder" aria-haspopup="menu" aria-expanded="false">
+            <span id="folder-name">No folder</span>
+          </button>
+          <div id="folder-menu" role="menu" hidden></div>
+        </div>
+        <span id="composer-hint">Enter to send · Shift-Enter for a new line</span>
+        <button type="button" id="interrupt" hidden>Stop</button>
+        <button type="submit" id="send">Send</button>
+      </div>
+    </form>
+  </main>
+  <aside id="side">
+    <div id="tabs" role="tablist">
+      <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
+      <button class="tab" data-pane="changes" role="tab" aria-selected="false">Changes</button>
+      <button class="tab" data-pane="plan" role="tab" aria-selected="false">Plan</button>
+    </div>
+    <section id="pane-team" class="pane">
+      <div id="roster"></div>
+      <div id="room"></div>
+      <form id="say-form">
+        <input id="say" placeholder="Message the team…" aria-label="Message the team">
+      </form>
+      <p id="say-hint" class="empty">Delivered when the agent next checks.</p>
+    </section>
+    <section id="pane-changes" class="pane" hidden></section>
+    <section id="pane-plan" class="pane" hidden></section>
+  </aside>
+</div>
+<script src="preview-data.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

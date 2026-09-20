@@ -573,3 +573,143 @@ fn an_older_binarys_writes_still_work_after_the_telemetry_migration() {
     );
     assert_eq!(runs[0].id, "old");
 }
+
+/// §2 and §9 asked for these to be measured rather than estimated. They are bounds, not
+/// benchmarks: they fail if the store becomes slow enough to be felt, and the numbers they
+/// print are what `docs/desktop-app-design.md` records.
+#[test]
+fn recording_a_busy_turn_stays_faster_than_a_reader_can_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    // Six seats, as a discussion has, each streaming at once.
+    let mut items = Vec::new();
+    for ordinal in 0..6 {
+        let seat = activity
+            .create_seat(&turn, ordinal, "seat", ordinal == 0, false, None, None)
+            .unwrap();
+        let attempt = activity
+            .create_attempt(&seat, &candidate("claude", "opus"), false, None)
+            .unwrap();
+        items.push(
+            activity
+                .item(
+                    &thread,
+                    &turn,
+                    Some(&attempt),
+                    ItemKind::AgentMessage,
+                    Some("streaming"),
+                    None,
+                    "",
+                    None,
+                )
+                .unwrap(),
+        );
+    }
+
+    // What one second of six agents streaming costs: each flushes at most every 80 ms.
+    let flushes = 6 * (1000 / 80);
+    let chunk = "the quick brown fox jumps over the lazy dog. ".repeat(4);
+    let start = std::time::Instant::now();
+    for n in 0..flushes {
+        activity.append(items[n % items.len()], &chunk).unwrap();
+    }
+    let per_flush = start.elapsed() / flushes as u32;
+    assert!(
+        per_flush < std::time::Duration::from_millis(8),
+        "a flush took {per_flush:?}; at this rate six streaming seats would be felt"
+    );
+
+    // What a reader pays for a quiet tick: the header read plus an empty feed query.
+    let reader = Activity::open_read_only(dir.path()).unwrap();
+    let cursor: i64 = reader
+        .query_row("SELECT COALESCE(max(id),0) FROM changes", [], |r| r.get(0))
+        .unwrap();
+    let start = std::time::Instant::now();
+    for _ in 0..100 {
+        let _: i64 = reader
+            .query_row("PRAGMA data_version", [], |r| r.get(0))
+            .unwrap();
+        let mut statement = reader
+            .prepare_cached("SELECT id, thread_id FROM changes WHERE id > ?1 ORDER BY id")
+            .unwrap();
+        let moved: Vec<i64> = statement
+            .query_map([cursor + 1_000_000], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(moved.is_empty());
+    }
+    let per_poll = start.elapsed() / 100;
+    assert!(
+        per_poll < std::time::Duration::from_micros(500),
+        "a quiet poll took {per_poll:?}; at 10 Hz that is not free"
+    );
+
+    println!("measured: flush {per_flush:?}, quiet poll {per_poll:?}");
+}
+
+/// §9 asked how fast the store grows. A turn's worth of streamed text is the bulk of it.
+#[test]
+fn a_recorded_turn_costs_about_what_its_text_costs() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    let seat = activity
+        .create_seat(&turn, 0, "implementer", true, false, None, None)
+        .unwrap();
+    let attempt = activity
+        .create_attempt(&seat, &candidate("claude", "opus"), false, None)
+        .unwrap();
+
+    // A heavy turn: 40 tool calls with their output, and 20 KiB of reply.
+    for n in 0..40 {
+        let item = activity
+            .item(
+                &thread,
+                &turn,
+                Some(&attempt),
+                ItemKind::ToolCall,
+                Some("completed"),
+                Some(&format!("call-{n}")),
+                &"output line\n".repeat(40),
+                Some(r#"{"title":"Read","tool_kind":"read"}"#),
+            )
+            .unwrap();
+        activity
+            .patch(
+                item,
+                &turn,
+                &format!("src/file{n}.rs"),
+                Some(&"a\n".repeat(200)),
+                &format!("{}changed\n", "a\n".repeat(200)),
+            )
+            .unwrap();
+    }
+    let reply = activity
+        .item(
+            &thread,
+            &turn,
+            Some(&attempt),
+            ItemKind::AgentMessage,
+            Some("completed"),
+            None,
+            &"x".repeat(20 * 1024),
+            None,
+        )
+        .unwrap();
+    let _ = reply;
+    activity
+        .connection()
+        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
+
+    let bytes = std::fs::metadata(dir.path().join("activity.sqlite3"))
+        .unwrap()
+        .len();
+    println!("measured: a heavy turn costs {} KiB", bytes / 1024);
+    assert!(
+        bytes < 1024 * 1024,
+        "a heavy turn took {bytes} bytes; a day of work would not fit in the budget §9 assumes"
+    );
+}

@@ -268,8 +268,12 @@ test("mission control lists every seat working anywhere", async () => {
     .find((b) => b.dataset.screen === "working")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    el("thread-title").textContent,
+    "Working now",
+    "the header names the screen, so it never labels one thing while showing another",
+  );
   const drawn = el("screen").render();
-  assert.match(drawn, /Working now/);
   assert.match(drawn, /orochi · Fix the flaky test/, "with the thread each seat belongs to");
   assert.match(drawn, /editing tests\/mailbox\.rs/);
   assert.equal(el("timeline").hidden, true, "and the conversation makes way for it");
