@@ -118,7 +118,7 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
                         let store = Store::open(&data)?;
                         let _lock = workspace_lock(&data, &store.repository_id(&root)?, config.scheduler.shared_workspace)?;
                         let policies = Registry::load(&data)?;
-                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None };
+                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None, seat: None };
                         tokio::select! {
                             result = scheduler::run_with_events(&config, &policies, &store, &root, options, Some(events)) => result,
                             _ = worker_cancel.wait_for(|v| *v) => Ok(130),
@@ -178,7 +178,7 @@ async fn forward(
             biased;
             event = events.recv(), if !events.is_closed() || !events.is_empty() => {
                 match event {
-                    Some(ExecutionEvent::Text(text)) => {
+                    Some(ExecutionEvent::Text(text, _)) => {
                         if response_text.len() < 16384 { response_text.push_str(bounded_bytes(&text, 16384 - response_text.len())); }
                         cx.send_notification(SessionNotification::new(id.clone(), SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(text))))))?;
                     }

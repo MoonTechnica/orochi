@@ -50,21 +50,6 @@ pub struct Mailbox {
     config: MailboxConfig,
 }
 
-fn owner_alive(pid: i64, start: i64) -> bool {
-    #[cfg(unix)]
-    {
-        crate::process::alive(crate::process::Identity {
-            pid: pid as i32,
-            start: start as u64,
-        })
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (pid, start);
-        true
-    }
-}
-
 impl Mailbox {
     pub fn open(data: &Path, config: &MailboxConfig) -> Result<Self> {
         std::fs::create_dir_all(data)?;
@@ -117,7 +102,7 @@ impl Mailbox {
                 ))
             })?
             .filter_map(Result::ok)
-            .filter(|(_, pid, start)| !owner_alive(*pid, *start))
+            .filter(|(_, pid, start)| !crate::process::owner_alive(*pid, *start))
             .map(|(id, ..)| id)
             .collect();
         for id in dead {
@@ -455,7 +440,9 @@ impl SessionPeer {
         let branch = crate::context::git(&worktree, &["branch", "--show-current"])
             .map(|b| b.trim().to_owned())
             .filter(|b| !b.is_empty());
-        let Ok(owner) = owner_identity() else { return };
+        let Ok(owner) = crate::process::owner_identity() else {
+            return;
+        };
         let Ok(peer) = mailbox.register_as(
             &self.id,
             &active.channel,
@@ -715,19 +702,6 @@ pub fn join(
         bail!("mailbox membership already registered in this process");
     }
     Ok(Membership)
-}
-
-fn owner_identity() -> Result<(i64, i64)> {
-    #[cfg(unix)]
-    {
-        let me = crate::process::identity(std::process::id() as i32)
-            .context("cannot identify this process")?;
-        Ok((i64::from(me.pid), me.start as i64))
-    }
-    #[cfg(not(unix))]
-    {
-        Ok((i64::from(std::process::id()), 0))
-    }
 }
 
 /// MCP server to attach to one agent session: (name, command, args).

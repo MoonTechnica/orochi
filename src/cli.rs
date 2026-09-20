@@ -118,6 +118,16 @@ pub enum Command {
         #[arg(long)]
         messages: bool,
     },
+    /// Read the conversation store: the same views a desktop client renders.
+    Threads {
+        #[command(subcommand)]
+        command: Option<ThreadCommand>,
+        /// Include archived threads.
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=1000))]
+        limit: u16,
+    },
     /// List sessions recorded for this repository.
     Sessions {
         #[arg(long)]
@@ -193,6 +203,19 @@ pub enum PolicyCommand {
         url: Option<String>,
         #[arg(long, requires = "url")]
         sha256: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ThreadCommand {
+    /// Show one thread's timeline, seats and changed files.
+    Show { id: String },
+    /// Delete a thread and everything under it. This cannot be undone.
+    Delete {
+        id: String,
+        /// Delete every thread instead of one.
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
     },
 }
 
@@ -663,6 +686,81 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 }
             }
         }
+        Some(Command::Threads {
+            command,
+            all,
+            limit,
+        }) => {
+            ensure!(
+                config.activity.enabled,
+                "activity.enabled is false, so no conversation is recorded"
+            );
+            let activity =
+                crate::activity::Activity::open(&paths.data, config.activity.retention_days)?;
+            match command {
+                None => {
+                    let projects = activity.sidebar(limit as usize, all)?;
+                    if cli.json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "projects": projects
+                            }))?
+                        );
+                    } else {
+                        for project in projects {
+                            println!("{}  {}", project.name, project.root);
+                            for thread in project.threads {
+                                println!(
+                                    "  {}  {}  {}  {}",
+                                    thread_mark(thread.status),
+                                    &thread.id[..8],
+                                    thread.title,
+                                    thread.status
+                                );
+                            }
+                        }
+                    }
+                }
+                Some(ThreadCommand::Show { id }) => {
+                    let thread = activity
+                        .thread(&id)?
+                        .with_context(|| format!("no thread {id}"))?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&thread)?);
+                    } else {
+                        println!("{}  ({})", thread.thread.title, thread.thread.status);
+                        for seat in &thread.seats {
+                            println!(
+                                "  seat {} {}{}  {}",
+                                seat.ordinal,
+                                seat.role,
+                                if seat.read_only { " (read-only)" } else { "" },
+                                seat.model.as_deref().unwrap_or("choosing")
+                            );
+                        }
+                        for item in &thread.items {
+                            let text = item.text.lines().next().unwrap_or("");
+                            println!("  {:<14} {}", item.kind, crate::context::bounded(text, 100));
+                        }
+                        for file in &thread.files {
+                            println!("  {} +{} -{}", file.path, file.added, file.removed);
+                        }
+                    }
+                }
+                Some(ThreadCommand::Delete { id, all }) => {
+                    if all {
+                        for project in activity.sidebar(usize::MAX, true)? {
+                            for thread in project.threads {
+                                activity.delete_thread(&thread.id)?;
+                            }
+                        }
+                    } else {
+                        ensure!(activity.delete_thread(&id)?, "no thread {id}");
+                    }
+                }
+            }
+        }
         Some(Command::CollaborateResume { output, apply }) => {
             let report = crate::collaboration::resume(
                 &config,
@@ -924,7 +1022,44 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             let repo = store.repository_id(&root)?;
             let _lock = workspace_lock(&paths.data, &repo, shared)?;
             let policies = Registry::load(&paths.data)?;
-            return scheduler::run(
+            let overrides = Overrides {
+                agent: cli.agent,
+                model: cli.model,
+                reasoning: cli.reasoning,
+                mode: cli.mode,
+            };
+            let permission = cli.permission.unwrap_or(match config.scheduler.permission {
+                PermissionMode::Ask => PermissionMode::Allow,
+                chosen => chosen,
+            });
+            // A one-shot run is a thread of one turn, so it appears beside conversations in a
+            // client rather than being invisible to it. A dry run decides nothing and records
+            // nothing.
+            let recorded = (config.activity.enabled && !cli.dry_run)
+                .then(|| -> Result<_> {
+                    let activity = crate::activity::Activity::open(
+                        &paths.data,
+                        config.activity.retention_days,
+                    )?;
+                    let (seat, host) = activity.start_turn(
+                        &root,
+                        &store.salt()?,
+                        &repo,
+                        crate::activity::Origin::Run,
+                        &task,
+                        &[],
+                        &overrides,
+                        permission.key(),
+                        "implementer",
+                    )?;
+                    Ok((activity, seat, host))
+                })
+                .transpose()
+                .unwrap_or_else(|error| {
+                    tracing::debug!(%error, "run not recorded");
+                    None
+                });
+            let code = scheduler::run(
                 &config,
                 &policies,
                 &store,
@@ -932,33 +1067,50 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 RunOptions {
                     task,
                     descriptor: None,
-                    overrides: Overrides {
-                        agent: cli.agent,
-                        model: cli.model,
-                        reasoning: cli.reasoning,
-                        mode: cli.mode,
-                    },
+                    overrides,
                     dry_run: cli.dry_run,
                     json: cli.json,
                     resume: cli.resume,
                     // The chat answers permission requests itself unless asked to stop and
                     // ask; Shift-Tab and /confirm change it while it runs.
-                    permission: cli.permission.unwrap_or(match config.scheduler.permission {
-                        PermissionMode::Ask => PermissionMode::Allow,
-                        chosen => chosen,
-                    }),
+                    permission,
                     interactive: false,
                     attachments: vec![],
                     peer: None,
                     verify: true,
                     read_only: false,
                     place: None,
+                    seat: recorded.as_ref().map(|(_, seat, _)| seat.clone()),
                 },
             )
             .await;
+            if let Some((activity, seat, host)) = &recorded {
+                let state = match &code {
+                    Ok(0) => crate::activity::TurnState::Completed,
+                    Ok(130) => crate::activity::TurnState::Interrupted,
+                    _ => crate::activity::TurnState::Failed,
+                };
+                if let Err(error) = activity.end_turn(seat, host, state) {
+                    tracing::debug!(%error, "turn not closed");
+                }
+            }
+            return code;
         }
     }
     Ok(0)
+}
+
+/// The sidebar's status marks, as `docs/desktop-app-design.md` §6.2 lists them.
+fn thread_mark(status: &str) -> &'static str {
+    match status {
+        "needs_you" => "!",
+        "working" => "◉",
+        "queued" => "⋯",
+        "interrupted" => "⏸",
+        "failed" => "×",
+        "unread" => "●",
+        _ => "○",
+    }
 }
 
 fn check_overrides(

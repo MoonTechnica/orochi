@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod activity;
 pub mod agents;
 pub mod benchmark;
 pub mod chat;

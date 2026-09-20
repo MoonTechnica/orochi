@@ -837,7 +837,7 @@ async fn execute(
     }
     let mut consume = |event: ExecutionEvent| -> Result<()> {
         match event {
-            ExecutionEvent::Text(text) => {
+            ExecutionEvent::Text(text, _) => {
                 ensure!(
                     session.response.len() + text.len() <= 65536,
                     "participant response exceeds 64 KiB"

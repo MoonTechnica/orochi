@@ -222,10 +222,10 @@ impl Session {
 
 fn collect(event: ExecutionEvent, reply: &mut String) {
     match event {
-        ExecutionEvent::Text(chunk) if reply.len() + chunk.len() <= MAX_REPLY => {
+        ExecutionEvent::Text(chunk, _) if reply.len() + chunk.len() <= MAX_REPLY => {
             reply.push_str(&chunk)
         }
-        ExecutionEvent::Text(_) | ExecutionEvent::Finished | ExecutionEvent::Progress(_) => {}
+        ExecutionEvent::Text(..) | ExecutionEvent::Finished | ExecutionEvent::Progress(_) => {}
         ExecutionEvent::Permission(_, answer) => {
             let _ = answer.send(None);
         }

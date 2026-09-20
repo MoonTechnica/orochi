@@ -211,6 +211,9 @@ pub struct RunOptions {
     pub read_only: bool,
     /// Where this run chooses among the seats of one turn; it waits for the seats before it.
     pub place: Option<crate::mailbox::Place>,
+    /// The seat this run fills in the conversation store. `None` records nothing, which is
+    /// what an adviser, a classifier and `activity.enabled = false` all are.
+    pub seat: Option<crate::activity::SeatRef>,
 }
 #[derive(Debug, Serialize)]
 pub struct RoutePlan {
@@ -257,9 +260,68 @@ pub async fn run_turn(
     policies: &Registry,
     store: &Store,
     root: &Path,
+    options: RunOptions,
+    events: Option<crate::acp::EventSink>,
+    continuation: &mut Option<Continuation>,
+) -> Result<u8> {
+    // With a seat to fill, everything this run emits passes through the store on its way to
+    // the caller. Without one nothing is written, which is what an adviser, a classifier and
+    // `activity.enabled = false` all are.
+    let tee = options
+        .seat
+        .clone()
+        .filter(|_| config.activity.enabled)
+        .and_then(|seat| {
+            match crate::activity::Activity::open(store.data_dir(), config.activity.retention_days)
+            {
+                Ok(activity) => Some(crate::activity::recorder::Tee::start(
+                    activity,
+                    crate::activity::recorder::Seat::from(&seat),
+                    config.activity.thinking,
+                    events.clone(),
+                    // Nothing is listening: this run's reply belongs on stdout, as it did
+                    // before the store sat in the path.
+                    events.is_none(),
+                )),
+                Err(error) => {
+                    tracing::debug!(%error, "activity store unavailable; not recording");
+                    None
+                }
+            }
+        });
+    let downstream = match &tee {
+        Some(tee) => Some(tee.sink()),
+        None => events,
+    };
+    let result = run_recorded(
+        config,
+        policies,
+        store,
+        root,
+        options,
+        downstream,
+        continuation,
+        tee.as_ref(),
+    )
+    .await;
+    // A turn is not over until its last row is written, or a client reading the store would
+    // see a conversation that stops mid-sentence.
+    if let Some(tee) = tee {
+        tee.finish().await;
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_recorded(
+    config: &Config,
+    policies: &Registry,
+    store: &Store,
+    root: &Path,
     mut options: RunOptions,
     events: Option<crate::acp::EventSink>,
     continuation: &mut Option<Continuation>,
+    tee: Option<&crate::activity::recorder::Tee>,
 ) -> Result<u8> {
     ensure!(!options.task.trim().is_empty(), "task must not be empty");
     ensure!(
@@ -584,17 +646,58 @@ pub async fn run_turn(
                 .reasons
                 .push("continues the recorded session".into());
         }
+        // One attempt per pass of this loop, opened before the route is reported so that the
+        // report is filed under the attempt it describes. A failover is the next attempt in
+        // the same seat, not a second turn.
+        let recorded_attempt = match (tee, &options.seat) {
+            (Some(tee), Some(seat)) => {
+                let considered: Vec<_> = ranked
+                    .iter()
+                    .take(5)
+                    .map(|c| {
+                        serde_json::json!({"agent": c.agent, "model": c.model,
+                            "reasoning": c.reasoning_level, "cost": c.expected_cost,
+                            "success": c.success_probability, "reasons": c.reasons})
+                    })
+                    .collect();
+                let opened = crate::activity::Activity::open(
+                    store.data_dir(),
+                    config.activity.retention_days,
+                )
+                .and_then(|activity| {
+                    let id = activity.create_attempt(
+                        &seat.seat,
+                        &candidate,
+                        resume.is_some(),
+                        Some(&serde_json::json!(considered).to_string()),
+                    )?;
+                    Ok(id)
+                });
+                match opened {
+                    Ok(id) => {
+                        tee.attempt(Some(id.clone()));
+                        Some(id)
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "attempt not recorded");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
         if loud {
             print_route(&candidate);
-        } else {
-            report(Progress::Route {
-                agent: candidate.agent.clone(),
-                provider: candidate.provider,
-                model: candidate.model.clone(),
-                reasoning: candidate.reasoning_level.clone(),
-                resumed: resume.is_some(),
-            });
         }
+        // Reported whether or not a terminal printed it: which agent took the work is part of
+        // the record, and a one-shot run has no console listening to tell it.
+        report(Progress::Route {
+            agent: candidate.agent.clone(),
+            provider: candidate.provider,
+            model: candidate.model.clone(),
+            reasoning: candidate.reasoning_level.clone(),
+            resumed: resume.is_some(),
+        });
         if options.read_only
             && let Some(mode) = clients[index]
                 .capabilities
@@ -726,6 +829,30 @@ pub async fn run_turn(
             "execution",
         );
         store.record(&record)?;
+        // The one-way link between the two files, plus the labels and numbers a thread's UI
+        // needs, so reading a conversation never has to open the telemetry file.
+        if let Some(attempt) = &recorded_attempt
+            && let Err(error) =
+                crate::activity::Activity::open(store.data_dir(), config.activity.retention_days)
+                    .and_then(|activity| {
+                        activity.attempt_finished(
+                            attempt,
+                            Some(&record.id),
+                            Some(match record.outcome {
+                                Outcome::Success => "success",
+                                Outcome::PartialSuccess => "partial_success",
+                                Outcome::Failure => "failure",
+                                Outcome::Cancelled => "cancelled",
+                            }),
+                            record.error_kind.as_deref(),
+                            result.as_ref().err().map(|e| e.to_string()).as_deref(),
+                            Some(&serde_json::to_string(&checks)?),
+                            Some(&record.usage),
+                        )
+                    })
+        {
+            tracing::debug!(%error, "attempt outcome not recorded");
+        }
         let session = SessionRecord {
             session_id,
             repository_id: repository_id.clone(),

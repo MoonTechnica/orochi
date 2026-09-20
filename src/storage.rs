@@ -7,6 +7,28 @@ use std::{collections::BTreeMap, fs::File, path::Path, time::Duration};
 /// would outlive the model that produced it.
 const CLASSIFICATION_TTL: i64 = 30 * 24 * 3600;
 
+/// Additive changes an older binary survives: virtual generated columns over `record` and the
+/// indexes on them. They take no space, `INSERT INTO runs VALUES (…)` without a column list
+/// does not count them, and the JSON stays the source of truth — so `user_version` must *not*
+/// move for these, or a newer Orochi touching the file would lock the user's older CLI out of
+/// it. `metadata.schema_minor` records them instead.
+const SCHEMA_MINOR: i64 = 1;
+
+/// Columns the learning queries filter on, so the planner has an index to use instead of
+/// evaluating `json_extract` per row.
+const GENERATED: &[(&str, &str)] = &[
+    ("purpose", "$.purpose"),
+    ("language", "$.language"),
+    ("framework", "$.framework"),
+    ("complexity", "$.complexity"),
+    ("provider", "$.candidate.provider"),
+    ("reasoning_level", "$.candidate.reasoning_level"),
+    ("mode", "$.candidate.mode"),
+    ("outcome", "$.outcome"),
+    ("error_kind", "$.error_kind"),
+    ("feedback_signal", "$.feedback.signal"),
+];
+
 /// Schema setup and the WAL switch can report BUSY without waiting when several Orochi
 /// processes open a fresh database at once; retry them briefly.
 pub(crate) fn setup(connection: &Connection, sql: &str) -> Result<()> {
@@ -30,6 +52,45 @@ pub(crate) fn setup(connection: &Connection, sql: &str) -> Result<()> {
     }
 }
 
+/// Applies the additive changes of `SCHEMA_MINOR`. An older binary that never ran this still
+/// reads and writes the file; a newer one that finds them already applied does nothing.
+fn minor_migrations(connection: &Connection) -> Result<()> {
+    let applied: i64 = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key='schema_minor'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    if applied >= SCHEMA_MINOR {
+        return Ok(());
+    }
+    // Another process may have applied these between the read and the write, and a column
+    // already there is not an error worth failing an `open` over.
+    let existing: std::collections::BTreeSet<String> = connection
+        .prepare("SELECT name FROM pragma_table_info('runs')")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut sql = String::from("BEGIN IMMEDIATE;");
+    for (column, path) in GENERATED {
+        if !existing.contains(*column) {
+            sql.push_str(&format!(
+                "ALTER TABLE runs ADD COLUMN {column} TEXT GENERATED ALWAYS AS (json_extract(record,'{path}')) VIRTUAL;"
+            ));
+        }
+    }
+    sql.push_str(
+        "CREATE INDEX IF NOT EXISTS runs_learning ON runs(agent, model, task_type, purpose, started_at);
+         CREATE INDEX IF NOT EXISTS runs_tier ON runs(provider, task_type, complexity, started_at);
+         CREATE INDEX IF NOT EXISTS runs_purpose ON runs(purpose, started_at);
+         INSERT INTO metadata VALUES ('schema_minor', '1') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+         COMMIT;",
+    );
+    setup(connection, &sql)
+}
+
 pub struct Store {
     connection: Connection,
     data: std::path::PathBuf,
@@ -42,7 +103,13 @@ impl Store {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(data, std::fs::Permissions::from_mode(0o700))?;
         }
-        let connection = Connection::open(data.join("telemetry.sqlite3"))?;
+        let path = data.join("telemetry.sqlite3");
+        let connection = Connection::open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
         connection.busy_timeout(Duration::from_secs(5))?;
         setup(
             &connection,
@@ -70,6 +137,7 @@ impl Store {
             "INSERT OR IGNORE INTO metadata VALUES ('repository_salt', ?1)",
             [uuid::Uuid::new_v4().to_string()],
         )?;
+        minor_migrations(&connection)?;
         Ok(Self {
             connection,
             data: std::fs::canonicalize(data)?,
@@ -93,7 +161,8 @@ impl Store {
     }
     pub fn record(&self, run: &RunRecord) -> Result<()> {
         self.connection.execute(
-            "INSERT INTO runs VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            "INSERT INTO runs (id, task_id, repository_id, task_type, agent, model, started_at, record)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 run.id,
                 run.task_id,
@@ -147,7 +216,7 @@ impl Store {
     /// this is only about what the question itself costs.
     pub fn advice_cost(&self, purpose: &str, limit: usize) -> Result<BTreeMap<String, f64>> {
         let mut statement = self.connection.prepare(
-            "SELECT record FROM runs WHERE json_extract(record, '$.purpose')=?1
+            "SELECT record FROM runs WHERE purpose=?1
              ORDER BY started_at DESC, rowid DESC LIMIT ?2",
         )?;
         let rows = statement.query_map(params![purpose, limit as i64], |row| {
@@ -226,13 +295,13 @@ impl Store {
     ) -> Result<Vec<RunRecord>> {
         let mut stmt = self.connection.prepare(
             "SELECT record FROM runs WHERE agent=?1 AND model=?2 AND task_type=?3
-            AND json_extract(record, '$.purpose')='execution'
-            AND json_extract(record, '$.language')=?4
-            AND json_extract(record, '$.framework') IS ?5
-            AND json_extract(record, '$.candidate.reasoning_level') IS ?6
-            AND json_extract(record, '$.candidate.mode') IS ?7
-            AND json_extract(record, '$.complexity')=?8
-            AND json_extract(record, '$.candidate.provider')=?9
+            AND purpose='execution'
+            AND language=?4
+            AND framework IS ?5
+            AND reasoning_level IS ?6
+            AND mode IS ?7
+            AND complexity=?8
+            AND provider=?9
             ORDER BY started_at DESC, rowid DESC LIMIT 500",
         )?;
         let rows = stmt.query_map(
@@ -266,11 +335,11 @@ impl Store {
     ) -> Result<Vec<RunRecord>> {
         let mut stmt = self.connection.prepare(
             "SELECT record FROM runs WHERE model!=?1 AND task_type=?2
-            AND json_extract(record, '$.purpose')='execution'
-            AND json_extract(record, '$.candidate.provider')=?3
-            AND json_extract(record, '$.complexity')=?4
-            AND json_extract(record, '$.candidate.reasoning_level') IS ?5
-            AND json_extract(record, '$.candidate.mode') IS ?6
+            AND purpose='execution'
+            AND provider=?3
+            AND complexity=?4
+            AND reasoning_level IS ?5
+            AND mode IS ?6
             ORDER BY started_at DESC, rowid DESC LIMIT 500",
         )?;
         let rows = stmt.query_map(
@@ -302,13 +371,13 @@ impl Store {
     ) -> Result<Vec<RunRecord>> {
         let mut stmt = self.connection.prepare(
             "SELECT record FROM runs WHERE agent=?1 AND model=?2
-            AND json_extract(record, '$.purpose')='execution'
-            AND json_extract(record, '$.candidate.reasoning_level') IS ?3
-            AND json_extract(record, '$.candidate.mode') IS ?4
-            AND json_extract(record, '$.candidate.provider')=?5
-            AND NOT (task_type=?6 AND json_extract(record, '$.language')=?7
-                AND json_extract(record, '$.framework') IS ?8
-                AND json_extract(record, '$.complexity') IS ?9)
+            AND purpose='execution'
+            AND reasoning_level IS ?3
+            AND mode IS ?4
+            AND provider=?5
+            AND NOT (task_type=?6 AND language=?7
+                AND framework IS ?8
+                AND complexity IS ?9)
             ORDER BY started_at DESC, rowid DESC LIMIT 500",
         )?;
         let rows = stmt.query_map(

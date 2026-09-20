@@ -109,6 +109,37 @@ pub fn alive(id: Identity) -> bool {
     identity(id.pid) == Some(id)
 }
 
+/// This process as an owner records itself: a pid plus the start time that tells a reused pid
+/// apart. Stored by the mailbox for a peer and by the activity store for a host.
+pub fn owner_identity() -> anyhow::Result<(i64, i64)> {
+    #[cfg(unix)]
+    {
+        use anyhow::Context;
+        let me = identity(std::process::id() as i32).context("cannot identify this process")?;
+        Ok((i64::from(me.pid), me.start as i64))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok((i64::from(std::process::id()), 0))
+    }
+}
+
+/// Whether the process that recorded `(pid, start)` is still the one running under that pid.
+pub fn owner_alive(pid: i64, start: i64) -> bool {
+    #[cfg(unix)]
+    {
+        alive(Identity {
+            pid: pid as i32,
+            start: start as u64,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, start);
+        true
+    }
+}
+
 fn snapshot() -> Vec<Proc> {
     pids().into_iter().filter_map(info).collect()
 }

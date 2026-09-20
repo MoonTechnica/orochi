@@ -1764,3 +1764,231 @@ fn an_interruption_is_judged_by_what_the_user_does_next() {
     );
     assert_eq!(orochi::learning::label(&rerouted[0]), Some((false, 0.3)));
 }
+
+/// A one-shot run is a thread of one turn, recorded where a desktop client can read it.
+/// This is the whole premise of `docs/desktop-app-design.md`: the app renders views over
+/// SQLite, so anything a screen shows has to reach the store from an ordinary run.
+#[test]
+fn a_run_records_the_conversation_a_desktop_client_reads() {
+    let workspace = Workspace::new();
+    success(&workspace.run(&["Add a helper to src/lib.rs"]));
+
+    let data = workspace.dir.path().join("data");
+    let connection = orochi::activity::Activity::open_read_only(&data).unwrap();
+
+    let (project, title, origin, cwd): (String, String, String, String) = connection
+        .query_row(
+            "SELECT project, title, origin, cwd FROM v_sidebar",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("a run leaves a thread in the sidebar");
+    assert_eq!(project, "repo", "the project is the repository it ran in");
+    assert_eq!(title, "Add a helper to src/lib.rs");
+    assert_eq!(origin, "run");
+    assert!(cwd.ends_with("repo"));
+
+    let (state, shape): (String, Option<String>) = connection
+        .query_row("SELECT state, shape FROM turns", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(state, "completed");
+    assert_eq!(shape.as_deref(), Some("solo"));
+
+    let (role, agent, model, run_id): (String, String, String, Option<String>) = connection
+        .query_row("SELECT role, agent, model, run_id FROM v_roster", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .expect("the seat that did the work, with the route it took");
+    assert_eq!(role, "implementer");
+    assert_eq!(agent, "test");
+    assert!(!model.is_empty());
+
+    // The one-way link: an attempt names its telemetry run, and telemetry names no thread.
+    let recorded = workspace.store().recent_runs(10).unwrap();
+    assert_eq!(
+        run_id.as_deref(),
+        Some(recorded[0].id.as_str()),
+        "the attempt points at the run it recorded"
+    );
+
+    let kinds: Vec<String> = connection
+        .prepare("SELECT kind FROM v_timeline ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        kinds.first().map(String::as_str),
+        Some("user_message"),
+        "the timeline opens with what was asked: {kinds:?}"
+    );
+    assert!(
+        kinds.iter().any(|k| k == "route"),
+        "and says which agent took it: {kinds:?}"
+    );
+    assert!(
+        kinds.iter().any(|k| k == "agent_message"),
+        "and holds the reply: {kinds:?}"
+    );
+}
+
+/// §3 of the design: the narrowing is real in both directions. Content lives in
+/// `activity.sqlite3` and nowhere else, and switching it off restores the behavior Orochi
+/// had before the store existed.
+#[test]
+fn task_text_reaches_the_activity_store_and_never_telemetry() {
+    let secret = "reticulate the splines in src/lib.rs";
+
+    let workspace = Workspace::new();
+    success(&workspace.run(&[secret]));
+    let data = workspace.dir.path().join("data");
+    let holds = |file: &str| -> bool {
+        let raw = std::fs::read(data.join(file)).unwrap_or_default();
+        raw.windows(secret.len()).any(|w| w == secret.as_bytes())
+    };
+    assert!(
+        holds("activity.sqlite3") || holds("activity.sqlite3-wal"),
+        "the conversation is what the activity store is for"
+    );
+    assert!(
+        !holds("telemetry.sqlite3") && !holds("telemetry.sqlite3-wal"),
+        "telemetry stays free of content, as it always has"
+    );
+
+    let mut off = Workspace::new();
+    off.config.activity.enabled = false;
+    success(&off.run(&[secret]));
+    let data = off.dir.path().join("data");
+    for entry in std::fs::read_dir(&data).unwrap().flatten() {
+        if entry.path().is_dir() {
+            continue;
+        }
+        let raw = std::fs::read(entry.path()).unwrap_or_default();
+        assert!(
+            !raw.windows(secret.len()).any(|w| w == secret.as_bytes()),
+            "activity.enabled = false keeps nothing: {} holds the task text",
+            entry.path().display()
+        );
+    }
+    assert!(
+        !data.join("activity.sqlite3").exists(),
+        "and creates no store at all"
+    );
+}
+
+/// `orochi threads` reads the same views the app does. It is how P0 is tested without a GUI,
+/// and the check that keeps "the app is a view over SQLite" honest: a screen that cannot be
+/// produced here means a view is missing something.
+#[test]
+fn threads_shows_from_the_terminal_what_a_client_would_render() {
+    let workspace = Workspace::new();
+    success(&workspace.run(&["Add a helper to src/lib.rs"]));
+
+    let listed = workspace.run(&["threads"]);
+    success(&listed);
+    let text = String::from_utf8_lossy(&listed.stdout).into_owned();
+    assert!(
+        text.contains("repo") && text.contains("Add a helper to src/lib.rs"),
+        "the list groups threads under their project: {text}"
+    );
+
+    let json = workspace.run(&["threads", "--json"]);
+    success(&json);
+    let listing: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let thread = &listing["projects"][0]["threads"][0];
+    assert_eq!(listing["projects"][0]["name"], "repo");
+    assert_eq!(thread["title"], "Add a helper to src/lib.rs");
+    assert_eq!(
+        thread["status"], "unread",
+        "a finished run nobody has looked at is unread, not idle"
+    );
+    let id = thread["id"].as_str().unwrap().to_owned();
+
+    let shown = workspace.run(&["threads", "show", &id, "--json"]);
+    success(&shown);
+    let detail: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let kinds: Vec<&str> = detail["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["kind"].as_str().unwrap())
+        .collect();
+    assert!(
+        kinds.contains(&"user_message") && kinds.contains(&"route"),
+        "show renders the timeline: {kinds:?}"
+    );
+    assert_eq!(detail["seats"][0]["role"], "implementer");
+
+    // R4: delete means gone.
+    success(&workspace.run(&["threads", "delete", &id]));
+    let after = workspace.run(&["threads", "--json"]);
+    success(&after);
+    let listing: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(
+        listing["projects"][0]["threads"].as_array().map(Vec::len),
+        Some(0),
+        "the thread is gone, its project remains"
+    );
+}
+
+/// A conversation is one thread whose turns accumulate, and `/new` starts another. This is
+/// what gives a console session a history at all: before the store, `Conversation::turns` was
+/// a bounded queue in RAM that quitting threw away.
+#[test]
+fn a_conversation_is_one_thread_whose_turns_accumulate_until_new() {
+    let workspace = Workspace::new();
+    let output = chat(
+        &workspace,
+        "first question\nsecond question\n/new\nafter the reset\n",
+    );
+    success(&output);
+
+    let activity =
+        orochi::activity::Activity::open(&workspace.dir.path().join("data"), 30).unwrap();
+    let projects = activity.sidebar(20, true).unwrap();
+    assert_eq!(projects.len(), 1, "one repository is one project section");
+    let threads = &projects[0].threads;
+    assert_eq!(threads.len(), 2, "/new starts a second thread");
+
+    // Newest first: the thread `/new` started carries the message that followed it.
+    let newest = activity.thread(&threads[0].id).unwrap().unwrap();
+    let asked: Vec<&str> = newest
+        .items
+        .iter()
+        .filter(|i| i.kind == "user_message")
+        .map(|i| i.text.as_str())
+        .collect();
+    assert_eq!(asked, vec!["after the reset"]);
+
+    let first = activity.thread(&threads[1].id).unwrap().unwrap();
+    let asked: Vec<&str> = first
+        .items
+        .iter()
+        .filter(|i| i.kind == "user_message")
+        .map(|i| i.text.as_str())
+        .collect();
+    assert_eq!(
+        asked,
+        vec!["first question", "second question"],
+        "both turns of one conversation are in one thread"
+    );
+    assert_eq!(
+        first.thread.title, "first question",
+        "titled by its opening"
+    );
+    assert_eq!(first.thread.origin, "console");
+
+    let ordinals: Vec<i64> = first.items.iter().map(|i| i.turn_ordinal).collect();
+    assert!(
+        ordinals.windows(2).all(|w| w[0] <= w[1]),
+        "the timeline is in turn order: {ordinals:?}"
+    );
+    assert!(
+        first.seats.iter().all(|s| s.state == "done"),
+        "every seat of a finished conversation is closed: {:?}",
+        first.seats
+    );
+}

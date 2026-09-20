@@ -117,7 +117,10 @@ struct LegacySetModel {
 struct RawResponse(Value);
 
 pub enum ExecutionEvent {
-    Text(String),
+    /// A chunk of the agent's reply, and the `messageId` the chunk belongs to when the agent
+    /// sends one — what tells two interleaved messages apart in a stored timeline. Without
+    /// one, a reader treats a contiguous run of chunks as one message.
+    Text(String, Option<String>),
     Permission(Value, oneshot::Sender<Option<String>>),
     /// The prompt turn ended; no further text follows for it.
     Finished,
@@ -130,7 +133,9 @@ pub enum Progress {
     /// A chunk of the agent's reasoning text.
     Thinking(String),
     /// A tool call started or changed. Fields absent from an update stay `None`/empty.
-    Tool(ToolUpdate),
+    /// Boxed: it is by far the largest thing a progress event carries, and every other
+    /// variant would otherwise pay for it.
+    Tool(Box<ToolUpdate>),
     /// Plan entries as (status, content).
     Plan(Vec<(String, String)>),
     Route {
@@ -154,6 +159,21 @@ pub enum Progress {
         error: Option<String>,
         usage: Usage,
     },
+    /// The agent's own session mode changed (`current_mode_update`), by its doing or ours.
+    Mode(String),
+    /// `usage_update`: how much of the model's context this session is holding.
+    Context {
+        used: u64,
+        size: Option<u64>,
+    },
+    /// `available_commands_update`: the agent's own slash commands, as (name, description).
+    Commands(Vec<(String, String)>),
+    /// `session_info_update`: a title the agent offers for the conversation. Orochi never
+    /// asks for one, so this is a title that costs nothing.
+    Info(String),
+    /// An update kind this version does not know, kept as received so that a conversation
+    /// recorded today still renders when the protocol grows a kind tomorrow.
+    Other(Value),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -166,6 +186,16 @@ pub struct ToolUpdate {
     /// Text output lines.
     pub output: Option<String>,
     pub diffs: Vec<FileDiff>,
+    /// ACP's own classification: read, edit, delete, move, search, execute, think, fetch,
+    /// switch_mode, other. It is what a permission decision already turns on, and what lets a
+    /// stored timeline group a turn's work without re-reading the title.
+    pub kind: Option<String>,
+    /// Files the call touched, as (path, line).
+    pub locations: Vec<(String, Option<u64>)>,
+    /// The call's arguments and result as the agent sent them, for a detail pane. Bounded
+    /// where they are stored, not here.
+    pub raw_input: Option<Value>,
+    pub raw_output: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,6 +242,15 @@ pub(crate) fn tool_update(update: &Value) -> Option<ToolUpdate> {
         title: text("title"),
         status: text("status"),
         detail: tool_detail(update),
+        kind: text("kind"),
+        locations: update["locations"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|l| Some((l["path"].as_str()?.to_owned(), l["line"].as_u64())))
+            .collect(),
+        raw_input: update.get("rawInput").filter(|v| !v.is_null()).cloned(),
+        raw_output: update.get("rawOutput").filter(|v| !v.is_null()).cloned(),
         ..Default::default()
     };
     let mut lines = Vec::new();
@@ -246,7 +285,9 @@ fn progress(update: &Value) -> Option<Progress> {
                 .unwrap_or_default()
                 .to_owned(),
         )),
-        "tool_call" | "tool_call_update" => tool_update(update).map(Progress::Tool),
+        "tool_call" | "tool_call_update" => {
+            tool_update(update).map(|t| Progress::Tool(Box::new(t)))
+        }
         "plan" => Some(Progress::Plan(
             update["entries"]
                 .as_array()?
@@ -254,7 +295,28 @@ fn progress(update: &Value) -> Option<Progress> {
                 .filter_map(|e| Some((e["status"].as_str()?.into(), e["content"].as_str()?.into())))
                 .collect(),
         )),
-        _ => None,
+        "current_mode_update" => Some(Progress::Mode(update["currentModeId"].as_str()?.into())),
+        "usage_update" => Some(Progress::Context {
+            used: update["used"].as_u64()?,
+            size: update["size"].as_u64(),
+        }),
+        "available_commands_update" => Some(Progress::Commands(
+            update["availableCommands"]
+                .as_array()?
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        c["name"].as_str()?.to_owned(),
+                        c["description"].as_str().unwrap_or_default().to_owned(),
+                    ))
+                })
+                .collect(),
+        )),
+        "session_info_update" => Some(Progress::Info(update["title"].as_str()?.into())),
+        // Chunks and `config_option_update` are handled by the caller, which has the state
+        // they change; anything else is kept verbatim rather than dropped.
+        "agent_message_chunk" | "user_message_chunk" | "config_option_update" => None,
+        _ => Some(Progress::Other(update.clone())),
     }
 }
 
@@ -439,7 +501,10 @@ impl Client {
                             && let Some(text) = update["content"]["text"].as_str()
                         {
                             if let Some(events) = &notification_events {
-                                let _ = events.send(ExecutionEvent::Text(text.to_owned()));
+                                let _ = events.send(ExecutionEvent::Text(
+                                    text.to_owned(),
+                                    update["messageId"].as_str().map(str::to_owned),
+                                ));
                             } else {
                                 print!("{}", text.replace('\u{1b}', "\\x1b"));
                                 let _ = std::io::stdout().flush();

@@ -310,6 +310,85 @@ struct Session<'a> {
     approval: Approval,
     twice: Twice,
     quit: bool,
+    /// Where this conversation is written down, when `activity.enabled`.
+    recorded: Option<Recorded>,
+}
+
+/// The conversation store for one console session. The thread is opened by the first message
+/// rather than at startup, so a session that asks nothing leaves nothing behind, and `/new`
+/// closes the old one so the next message opens another.
+struct Recorded {
+    activity: crate::activity::Activity,
+    repository_id: String,
+    thread: Option<String>,
+    host: Option<String>,
+    turn: Option<String>,
+}
+
+impl Recorded {
+    fn open(config: &Config, store: &Store, root: &Path) -> Option<Self> {
+        if !config.activity.enabled {
+            return None;
+        }
+        match (|| -> Result<Self> {
+            let activity =
+                crate::activity::Activity::open(store.data_dir(), config.activity.retention_days)?;
+            Ok(Self {
+                repository_id: store.repository_id(root)?,
+                activity,
+                thread: None,
+                host: None,
+                turn: None,
+            })
+        })() {
+            Ok(recorded) => Some(recorded),
+            Err(error) => {
+                tracing::debug!(%error, "conversation not recorded");
+                None
+            }
+        }
+    }
+
+    fn thread(&mut self, session: &SessionContext<'_>) -> Result<String> {
+        if let Some(thread) = &self.thread {
+            return Ok(thread.clone());
+        }
+        let project = self
+            .activity
+            .project_for(session.root, &session.store.salt()?)?;
+        let branch = crate::context::git(session.root, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|b| b.trim().to_owned())
+            .filter(|b| !b.is_empty() && b != "HEAD");
+        let thread = self.activity.create_thread(
+            &project,
+            session.root,
+            branch.as_deref(),
+            &self.repository_id,
+            crate::activity::Origin::Console,
+            session.overrides,
+            session.permission,
+        )?;
+        self.host = self.activity.register_host(Some(&thread), "terminal").ok();
+        self.thread = Some(thread.clone());
+        Ok(thread)
+    }
+
+    /// `/new`: the next message opens a thread of its own.
+    fn reset(&mut self) {
+        if let Some(host) = self.host.take() {
+            let _ = self.activity.unregister_host(&host);
+        }
+        self.thread = None;
+        self.turn = None;
+    }
+}
+
+/// What `Recorded::thread` needs from the session without borrowing all of it.
+struct SessionContext<'a> {
+    root: &'a Path,
+    store: &'a Store,
+    overrides: &'a Overrides,
+    permission: &'a str,
 }
 
 pub async fn run(
@@ -353,6 +432,7 @@ pub async fn run(
         approval,
         twice: Twice::default(),
         quit: false,
+        recorded: Recorded::open(config, store, root),
     };
     if tty {
         session.view.welcome(config, data, root, &session.feed);
@@ -473,6 +553,9 @@ impl Session<'_> {
                 // Moving on to something else says nothing about the last answer.
                 self.awaiting = None;
                 self.conversation = Conversation::default();
+                if let Some(recorded) = &mut self.recorded {
+                    recorded.reset();
+                }
                 self.view.last_route = None;
                 self.approval.modes.clear();
                 self.approval.mode = None;
@@ -565,6 +648,9 @@ impl Session<'_> {
                     resume: Some(session.session_id.clone()),
                     ..Default::default()
                 };
+                if let Some(recorded) = &mut self.recorded {
+                    recorded.reset();
+                }
                 self.view.last_route = None;
                 self.view.note(&format!(
                     "The next message continues {} / {}",
@@ -981,20 +1067,120 @@ impl Session<'_> {
             return Ok(());
         };
         let steps = self.steps(&message, &task);
-        if !steps.is_empty() {
-            return self.run_team(message, steps, &task).await;
-        }
-        let pinned = self.conversation.current.is_some();
-        let result = self.execute(message, None, Some(task)).await;
-        match &result {
-            Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
-            Ok((code, _)) if *code != 0 && *code != 130 && pinned => self
-                .view
-                .note("/reroute picks another agent and keeps this conversation"),
-            Ok(_) => {}
-        }
+        // One user message is one turn, whatever it takes to answer: the phases and seats
+        // below are places at that turn's table, not turns of their own.
+        self.open_turn(&message, &task, &steps);
+        let result = if steps.is_empty() {
+            let pinned = self.conversation.current.is_some();
+            let result = self.execute(message, None, Some(task)).await;
+            match &result {
+                Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
+                Ok((code, _)) if *code != 0 && *code != 130 && pinned => self
+                    .view
+                    .note("/reroute picks another agent and keeps this conversation"),
+                Ok(_) => {}
+            }
+            result.map(|(code, _)| code)
+        } else {
+            self.run_team(message, steps, &task).await.map(|()| 0)
+        };
+        self.close_turn(match &result {
+            Ok(0) => crate::activity::TurnState::Completed,
+            Ok(130) => crate::activity::TurnState::Interrupted,
+            _ => crate::activity::TurnState::Failed,
+        });
         self.refresh_status(None);
-        Ok(())
+        result.map(|_| ())
+    }
+
+    /// Opens the conversation's thread if this is its first message, then the turn this
+    /// message is. Failing to record never stops a turn from running.
+    fn open_turn(&mut self, message: &Message, task: &TaskDescriptor, steps: &[usize]) {
+        let context = SessionContext {
+            root: self.root,
+            store: self.store,
+            overrides: &self.options.overrides,
+            permission: self.approval.confirm.key(),
+        };
+        let steps_asked = match message.steps {
+            Steps::Team => "team",
+            Steps::Solo => "solo",
+            Steps::Auto => "auto",
+        };
+        let Some(recorded) = &mut self.recorded else {
+            return;
+        };
+        let opened = (|| -> Result<()> {
+            let thread = recorded.thread(&context)?;
+            let turn = recorded.activity.queue_turn(
+                &thread,
+                &message.text,
+                &message.attachments,
+                steps_asked,
+                "terminal",
+            )?;
+            if let Some(host) = &recorded.host {
+                recorded.activity.claim_turn(&turn, host)?;
+            }
+            recorded.activity.turn_shape(
+                &turn,
+                (!steps.is_empty()).then_some("phases"),
+                serde_json::to_string(task).ok().as_deref(),
+            )?;
+            recorded.turn = Some(turn);
+            Ok(())
+        })();
+        if let Err(error) = opened {
+            tracing::debug!(%error, "turn not recorded");
+            recorded.turn = None;
+        }
+    }
+
+    /// A seat row per place at this turn's table: the lead first, then the read-only seats
+    /// beside it, in the order they take their places in the mailbox.
+    fn seat_rows(
+        &mut self,
+        lead: &str,
+        phase: Option<&str>,
+        lead_read_only: bool,
+        beside: &[Role],
+        shape: &str,
+    ) -> Vec<Option<crate::activity::SeatRef>> {
+        let mut rows = vec![None; 1 + beside.len()];
+        let Some(recorded) = &mut self.recorded else {
+            return rows;
+        };
+        let (Some(thread), Some(turn)) = (recorded.thread.clone(), recorded.turn.clone()) else {
+            return rows;
+        };
+        let _ = recorded.activity.turn_shape(&turn, Some(shape), None);
+        let seat = |ordinal: usize, role: &str, is_lead: bool, read_only: bool| {
+            recorded
+                .activity
+                .create_seat(&turn, ordinal, role, is_lead, read_only, phase, None)
+                .ok()
+                .map(|seat| crate::activity::SeatRef {
+                    thread: thread.clone(),
+                    turn: turn.clone(),
+                    seat,
+                })
+        };
+        rows[0] = seat(0, lead, true, lead_read_only);
+        for (index, role) in beside.iter().enumerate() {
+            rows[index + 1] = seat(index + 1, role.name, false, true);
+        }
+        rows
+    }
+
+    fn close_turn(&mut self, state: crate::activity::TurnState) {
+        let Some(recorded) = &mut self.recorded else {
+            return;
+        };
+        if let Some(turn) = recorded.turn.take()
+            && let Err(error) = recorded.activity.turn_state(&turn, state)
+        {
+            tracing::debug!(%error, "turn not closed");
+        }
     }
 
     /// Lists what is remembered, with the ids `forget` takes. For looking, not for using:
@@ -1633,6 +1819,21 @@ impl Session<'_> {
                 names.join(", ")
             ));
         }
+        // Each seat of this turn is a row, so a client can show who is at the table, and the
+        // read-only seats' work stays on their own lanes rather than in the transcript.
+        let recorded_seats = self.seat_rows(
+            lead,
+            phase.map(|p| p.name),
+            !seats[0].writes,
+            &beside,
+            if !beside.is_empty() {
+                "seats"
+            } else if profile.task_type == "discussion" {
+                "discussion"
+            } else {
+                "solo"
+            },
+        );
         let mut asides: Vec<(&'static str, mpsc::UnboundedReceiver<ExecutionEvent>)> = Vec::new();
         let mut aside_slots: Vec<Option<Continuation>> = Vec::new();
         let mut aside_runs = Vec::new();
@@ -1688,6 +1889,7 @@ impl Session<'_> {
                     // A discussion changes nothing in the repository; only the talking matters.
                     read_only: !seats[0].writes,
                     place: Some(order.place(0)),
+                    seat: recorded_seats[0].clone(),
                 },
                 Some(events),
                 &mut continuation,
@@ -1698,32 +1900,36 @@ impl Session<'_> {
                 .into_iter()
                 .zip(aside_slots.iter_mut())
                 .enumerate()
-                .map(|(index, ((role, task, sender), slot))| async move {
-                    let _ = scheduler::run_turn(
-                        config,
-                        rules,
-                        store,
-                        root,
-                        RunOptions {
-                            task,
-                            descriptor: None,
-                            overrides: Overrides::default(),
-                            dry_run: false,
-                            json: false,
-                            resume: None,
-                            permission: PermissionMode::Allow,
-                            interactive: true,
-                            attachments: vec![],
-                            peer: Some(role.name.to_owned()),
-                            verify: false,
-                            read_only: true,
-                            place: Some(order.place(index + 1)),
-                        },
-                        Some(sender),
-                        slot,
-                    )
-                    .await;
-                    role.name
+                .map(|(index, ((role, task, sender), slot))| {
+                    let aside_seat = recorded_seats.get(index + 1).cloned().flatten();
+                    async move {
+                        let _ = scheduler::run_turn(
+                            config,
+                            rules,
+                            store,
+                            root,
+                            RunOptions {
+                                task,
+                                descriptor: None,
+                                overrides: Overrides::default(),
+                                dry_run: false,
+                                json: false,
+                                resume: None,
+                                permission: PermissionMode::Allow,
+                                interactive: true,
+                                attachments: vec![],
+                                peer: Some(role.name.to_owned()),
+                                verify: false,
+                                read_only: true,
+                                place: Some(order.place(index + 1)),
+                                seat: aside_seat,
+                            },
+                            Some(sender),
+                            slot,
+                        )
+                        .await;
+                        role.name
+                    }
                 })
                 .collect();
             let interrupt = tokio::signal::ctrl_c();
@@ -2045,7 +2251,7 @@ fn handle(
     withhold: &mut Withhold,
 ) {
     match event {
-        ExecutionEvent::Text(text) => {
+        ExecutionEvent::Text(text, _) => {
             if reply.len() < AGENT_CHARS * 4 {
                 reply.push_str(&text);
             }
@@ -3081,7 +3287,7 @@ impl<'v> Screen<'v> {
     fn progress(&mut self, progress: Progress) {
         match progress {
             Progress::Thinking(text) => self.thinking(&text),
-            Progress::Tool(update) => self.tool(update),
+            Progress::Tool(update) => self.tool(*update),
             Progress::Plan(entries) => self.show_plan(entries),
             Progress::Route {
                 agent,
@@ -3120,6 +3326,14 @@ impl<'v> Screen<'v> {
                 }
             }
             Progress::Checking => self.phase = "Running checks".into(),
+            // The console shows the agent's own mode on its status row and has no room for a
+            // context gauge, a command list or a title it did not ask for; they are recorded
+            // for a client that does have room.
+            Progress::Mode(_)
+            | Progress::Context { .. }
+            | Progress::Commands(_)
+            | Progress::Info(_)
+            | Progress::Other(_) => {}
             Progress::Attempt {
                 outcome,
                 checks,

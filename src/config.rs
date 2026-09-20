@@ -21,6 +21,7 @@ pub struct Config {
     pub council: CouncilConfig,
     pub quota: QuotaConfig,
     pub mailbox: MailboxConfig,
+    pub activity: ActivityConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -42,6 +43,7 @@ impl Default for Config {
             council: CouncilConfig::default(),
             quota: QuotaConfig::default(),
             mailbox: MailboxConfig::default(),
+            activity: ActivityConfig::default(),
         }
     }
 }
@@ -89,6 +91,35 @@ pub struct CouncilConfig {
     pub enabled: bool,
     /// Explicit, tool-free OpenAI-compatible advisers. Replies contain candidate IDs only.
     pub members: Vec<RouterConfig>,
+}
+
+/// The conversation store a desktop client reads: what was asked, answered, changed and said
+/// between agents. It is the one place Orochi keeps the user's own text, so it is also the one
+/// place the user can bound or switch off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActivityConfig {
+    /// `false` keeps nothing: no `activity.sqlite3`, the console behaves as it did before one
+    /// existed, and a client sees only telemetry and live peers.
+    pub enabled: bool,
+    /// Threads untouched for this long are deleted, pinned ones excepted. `0` keeps them
+    /// until they are deleted by hand.
+    pub retention_days: i64,
+    /// Reasoning is the bulkiest thing an agent streams and the least often read back.
+    pub thinking: bool,
+    /// A headless host exits after this long with nothing queued; the next message starts
+    /// another.
+    pub host_idle_secs: u64,
+}
+impl Default for ActivityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retention_days: 30,
+            thinking: true,
+            host_idle_secs: 600,
+        }
+    }
 }
 
 /// Messages between agents that separate Orochi processes run in the same repository.
@@ -243,6 +274,15 @@ pub enum PermissionMode {
     Ask,
     Deny,
     Allow,
+}
+impl PermissionMode {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Deny => "deny",
+            Self::Allow => "allow",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,6 +552,14 @@ impl Config {
             (60..=30 * 86_400).contains(&self.mailbox.retention_secs)
                 && (1..=1000).contains(&self.mailbox.max_messages_per_hour),
             "mailbox.retention_secs must be 60..=2592000 and max_messages_per_hour 1..=1000"
+        );
+        ensure!(
+            (0..=3650).contains(&self.activity.retention_days),
+            "activity.retention_days must be 0..=3650 (0 keeps threads until deleted)"
+        );
+        ensure!(
+            (60..=86_400).contains(&self.activity.host_idle_secs),
+            "activity.host_idle_secs must be 60..=86400"
         );
         let mut probes = std::collections::BTreeSet::new();
         for probe in &self.quota.probes {
