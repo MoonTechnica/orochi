@@ -51,31 +51,30 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
+    /// The room lives in the conversation store, so a message can be joined to the seat that
+    /// sent it and survives as long as the thread does. With the store switched off it keeps
+    /// its own file and its own one-day window, exactly as it did before.
     pub fn open(data: &Path, config: &MailboxConfig) -> Result<Self> {
         std::fs::create_dir_all(data)?;
-        let path = data.join("mailbox.sqlite3");
-        let connection = Connection::open(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        connection.busy_timeout(Duration::from_secs(5))?;
-        crate::storage::setup(
-            &connection,
-            "PRAGMA journal_mode=WAL;
-            CREATE TABLE IF NOT EXISTS peers (
-                id TEXT PRIMARY KEY, channel TEXT NOT NULL, name TEXT NOT NULL,
-                worktree TEXT NOT NULL, branch TEXT, route TEXT, status TEXT NOT NULL,
-                owner_pid INTEGER NOT NULL, owner_start INTEGER NOT NULL,
-                started_at INTEGER NOT NULL, last_read INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL,
-                sender TEXT NOT NULL, sender_name TEXT NOT NULL,
-                recipient TEXT NOT NULL, recipient_name TEXT NOT NULL,
-                body TEXT NOT NULL, sent_at INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS messages_channel ON messages(channel, id);",
-        )?;
+        // Attached, never created: whether the room lives in the conversation store is the
+        // store's decision, made by whoever opens it first (`cli::execute`), not the
+        // mailbox's. With `activity.enabled = false` there is no such file and the room keeps
+        // its own, exactly as it did before.
+        let connection = match crate::activity::Activity::attach(data, 0) {
+            Ok(activity) => activity.into_connection(),
+            Err(_) => {
+                let path = data.join("mailbox.sqlite3");
+                let connection = Connection::open(&path)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+                }
+                connection.busy_timeout(Duration::from_secs(5))?;
+                crate::storage::setup(&connection, crate::activity::ROOM_SCHEMA)?;
+                connection
+            }
+        };
         let mailbox = Self {
             connection,
             config: config.clone(),
@@ -86,13 +85,15 @@ impl Mailbox {
 
     /// Drop expired messages and peers whose owning Orochi process is gone.
     fn prune(&self) -> Result<()> {
+        // A message that belongs to a conversation lives as long as that conversation does;
+        // the window is for the ones that belong to none.
         self.connection.execute(
-            "DELETE FROM messages WHERE sent_at < ?1",
+            "DELETE FROM messages WHERE sent_at < ?1 AND thread_id IS NULL",
             [now() - self.config.retention_secs],
         )?;
         let mut stmt = self
             .connection
-            .prepare("SELECT id, owner_pid, owner_start FROM peers")?;
+            .prepare("SELECT id, owner_pid, owner_start FROM peers WHERE left_at IS NULL")?;
         let dead: Vec<String> = stmt
             .query_map([], |r| {
                 Ok((
@@ -106,9 +107,30 @@ impl Mailbox {
             .map(|(id, ..)| id)
             .collect();
         for id in dead {
-            self.connection
-                .execute("DELETE FROM peers WHERE id = ?1", [id])?;
+            self.leave(&id)?;
         }
+        Ok(())
+    }
+
+    /// A peer stops running but keeps its row: the room still has to say who said what, and
+    /// who was there when they said it.
+    fn leave(&self, id: &str) -> Result<()> {
+        if self.connection.execute(
+            "UPDATE peers SET left_at = ?2 WHERE id = ?1 AND left_at IS NULL",
+            params![id, now()],
+        )? == 1
+        {
+            self.event(id, "left", "")?;
+        }
+        Ok(())
+    }
+
+    /// One line in the room: joined, left, or what a peer said it was doing.
+    fn event(&self, peer: &str, kind: &str, text: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO peer_events (peer_id, kind, text, at) VALUES (?1,?2,?3,?4)",
+            params![peer, kind, text, now()],
+        )?;
         Ok(())
     }
 
@@ -165,7 +187,7 @@ impl Mailbox {
             Ok(self
                 .connection
                 .query_row(
-                    "SELECT 1 FROM peers WHERE channel = ?1 AND lower(name) = lower(?2)",
+                    "SELECT 1 FROM peers WHERE project_id = ?1 AND lower(name) = lower(?2) AND left_at IS NULL",
                     params![channel, candidate],
                     |_| Ok(()),
                 )
@@ -183,13 +205,15 @@ impl Mailbox {
         let heard: i64 = self
             .connection
             .query_row(
-                "SELECT COALESCE(MAX(id), 0) FROM messages WHERE channel = ?1",
+                "SELECT COALESCE(MAX(id), 0) FROM messages WHERE project_id = ?1",
                 [channel],
                 |r| r.get(0),
             )
             .unwrap_or(0);
         self.connection.execute(
-            "INSERT INTO peers VALUES (?1,?2,?3,?4,?5,NULL,'',?6,?7,?8,?9)",
+            "INSERT INTO peers (id, project_id, name, worktree, branch, route, status,
+                owner_pid, owner_start, last_read, started_at)
+             VALUES (?1,?2,?3,?4,?5,NULL,'',?6,?7,?9,?8)",
             params![
                 id,
                 channel,
@@ -202,20 +226,20 @@ impl Mailbox {
                 heard
             ],
         )?;
+        self.event(id, "joined", "")?;
         self.peer(id)?.context("peer registration disappeared")
     }
 
     pub fn unregister(&self, id: &str) -> Result<()> {
-        self.connection
-            .execute("DELETE FROM peers WHERE id = ?1", [id])?;
-        Ok(())
+        self.leave(id)
     }
 
     pub fn peer(&self, id: &str) -> Result<Option<Peer>> {
         Ok(self
             .connection
             .query_row(
-                "SELECT id, name, worktree, branch, route, status, started_at FROM peers WHERE id = ?1",
+                "SELECT id, name, worktree, branch, route, status, started_at FROM peers
+                 WHERE id = ?1 AND left_at IS NULL",
                 [id],
                 Self::peer_from_row,
             )
@@ -224,9 +248,11 @@ impl Mailbox {
 
     fn channel_of(&self, id: &str) -> Result<String> {
         self.connection
-            .query_row("SELECT channel FROM peers WHERE id = ?1", [id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT project_id FROM peers WHERE id = ?1 AND left_at IS NULL",
+                [id],
+                |r| r.get(0),
+            )
             .optional()?
             .context("this agent's Orochi run is no longer registered")
     }
@@ -235,7 +261,7 @@ impl Mailbox {
         self.prune()?;
         let mut stmt = self.connection.prepare(
             "SELECT id, name, worktree, branch, route, status, started_at FROM peers
-            WHERE channel = ?1 ORDER BY started_at, name",
+            WHERE project_id = ?1 AND left_at IS NULL ORDER BY started_at, name",
         )?;
         let peers = stmt
             .query_map([channel], Self::peer_from_row)?
@@ -244,11 +270,12 @@ impl Mailbox {
     }
 
     pub fn set_route(&self, id: &str, route: &str) -> Result<()> {
+        let route = crate::context::bounded(route, MAX_STATUS);
         self.connection.execute(
             "UPDATE peers SET route = ?2 WHERE id = ?1",
-            params![id, crate::context::bounded(route, MAX_STATUS)],
+            params![id, route],
         )?;
-        Ok(())
+        self.event(id, "route", &route)
     }
 
     pub fn set_status(&self, id: &str, status: &str) -> Result<()> {
@@ -260,7 +287,7 @@ impl Mailbox {
             "UPDATE peers SET status = ?2 WHERE id = ?1",
             params![id, status.trim()],
         )?;
-        Ok(())
+        self.event(id, "status", status.trim())
     }
 
     /// `to` is a peer name in the same repository, or `all`.
@@ -294,7 +321,7 @@ impl Mailbox {
         };
         let sent_at = now();
         self.connection.execute(
-            "INSERT INTO messages (channel, sender, sender_name, recipient, recipient_name, body, sent_at)
+            "INSERT INTO messages (project_id, sender, sender_name, recipient, recipient_name, body, sent_at)
             VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![channel, from, sender.name, recipient, recipient_name, body, sent_at],
         )?;
@@ -319,7 +346,7 @@ impl Mailbox {
                 })?;
         let mut stmt = self.connection.prepare(
             "SELECT id, sender_name, recipient_name, body, sent_at FROM messages
-            WHERE channel = ?1 AND id > ?2 AND sender != ?3 AND (recipient = ?3 OR recipient = '*')
+            WHERE project_id = ?1 AND id > ?2 AND sender != ?3 AND (recipient = ?3 OR recipient = '*')
             ORDER BY id LIMIT ?4",
         )?;
         let messages: Vec<Message> = stmt
@@ -347,7 +374,7 @@ impl Mailbox {
         self.prune()?;
         let mut stmt = self.connection.prepare(
             "SELECT id, sender_name, recipient_name, body, sent_at FROM messages
-            WHERE channel = ?1 ORDER BY id DESC LIMIT ?2",
+            WHERE project_id = ?1 ORDER BY id DESC LIMIT ?2",
         )?;
         let mut messages: Vec<Message> = stmt
             .query_map(params![channel, limit as i64], |r| {

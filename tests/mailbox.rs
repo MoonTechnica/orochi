@@ -982,3 +982,63 @@ async fn the_seats_of_one_turn_choose_their_routes_in_order() {
     second.seated();
     timeout(Duration::from_secs(1), third.turn()).await.unwrap();
 }
+
+/// §4.7: the room lives with the conversation. A peer that leaves keeps its row, so the chat
+/// can still say who said what, and joining, leaving and each `set_status` are events in it.
+#[test]
+fn the_room_outlives_its_peers_and_records_who_came_and_went() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = orochi::config::MailboxConfig::default();
+    // Whoever opens the conversation store decides where the room lives; here, the test.
+    let activity = orochi::activity::Activity::open(dir.path(), 30).unwrap();
+    let mailbox = orochi::mailbox::Mailbox::open(dir.path(), &config).unwrap();
+    let alive = me();
+    let alice = mailbox
+        .register("room", "alice", dir.path(), Some("main"), alive)
+        .unwrap();
+    let bob = mailbox
+        .register("room", "bob", dir.path(), None, alive)
+        .unwrap();
+    mailbox.set_status(&alice.id, "taking src/chat").unwrap();
+    mailbox
+        .send(&alice.id, "bob", "the interface is settled")
+        .unwrap();
+    mailbox.unregister(&bob.id).unwrap();
+
+    assert_eq!(
+        mailbox.peers("room").unwrap().len(),
+        1,
+        "a peer that left is not a running peer"
+    );
+    let history = mailbox.history("room", 10).unwrap();
+    assert_eq!(history.len(), 1, "what was said stays said");
+    assert_eq!(history[0].body, "the interface is settled");
+
+    let room: Vec<(String, String, String)> = activity
+        .connection()
+        .prepare("SELECT kind, who, text FROM v_room WHERE project_id='room' ORDER BY kind, seq")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        room.contains(&("joined".into(), "alice".into(), String::new()))
+            && room.contains(&("joined".into(), "bob".into(), String::new())),
+        "joining is an event: {room:?}"
+    );
+    assert!(
+        room.contains(&("left".into(), "bob".into(), String::new())),
+        "and so is leaving: {room:?}"
+    );
+    assert!(
+        room.contains(&("status".into(), "alice".into(), "taking src/chat".into())),
+        "a status is a line in the room, not a value that was overwritten: {room:?}"
+    );
+    assert!(
+        room.iter().any(|(kind, who, text)| kind == "message"
+            && who == "alice"
+            && text == "the interface is settled"),
+        "and the message is there with its sender: {room:?}"
+    );
+}

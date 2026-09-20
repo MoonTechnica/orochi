@@ -528,6 +528,11 @@ impl Activity {
         &self.connection
     }
 
+    /// Hands the connection to the mailbox, which owns the room's tables in this same file.
+    pub fn into_connection(self) -> Connection {
+        self.connection
+    }
+
     /// The sidebar: projects by name, pinned first, each with its threads newest first. The
     /// ordering is the one a client renders and is decided here rather than in the client, so
     /// `orochi threads` and the app agree about what the list looks like.
@@ -1662,6 +1667,45 @@ CREATE TABLE IF NOT EXISTS peer_events (
   text TEXT NOT NULL DEFAULT '',
   at INTEGER NOT NULL);
 "#;
+
+/// The room on its own, for `mailbox.sqlite3` when the conversation store is switched off.
+/// Same columns, without the foreign keys that only mean something beside a thread.
+pub const ROOM_SCHEMA: &str = concat!(
+    "PRAGMA journal_mode=WAL;",
+    r#"
+CREATE TABLE IF NOT EXISTS peers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  attempt_id TEXT,
+  worktree TEXT NOT NULL, branch TEXT, route TEXT,
+  status TEXT NOT NULL DEFAULT '',
+  owner_pid INTEGER NOT NULL, owner_start INTEGER NOT NULL,
+  last_read INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  left_at INTEGER);
+CREATE UNIQUE INDEX IF NOT EXISTS peers_live_name
+  ON peers(project_id, lower(name)) WHERE left_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  thread_id TEXT,
+  sender TEXT NOT NULL, sender_name TEXT NOT NULL,
+  recipient TEXT NOT NULL, recipient_name TEXT NOT NULL,
+  via TEXT NOT NULL DEFAULT 'mailbox' CHECK (via IN ('mailbox','handoff','user')),
+  body TEXT NOT NULL,
+  sent_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS messages_room ON messages(project_id, id);
+
+CREATE TABLE IF NOT EXISTS peer_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  peer_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('joined','left','status','route')),
+  text TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL);
+"#
+);
 
 /// `sqlite3_update_hook` only ever sees its own connection, so a reader in another process
 /// learns what moved from these rows: `PRAGMA data_version` says *something* committed, the

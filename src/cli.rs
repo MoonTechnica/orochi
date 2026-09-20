@@ -429,6 +429,12 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 | Command::CollaborateResume { .. }
         )
     ) || (cli.command.is_none() && cli.task.is_some() && !cli.dry_run);
+    // The room lives in the conversation store, so that store has to exist before anything
+    // joins the room.
+    if joins && config.activity.enabled {
+        let _ = crate::activity::Activity::open(&paths.data, config.activity.retention_days)
+            .map_err(|error| tracing::debug!(%error, "conversation store unavailable"));
+    }
     let _membership = if joins && config.mailbox.enabled {
         let membership = crate::mailbox::join(
             std::env::current_exe()?,
