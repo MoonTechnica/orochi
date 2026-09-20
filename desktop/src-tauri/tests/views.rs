@@ -591,3 +591,39 @@ fn the_window_opens_filling_the_screen() {
         "and unmaximizes to a size the three columns still fit in"
     );
 }
+
+/// A binary too old to know the subcommand rejects it and exits at once — but spawning it
+/// succeeded, so the window reported that a host was running while the turn sat queued for
+/// ever with nothing said. Seen on 2026-09-21 against an `orochi` on PATH from two days
+/// before `host` existed.
+#[test]
+#[cfg(unix)]
+fn a_host_that_stops_at_once_is_reported_rather_than_counted_as_running() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, body: &str| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let old = write(
+        "old-orochi",
+        "#!/bin/sh\necho \"error: unexpected argument '--thread' found\" >&2\nexit 2\n",
+    );
+    let error = view::start_host(&old, "thread-1").unwrap_err().to_string();
+    assert!(
+        error.contains("--thread") && error.contains("old-orochi"),
+        "it says which binary and what it said: {error}"
+    );
+
+    // One that stays up is hosting the thread, and is left to it.
+    let good = write("orochi", "#!/bin/sh\nsleep 30\n");
+    view::start_host(&good, "thread-1").expect("a host that keeps running is a host");
+
+    // Nothing there at all is not a silent success either.
+    let missing = view::start_host(&dir.path().join("nowhere"), "thread-1")
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("nowhere"), "{missing}");
+}

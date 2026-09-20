@@ -758,9 +758,11 @@ el("message").addEventListener("input", (event) => {
   event.target.style.height = `${event.target.scrollHeight}px`;
 });
 
-// Enter sends and Shift-Enter breaks the line, as the console's input does.
+// Cmd-Enter sends; Enter is a new line. A message here is often several lines of thinking,
+// and the terminal console's Enter is not this window's to copy: there, a stray Enter starts
+// over at a prompt, and here it would send half a thought to an agent.
 el("message").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
     el("composer").requestSubmit();
   }

@@ -702,6 +702,24 @@ impl Activity {
         Ok(projects)
     }
 
+    /// The thread an id names, whole or as much of it as `orochi threads` prints. A prefix
+    /// that fits more than one names none of them: answering with either would be a guess.
+    pub fn resolve_thread(&self, id: &str) -> Result<Option<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM threads WHERE id=?1 OR id LIKE ?1 || '%' LIMIT 2")?;
+        let mut found: Vec<String> = statement
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if let Some(exact) = found.iter().position(|candidate| candidate == id) {
+            return Ok(Some(found.swap_remove(exact)));
+        }
+        Ok(match found.len() {
+            1 => found.pop(),
+            _ => None,
+        })
+    }
+
     /// Everything one thread's screens need, in one read.
     pub fn thread(&self, id: &str) -> Result<Option<Thread>> {
         let Some(thread) = self

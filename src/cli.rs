@@ -7,6 +7,14 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
+
+/// The thread an argument names, accepting the short id `orochi threads` prints.
+fn named(activity: &crate::activity::Activity, id: &str) -> Result<String> {
+    activity
+        .resolve_thread(id)?
+        .with_context(|| format!("no thread {id}"))
+}
+
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
@@ -742,7 +750,14 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 config.activity.enabled,
                 "activity.enabled is false, so there is no thread to host"
             );
-            return crate::chat::host::run(&config, &paths.data, &thread).await;
+            let named = {
+                let activity =
+                    crate::activity::Activity::open(&paths.data, config.activity.retention_days)?;
+                activity
+                    .resolve_thread(&thread)?
+                    .with_context(|| format!("no thread {thread}"))?
+            };
+            return crate::chat::host::run(&config, &paths.data, &named).await;
         }
         Some(Command::Threads {
             command,
@@ -781,6 +796,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     }
                 }
                 Some(ThreadCommand::Show { id }) => {
+                    let id = named(&activity, &id)?;
                     let thread = activity
                         .thread(&id)?
                         .with_context(|| format!("no thread {id}"))?;
@@ -832,15 +848,18 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     }
                 }
                 Some(ThreadCommand::Send { id, text }) => {
+                    let id = named(&activity, &id)?;
                     let turn = activity.queue_turn(&id, &text, &[], "auto", "desktop")?;
                     if cli.json {
                         println!("{}", json!({ "turn": turn }));
                     }
                 }
                 Some(ThreadCommand::Interrupt { id }) => {
+                    let id = named(&activity, &id)?;
                     activity.control(&id, "interrupt", None)?;
                 }
                 Some(ThreadCommand::Stop { id }) => {
+                    let id = named(&activity, &id)?;
                     activity.control(&id, "stop", None)?;
                 }
                 Some(ThreadCommand::Delete { id, all }) => {
@@ -851,6 +870,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                             }
                         }
                     } else {
+                        let id = named(&activity, &id)?;
                         ensure!(activity.delete_thread(&id)?, "no thread {id}");
                     }
                 }

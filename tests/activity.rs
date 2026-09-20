@@ -898,3 +898,55 @@ fn several_openers_at_once_leave_the_views_intact() {
         .unwrap();
     assert!(views >= 9, "{views} views");
 }
+
+/// `orochi threads` prints a short id so a person can read it; every command that takes one
+/// must therefore accept it. It did not — `host --thread 275ae39b` answered "no thread
+/// 275ae39b" about a thread the listing had just shown (2026-09-21).
+#[test]
+fn a_thread_answers_to_the_short_id_its_listing_shows() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(&dir.path().join("data"), 30).unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let project = activity.project_for(&repo, "salt").unwrap();
+    let start = || {
+        activity
+            .create_thread(
+                &project,
+                &repo,
+                Some("main"),
+                "repo-hash",
+                Origin::Console,
+                &Overrides::default(),
+                "ask",
+            )
+            .unwrap()
+    };
+    let (one, two) = (start(), start());
+
+    assert_eq!(
+        activity.resolve_thread(&one).unwrap().as_deref(),
+        Some(&one[..])
+    );
+    assert_eq!(
+        activity.resolve_thread(&one[..8]).unwrap().as_deref(),
+        Some(&one[..]),
+        "the eight characters the listing prints"
+    );
+    assert_eq!(
+        activity.resolve_thread("nothing-like-it").unwrap(),
+        None,
+        "and a prefix that names nothing still names nothing"
+    );
+
+    // A prefix that fits two threads is not a thread: answering with either would be a guess.
+    let shared: String = one
+        .chars()
+        .zip(two.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect();
+    if !shared.is_empty() {
+        assert_eq!(activity.resolve_thread(&shared).unwrap(), None, "{shared}");
+    }
+}

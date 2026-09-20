@@ -281,6 +281,33 @@ test("new thread asks where, when nowhere has been worked in yet", async () => {
   );
 });
 
+test("the composer sends on cmd-enter and breaks the line on enter", async () => {
+  const { el, calls } = await open();
+  const message = el("message");
+  let prevented = 0;
+
+  message.value = "half a thought";
+  message.dispatch("keydown", { key: "Enter", preventDefault: () => (prevented += 1) });
+  assert.equal(
+    calls.some(([name]) => name === "send"),
+    false,
+    "a bare Enter is a new line, not a send",
+  );
+  assert.equal(prevented, 0, "and the textarea is left to insert it");
+
+  message.dispatch("keydown", { key: "Enter", metaKey: true, preventDefault: () => (prevented += 1) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(
+    calls.find(([name]) => name === "send")?.[1].text,
+    "half a thought",
+    "cmd-Enter sends what was typed",
+  );
+  assert.equal(prevented, 1, "and the line break it would have made is not also inserted");
+  // The hint is the page's own words, so it is the page that is read for them.
+  assert.match(markup, /\u2318Enter to send/, "the hint says what the keys do");
+  assert.doesNotMatch(markup, /Shift-Enter for a new line/, "and not what they used to do");
+});
+
 test("a sent message also makes sure something is running it", async () => {
   const { el, calls } = await open();
   el("message").value = "start here";

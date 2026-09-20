@@ -38,17 +38,18 @@ fn ensure_host(open: State<'_, Open>, thread: String) -> Result<bool, String> {
     if !needed {
         return Ok(false);
     }
-    // The same binary the user would run, found the way a user would find it.
+    // `OROCHI_BIN`, then the one shipped beside this window, then the one the user would run.
+    // A window opened from Finder has no shell `PATH`, so a sibling is what makes a packaged
+    // app work at all.
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("orochi")))
+        .filter(|path| path.is_file());
     let orochi = std::env::var_os("OROCHI_BIN")
         .map(std::path::PathBuf::from)
+        .or(beside)
         .unwrap_or_else(|| "orochi".into());
-    std::process::Command::new(orochi)
-        .args(["host", "--thread", &thread])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|error| format!("could not start a host for this thread: {error}"))?;
+    orochi_desktop::view::start_host(&orochi, &thread).map_err(fail)?;
     Ok(true)
 }
 
