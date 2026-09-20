@@ -13,6 +13,8 @@ For measurement details, see [Measurement and Session Collaboration Validation (
 | Antigravity live E2E | CLI and official ACP Server installed. Confirmed up to the authentication request; verification after Google login is pending |
 | Router / Frontier Judge | Advisers unified onto ACP agents from `[[agents]]` (2026-09-16). Confirmed the handover from a real Antigravity (unauthenticated) to a real Codex. Semantic pass/fail judgment of deliverables is not implemented |
 | Council / session collaboration | Coordinator → parallel implementation → integration over independent ACP sessions, addressed multi-round communication, and application to the original working tree with conflict resolution. Implemented fallback agent/model selection for every role, saving of intermediate state, and `collaborate-resume`. Router / Judge / Council support fallback advisers, and a 2-round Council over ACP was confirmed against the real services |
+| Orochi against each agent alone | `examples/compare_live.py` runs the same tasks three ways with real CLIs. A 3-task pilot on 2026-09-20 ([results](real-validation-20260920.md)) found equal accuracy, 5.6× fewer tokens than Claude Code alone and 2.5× more than Codex alone, the gap being the classifier's extra session. The full 10-task suite is still to be run |
+| Ordered parts (work graph) | Parts run in waves in `collaborate`, proposed by a plan file, the first coordinator turn or the console's design step; route claims and a choice order for the seats of one turn replaced the fixed 1.2 s stagger (2026-09-19). **Automated tests only**; behavior with real agents is unverified ([design record](parallel-execution-design.md)) |
 | Exposing Orochi over ACP | `serve` supports ACP v1 stdio. Permission, cancel, etc. verified with fixtures. Execution and evaluation from an ACP client to a real Codex succeeded. Confirmed execution and evaluation from the agent panel of Zed 1.19.2 through to a real Codex (UI operation automated with System Events; no screen capture) |
 
 ## 1. Calibration and comparison
@@ -34,6 +36,26 @@ Observing only the chosen candidate cannot tell whether "a different candidate w
 The input is JSON with `schema_version: 1`, `provenance` (source), `synthetic` (whether the data is synthetic) and `cases`. A case has an `id`, a `descriptor` in `TaskDescriptor` form, and `arms`. An arm holds a `candidate` in `ExecutionCandidate` form carrying the initial prior, the evaluated `success`, the measured `tokens`, and `duration_ms`. See the [generation example](../examples/benchmark_fixture.py).
 
 For Static / EWMA / Bandit it outputs the number of successes, the number of selections and abstentions, total tokens, tokens per success, and the cost including the failure penalty together with its gap from the best result. The failure penalty is a comparison parameter expressed in resource terms, not a price. Abstaining incurs the same penalty, and the baseline is the minimum cost over all candidates and abstention. A result that reduces only tokens without keeping the number of successes is not regarded as an improvement.
+
+### Against each agent used alone
+
+`benchmark` replays measurements; it cannot say whether Orochi beats the agents it routes to. That needs the same tasks run three ways, and [`examples/compare_live.py`](../examples/compare_live.py) does exactly that with real CLIs:
+
+```sh
+python3 examples/compare_live.py --suite examples/compare-suite.json \
+  --output .orochi/live-e2e/compare-<date> --adapter-cache ~/.local/share/orochi/adapters \
+  --agent-path-prepend ~/.local/bin --agent-path-prepend ~/.bun/bin --execute   # consumes quota
+
+python3 examples/compare_live.py --suite examples/compare-suite.json \
+  --output /tmp/validation --validate                                          # contacts nothing
+```
+
+- **Arms.** Each arm is a configuration of the same binary: an *alone* arm pins one agent and the model and reasoning its owner set as that CLI's default, with one attempt and no classifier; the *orochi* arm gets both agents, its classifier and up to three attempts. Rotating the order per case keeps one arm from always running first.
+- **Scoring.** Each case ships visible tests in the repository — what the agents and Orochi's evaluator can see — and a **hidden check** that is run afterwards and is the only thing that decides pass or fail. A trial whose agent could not be discovered, or that recorded no execution, is `blocked` and never a pass.
+- **Tokens.** An arm is charged every token its runs recorded: execution, retries, the classifier and any routing advice, exactly as each agent reported it (`orochi runs`). Providers count cache and system prompts differently, so tokens compare arms on the same provider more meaningfully than across providers.
+- `--validate` checks that every case fails as it is handed to the agents and passes with the reference solution kept beside it, which is what makes a pass or a failure mean anything. `tests/cli_e2e.rs` runs it, and drives the whole harness against the fixture.
+
+Measurements live in dated documents; the suite itself says which CLI defaults its alone arms reproduce, and when.
 
 Normal routing and replay share the EWMA, exploration and resource scoring functions. Input that has `candidate.prediction.cost_features` reuses its cache/context/quota terms; input without it recovers the proportionality coefficient from the given initial cost. Candidate eligibility by quota/capability/Policy is checked on the input side. Replay does not connect to real agents and does not write learning results to the operational DB.
 
@@ -203,10 +225,13 @@ session_overhead_tokens = 29000
 ```toml
 [classifier]
 enabled = false        # turn it off
-agent = "claude"       # pin the recipient
+agent = "claude"       # pin the recipient; omitted, the agent that has answered most cheaply
 model = "haiku"        # if omitted, chosen automatically from the policy at Simple difficulty (= the cheapest candidate)
 timeout_secs = 60
+max_cost_share = 0.25  # the largest share of what work like this costs that asking may take
 ```
+
+**Asking costs a session of its own, so it has to be worth it.** Measured on 2026-09-20 with real CLIs: the same question cost 37,630 tokens on Claude and 23,800 on Codex, almost all of it the session's fixed cost rather than the question ([pilot](real-validation-20260920.md)). So what each answer costs is recorded as a `classification` run — never an execution, so it never teaches the router — and two things follow from it. The agent asked is whichever has answered most cheaply here, an agent nobody has priced going first so its own price becomes known. And once both sides are measured, a question that would take more than `max_cost_share` of what work like this has cost is not asked at all: the local profile stands, the evaluator still checks the result, and a failure still moves to another candidate. Until there is something to weigh, Orochi asks.
 
 **Nothing with no choice left to make starts an agent.** A `--dry-run`, a read-only seat, and a route with both `--agent` and `--model` specified proceed with the heuristic's label.
 
@@ -273,7 +298,7 @@ If `seats` is given (「5人のエージェントで」, "with five agents"), th
 
 **The key point is that Implementers are capped by the number of areas.** Putting two Implementers in the same directory does not halve the work; they only collide. So the count is never raised beyond the number of top-level directories of `candidate_files` (the directories at the repository root if the task mentions no files). When there are 2 or more, those areas are handed out as `paths` without overlap.
 
-Each participant's `agent` is empty (automatic selection). Which agent × model to assign is the scheduler's job, and because `scorer` prices an agent that another seat is using at 1.4×, concurrent seats naturally spread across different accounts.
+Each participant's `agent` is empty (automatic selection). Which agent × model to assign is the scheduler's job, and because `scorer` prices an agent that another seat is using at 1.4×, concurrent seats naturally spread across different accounts. A seat claims its route at the moment it chooses (`mailbox::claim`), before anything is awaited, so the next seat of the same process sees it at once rather than after the first has registered with the mailbox. The seats of one console turn also take their places in order (`mailbox::Order`): the one doing the work first, then each seat after the one before it, while their discoveries still run side by side. A place is taken by choosing a route **and joining the mailbox** under it, so no seat starts talking before the one it answers to is there to hear it. This replaced a fixed 1.2-second head start per seat.
 
 ## 4.3. Team escalation from the console
 
@@ -281,20 +306,28 @@ Just typing a prompt into `orochi` (or `orochi chat`) goes as far as collaborati
 
 Classification happens once per turn. That one result is used for the escalation decision, the phase split and routing alike (it is passed as `RunOptions::descriptor`, so the scheduler never reclassifies the decorated text).
 
-The escalation condition is `Plan::splits_work()` — only when the derived team has 2 or more Implementers, that is, **when the work can actually be split**. With one, nothing is gained by preparing separate workspaces, so the console handles it with 1–2 seats in your own working tree.
+Escalation is decided **after the design step**, by something that has read the code, not by counting directories. Work split into phases starts with a design step; its instruction asks it to end with one `{"parts": [...]}` line when the work divides into parts that can be built without each other's code. Orochi orders those parts as `collaborate` does ([The order of the work](session-collaboration.md#the-order-of-the-work-parts-and-waves)), and escalates only when something can run side by side. The team is `collaboration::plan::with_parts`: one implementer seat per part that runs at once (at most 4), reviewers as for a derived team, and no coordinator, since the design step was that turn. The design's reply (without the parts) is added to the collaboration's task, so every part starts from it.
 
-When escalating, it **asks once**.
+The `{"parts": ...}` object is for Orochi: it is held back from the transcript while it streams and removed from what is handed to the next step. Text that only looked like its start is shown as soon as that is clear, and an object that turns out not to end the reply is shown at the end.
+
+When escalating, it **asks once**, showing the order it would run in, as Claude Code asks to approve a plan.
 
 ```
-◆ This is more than one agent's worth of work
-  coordinator, 3 implementer(s), 3 reviewer(s), integrator, 3 discussion round(s)
-  each implementer works in its own copy; a verified result is merged back into your tree
-  ⎿ Enter or y to start the team · any other key runs it as a normal turn
+ ◆ This divides into parts that can run side by side
+   alpha ‖ beta → gamma
+   2 implementer(s), 3 reviewer(s), integrator
+   each part works in its own copy; a verified result is merged back
+
+ ❯ 1. Yes, run the parts side by side
+   2. Yes, one agent carries it out here
+   3. No, keep the design (esc)
 ```
+
+`2` carries on with the implementation step in your own working tree, as if no parts had been proposed. `3` or Esc builds nothing, as declining a plan in Claude Code does: the design is kept in the conversation and the next message carries on from it. While the team runs, its progress appears as notes in the transcript, and Esc or Ctrl-C stops it; the report can be resumed.
 
 This is the only path on which several agents run at once and, once verification passes, write back to the working tree, so this alone is never run silently. Without a terminal (stdin is a pipe) there is no escalation, because in an environment where each line is read as one message, the confirmation prompt would swallow the next message.
 
-Turns that explicitly use `/solo` or `/team` are not subject to escalation. The report remains in `<data>/collaborations/<id>/`, so an interrupted run can be continued with `orochi collaborate-resume --output <path>`.
+Turns that explicitly use `/solo` or `/team` are not subject to escalation. Whether real design steps propose useful divisions is **unverified**; the flow is covered by automated tests with mock agents, including a terminal test that answers the question. The report remains in `<data>/collaborations/<id>/`, so an interrupted run can be continued with `orochi collaborate-resume --output <path>`.
 
 ## 4.4. Memory
 

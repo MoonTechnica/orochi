@@ -323,6 +323,10 @@ pub struct ClassifierConfig {
     pub reasoning: Option<String>,
     pub timeout_secs: u64,
     pub max_output_tokens: u32,
+    /// The largest share of what work like this has cost here that asking what it is may take.
+    /// Asking is a whole session; where it would cost as much as the work it decides, the
+    /// local profile is kept instead. Orochi asks until it has measured both sides.
+    pub max_cost_share: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_overhead_tokens: Option<u64>,
 }
@@ -336,6 +340,7 @@ impl Default for ClassifierConfig {
             // Short: this runs before every turn, and giving up only costs the heuristic.
             timeout_secs: 60,
             max_output_tokens: 512,
+            max_cost_share: 0.25,
             session_overhead_tokens: None,
         }
     }
@@ -459,6 +464,10 @@ impl Config {
         ensure!(
             self.discovery.setup_timeout_secs > 0,
             "invalid adapter setup timeout"
+        );
+        ensure!(
+            (0.0..=100.0).contains(&self.classifier.max_cost_share),
+            "classifier.max_cost_share must be in [0, 100]"
         );
         for check in &self.evaluator.checks {
             ensure!(

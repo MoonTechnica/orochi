@@ -1,0 +1,283 @@
+{
+  "schema_version": 2,
+  "name": "Orochi against each agent used alone (Python, JavaScript, Rust, docs; simple to complex)",
+  "notes": "The alone arms reproduce each CLI as its owner configured it on 2026-09-20: Claude Code with claude-fable-5-1[1m] at xhigh, Codex with gpt-6-astra at high, one attempt, no classifier. The orochi arm has both agents, its classifier on, and up to three attempts, verified by the repository's visible tests. Every arm is scored by the hidden check only. The orochi arm keeps one data directory across the suite, as a user's own Orochi does: what it learns about routing, and about what asking what a task is costs, carries from one task to the next.",
+  "arms": [
+    {
+      "id": "claude-alone",
+      "agents": [
+        {
+          "id": "claude",
+          "provider": "anthropic",
+          "command": "claude-agent-acp"
+        }
+      ],
+      "pin": {
+        "agent": "claude",
+        "model": "claude-fable-5-1[1m]",
+        "reasoning": "xhigh"
+      },
+      "attempts": 1,
+      "classifier": false
+    },
+    {
+      "id": "codex-alone",
+      "agents": [
+        {
+          "id": "codex",
+          "provider": "openai",
+          "command": "codex-acp"
+        }
+      ],
+      "pin": {
+        "agent": "codex",
+        "model": "gpt-6-astra",
+        "reasoning": "high"
+      },
+      "attempts": 1,
+      "classifier": false
+    },
+    {
+      "id": "orochi",
+      "agents": [
+        {
+          "id": "claude",
+          "provider": "anthropic",
+          "command": "claude-agent-acp"
+        },
+        {
+          "id": "codex",
+          "provider": "openai",
+          "command": "codex-acp"
+        }
+      ],
+      "pin": null,
+      "attempts": 3,
+      "classifier": true,
+      "memory": "shared"
+    }
+  ],
+  "cases": [
+    {
+      "id": "py-expression-evaluator",
+      "kind": "implementation",
+      "difficulty": "normal",
+      "task": "Implement evaluate(expression) in calc.py. It evaluates arithmetic expressions with +, -, *, / (true division), parentheses, unary minus and decimal numbers such as 2.5, using normal operator precedence and left associativity, and returns the numeric result. Whitespace between tokens is allowed. Raise ValueError for malformed input and for division by zero. Do not use eval, exec or compile. Modify only calc.py.",
+      "files": {
+        "calc.py": "def evaluate(expression):\n    raise NotImplementedError\n",
+        "test_calc.py": "import unittest\n\nfrom calc import evaluate\n\n\nclass EvaluateTest(unittest.TestCase):\n    def test_precedence(self):\n        self.assertEqual(evaluate(\"1 + 2 * 3\"), 7)\n\n    def test_parentheses(self):\n        self.assertEqual(evaluate(\"(1 + 2) * 3\"), 9)\n\n    def test_malformed_input_is_rejected(self):\n        with self.assertRaises(ValueError):\n            evaluate(\"1 +\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "visible": {
+        "command": "python3",
+        "args": [
+          "-m",
+          "unittest",
+          "-q"
+        ]
+      },
+      "check": "import math, pathlib, sys\nsys.path.insert(0, '.')\nsource = pathlib.Path('calc.py').read_text()\nassert not any(word in source for word in ('eval(', 'exec(', 'compile(')), 'forbidden builtin'\nfrom calc import evaluate\ncases = {'1 + 2 * 3': 7, '(1 + 2) * 3': 9, '10 / 4': 2.5, '-3 + 5': 2, '2 * -(1 + 1)': -4,\n         '8 - 3 - 2': 3, '2.5 * 4': 10, '  7 ': 7, '100 / 10 / 5': 2, '-(-2)': 2}\nfor expression, expected in cases.items():\n    got = evaluate(expression)\n    assert math.isclose(got, expected), (expression, got)\nfor bad in ['', '1 +', '(1 + 2', '1 2', '2 * * 3', '1 / 0', 'abc', ')(']:\n    try:\n        evaluate(bad)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(bad)\n",
+      "reference": {
+        "calc.py": "def evaluate(expression):\n    tokens = _tokenize(expression)\n    parser = _Parser(tokens)\n    value = parser.expression()\n    if parser.position != len(tokens):\n        raise ValueError(\"unexpected token\")\n    return value\n\n\ndef _tokenize(text):\n    tokens = []\n    i = 0\n    while i < len(text):\n        c = text[i]\n        if c.isspace():\n            i += 1\n        elif c in \"+-*/()\":\n            tokens.append(c)\n            i += 1\n        elif c.isdigit() or c == \".\":\n            j = i\n            while j < len(text) and (text[j].isdigit() or text[j] == \".\"):\n                j += 1\n            try:\n                tokens.append(float(text[i:j]))\n            except ValueError:\n                raise ValueError(\"bad number\") from None\n            i = j\n        else:\n            raise ValueError(\"unexpected character\")\n    if not tokens:\n        raise ValueError(\"empty expression\")\n    return tokens\n\n\nclass _Parser:\n    def __init__(self, tokens):\n        self.tokens = tokens\n        self.position = 0\n\n    def peek(self):\n        return self.tokens[self.position] if self.position < len(self.tokens) else None\n\n    def take(self):\n        token = self.peek()\n        if token is None:\n            raise ValueError(\"unexpected end of input\")\n        self.position += 1\n        return token\n\n    def expression(self):\n        value = self.term()\n        while self.peek() in (\"+\", \"-\"):\n            operator = self.take()\n            right = self.term()\n            value = value + right if operator == \"+\" else value - right\n        return value\n\n    def term(self):\n        value = self.factor()\n        while self.peek() in (\"*\", \"/\"):\n            operator = self.take()\n            right = self.factor()\n            if operator == \"*\":\n                value *= right\n            elif right == 0:\n                raise ValueError(\"division by zero\")\n            else:\n                value /= right\n        return value\n\n    def factor(self):\n        token = self.take()\n        if token == \"-\":\n            return -self.factor()\n        if token == \"(\":\n            value = self.expression()\n            if self.take() != \")\":\n                raise ValueError(\"expected )\")\n            return value\n        if isinstance(token, float):\n            return token\n        raise ValueError(\"unexpected token\")\n"
+      }
+    },
+    {
+      "id": "js-duration-parser",
+      "kind": "implementation",
+      "difficulty": "normal",
+      "task": "Implement parseDuration(text) in duration.js. It converts strings such as '1h30m', '45s', '2h', '1h2m3s' and ' 5m ' into a number of seconds. Each of the units h, m and s may appear at most once and only in that order, at least one unit is required, amounts are non-negative integers, and whitespace is allowed only around the whole string. Throw a RangeError for anything else, including empty strings, bare numbers, unknown units, repeated or out-of-order units, decimal or negative amounts and inner whitespace. Modify only duration.js.",
+      "files": {
+        "duration.js": "function parseDuration(text) {\n  throw new Error('not implemented');\n}\n\nmodule.exports = { parseDuration };\n",
+        "test.js": "const assert = require('assert');\nconst { parseDuration } = require('./duration.js');\n\nassert.strictEqual(parseDuration('1h30m'), 5400);\nassert.strictEqual(parseDuration('45s'), 45);\nassert.throws(() => parseDuration('5'), RangeError);\nconsole.log('ok');\n"
+      },
+      "visible": {
+        "command": "node",
+        "args": [
+          "test.js"
+        ]
+      },
+      "check": "import subprocess\nscript = r\"\"\"\nconst assert = require('assert');\nconst { parseDuration } = require('./duration.js');\nassert.strictEqual(parseDuration('1h30m'), 5400);\nassert.strictEqual(parseDuration('45s'), 45);\nassert.strictEqual(parseDuration('2h'), 7200);\nassert.strictEqual(parseDuration('1h2m3s'), 3723);\nassert.strictEqual(parseDuration(' 5m '), 300);\nassert.strictEqual(parseDuration('0s'), 0);\nfor (const bad of ['', '5', '1x', '1m1h', '1h1h', '1.5h', 'h', '-1m', '1h 30m']) {\n  assert.throws(() => parseDuration(bad), RangeError, JSON.stringify(bad));\n}\n\"\"\"\nsubprocess.run(['node', '-e', script], check=True, timeout=30)\n",
+      "reference": {
+        "duration.js": "function parseDuration(text) {\n  if (typeof text !== 'string') throw new RangeError('expected a string');\n  const match = /^\\s*(?:(\\d+)h)?(?:(\\d+)m)?(?:(\\d+)s)?\\s*$/.exec(text);\n  if (!match || match.slice(1).every((part) => part === undefined)) {\n    throw new RangeError(`invalid duration: ${JSON.stringify(text)}`);\n  }\n  const [hours, minutes, seconds] = match.slice(1).map((part) => (part === undefined ? 0 : Number(part)));\n  return hours * 3600 + minutes * 60 + seconds;\n}\n\nmodule.exports = { parseDuration };\n"
+      }
+    },
+    {
+      "id": "rust-bracket-balance",
+      "kind": "implementation",
+      "difficulty": "normal",
+      "task": "Implement is_balanced in src/lib.rs: return true when every (), [] and {} bracket in the input is closed in the correct order, ignoring all other characters. Add unit tests in the same file and make sure `cargo test` passes. Do not add dependencies. Modify only src/lib.rs.",
+      "files": {
+        "Cargo.toml": "[package]\nname = \"brackets\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+        "src/lib.rs": "pub fn is_balanced(input: &str) -> bool {\n    unimplemented!()\n}\n"
+      },
+      "visible": {
+        "command": "cargo",
+        "args": [
+          "test",
+          "--offline",
+          "--quiet"
+        ]
+      },
+      "check": "import os, pathlib, shutil, subprocess, tempfile\nrepo = pathlib.Path.cwd()\ncargo = os.path.expanduser('~/.cargo/bin/cargo')\ncargo = cargo if os.path.exists(cargo) else shutil.which('cargo')\nwith tempfile.TemporaryDirectory() as temp:\n    temp = pathlib.Path(temp)\n    (temp / 'Cargo.toml').write_text('[package]\\nname = \"check\"\\nversion = \"0.1.0\"\\nedition = \"2021\"\\n'\n                                     f'[dependencies]\\nbrackets = {{ path = \"{repo}\" }}\\n')\n    (temp / 'src').mkdir()\n    (temp / 'src/lib.rs').write_text('')\n    (temp / 'tests').mkdir()\n    (temp / 'tests/check.rs').write_text(\"\"\"use brackets::is_balanced;\n#[test]\nfn cases() {\n    for s in [\"\", \"()\", \"([]{})\", \"a(b[c]{d}e)f\", \"{[()()]}\"] { assert!(is_balanced(s), \"{s}\"); }\n    for s in [\"(\", \")\", \"(]\", \"([)]\", \"{{}\", \"())(\"] { assert!(!is_balanced(s), \"{s}\"); }\n}\n\"\"\")\n    env = dict(os.environ, CARGO_TARGET_DIR=str(temp / 'target'))\n    env.pop('RUSTUP_TOOLCHAIN', None)\n    for directory in (temp, repo):\n        subprocess.run([cargo, 'test', '--offline', '--quiet'], cwd=directory, env=env, check=True, timeout=240)\n",
+      "reference": {
+        "src/lib.rs": "pub fn is_balanced(input: &str) -> bool {\n    let mut open = Vec::new();\n    for c in input.chars() {\n        match c {\n            '(' | '[' | '{' => open.push(c),\n            ')' | ']' | '}' => {\n                let expected = match c {\n                    ')' => '(',\n                    ']' => '[',\n                    _ => '{',\n                };\n                if open.pop() != Some(expected) {\n                    return false;\n                }\n            }\n            _ => {}\n        }\n    }\n    open.is_empty()\n}\n\n#[cfg(test)]\nmod tests {\n    use super::is_balanced;\n\n    #[test]\n    fn nested_pairs_balance() {\n        assert!(is_balanced(\"([]{})\"));\n    }\n\n    #[test]\n    fn crossed_pairs_do_not() {\n        assert!(!is_balanced(\"([)]\"));\n    }\n}\n"
+      }
+    },
+    {
+      "id": "py-cart-decimal-bugfix",
+      "kind": "bug_fix",
+      "difficulty": "normal",
+      "task": "Fix the bugs in cart.py and pricing.py. Cart.subtotal must include item quantities. Prices may be given as strings or decimal.Decimal values, and subtotal, total and apply_discount must return decimal.Decimal amounts rounded to the cent with half-up rounding. Reject negative quantities and discount percentages outside 0 to 100 with ValueError. Keep the public API.",
+      "files": {
+        "pricing.py": "def apply_discount(amount, percent):\n    \"\"\"Return amount reduced by percent, rounded to cents (half up).\"\"\"\n    return round(amount * (1 - percent / 100), 2)\n",
+        "cart.py": "from pricing import apply_discount\n\n\nclass Cart:\n    def __init__(self):\n        self.items = []\n\n    def add(self, name, price, quantity=1):\n        self.items.append((name, price, quantity))\n\n    def subtotal(self):\n        return sum(price for _, price, quantity in self.items)\n\n    def total(self, discount_percent=0):\n        return apply_discount(self.subtotal(), discount_percent)\n",
+        "test_cart.py": "import unittest\nfrom decimal import Decimal\n\nfrom cart import Cart\n\n\nclass CartTest(unittest.TestCase):\n    def test_subtotal_counts_quantities(self):\n        cart = Cart()\n        cart.add(\"pen\", \"2.00\", 3)\n        self.assertEqual(cart.subtotal(), Decimal(\"6.00\"))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "visible": {
+        "command": "python3",
+        "args": [
+          "-m",
+          "unittest",
+          "-q"
+        ]
+      },
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom decimal import Decimal\nfrom cart import Cart\nfrom pricing import apply_discount\ncart = Cart()\ncart.add('pen', '1.005', 2)\ncart.add('book', Decimal('10.10'))\nassert cart.subtotal() == Decimal('12.11'), cart.subtotal()\nassert cart.total() == Decimal('12.11'), cart.total()\nassert cart.total(10) == Decimal('10.90'), cart.total(10)\nassert isinstance(cart.total(10), Decimal)\nassert apply_discount(Decimal('2.675'), 0) == Decimal('2.68')\nassert apply_discount(Decimal('0.125'), 0) == Decimal('0.13')\nassert apply_discount('20.00', 25) == Decimal('15.00')\nfor percent in (-1, 101):\n    try:\n        apply_discount(Decimal('1'), percent)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(percent)\ntry:\n    Cart().add('x', '1', -1)\nexcept ValueError:\n    pass\nelse:\n    raise AssertionError('negative quantity accepted')\n",
+      "reference": {
+        "pricing.py": "from decimal import ROUND_HALF_UP, Decimal\n\nCENT = Decimal(\"0.01\")\n\n\ndef to_decimal(value):\n    if isinstance(value, Decimal):\n        return value\n    if isinstance(value, bool):\n        raise TypeError(\"expected an amount\")\n    if isinstance(value, (int, str)):\n        return Decimal(value)\n    return Decimal(str(value))\n\n\ndef apply_discount(amount, percent):\n    \"\"\"Return amount reduced by percent, rounded to cents (half up).\"\"\"\n    amount = to_decimal(amount)\n    percent = to_decimal(percent)\n    if not Decimal(0) <= percent <= Decimal(100):\n        raise ValueError(\"discount percent must be between 0 and 100\")\n    return (amount * (Decimal(100) - percent) / Decimal(100)).quantize(CENT, rounding=ROUND_HALF_UP)\n",
+        "cart.py": "from decimal import ROUND_HALF_UP, Decimal\n\nfrom pricing import CENT, apply_discount, to_decimal\n\n\nclass Cart:\n    def __init__(self):\n        self.items = []\n\n    def add(self, name, price, quantity=1):\n        if quantity < 0:\n            raise ValueError(\"quantity must not be negative\")\n        self.items.append((name, to_decimal(price), quantity))\n\n    def subtotal(self):\n        total = sum((price * quantity for _, price, quantity in self.items), Decimal(0))\n        return total.quantize(CENT, rounding=ROUND_HALF_UP)\n\n    def total(self, discount_percent=0):\n        return apply_discount(self.subtotal(), discount_percent)\n"
+      }
+    },
+    {
+      "id": "js-report-refactor",
+      "kind": "refactor",
+      "difficulty": "complex",
+      "task": "Refactor report.js without changing the output of render for any input. Extract and export formatRow(row), which returns one item line without the trailing newline, and computeTotal(rows), which returns the unrounded total; use both in render and replace the manual padding loops with padStart/padEnd. Keep render exported. Modify only report.js.",
+      "files": {
+        "report.js": "function render(rows) {\n  let out = '';\n  out += 'NAME       QTY   PRICE\\n';\n  for (let i = 0; i < rows.length; i++) {\n    const r = rows[i];\n    let name = r.name;\n    if (name.length > 10) name = name.slice(0, 9) + '~';\n    while (name.length < 10) name += ' ';\n    let qty = String(r.qty);\n    while (qty.length < 5) qty = ' ' + qty;\n    let price = (Math.round(r.price * 100) / 100).toFixed(2);\n    while (price.length < 8) price = ' ' + price;\n    out += name + ' ' + qty + price + '\\n';\n  }\n  let total = 0;\n  for (let i = 0; i < rows.length; i++) total += rows[i].qty * rows[i].price;\n  out += 'TOTAL' + (Math.round(total * 100) / 100).toFixed(2).padStart(20) + '\\n';\n  return out;\n}\nmodule.exports = { render };\n",
+        "test.js": "const assert = require('assert');\nconst { render } = require('./report.js');\n\nassert.strictEqual(\n  render([{ name: 'pen', qty: 3, price: 1.5 }]),\n  'NAME       QTY   PRICE\\npen            3    1.50\\nTOTAL                4.50\\n',\n);\nconsole.log('ok');\n"
+      },
+      "visible": {
+        "command": "node",
+        "args": [
+          "test.js"
+        ]
+      },
+      "check": "import json, pathlib, subprocess\nreference = \"function render(rows) {\\n  let out = '';\\n  out += 'NAME       QTY   PRICE\\\\n';\\n  for (let i = 0; i < rows.length; i++) {\\n    const r = rows[i];\\n    let name = r.name;\\n    if (name.length > 10) name = name.slice(0, 9) + '~';\\n    while (name.length < 10) name += ' ';\\n    let qty = String(r.qty);\\n    while (qty.length < 5) qty = ' ' + qty;\\n    let price = (Math.round(r.price * 100) / 100).toFixed(2);\\n    while (price.length < 8) price = ' ' + price;\\n    out += name + ' ' + qty + price + '\\\\n';\\n  }\\n  let total = 0;\\n  for (let i = 0; i < rows.length; i++) total += rows[i].qty * rows[i].price;\\n  out += 'TOTAL' + (Math.round(total * 100) / 100).toFixed(2).padStart(20) + '\\\\n';\\n  return out;\\n}\\nmodule.exports = { render };\\n\"\nsource = pathlib.Path('report.js').read_text()\nassert 'while (' not in source, 'manual padding loop remains'\nscript = \"\"\"\nconst assert = require('assert');\nconst m = require('./report.js');\nconst reference = {};\nnew Function('module', REFERENCE)(reference);\nconst inputs = [[], [{name: 'pen', qty: 3, price: 1.005}],\n  [{name: 'a very long product name', qty: 12345, price: 0.1}, {name: 'x', qty: 0, price: 99999.999}],\n  [{name: 'tenletters', qty: 1, price: 2.675}, {name: 'eleven char', qty: 2, price: 3}]];\nfor (const rows of inputs) assert.strictEqual(m.render(rows), reference.exports.render(rows));\nassert.strictEqual(typeof m.formatRow, 'function');\nassert.strictEqual(m.formatRow({name: 'pen', qty: 3, price: 1.5}), 'pen            3    1.50');\nassert.ok(Math.abs(m.computeTotal([{qty: 3, price: 0.1}, {qty: 1, price: 2}]) - 2.3) < 1e-9);\n\"\"\".replace('REFERENCE', json.dumps(reference))\nsubprocess.run(['node', '-e', script], check=True, timeout=30)\n",
+      "reference": {
+        "report.js": "function formatRow(row) {\n  const name = row.name.length > 10 ? row.name.slice(0, 9) + '~' : row.name.padEnd(10);\n  const qty = String(row.qty).padStart(5);\n  const price = (Math.round(row.price * 100) / 100).toFixed(2).padStart(8);\n  return name + ' ' + qty + price;\n}\n\nfunction computeTotal(rows) {\n  let total = 0;\n  for (const row of rows) total += row.qty * row.price;\n  return total;\n}\n\nfunction render(rows) {\n  let out = 'NAME       QTY   PRICE\\n';\n  for (const row of rows) out += formatRow(row) + '\\n';\n  out += 'TOTAL' + (Math.round(computeTotal(rows) * 100) / 100).toFixed(2).padStart(20) + '\\n';\n  return out;\n}\n\nmodule.exports = { render, formatRow, computeTotal };\n"
+      }
+    },
+    {
+      "id": "docs-roman-readme",
+      "kind": "documentation",
+      "difficulty": "simple",
+      "task": "Update the README.md documentation only. Add a '## Usage' section with a Python code block that imports to_roman with `from roman import to_roman` and shows that to_roman(1994) returns 'MCMXCIV', and a '## Limits' section explaining that inputs must be integers from 1 to 3999 and that other values raise ValueError. Do not modify roman.py.",
+      "files": {
+        "README.md": "# roman\n\nConverts integers to Roman numerals.\n",
+        "roman.py": "def to_roman(n):\n    \"\"\"Convert an integer from 1 to 3999 to a Roman numeral.\"\"\"\n    if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= 3999:\n        raise ValueError(\"expected an integer from 1 to 3999\")\n    table = [(1000, \"M\"), (900, \"CM\"), (500, \"D\"), (400, \"CD\"), (100, \"C\"), (90, \"XC\"),\n             (50, \"L\"), (40, \"XL\"), (10, \"X\"), (9, \"IX\"), (5, \"V\"), (4, \"IV\"), (1, \"I\")]\n    out = []\n    for value, symbol in table:\n        count, n = divmod(n, value)\n        out.append(symbol * count)\n    return \"\".join(out)\n",
+        "test_roman.py": "import unittest\n\nfrom roman import to_roman\n\n\nclass RomanTest(unittest.TestCase):\n    def test_converts(self):\n        self.assertEqual(to_roman(1994), \"MCMXCIV\")\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "visible": {
+        "command": "python3",
+        "args": [
+          "-m",
+          "unittest",
+          "-q"
+        ]
+      },
+      "check": "import hashlib, pathlib, re\ntext = pathlib.Path('README.md').read_text()\nusage = re.search(r'^## Usage[ \\t]*$(.*?)(?=^## |\\Z)', text, re.M | re.S)\nlimits = re.search(r'^## Limits[ \\t]*$(.*?)(?=^## |\\Z)', text, re.M | re.S)\nassert usage and limits, 'missing sections'\nusage, limits = usage.group(1), limits.group(1)\nassert '```python' in usage and 'from roman import to_roman' in usage\nassert 'to_roman(1994)' in usage and 'MCMXCIV' in usage\nassert '3999' in limits and 'ValueError' in limits and re.search(r'\\b1\\b', limits)\nassert hashlib.sha256(pathlib.Path('roman.py').read_bytes()).hexdigest() == '5d993f897323d90e7ba9e7f266c81d1a49c6e1f9d55ebafe089e216ca4188317'\n",
+      "reference": {
+        "README.md": "# roman\n\nConverts integers to Roman numerals.\n\n## Usage\n\n```python\nfrom roman import to_roman\n\nprint(to_roman(1994))  # 'MCMXCIV'\n```\n\n## Limits\n\nInputs must be integers from 1 to 3999. Any other value raises ValueError.\n"
+      }
+    },
+    {
+      "id": "py-ttl-lru-cache",
+      "kind": "implementation",
+      "difficulty": "complex",
+      "task": "Implement the TTLCache class in ttl_cache.py. TTLCache(capacity, ttl, clock=time.monotonic): capacity must be a positive int and ttl a positive number of seconds, otherwise raise ValueError. An entry expires once clock() - stored_at >= ttl, where stored_at is the clock value when the key was last set; reading never extends its life. get(key, default=None) returns the live value and makes the key the most recently used; for a missing or expired key it returns default (an expired entry is removed). set(key, value) stores or replaces the value, resets stored_at and makes the key the most recently used; if the cache then holds more than capacity entries, expired entries are removed first, then least recently used entries until it fits. delete(key) removes the key and returns True only if a live entry was removed. len(cache) counts live entries only. keys() returns the live keys from least to most recently used. `key in cache` is True only for a live entry and does not change recency. Modify only ttl_cache.py.",
+      "files": {
+        "ttl_cache.py": "import time\n\n\nclass TTLCache:\n    def __init__(self, capacity, ttl, clock=time.monotonic):\n        raise NotImplementedError\n",
+        "test_ttl_cache.py": "import unittest\n\nfrom ttl_cache import TTLCache\n\n\nclass Clock:\n    def __init__(self):\n        self.now = 0.0\n\n    def __call__(self):\n        return self.now\n\n\nclass TTLCacheTest(unittest.TestCase):\n    def test_least_recently_used_is_evicted(self):\n        clock = Clock()\n        cache = TTLCache(2, 100, clock=clock)\n        cache.set(\"a\", 1)\n        cache.set(\"b\", 2)\n        cache.get(\"a\")\n        cache.set(\"c\", 3)\n        self.assertEqual(cache.keys(), [\"a\", \"c\"])\n\n    def test_entries_expire(self):\n        clock = Clock()\n        cache = TTLCache(2, 10, clock=clock)\n        cache.set(\"a\", 1)\n        clock.now = 10\n        self.assertIsNone(cache.get(\"a\"))\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "visible": {
+        "command": "python3",
+        "args": [
+          "-m",
+          "unittest",
+          "-q"
+        ]
+      },
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom ttl_cache import TTLCache\n\n\nclass Clock:\n    def __init__(self):\n        self.now = 0.0\n\n    def __call__(self):\n        return self.now\n\n\nclock = Clock()\nc = TTLCache(2, 10, clock=clock)\nc.set('a', 1)\nclock.now = 1\nc.set('b', 2)\nassert c.get('a') == 1\nclock.now = 2\nc.set('c', 3)\nassert c.keys() == ['a', 'c'], c.keys()\nassert 'b' not in c and c.get('b', 'gone') == 'gone'\nclock.now = 10\nassert c.get('a') is None, 'expired exactly at ttl'\nassert len(c) == 1 and c.keys() == ['c'], (len(c), c.keys())\nclock.now = 11\nassert c.get('c') == 3\nclock.now = 12\nassert 'c' not in c, 'a read must not extend the life of an entry'\nassert len(c) == 0\n\nd = TTLCache(2, 5, clock=clock)\nclock.now = 100\nd.set('old', 1)\nclock.now = 103\nd.set('x', 2)\nclock.now = 105\nd.set('y', 3)\nassert d.keys() == ['x', 'y'], ('expired entries go before live ones', d.keys())\nclock.now = 106\nd.set('x', 20)\nclock.now = 107\nd.set('z', 4)\nassert d.keys() == ['x', 'z'], ('replacing makes the key recent', d.keys())\nassert d.get('x') == 20\nclock.now = 110\nassert 'x' in d\nclock.now = 111\nassert 'x' not in d, 'replacing resets the age'\nassert d.delete('z') is True and d.delete('z') is False\nassert d.delete('x') is False, 'an expired entry is not a live one'\n\ne = TTLCache(2, 100, clock=clock)\ne.set('p', 1)\ne.set('q', 2)\nassert 'p' in e\ne.set('r', 3)\nassert e.keys() == ['q', 'r'], ('membership does not touch recency', e.keys())\n\nfor arguments in ((0, 1), (1, 0), (-1, 1), (1, -2), (1.5, 1), (True, 1)):\n    try:\n        TTLCache(*arguments)\n    except ValueError:\n        pass\n    else:\n        raise AssertionError(arguments)\nTTLCache(1, 0.5)\n",
+      "reference": {
+        "ttl_cache.py": "import time\nfrom collections import OrderedDict\n\n\nclass TTLCache:\n    def __init__(self, capacity, ttl, clock=time.monotonic):\n        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:\n            raise ValueError(\"capacity must be a positive integer\")\n        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or ttl <= 0:\n            raise ValueError(\"ttl must be a positive number\")\n        self.capacity = capacity\n        self.ttl = ttl\n        self.clock = clock\n        self._entries = OrderedDict()\n\n    def _alive(self, stored_at, now):\n        return now - stored_at < self.ttl\n\n    def get(self, key, default=None):\n        now = self.clock()\n        entry = self._entries.get(key)\n        if entry is None:\n            return default\n        if not self._alive(entry[1], now):\n            del self._entries[key]\n            return default\n        self._entries.move_to_end(key)\n        return entry[0]\n\n    def set(self, key, value):\n        now = self.clock()\n        self._entries[key] = (value, now)\n        self._entries.move_to_end(key)\n        if len(self._entries) > self.capacity:\n            for stale in [k for k, (_, at) in self._entries.items() if not self._alive(at, now)]:\n                del self._entries[stale]\n            while len(self._entries) > self.capacity:\n                self._entries.popitem(last=False)\n\n    def delete(self, key):\n        now = self.clock()\n        entry = self._entries.pop(key, None)\n        return entry is not None and self._alive(entry[1], now)\n\n    def __len__(self):\n        return len(self.keys())\n\n    def keys(self):\n        now = self.clock()\n        return [k for k, (_, at) in self._entries.items() if self._alive(at, now)]\n\n    def __contains__(self, key):\n        entry = self._entries.get(key)\n        return entry is not None and self._alive(entry[1], self.clock())\n"
+      }
+    },
+    {
+      "id": "py-ledger-bugfix",
+      "kind": "bug_fix",
+      "difficulty": "normal",
+      "task": "Fix ledger.py so it does what its docstrings say. Lines are 'date;account;amount' with ISO dates. Blank lines, whitespace-only lines and lines starting with # are skipped. Amounts are returned as decimal.Decimal and may contain thousands separators (1,234.50), surrounding spaces, and parentheses for negatives ((12.50) is -12.50). Account names are compared case-insensitively after trimming and reported in lower case. The date filter of balances includes both start and end. A malformed line raises ValueError whose message contains 'line N' with its 1-based line number. Keep the public API (parse_amount, load, balances).",
+      "files": {
+        "ledger.py": "def parse_amount(text):\n    \"\"\"'1,234.50' -> Decimal('1234.50'); '(12.50)' -> Decimal('-12.50').\"\"\"\n    return float(text)\n\n\ndef load(lines):\n    \"\"\"Parse 'date;account;amount' lines. Blank lines and # comments are skipped;\n    account names are case-insensitive and reported in lower case.\"\"\"\n    entries = []\n    for line in lines:\n        if not line:\n            continue\n        date, account, amount = line.split(\";\")\n        entries.append((date, account, parse_amount(amount)))\n    return entries\n\n\ndef balances(entries, start=None, end=None):\n    \"\"\"Sum amounts per account for entries dated from start to end, both inclusive.\"\"\"\n    totals = {}\n    for date, account, amount in entries:\n        if start and date < start:\n            continue\n        if end and date >= end:\n            continue\n        totals[account] = totals.get(account, 0) + amount\n    return totals\n",
+        "test_ledger.py": "import unittest\nfrom decimal import Decimal\n\nfrom ledger import balances, load\n\n\nclass LedgerTest(unittest.TestCase):\n    def test_comments_are_skipped(self):\n        self.assertEqual(len(load([\"# header\", \"2026-01-01;cash;1\"])), 1)\n\n    def test_end_date_is_inclusive(self):\n        entries = load([\"2026-01-31;cash;5\"])\n        self.assertEqual(balances(entries, end=\"2026-01-31\"), {\"cash\": Decimal(\"5\")})\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "visible": {
+        "command": "python3",
+        "args": [
+          "-m",
+          "unittest",
+          "-q"
+        ]
+      },
+      "check": "import sys\nsys.path.insert(0, '.')\nfrom decimal import Decimal\nfrom ledger import balances, load, parse_amount\n\nlines = ['# opening balances', '2026-01-01;Cash;1,234.50', '', '   ', '2026-01-05; cash ;(34.50)',\n         '2026-01-31;Bank;100', '2026-02-01;bank;  2.25 ', '   # indented comment']\nentries = load(lines)\nassert len(entries) == 4, entries\nassert all(isinstance(amount, Decimal) for _, _, amount in entries), entries\nassert balances(entries) == {'cash': Decimal('1200.00'), 'bank': Decimal('102.25')}, balances(entries)\nassert balances(entries, start='2026-01-05', end='2026-01-31') == {'cash': Decimal('-34.50'), 'bank': Decimal('100')}\nassert balances(entries, end='2026-01-01') == {'cash': Decimal('1234.50')}\nassert balances(entries, start='2026-02-01') == {'bank': Decimal('2.25')}\nassert parse_amount('(12.50)') == Decimal('-12.50') and parse_amount(' 7 ') == Decimal('7')\nassert parse_amount('1,000,000') == Decimal('1000000')\nfor bad in ('2026-01-01;cash', '2026-01-01;cash;abc', 'a;b;c;d'):\n    try:\n        load(['2026-01-01;cash;1', bad])\n    except ValueError as error:\n        assert 'line 2' in str(error), error\n    else:\n        raise AssertionError(bad)\n",
+      "reference": {
+        "ledger.py": "from decimal import Decimal, InvalidOperation\n\n\ndef parse_amount(text):\n    \"\"\"'1,234.50' -> Decimal('1234.50'); '(12.50)' -> Decimal('-12.50').\"\"\"\n    text = text.strip()\n    negative = text.startswith(\"(\") and text.endswith(\")\")\n    if negative:\n        text = text[1:-1].strip()\n    try:\n        value = Decimal(text.replace(\",\", \"\"))\n    except InvalidOperation:\n        raise ValueError(f\"bad amount: {text!r}\") from None\n    return -value if negative else value\n\n\ndef load(lines):\n    \"\"\"Parse 'date;account;amount' lines. Blank lines and # comments are skipped;\n    account names are case-insensitive and reported in lower case.\"\"\"\n    entries = []\n    for number, line in enumerate(lines, start=1):\n        if not line.strip() or line.lstrip().startswith(\"#\"):\n            continue\n        parts = line.split(\";\")\n        if len(parts) != 3:\n            raise ValueError(f\"line {number}: expected date;account;amount\")\n        date, account, amount = (part.strip() for part in parts)\n        try:\n            value = parse_amount(amount)\n        except ValueError as error:\n            raise ValueError(f\"line {number}: {error}\") from None\n        entries.append((date, account.lower(), value))\n    return entries\n\n\ndef balances(entries, start=None, end=None):\n    \"\"\"Sum amounts per account for entries dated from start to end, both inclusive.\"\"\"\n    totals = {}\n    for date, account, amount in entries:\n        if start is not None and date < start:\n            continue\n        if end is not None and date > end:\n            continue\n        totals[account] = totals.get(account, Decimal(0)) + amount\n    return totals\n"
+      }
+    },
+    {
+      "id": "js-semver-satisfies",
+      "kind": "implementation",
+      "difficulty": "complex",
+      "task": "Implement satisfies(version, range) in semver.js. Versions are plain MAJOR.MINOR.PATCH with non-negative integers and no leading zeros; anything else (including prerelease tags) throws TypeError. A range is one or more comparator sets joined by '||', and a version satisfies the range if it satisfies any set. A set is whitespace-separated terms that must all hold; surrounding whitespace is ignored. Terms: a full version with an optional operator (=, >, >=, <, <=); '*', 'x' or 'X' (any version); partial or X-ranges such as '1', '1.2', '1.x', '1.2.x' and '1.2.*' (1.2.x means >=1.2.0 <1.3.0, 1 means >=1.0.0 <2.0.0); caret with a full version: ^1.2.3 means >=1.2.3 <2.0.0, ^0.2.3 means >=0.2.3 <0.3.0 and ^0.0.3 means >=0.0.3 <0.0.4; tilde: ~1.2.3 means >=1.2.3 <1.3.0, ~1.2 means >=1.2.0 <1.3.0 and ~1 means >=1.0.0 <2.0.0; and a hyphen range 'A - B' of two full versions meaning >=A <=B. An empty range, an empty set or a term that cannot be parsed throws TypeError. Modify only semver.js.",
+      "files": {
+        "semver.js": "function satisfies(version, range) {\n  throw new Error('not implemented');\n}\n\nmodule.exports = { satisfies };\n",
+        "test.js": "const assert = require('assert');\nconst { satisfies } = require('./semver.js');\n\nassert.strictEqual(satisfies('1.2.3', '1.2.3'), true);\nassert.strictEqual(satisfies('1.9.0', '^1.2.3'), true);\nassert.strictEqual(satisfies('1.3.0', '~1.2.3'), false);\nconsole.log('ok');\n"
+      },
+      "visible": {
+        "command": "node",
+        "args": [
+          "test.js"
+        ]
+      },
+      "check": "import subprocess\nscript = r\"\"\"\nconst assert = require('assert');\nconst { satisfies } = require('./semver.js');\nconst yes = [\n  ['1.2.3', '1.2.3'], ['1.2.3', '=1.2.3'], ['1.2.3', '>=1.2.3'], ['1.2.4', '>1.2.3'], ['1.9.9', '<2.0.0'],\n  ['1.0.0', '<=1.0.0'], ['1.9.0', '^1.2.3'], ['0.2.9', '^0.2.3'], ['0.0.3', '^0.0.3'], ['1.2.9', '~1.2.3'],\n  ['1.2.0', '~1.2'], ['1.9.9', '~1'], ['1.0.0', '1.x'], ['1.2.7', '1.2.x'], ['7.8.9', '*'], ['3.1.4', 'x'],\n  ['1.5.0', '1'], ['1.2.5', '1.2'], ['1.2.5', '1.2.*'], ['1.4.9', '>=1.0.0 <1.5.0'], ['2.3.4', '1.2.3 - 2.3.4'],\n  ['1.2.3', '1.2.3 - 2.3.4'], ['0.9.0', '<1.0.0 || >=2.0.0'], ['2.0.0', '<1.0.0 || >=2.0.0'],\n  ['0.9.5', '^1.0.0 || ~0.9.0'], ['1.2.3', '  1.2.3  '], ['1.3.0', '>=1.2.3   <1.4.0'],\n];\nconst no = [\n  ['1.2.4', '1.2.3'], ['1.2.2', '>=1.2.3'], ['1.2.3', '>1.2.3'], ['2.0.0', '<2.0.0'], ['1.0.1', '<=1.0.0'],\n  ['2.0.0', '^1.2.3'], ['1.2.2', '^1.2.3'], ['0.3.0', '^0.2.3'], ['0.0.4', '^0.0.3'], ['0.1.0', '^0.0.3'],\n  ['1.3.0', '~1.2.3'], ['1.2.2', '~1.2.3'], ['1.3.0', '~1.2'], ['2.0.0', '~1'], ['2.0.0', '1.x'],\n  ['1.3.0', '1.2.x'], ['0.9.9', '1'], ['1.3.0', '1.2'], ['1.5.0', '>=1.0.0 <1.5.0'], ['2.3.5', '1.2.3 - 2.3.4'],\n  ['1.2.2', '1.2.3 - 2.3.4'], ['1.5.0', '<1.0.0 || >=2.0.0'], ['1.2.3', '1.2.4 || 1.2.5'],\n];\nfor (const [v, r] of yes) assert.strictEqual(satisfies(v, r), true, `${v} should satisfy ${r}`);\nfor (const [v, r] of no) assert.strictEqual(satisfies(v, r), false, `${v} should not satisfy ${r}`);\nfor (const [v, r] of [['1.2', '*'], ['01.2.3', '*'], ['1.2.3-beta', '*'], ['1.2.3', ''], ['1.2.3', '>=a'],\n                      ['1.2.3', '1.2.3 ||'], ['1.2.3', '^1.x.3']]) {\n  assert.throws(() => satisfies(v, r), TypeError, `${v} / ${r}`);\n}\n\"\"\"\nsubprocess.run(['node', '-e', script], check=True, timeout=30)\n",
+      "reference": {
+        "semver.js": "const NUMBER = /^(0|[1-9]\\d*)$/;\nconst WILDCARD = new Set(['*', 'x', 'X']);\n\nfunction parseVersion(text) {\n  const parts = String(text).split('.');\n  if (parts.length !== 3 || !parts.every((part) => NUMBER.test(part))) {\n    throw new TypeError(`invalid version: ${text}`);\n  }\n  return parts.map(Number);\n}\n\nfunction compare(a, b) {\n  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;\n  return 0;\n}\n\n// The numbers of a partial version up to its first wildcard, or null.\nfunction parsePartial(text) {\n  if (WILDCARD.has(text)) return [];\n  const parts = text.split('.');\n  if (parts.length > 3) return null;\n  const numbers = [];\n  for (let i = 0; i < parts.length; i++) {\n    if (WILDCARD.has(parts[i])) {\n      return parts.slice(i).every((part) => WILDCARD.has(part)) ? numbers : null;\n    }\n    if (!NUMBER.test(parts[i])) return null;\n    numbers.push(Number(parts[i]));\n  }\n  return numbers;\n}\n\nfunction bounds(numbers) {\n  const lower = [...numbers, 0, 0].slice(0, 3);\n  const upper = numbers.length === 1 ? [numbers[0] + 1, 0, 0] : [numbers[0], numbers[1] + 1, 0];\n  return [['>=', lower], ['<', upper]];\n}\n\nfunction term(text) {\n  const operator = /^(>=|<=|>|<|=)(.*)$/.exec(text);\n  if (operator) return [[operator[1], parseVersion(operator[2])]];\n  if (text.startsWith('^')) {\n    const v = parseVersion(text.slice(1));\n    const upper = v[0] > 0 ? [v[0] + 1, 0, 0] : v[1] > 0 ? [0, v[1] + 1, 0] : [0, 0, v[2] + 1];\n    return [['>=', v], ['<', upper]];\n  }\n  if (text.startsWith('~')) {\n    const numbers = parsePartial(text.slice(1));\n    if (!numbers || numbers.length === 0) throw new TypeError(`invalid term: ${text}`);\n    return numbers.length === 3 ? [['>=', numbers], ['<', [numbers[0], numbers[1] + 1, 0]]] : bounds(numbers);\n  }\n  const numbers = parsePartial(text);\n  if (!numbers) throw new TypeError(`invalid term: ${text}`);\n  if (numbers.length === 0) return [];\n  return numbers.length === 3 ? [['=', numbers]] : bounds(numbers);\n}\n\nfunction comparatorSet(text) {\n  const tokens = text.trim().split(/\\s+/).filter(Boolean);\n  if (tokens.length === 0) throw new TypeError('empty comparator set');\n  if (tokens.length === 3 && tokens[1] === '-') {\n    return [['>=', parseVersion(tokens[0])], ['<=', parseVersion(tokens[2])]];\n  }\n  if (tokens.includes('-')) throw new TypeError(`invalid range: ${text}`);\n  return tokens.flatMap(term);\n}\n\nfunction holds(version, [operator, bound]) {\n  const order = compare(version, bound);\n  return { '=': order === 0, '>': order > 0, '>=': order >= 0, '<': order < 0, '<=': order <= 0 }[operator];\n}\n\nfunction satisfies(version, range) {\n  const v = parseVersion(version);\n  if (typeof range !== 'string') throw new TypeError('range must be a string');\n  const sets = range.split('||').map(comparatorSet);\n  return sets.some((set) => set.every((comparator) => holds(v, comparator)));\n}\n\nmodule.exports = { satisfies };\n"
+      }
+    },
+    {
+      "id": "py-shapes-package-refactor",
+      "kind": "refactor",
+      "difficulty": "complex",
+      "task": "Refactor shapes.py into a package named shapes without changing behaviour. shapes/base.py defines an abstract Shape base class with area(), perimeter() and label(), plus the formatting describe() relies on; shapes/circle.py and shapes/rectangle.py hold Circle and Rectangle; shapes/__init__.py exports Circle, Rectangle, Shape, describe and total_area. describe must no longer inspect types with isinstance: each shape provides its own label through the base class, and describe still raises TypeError for an object that is not a shape. Delete shapes.py. Callers doing `from shapes import Circle, Rectangle, describe, total_area` must get identical results and errors.",
+      "files": {
+        "shapes.py": "import math\n\n\nclass Circle:\n    def __init__(self, radius):\n        if radius <= 0:\n            raise ValueError(\"radius must be positive\")\n        self.radius = radius\n\n    def area(self):\n        return math.pi * self.radius ** 2\n\n    def perimeter(self):\n        return 2 * math.pi * self.radius\n\n\nclass Rectangle:\n    def __init__(self, width, height):\n        if width <= 0 or height <= 0:\n            raise ValueError(\"sides must be positive\")\n        self.width = width\n        self.height = height\n\n    def area(self):\n        return self.width * self.height\n\n    def perimeter(self):\n        return 2 * (self.width + self.height)\n\n\ndef describe(shape):\n    if isinstance(shape, Circle):\n        return \"circle r=%s area=%.2f perimeter=%.2f\" % (shape.radius, shape.area(), shape.perimeter())\n    if isinstance(shape, Rectangle):\n        return \"rectangle %sx%s area=%.2f perimeter=%.2f\" % (\n            shape.width, shape.height, shape.area(), shape.perimeter())\n    raise TypeError(\"unknown shape\")\n\n\ndef total_area(shapes):\n    total = 0\n    for shape in shapes:\n        total += shape.area()\n    return total\n",
+        "test_shapes.py": "import unittest\n\nfrom shapes import Circle, Rectangle, describe, total_area\n\n\nclass ShapesTest(unittest.TestCase):\n    def test_describe(self):\n        self.assertEqual(describe(Circle(1)), \"circle r=1 area=3.14 perimeter=6.28\")\n        self.assertEqual(describe(Rectangle(2, 3)), \"rectangle 2x3 area=6.00 perimeter=10.00\")\n\n    def test_total_area(self):\n        self.assertAlmostEqual(total_area([Rectangle(1, 2), Rectangle(3, 4)]), 14)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n"
+      },
+      "visible": {
+        "command": "python3",
+        "args": [
+          "-m",
+          "unittest",
+          "-q"
+        ]
+      },
+      "check": "import inspect, math, pathlib, sys\nsys.path.insert(0, '.')\nassert not pathlib.Path('shapes.py').exists(), 'shapes.py must be deleted'\nfor name in ('__init__.py', 'base.py', 'circle.py', 'rectangle.py'):\n    assert pathlib.Path('shapes', name).is_file(), name\nfrom shapes import Circle, Rectangle, Shape, describe, total_area\nassert issubclass(Circle, Shape) and issubclass(Rectangle, Shape)\nassert inspect.isabstract(Shape), 'Shape must be abstract'\nassert describe(Circle(2)) == 'circle r=2 area=12.57 perimeter=12.57', describe(Circle(2))\nassert describe(Rectangle(3, 4.5)) == 'rectangle 3x4.5 area=13.50 perimeter=15.00', describe(Rectangle(3, 4.5))\nassert abs(total_area([Circle(1), Rectangle(2, 3)]) - (math.pi + 6)) < 1e-12\nassert total_area([]) == 0\nfor build in (lambda: Circle(0), lambda: Rectangle(1, -1), lambda: Rectangle(0, 2)):\n    try:\n        build()\n    except ValueError:\n        pass\n    else:\n        raise AssertionError('invalid size accepted')\ntry:\n    describe(object())\nexcept TypeError:\n    pass\nelse:\n    raise AssertionError('describe accepted an object that is not a shape')\nassert 'isinstance' not in inspect.getsource(describe), 'describe still inspects types'\n",
+      "reference": {
+        "shapes.py": null,
+        "shapes/__init__.py": "from .base import Shape\nfrom .circle import Circle\nfrom .rectangle import Rectangle\n\n__all__ = [\"Circle\", \"Rectangle\", \"Shape\", \"describe\", \"total_area\"]\n\n\ndef describe(shape):\n    label = getattr(shape, \"label\", None)\n    if not callable(label):\n        raise TypeError(\"unknown shape\")\n    return shape.describe()\n\n\ndef total_area(shapes):\n    total = 0\n    for shape in shapes:\n        total += shape.area()\n    return total\n",
+        "shapes/base.py": "from abc import ABC, abstractmethod\n\n\nclass Shape(ABC):\n    @abstractmethod\n    def area(self):\n        \"\"\"The area of the shape.\"\"\"\n\n    @abstractmethod\n    def perimeter(self):\n        \"\"\"The length of its outline.\"\"\"\n\n    @abstractmethod\n    def label(self):\n        \"\"\"What the shape is and how big, as describe() prints it.\"\"\"\n\n    def describe(self):\n        return \"%s area=%.2f perimeter=%.2f\" % (self.label(), self.area(), self.perimeter())\n",
+        "shapes/circle.py": "import math\n\nfrom .base import Shape\n\n\nclass Circle(Shape):\n    def __init__(self, radius):\n        if radius <= 0:\n            raise ValueError(\"radius must be positive\")\n        self.radius = radius\n\n    def area(self):\n        return math.pi * self.radius ** 2\n\n    def perimeter(self):\n        return 2 * math.pi * self.radius\n\n    def label(self):\n        return \"circle r=%s\" % (self.radius,)\n",
+        "shapes/rectangle.py": "from .base import Shape\n\n\nclass Rectangle(Shape):\n    def __init__(self, width, height):\n        if width <= 0 or height <= 0:\n            raise ValueError(\"sides must be positive\")\n        self.width = width\n        self.height = height\n\n    def area(self):\n        return self.width * self.height\n\n    def perimeter(self):\n        return 2 * (self.width + self.height)\n\n    def label(self):\n        return \"rectangle %sx%s\" % (self.width, self.height)\n"
+      }
+    }
+  ]
+}

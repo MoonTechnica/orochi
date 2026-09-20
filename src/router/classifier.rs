@@ -17,7 +17,7 @@ use crate::{
     },
     scheduler::{self, quota},
     storage::Store,
-    types::{Complexity, TaskDescriptor, now},
+    types::{Complexity, ExecutionCandidate, Outcome, TaskDescriptor, now},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -188,19 +188,53 @@ pub fn apply(descriptor: &mut TaskDescriptor, classification: &Classification) {
 /// leaves the heuristic in place: classification must never be why a run cannot start.
 /// Named outright, or every agent that would run the work anyway: sending the request to one
 /// of those puts the text where it was already going. Empty when classification is off.
-fn agents(config: &Config) -> Vec<String> {
+///
+/// Asking is a whole extra session, and what that costs differs by agent far more than by
+/// question, so the cheapest answerer is asked first — measured here, not assumed. An agent
+/// that has never answered goes ahead of the priced ones, or its own price stays unknown.
+pub fn agents(config: &Config, store: &Store) -> Vec<String> {
     if !config.classifier.enabled {
         return vec![];
     }
-    match &config.classifier.agent {
-        Some(agent) => vec![agent.clone()],
-        None => config
-            .agents
-            .iter()
-            .filter(|a| a.enabled && !a.routing_only)
-            .map(|a| a.id.clone())
-            .collect(),
+    if let Some(agent) = &config.classifier.agent {
+        return vec![agent.clone()];
     }
+    let spent = store.advice_cost("classification", 64).unwrap_or_default();
+    let mut agents: Vec<String> = config
+        .agents
+        .iter()
+        .filter(|a| a.enabled && !a.routing_only)
+        .map(|a| a.id.clone())
+        .collect();
+    // A stable sort, so agents nobody has priced yet keep their configured order.
+    agents.sort_by(|a, b| match (spent.get(a), spent.get(b)) {
+        (Some(one), Some(other)) => one.total_cmp(other),
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    agents
+}
+
+/// Whether asking is worth what asking costs, both as measured here. Orochi asks while it
+/// cannot tell — there is nothing to weigh yet, and asking is how it learns — and stops where
+/// the question would take more than its share of the work it decides.
+pub fn worth_asking(config: &Config, store: &Store, descriptor: &TaskDescriptor) -> bool {
+    let Some(first) = agents(config, store).first().cloned() else {
+        return false;
+    };
+    let Some(asking) = store
+        .advice_cost("classification", 64)
+        .ok()
+        .and_then(|spent| spent.get(&first).copied())
+    else {
+        // Nobody has priced the agent that would answer; asking it is how that is learned.
+        return true;
+    };
+    let Ok(Some(work)) = store.typical_tokens(&descriptor.task_type, descriptor.complexity) else {
+        return true;
+    };
+    asking <= work * config.classifier.max_cost_share
 }
 
 pub async fn refine(
@@ -212,7 +246,7 @@ pub async fn refine(
     descriptor: &mut TaskDescriptor,
     mut report: impl FnMut(Progress),
 ) {
-    let agents = agents(config);
+    let agents = agents(config, store);
     if agents.is_empty() {
         return;
     }
@@ -238,6 +272,14 @@ pub async fn refine(
         report(note(descriptor, true));
         return;
     }
+    // A cached answer is free; a new one is a session of its own and has to be worth it.
+    if !worth_asking(config, store, descriptor) {
+        report(Progress::Note(
+            "asking what this is would cost more than the work; keeping the local profile".into(),
+        ));
+        return;
+    }
+    let labels = descriptor.clone();
     // Trying every agent must not turn a turn into minutes of stalling when none can answer:
     // one agent's worth of time is the whole budget, however many are left to try.
     let deadline =
@@ -250,7 +292,12 @@ pub async fn refine(
             return;
         }
         let choice = &config.classifier.seat(agent);
-        match ask(config, policies, store, choice, task, &remembered).await {
+        let ledger = Ledger {
+            root,
+            labels: &labels,
+            purpose: "classification",
+        };
+        match ask(config, policies, store, choice, task, &remembered, &ledger).await {
             Ok(classification) => {
                 // The same reply that classified the request says what in it is worth keeping,
                 // so remembering costs no call of its own.
@@ -310,8 +357,17 @@ async fn ask(
     choice: &RouterConfig,
     task: &str,
     remembered: &serde_json::Value,
+    ledger: &Ledger<'_>,
 ) -> anyhow::Result<Classification> {
-    let reply = consult(config, policies, store, choice, request(task, remembered)).await?;
+    let reply = consult(
+        config,
+        policies,
+        store,
+        choice,
+        request(task, remembered),
+        ledger,
+    )
+    .await?;
     parse(&reply).ok_or_else(|| {
         AgentError::new(
             ErrorKind::Other,
@@ -321,6 +377,15 @@ async fn ask(
     })
 }
 
+/// Where what a consultation spent is written: beside this repository's runs, under what it
+/// was for. What a run cost has to include what it took to decide it, or Orochi looks
+/// cheaper than it is; not being an execution, it never teaches the router (`learning`).
+struct Ledger<'a> {
+    root: &'a Path,
+    labels: &'a TaskDescriptor,
+    purpose: &'static str,
+}
+
 /// One turn in a fresh adviser session on the classifier's seat.
 async fn consult(
     config: &Config,
@@ -328,6 +393,7 @@ async fn consult(
     store: &Store,
     choice: &RouterConfig,
     text: String,
+    ledger: &Ledger<'_>,
 ) -> anyhow::Result<String> {
     let runtime = store.runtime()?;
     let scope = choice.model.as_deref().unwrap_or("*");
@@ -344,8 +410,53 @@ async fn consult(
     };
     let mut session = Session::start(choice, &selection).await?;
     let model = session.model();
-    let (result, _) = session.ask(text).await;
+    let reasoning = session.reasoning();
+    let (started, clock) = (now(), std::time::Instant::now());
+    let (result, usage) = session.ask(text).await;
     session.stop().await;
+    if let Ok(repository) = store.repository_id(ledger.root) {
+        let error = result.as_ref().err().map(|error| {
+            error
+                .downcast_ref::<AgentError>()
+                .map_or(ErrorKind::Other, |e| e.kind)
+                .key()
+                .to_owned()
+        });
+        let candidate = ExecutionCandidate {
+            id: format!("{}/{model}", choice.agent),
+            agent: choice.agent.clone(),
+            provider: config
+                .agents
+                .iter()
+                .find(|a| a.id == choice.agent)
+                .map_or(crate::types::Provider::Openai, |a| a.provider),
+            model: model.clone(),
+            reasoning_level: reasoning,
+            mode: None,
+            session_strategy: "fresh".into(),
+            context_strategy: "adviser".into(),
+            success_probability: 0.0,
+            expected_tokens: 0.0,
+            expected_cost: 0.0,
+            confidence: 0.0,
+            reasons: vec![ledger.purpose.into()],
+            prediction: None,
+        };
+        let _ = store.record(&scheduler::make_record(
+            &uuid::Uuid::new_v4().to_string(),
+            &repository,
+            ledger.labels,
+            candidate,
+            usage,
+            clock.elapsed(),
+            0,
+            Outcome::PartialSuccess,
+            vec![],
+            error,
+            started,
+            ledger.purpose,
+        ));
+    }
     result.inspect_err(|error| {
         // The classifier shares the account with execution, so a real limit applies to both.
         if let Some(agent_error) = error.downcast_ref::<AgentError>()
@@ -398,7 +509,7 @@ pub async fn distill(
     said: &[String],
     mut report: impl FnMut(Progress),
 ) {
-    let agents = agents(config);
+    let agents = agents(config, store);
     let Some((memory, repository)) =
         Memory::open(store.data_dir(), &config.memory).zip(store.repository_id(root).ok())
     else {
@@ -414,12 +525,19 @@ pub async fn distill(
             return;
         }
         let text = distill_request(said, &memory.listing(&repository, now()));
+        let labels = profiler::profile("", root);
+        let ledger = Ledger {
+            root,
+            labels: &labels,
+            purpose: "distillation",
+        };
         let reply = consult(
             config,
             policies,
             store,
             &config.classifier.seat(agent),
             text,
+            &ledger,
         )
         .await;
         let Some(distilled) = reply

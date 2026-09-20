@@ -1,16 +1,17 @@
 //! Interactive conversation (`orochi` on a terminal, `orochi chat`). Each message re-enters the
 //! scheduler; later messages continue the agent session the first one was routed to.
 //!
-//! The terminal UI follows OpenHands CLI and Claude Code: the input line, its attachments and a
-//! status row stay pinned at the bottom while the transcript scrolls above them, messages typed
-//! during a turn queue up, tool rows are marked ✓/✗ in place, Esc interrupts, and Shift-Tab
-//! cycles the approval mode the running agent actually supports.
+//! The terminal UI follows Claude Code, and OpenHands CLI where Claude Code says nothing: the
+//! input line, its attachments and a status row stay pinned at the bottom while the transcript
+//! scrolls above them, messages typed during a turn queue up, tool rows are marked ✓/✗ in
+//! place, Esc interrupts, and Shift-Tab cycles the approval mode the running agent actually
+//! supports. Keys, the queue and questions behave as Claude Code documents them.
 mod banner;
 pub mod term;
 
 use crate::{
     acp::{ExecutionEvent, FileDiff, Progress, ToolUpdate, allow_once_option},
-    collaboration::Plan,
+    collaboration::{Part, Plan},
     config::{Config, PermissionMode},
     context::bounded,
     policy::Registry,
@@ -131,15 +132,17 @@ const COMMANDS: [Command; 11] = [
         anytime: false,
     },
 ];
-const SHORTCUTS: [(&str, &str); 8] = [
+const SHORTCUTS: [(&str, &str); 10] = [
     ("Shift-Tab", "Cycle the approval mode"),
-    ("Esc", "Interrupt the running turn"),
+    ("Esc", "Stop the running turn; what is queued is sent next"),
+    ("Esc Esc", "Clear what you typed (↑ brings it back)"),
     (
         "Enter",
         "Send; while the agent works, the message is queued",
     ),
-    ("Ctrl-C", "Clear the input; twice in a row quits"),
-    ("Ctrl-D", "Quit"),
+    ("↑", "While messages are queued, take them back to edit"),
+    ("Ctrl-C", "Stop the turn, or clear the input; twice quits"),
+    ("Ctrl-D", "Delete forward; twice on an empty line quits"),
     ("\\ + Enter", "Continue the message on a new line"),
     ("/ then Tab", "List and complete commands"),
     ("@ then Tab", "Attach a file or image by path"),
@@ -182,7 +185,7 @@ const REVIEW: usize = 2;
 const PHASES: [Phase; 3] = [
     Phase {
         name: "design",
-        instruction: "Plan the work first (設計 / architecture). Change nothing yet. Answer with what has to happen, the pieces involved, the risks, and how the result will be checked. Answer in the language the user used.",
+        instruction: "Plan the work first (設計 / architecture). Change nothing yet. Answer with what has to happen, the pieces involved, the risks, and how the result will be checked. Answer in the language the user used. If the work divides into parts that can be built without each other's code, end with one line holding only {\"parts\":[{\"id\":\"<lowercase letters, digits, ->\",\"brief\":\"what this part builds\",\"paths\":[\"<relative paths it writes>\"],\"after\":[\"<ids of parts whose code it needs>\"]}]}; two parts that only have to agree on an interface need not wait for each other. Leave it out when the work does not divide.",
         hands_over: true,
     },
     Phase {
@@ -206,9 +209,38 @@ const LANGUAGE: &str = "Write your answer, and every message you send to another
 enum Action {
     None,
     Send(Message),
+    /// Esc: stops a running turn; at an idle prompt, twice clears the draft.
+    Escape,
+    /// Ctrl-C: stops a running turn; at an idle prompt, clears the input, then leaves.
     Interrupt,
+    /// Ctrl-D on an empty line: leaves once pressed twice.
+    Exit,
+    /// Input ended.
     Quit,
     Cycle,
+}
+
+/// How long a second Esc or Ctrl-D still counts as the second press (Claude Code's 800 ms).
+const AGAIN: Duration = Duration::from_millis(800);
+
+/// Keys that act on their second press at an idle prompt, and when each was first pressed.
+/// Any other key starts them over.
+#[derive(Default)]
+struct Twice {
+    escape: Option<Instant>,
+    interrupt: bool,
+    exit: Option<Instant>,
+}
+impl Twice {
+    fn again(first: &mut Option<Instant>) -> bool {
+        match first.take() {
+            Some(at) if at.elapsed() < AGAIN => true,
+            _ => {
+                *first = Some(Instant::now());
+                false
+            }
+        }
+    }
 }
 
 /// The approval mode: the agent's own session modes when it has them, else how Orochi answers
@@ -276,7 +308,7 @@ struct Session<'a> {
     conversation: Conversation,
     feed: Option<Feed>,
     approval: Approval,
-    interrupted: bool,
+    twice: Twice,
     quit: bool,
 }
 
@@ -319,7 +351,7 @@ pub async fn run(
         awaiting: None,
         feed: Feed::open(),
         approval,
-        interrupted: false,
+        twice: Twice::default(),
         quit: false,
     };
     if tty {
@@ -357,10 +389,14 @@ impl Session<'_> {
                     _ = resized.recv() => { self.view.term.resized(); continue }
                 };
                 let Some(key) = key else { break None };
-                match press(&mut self.view.term, key, self.root) {
+                let action = press(&mut self.view.term, key, self.root);
+                // As in Claude Code: Esc never leaves; twice clears a draft into history.
+                // Ctrl-C clears the input, and a second press leaves; Ctrl-D on an empty line
+                // asks first. Anything else in between starts them over.
+                let twice = std::mem::take(&mut self.twice);
+                match action {
                     Action::Quit => break None,
                     Action::Send(message) => {
-                        self.interrupted = false;
                         if let Some(message) = self.dispatch(message, false) {
                             break Some(message);
                         }
@@ -369,12 +405,28 @@ impl Session<'_> {
                         self.approval.cycle();
                         self.refresh_status(None);
                     }
+                    Action::Escape => {
+                        self.twice.escape = twice.escape;
+                        if Twice::again(&mut self.twice.escape) {
+                            self.view.term.prompt.shelve();
+                            self.view.term.render();
+                        }
+                    }
                     Action::Interrupt => {
-                        if self.interrupted {
+                        if twice.interrupt {
                             break None;
                         }
-                        self.interrupted = true;
+                        self.twice.interrupt = true;
+                        self.view.term.prompt.clear();
+                        self.view.term.render();
                         self.view.note("Press Ctrl-C again to exit");
+                    }
+                    Action::Exit => {
+                        self.twice.exit = twice.exit;
+                        if Twice::again(&mut self.twice.exit) {
+                            break None;
+                        }
+                        self.view.note("Press Ctrl-D again to exit");
                     }
                     Action::None => {}
                 }
@@ -669,13 +721,10 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
         Key::Tab if picking => accept(term),
         Key::Tab => complete(term, root),
         Key::ShiftTab => return Action::Cycle,
-        Key::Escape => return Action::Interrupt,
-        Key::Interrupt => {
-            if term.prompt.text().is_empty() {
-                return Action::Interrupt;
-            }
-            term.prompt.clear();
-        }
+        Key::Escape => return Action::Escape,
+        Key::Interrupt => return Action::Interrupt,
+        Key::CtrlD if term.prompt.text().is_empty() => return Action::Exit,
+        Key::CtrlD => term.prompt.delete(),
         Key::Eof => {
             if term.prompt.text().is_empty() {
                 return Action::Quit;
@@ -893,11 +942,13 @@ fn command(text: &str) -> Option<(&str, &str)> {
     .then_some((word, argument))
 }
 
+/// As Claude Code's permission prompt, with No last and on Esc.
 const CHOICES: [&str; 3] = [
     "Yes",
-    "No, stop this turn",
-    "Auto: allow the rest of this session",
+    "Yes, and don't ask again this session",
+    "No, and say what to do instead (esc)",
 ];
+const NO: usize = 2;
 
 /// A permission request waiting for an answer; the panel stays on screen, the loop keeps running.
 struct Pending {
@@ -924,13 +975,14 @@ impl Session<'_> {
         while self.said.len() > SAID_MESSAGES {
             self.said.pop_front();
         }
-        let task = self.profile(&message.text).await;
-        if let Some(plan) = self.team_for(&message, &task).await {
-            return self.collaborate(message, plan).await;
-        }
+        let Some(task) = self.profile(&message.text).await else {
+            self.view.result(WARN, "Interrupted");
+            self.refresh_status(None);
+            return Ok(());
+        };
         let steps = self.steps(&message, &task);
         if !steps.is_empty() {
-            return self.run_team(message, steps).await;
+            return self.run_team(message, steps, &task).await;
         }
         let pinned = self.conversation.current.is_some();
         let result = self.execute(message, None, Some(task)).await;
@@ -1052,66 +1104,164 @@ impl Session<'_> {
     }
 
     /// One classification per turn. The escalation below, the phase split and the routing
-    /// all read this same answer instead of asking again about the same words.
-    async fn profile(&mut self, text: &str) -> TaskDescriptor {
+    /// all read this same answer instead of asking again about the same words. `None` when the
+    /// user stopped the turn while it was being classified: Esc stops whatever is running.
+    async fn profile(&mut self, text: &str) -> Option<TaskDescriptor> {
         let mut task = crate::router::profiler::profile(text, self.root);
-        if let Ok(policies) = Registry::load(self.data) {
-            let view = &mut self.view;
-            crate::router::classifier::refine(
-                self.config,
+        let Ok(policies) = Registry::load(self.data) else {
+            return Some(task);
+        };
+        let (config, store, root) = (self.config, self.store, self.root);
+        let mut notes = vec![];
+        let stopped = {
+            let work = crate::router::classifier::refine(
+                config,
                 &policies,
-                self.store,
-                self.root,
+                store,
+                root,
                 text,
                 &mut task,
                 |progress| {
                     if let Progress::Note(note) = progress {
-                        view.note(&note);
+                        notes.push(note);
                     }
                 },
-            )
-            .await;
+            );
+            tokio::pin!(work);
+            let mut listening = true;
+            loop {
+                tokio::select! {
+                    _ = &mut work => break false,
+                    key = self.keyboard.next(), if listening => {
+                        let Some(key) = key else { listening = false; continue };
+                        match press(&mut self.view.term, key, root) {
+                            Action::Escape | Action::Interrupt => break true,
+                            Action::Send(message) => {
+                                let _ = self.dispatch(message, true);
+                            }
+                            Action::Cycle => {
+                                self.approval.cycle();
+                                self.refresh_status(None);
+                            }
+                            Action::Quit => listening = false,
+                            Action::Exit | Action::None => {}
+                        }
+                    }
+                }
+            }
+        };
+        for note in notes {
+            self.view.note(&note);
         }
-        task
+        (!stopped).then_some(task)
     }
 
-    /// Work that splits across separate workspaces is past what a console turn does in the
-    /// user's own tree. It is also the only escalation that starts several agents at once and
-    /// writes back, so it is the one thing the console asks about first.
-    async fn team_for(&mut self, message: &Message, task: &TaskDescriptor) -> Option<Plan> {
+    /// Work the design step divided into parts that can run side by side is past what a console
+    /// turn does in the user's tree. It is also the only escalation that starts several agents
+    /// at once and writes back, so it is the one thing the console asks about first — showing
+    /// the order it would run in, which only something that has read the code can propose.
+    /// Asked as Claude Code asks to approve a plan: Esc builds nothing.
+    async fn divide(
+        &mut self,
+        message: &Message,
+        task: &TaskDescriptor,
+        parts: Vec<Part>,
+    ) -> Option<Proceed> {
         if !self.tty || !matches!(message.steps, Steps::Auto) {
             return None;
         }
-        let plan = crate::collaboration::plan::derive(task, self.root);
-        if !plan.splits_work() || plan.validate(self.config).is_err() {
-            return None;
-        }
-        self.view.line(&format!(
-            "{} {}",
-            self.view.paint(BRAND, "◆"),
-            self.view
-                .paint(BOLD, "This is more than one agent's worth of work")
-        ));
-        self.view.note(&plan.summary());
-        self.view.note(
-            "each implementer works in its own copy; a verified result is merged back into \
-             your tree",
-        );
-        self.view.result(
-            MUTED,
-            "Enter or y to start the team · any other key runs it as a normal turn",
-        );
-        loop {
-            return match self.keyboard.next().await {
-                Some(Key::Enter | Key::Char('y' | 'Y')) => Some(plan),
-                // Esc and Ctrl-C mean "not this", the same as anywhere else in the console.
-                None | Some(Key::Eof | Key::Escape | Key::Interrupt | Key::Char(_)) => {
-                    self.view.note("staying on a single turn");
-                    None
+        let plan = crate::collaboration::plan::with_parts(task, parts)?;
+        plan.validate(self.config).ok()?;
+        let waves = plan.waves()?;
+        let limit = self.view.width().saturating_sub(4).max(20);
+        let heading = vec![
+            format!(
+                " {} {}",
+                self.view.paint(BRAND, "◆"),
+                self.view
+                    .paint(BOLD, "This divides into parts that can run side by side")
+            ),
+            format!(
+                "   {}",
+                self.view.paint(
+                    CODE,
+                    &fit(&crate::collaboration::graph::summary(&waves), limit)
+                )
+            ),
+            format!(
+                "   {}",
+                self.view.paint(MUTED, &fit(&plan.summary(), limit))
+            ),
+            format!(
+                "   {}",
+                self.view.paint(
+                    MUTED,
+                    &fit(
+                        "each part works in its own copy; a verified result is merged back",
+                        limit
+                    )
+                )
+            ),
+        ];
+        let choice = self
+            .choose(
+                heading,
+                &[
+                    "Yes, run the parts side by side",
+                    "Yes, one agent carries it out here",
+                    "No, keep the design (esc)",
+                ],
+            )
+            .await;
+        Some(match choice {
+            Some(0) => Proceed::Team(plan),
+            Some(1) => Proceed::Alone,
+            _ => Proceed::Keep,
+        })
+    }
+
+    /// A question in the pinned area, answered as Claude Code's dialogs are: ↑↓ and Enter, or
+    /// an option's number. Esc and Ctrl-C close it without choosing.
+    async fn choose(&mut self, heading: Vec<String>, options: &[&str]) -> Option<usize> {
+        let mut selected = 0;
+        let choice = loop {
+            let mut rows = vec![self.view.paint(MUTED, &"─".repeat(self.view.width()))];
+            rows.extend(heading.iter().cloned());
+            rows.push(String::new());
+            for (index, label) in options.iter().enumerate() {
+                let label = format!("{}. {label}", index + 1);
+                rows.push(if index == selected {
+                    format!(
+                        " {} {}",
+                        self.view.paint(BRAND, "❯"),
+                        self.view.paint(&format!("1;{BRAND}"), &label)
+                    )
+                } else {
+                    format!("   {}", self.view.paint(MUTED, &label))
+                });
+            }
+            self.view.term.overlay = Some(rows);
+            self.view.term.status = self
+                .view
+                .paint(MUTED, " Enter to select · ↑↓ to navigate · Esc to cancel");
+            self.view.term.render();
+            match self.keyboard.next().await {
+                Some(Key::Up) => selected = (selected + options.len() - 1) % options.len(),
+                Some(Key::Down) => selected = (selected + 1) % options.len(),
+                Some(Key::Enter) => break Some(selected),
+                Some(Key::Char(c))
+                    if c.to_digit(10)
+                        .is_some_and(|n| (1..=options.len()).contains(&(n as usize))) =>
+                {
+                    break c.to_digit(10).map(|n| n as usize - 1);
                 }
-                _ => continue,
-            };
-        }
+                None | Some(Key::Escape | Key::Interrupt | Key::Eof) => break None,
+                _ => {}
+            }
+        };
+        self.view.term.overlay = None;
+        self.refresh_status(None);
+        choice
     }
 
     /// Runs the derived team and reports where it got to. The report lives under the data
@@ -1122,33 +1272,67 @@ impl Session<'_> {
             .join("collaborations")
             .join(uuid::Uuid::new_v4().to_string());
         self.view.note(&format!("report: {}", output.display()));
-        let result = crate::collaboration::run(
-            self.config,
-            &Registry::load(self.data)?,
-            self.store,
-            self.root,
-            &message.text,
-            &plan,
-            &output,
-            // The user asked for the work, not for a report about it; `apply` still refuses
-            // anything whose real checks did not pass.
-            true,
-        )
-        .await;
+        let policies = Registry::load(self.data)?;
+        let (events, mut received) = mpsc::unbounded_channel();
+        let result = {
+            let run = crate::collaboration::run(
+                self.config,
+                &policies,
+                self.store,
+                self.root,
+                &message.text,
+                &plan,
+                &output,
+                // The user asked for the work, not for a report about it; `apply` still refuses
+                // anything whose real checks did not pass.
+                true,
+                // Progress goes through the screen: raw stderr would land on the pinned input.
+                Some(events),
+            );
+            tokio::pin!(run);
+            let mut listening = true;
+            loop {
+                tokio::select! {
+                    biased;
+                    Some(event) = received.recv() => {
+                        if let ExecutionEvent::Progress(Progress::Note(note)) = event {
+                            self.view.note(&note);
+                        }
+                    }
+                    key = self.keyboard.next(), if listening => match key {
+                        // The collaboration stops on the interrupt it already listens for.
+                        Some(Key::Escape | Key::Interrupt) => raise_interrupt(),
+                        None | Some(Key::Eof) => listening = false,
+                        _ => {}
+                    },
+                    result = &mut run => break result,
+                }
+            }
+        };
+        while let Ok(event) = received.try_recv() {
+            if let ExecutionEvent::Progress(Progress::Note(note)) = event {
+                self.view.note(&note);
+            }
+        }
         match result {
             Ok(report) => {
-                let applied = report.finished();
-                self.view.result(
-                    if applied { BRAND } else { WARN },
-                    &if applied {
-                        "team finished · result merged into your working tree".to_owned()
-                    } else {
-                        format!(
-                            "team finished without a verified result · resume with `orochi collaborate-resume --output {}`",
-                            output.display()
-                        )
-                    },
+                let resume = format!(
+                    "resume with `orochi collaborate-resume --output {}`",
+                    output.display()
                 );
+                if report.finished() {
+                    self.view.result(
+                        BRAND,
+                        "team finished · result merged into your working tree",
+                    );
+                } else if report.status == crate::collaboration::RunStatus::Cancelled {
+                    self.view.result(WARN, &format!("team stopped · {resume}"));
+                } else {
+                    self.view.result(
+                        WARN,
+                        &format!("team finished without a verified result · {resume}"),
+                    );
+                }
             }
             Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
         }
@@ -1188,8 +1372,14 @@ impl Session<'_> {
         steps
     }
 
-    /// Each step is routed on its own and hands its reply to the next one.
-    async fn run_team(&mut self, message: Message, steps: Vec<usize>) -> Result<()> {
+    /// Each step is routed on its own and hands its reply to the next one. A design that
+    /// divides the work may turn the rest of it into a team, if the user says so.
+    async fn run_team(
+        &mut self,
+        message: Message,
+        steps: Vec<usize>,
+        descriptor: &TaskDescriptor,
+    ) -> Result<()> {
         let task = message.text.clone();
         let mut handover = String::new();
         let mut steps = steps;
@@ -1225,8 +1415,41 @@ impl Session<'_> {
                     break;
                 }
             };
+            let designed = steps[index] == DESIGN;
+            let (reply, parts) = if designed {
+                divided(&reply)
+            } else {
+                (reply, None)
+            };
             if hands_over {
                 handover = bounded(&reply, AGENT_CHARS);
+            }
+            if designed
+                && code == 0
+                && let Some(parts) = parts
+                && let Some(proceed) = self.divide(&message, descriptor, parts).await
+            {
+                match proceed {
+                    Proceed::Team(plan) => {
+                        let team = Message {
+                            text: format!(
+                                "{}\n\nThe design step concluded:\n{handover}",
+                                message.text
+                            ),
+                            attachments: vec![],
+                            steps: Steps::Solo,
+                        };
+                        return self.collaborate(team, plan).await;
+                    }
+                    Proceed::Alone => self.view.note("carrying on as one agent"),
+                    Proceed::Keep => {
+                        // As declining a plan in Claude Code: nothing is built, and the next
+                        // message carries on from the design.
+                        self.conversation.remember(&message.text, &handover);
+                        self.view.note("keeping the design · say what to change");
+                        break;
+                    }
+                }
             }
             // An implementation that did not verify itself gets a review, and then one pass
             // to act on what the review found.
@@ -1315,7 +1538,13 @@ impl Session<'_> {
         // other turn was already classified by `run_turn`, once, before any of this printed.
         let mut profile = match classified {
             Some(profile) => profile,
-            None => self.profile(&message.text).await,
+            None => match self.profile(&message.text).await {
+                Some(profile) => profile,
+                None => {
+                    self.view.result(WARN, "Interrupted");
+                    return Ok((130, String::new()));
+                }
+            },
         };
         // The seats of the last turn are gone; a follow-up to a discussion seats them again,
         // with what was said passed on as context, rather than answering into an empty room.
@@ -1421,9 +1650,12 @@ impl Session<'_> {
         let mut continuation = None;
         let mut finished: BTreeSet<&'static str> = BTreeSet::new();
         let mut reply = String::new();
+        // The design's division of the work is for Orochi, which shows the order instead.
+        let mut withhold = Withhold::new(phase.is_some_and(|p| p.name == PHASES[DESIGN].name));
         let mut pending: Option<Pending> = None;
         let mut signalled = false;
         let mut stopping = false;
+        let mut exiting: Option<Instant> = None;
         let mut listening = true;
         let approval = &mut self.approval;
         let queue = &mut self.queue;
@@ -1431,6 +1663,10 @@ impl Session<'_> {
         let feed = &mut self.feed;
         let root = self.root;
         let mut screen = Screen::new(&mut self.view);
+        // The lead takes its place first and each seat after the one before it, so each sees
+        // what the earlier ones took and finds them in the mailbox, however long its own
+        // discovery ran.
+        let order = crate::mailbox::Order::new(1 + beside.len());
         let result = {
             let run = scheduler::run_turn(
                 self.config,
@@ -1451,20 +1687,18 @@ impl Session<'_> {
                     verify: seats[0].writes,
                     // A discussion changes nothing in the repository; only the talking matters.
                     read_only: !seats[0].writes,
+                    place: Some(order.place(0)),
                 },
                 Some(events),
                 &mut continuation,
             );
-            let (config, store, rules) = (self.config, self.store, &policies);
+            let (config, store, rules, order) = (self.config, self.store, &policies, &order);
             // Every other seat runs beside the lead, in this same working tree, reading only.
             let others: futures::stream::FuturesUnordered<_> = aside_runs
                 .into_iter()
                 .zip(aside_slots.iter_mut())
                 .enumerate()
                 .map(|(index, ((role, task, sender), slot))| async move {
-                    // Each seat starts a moment after the one before it, so each claims its
-                    // account first and the scorer steers the next one elsewhere.
-                    tokio::time::sleep(Duration::from_millis(1200 * (index as u64 + 1))).await;
                     let _ = scheduler::run_turn(
                         config,
                         rules,
@@ -1483,6 +1717,7 @@ impl Session<'_> {
                             peer: Some(role.name.to_owned()),
                             verify: false,
                             read_only: true,
+                            place: Some(order.place(index + 1)),
                         },
                         Some(sender),
                         slot,
@@ -1502,7 +1737,7 @@ impl Session<'_> {
                 tokio::select! {
                     biased;
                     Some(event) = received.recv() => {
-                        handle(event, &mut screen, &mut reply, &mut pending);
+                        handle(event, &mut screen, &mut reply, &mut pending, &mut withhold);
                     }
                     Some((name, event)) = next_aside(&mut asides), if !asides.is_empty() => {
                         aside(event, &mut screen, name);
@@ -1520,15 +1755,32 @@ impl Session<'_> {
                         let Some(key) = key else { listening = false; continue };
                         if pending.is_some() {
                             answer(key, &mut pending, &mut screen);
+                        } else if matches!(key, Key::Up) && !queue.is_empty() {
+                            // As in Claude Code, Up takes back what is queued, to edit or drop.
+                            take_back(queue, &mut screen);
                         } else {
-                            match press(&mut screen.view.term, key, root) {
+                            let action = press(&mut screen.view.term, key, root);
+                            let first_exit = exiting.take();
+                            match action {
                                 Action::Send(message) => enqueue(message, queue, approval, &mut screen),
                                 Action::Cycle => approval.cycle(),
-                                Action::Interrupt => {
+                                // Both stop the turn and keep what is typed; what is queued is
+                                // sent next, as in Claude Code.
+                                Action::Escape | Action::Interrupt => {
                                     screen.phase = "Stopping".into();
                                     raise_interrupt();
                                 }
-                                // Ctrl-D quits; a closed pipe just means no more input.
+                                Action::Exit => {
+                                    exiting = first_exit;
+                                    if Twice::again(&mut exiting) {
+                                        stopping = true;
+                                        screen.phase = "Stopping".into();
+                                        raise_interrupt();
+                                    } else {
+                                        screen.result(MUTED, "Press Ctrl-D again to exit");
+                                    }
+                                }
+                                // A closed pipe or terminal just means no more input.
                                 Action::Quit => {
                                     if screen.view.term.tty {
                                         stopping = true;
@@ -1554,7 +1806,11 @@ impl Session<'_> {
             }
         };
         while let Ok(event) = received.try_recv() {
-            handle(event, &mut screen, &mut reply, &mut pending);
+            handle(event, &mut screen, &mut reply, &mut pending, &mut withhold);
+        }
+        let held = withhold.finish();
+        if !held.is_empty() {
+            screen.text(&held);
         }
         for (name, receiver) in &mut asides {
             while let Ok(event) = receiver.try_recv() {
@@ -1639,6 +1895,22 @@ impl Session<'_> {
 }
 
 /// A message typed while the agent works waits its turn; `/confirm` still applies at once.
+/// Moves every queued message back into the input, one per line, ahead of what is typed.
+fn take_back(queue: &mut VecDeque<Message>, screen: &mut Screen<'_>) {
+    let taken: Vec<Message> = queue.drain(..).collect();
+    let text = taken
+        .iter()
+        .map(|message| message.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let attachments = taken
+        .into_iter()
+        .flat_map(|message| message.attachments)
+        .collect();
+    screen.view.term.prompt.restore(&text, attachments);
+    screen.view.term.render();
+}
+
 fn enqueue(
     message: Message,
     queue: &mut VecDeque<Message>,
@@ -1770,13 +2042,17 @@ fn handle(
     screen: &mut Screen<'_>,
     reply: &mut String,
     pending: &mut Option<Pending>,
+    withhold: &mut Withhold,
 ) {
     match event {
         ExecutionEvent::Text(text) => {
             if reply.len() < AGENT_CHARS * 4 {
                 reply.push_str(&text);
             }
-            screen.text(&text);
+            let shown = withhold.feed(&text);
+            if !shown.is_empty() {
+                screen.text(&shown);
+            }
         }
         ExecutionEvent::Permission(request, answer) => {
             let Some(allow) = allow_once_option(&request) else {
@@ -1816,12 +2092,132 @@ fn handle(
                 }
             }
         }
-        ExecutionEvent::Finished => screen.end_text(),
+        ExecutionEvent::Finished => {
+            let held = withhold.finish();
+            if !held.is_empty() {
+                screen.text(&held);
+            }
+            screen.end_text();
+        }
         ExecutionEvent::Progress(progress) => screen.progress(progress),
     }
 }
 
-/// Answers the permission panel: arrows move, 1/2/3 and y/n/a choose, Esc denies.
+/// What the user chose once a design divided the work.
+enum Proceed {
+    Team(Plan),
+    Alone,
+    Keep,
+}
+
+/// A design step's trailing division of the work, `{"parts": …}`, optionally fenced.
+#[derive(serde::Deserialize)]
+struct Division {
+    parts: Value,
+}
+
+/// The design's reply without its division of the work, and the parts it proposed.
+fn divided(reply: &str) -> (String, Option<Vec<Part>>) {
+    let parts = crate::context::trailing_json::<Division>(reply)
+        .and_then(|division| serde_json::from_value(division.parts).ok());
+    let mut withhold = Withhold::new(true);
+    let mut said = withhold.feed(reply);
+    said.push_str(&withhold.finish());
+    (said.trim_end().to_owned(), parts)
+}
+
+/// Keeps a design step's trailing `{"parts": …}` object (and any fence around it) out of the
+/// transcript while it streams. Text that only looked like its start is shown as soon as that
+/// is clear, and an object that turns out not to end the reply is shown at the end, so nothing
+/// but the division itself is ever held back.
+struct Withhold {
+    active: bool,
+    /// Unshown text; it always begins at the start of a line.
+    held: String,
+    /// The last text shown ended mid-line, so what follows cannot start the object.
+    mid_line: bool,
+    hiding: bool,
+}
+impl Withhold {
+    const OPENING: &str = "{\"parts\"";
+    fn new(active: bool) -> Self {
+        Self {
+            active,
+            held: String::new(),
+            mid_line: false,
+            hiding: false,
+        }
+    }
+    fn feed(&mut self, text: &str) -> String {
+        if !self.active {
+            return text.to_owned();
+        }
+        let mut shown = String::new();
+        let mut text = text;
+        if self.mid_line && !self.hiding {
+            match text.find('\n') {
+                Some(end) => {
+                    shown.push_str(&text[..=end]);
+                    text = &text[end + 1..];
+                    self.mid_line = false;
+                }
+                None => return text.to_owned(),
+            }
+        }
+        self.held.push_str(text);
+        while !self.hiding {
+            match self.probe() {
+                Some(true) => self.hiding = true,
+                // Could still become the object: wait for more.
+                None => break,
+                Some(false) => match self.held.find('\n') {
+                    Some(end) => shown.extend(self.held.drain(..=end)),
+                    None => {
+                        shown.push_str(&std::mem::take(&mut self.held));
+                        self.mid_line = !shown.is_empty();
+                        break;
+                    }
+                },
+            }
+        }
+        shown
+    }
+    /// Whether the held text opens the object (`Some(true)`), cannot (`Some(false)`), or may
+    /// yet (`None`). Fence lines are looked through; models often wrap the object in ```json.
+    fn probe(&self) -> Option<bool> {
+        let mut compact = String::new();
+        for line in self.held.split_inclusive('\n') {
+            let trimmed = line.trim();
+            let complete = line.ends_with('\n');
+            if trimmed.starts_with("```")
+                || !complete && !trimmed.is_empty() && "```".starts_with(trimmed)
+            {
+                continue;
+            }
+            compact.extend(trimmed.chars().filter(|c| !c.is_whitespace()));
+            if compact.len() >= Self::OPENING.len() {
+                break;
+            }
+        }
+        if compact.starts_with(Self::OPENING) {
+            Some(true)
+        } else if Self::OPENING.starts_with(&compact) {
+            None
+        } else {
+            Some(false)
+        }
+    }
+    /// Whatever is still held once the reply is complete: nothing if it was the division.
+    fn finish(&mut self) -> String {
+        let held = std::mem::take(&mut self.held);
+        let division = self.hiding && crate::context::trailing_json::<Division>(&held).is_some();
+        self.hiding = false;
+        self.mid_line = false;
+        if division { String::new() } else { held }
+    }
+}
+
+/// Answers the permission panel: arrows move, 1/2/3 and y/a/n choose, Esc is No.
 fn answer(key: Key, slot: &mut Option<Pending>, screen: &mut Screen<'_>) {
     let dialog = slot.as_mut().expect("pending permission");
     let choice = match key {
@@ -1835,9 +2231,9 @@ fn answer(key: Key, slot: &mut Option<Pending>, screen: &mut Screen<'_>) {
         }
         Key::Enter => Some(dialog.selected),
         Key::Char('1' | 'y' | 'Y') => Some(0),
-        Key::Char('2' | 'n' | 'N') => Some(1),
-        Key::Char('3' | 'a' | 'A') => Some(2),
-        Key::Escape | Key::Interrupt => Some(1),
+        Key::Char('2' | 'a' | 'A') => Some(1),
+        Key::Char('3' | 'n' | 'N') => Some(NO),
+        Key::Escape | Key::Interrupt => Some(NO),
         _ => None,
     };
     let Some(choice) = choice else {
@@ -1850,12 +2246,18 @@ fn answer(key: Key, slot: &mut Option<Pending>, screen: &mut Screen<'_>) {
     screen.view.term.overlay = None;
     let (code, answer) = match choice {
         0 => (OK, "allowed once"),
-        2 => (OK, "allowed · approval is now auto"),
+        1 => (OK, "allowed · approval is now auto"),
         _ => (WARN, "denied"),
     };
     match choice {
-        1 => screen.denied = true,
-        2 => screen.view.permission = PermissionMode::Allow,
+        // No without a word stops the turn, as in Claude Code: an agent told only "no" would
+        // otherwise go looking for another way to do the same thing.
+        NO => {
+            screen.denied = true;
+            screen.phase = "Stopping".into();
+            raise_interrupt();
+        }
+        1 => screen.view.permission = PermissionMode::Allow,
         _ => {}
     }
     let limit = screen.view.width().saturating_sub(30);
@@ -1868,7 +2270,7 @@ fn answer(key: Key, slot: &mut Option<Pending>, screen: &mut Screen<'_>) {
     );
     screen.begin();
     screen.view.line(&line);
-    let _ = dialog.answer.send((choice != 1).then_some(dialog.allow));
+    let _ = dialog.answer.send((choice != NO).then_some(dialog.allow));
 }
 
 #[derive(Default)]

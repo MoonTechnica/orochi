@@ -1,7 +1,7 @@
 use crate::types::*;
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::{fs::File, path::Path, time::Duration};
+use std::{collections::BTreeMap, fs::File, path::Path, time::Duration};
 
 /// A classification is a property of the wording, not of the repository, but a stale one
 /// would outlive the model that produced it.
@@ -107,6 +107,70 @@ impl Store {
         )?;
         Ok(())
     }
+    /// What work like this has cost here: the median measured tokens of recent executions
+    /// carrying the same labels, or of recent executions at large when that stratum is too
+    /// thin to mean anything. `None` until there is anything to go by.
+    pub fn typical_tokens(&self, task_type: &str, complexity: Complexity) -> Result<Option<f64>> {
+        const SAMPLES: usize = 3;
+        let mut statement = self.connection.prepare(
+            "SELECT record FROM runs WHERE json_extract(record, '$.purpose')='execution'
+             ORDER BY started_at DESC, rowid DESC LIMIT 128",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let (mut stratum, mut every) = (vec![], vec![]);
+        for row in rows {
+            let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
+                continue;
+            };
+            let Some(total) = run.usage.total_tokens else {
+                continue;
+            };
+            every.push(total as f64);
+            if run.task_type == task_type && run.complexity == Some(complexity) {
+                stratum.push(total as f64);
+            }
+        }
+        let mut measured = if stratum.len() >= SAMPLES {
+            stratum
+        } else {
+            every
+        };
+        if measured.len() < SAMPLES {
+            return Ok(None);
+        }
+        measured.sort_by(f64::total_cmp);
+        Ok(Some(measured[measured.len() / 2]))
+    }
+
+    /// What asking each agent for advice has cost lately: the mean total tokens of its most
+    /// recent records of that purpose. Advice is not execution and never teaches the router;
+    /// this is only about what the question itself costs.
+    pub fn advice_cost(&self, purpose: &str, limit: usize) -> Result<BTreeMap<String, f64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT record FROM runs WHERE json_extract(record, '$.purpose')=?1
+             ORDER BY started_at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![purpose, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut spent: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+        for row in rows {
+            let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
+                continue;
+            };
+            let Some(total) = run.usage.total_tokens else {
+                continue;
+            };
+            let entry = spent.entry(run.candidate.agent).or_default();
+            entry.0 += total as f64;
+            entry.1 += 1;
+        }
+        Ok(spent
+            .into_iter()
+            .map(|(agent, (total, count))| (agent, total / count as f64))
+            .collect())
+    }
+
     pub fn recent_runs(&self, limit: usize) -> Result<Vec<RunRecord>> {
         let mut stmt = self
             .connection

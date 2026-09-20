@@ -21,6 +21,9 @@ pub enum Key {
     ShiftTab,
     Escape,
     Interrupt,
+    /// Ctrl-D typed at a terminal: deletes forward, or asks to leave on an empty line.
+    CtrlD,
+    /// Input ended (a closed pipe or terminal).
     Eof,
     KillLine,
     KillWord,
@@ -111,7 +114,7 @@ fn read_keys(keys: &mpsc::UnboundedSender<Key>) {
             b'\t' => Key::Tab,
             0x01 => Key::Home,
             0x03 => Key::Interrupt,
-            0x04 => Key::Eof,
+            0x04 => Key::CtrlD,
             0x05 => Key::End,
             0x0b => Key::KillLine,
             0x0c => Key::Clear,
@@ -368,14 +371,17 @@ impl Term {
     fn repin(&mut self, pinned: usize) -> (usize, usize) {
         let previous = std::mem::replace(&mut self.pinned, pinned);
         if previous != pinned {
-            self.set_region();
             // A growing input eats into the transcript: scroll it up so the last lines stay
             // visible and the next one flows on, rather than being written under the input.
+            // It scrolls inside the old region, which still holds those lines; the new, shorter
+            // one would leave the rows about to be covered where they are, to be drawn over.
             let bottom = self.bottom();
             if self.row > bottom {
-                print!("\x1b[{};1H{}", bottom, "\n".repeat(self.row - bottom));
+                let old = self.rows.saturating_sub(previous).max(1);
+                print!("\x1b[{old};1H{}", "\n".repeat(self.row - bottom));
                 self.row = bottom;
             }
+            self.set_region();
         }
         (
             self.rows.saturating_sub(pinned) + 1,
@@ -557,6 +563,27 @@ impl Prompt {
     }
     pub fn text(&self) -> &str {
         &self.buffer
+    }
+    /// Clears a draft without sending it, keeping it in history so Up brings it back.
+    pub fn shelve(&mut self) {
+        if !self.buffer.trim().is_empty() && self.history.last() != Some(&self.buffer) {
+            self.history.push(self.buffer.clone());
+        }
+        self.clear();
+    }
+    /// Puts messages taken back from the queue ahead of whatever is being typed.
+    pub fn restore(&mut self, text: &str, attachments: Vec<Attachment>) {
+        let typed = std::mem::take(&mut self.buffer);
+        self.buffer = if typed.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{text}\n{typed}")
+        };
+        self.cursor = self.buffer.len();
+        self.index = None;
+        let mut restored = attachments;
+        restored.append(&mut self.attachments);
+        self.attachments = restored;
     }
     pub fn take(&mut self) -> (String, Vec<Attachment>) {
         let text = std::mem::take(&mut self.buffer);

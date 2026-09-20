@@ -1,11 +1,11 @@
 //! Deterministic merges of concurrent implementations and guarded application of a
 //! verified result to the user's working tree.
 use super::{
-    Application, ApplyStatus, Cx, MergeRecord, Report, Role, TurnKind, turn,
+    Application, ApplyStatus, AttemptStatus, Cx, MergeRecord, Report, Role, TurnKind, turn,
     workspace::{self, Change},
 };
 use anyhow::{Context, Result, bail, ensure};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 fn recreate(output: &Path, name: &str) -> Result<std::path::PathBuf> {
     let path = output.join(name);
@@ -19,7 +19,8 @@ fn recreate(output: &Path, name: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-pub(super) fn merge_implementers(output: &Path, report: &mut Report, stage: usize) -> Result<()> {
+pub(super) fn merge_implementers(cx: &Cx<'_>, report: &mut Report, stage: usize) -> Result<()> {
+    let output = cx.output;
     if let Some(last) = report.merges.last()
         && !report.sessions.iter().any(|s| {
             s.role == Role::Implementer
@@ -52,16 +53,98 @@ pub(super) fn merge_implementers(output: &Path, report: &mut Report, stage: usiz
         conflicts.extend(merge.conflicts);
         sources.push(id);
     }
-    eprintln!(
+    cx.say(format!(
         "Merged {} implementations; {} conflict(s)",
         sources.len(),
         conflicts.len()
-    );
+    ));
     report.merges.push(MergeRecord {
         stage,
         sources,
         conflicts,
+        wave: None,
+        strays: BTreeMap::new(),
     });
+    Ok(())
+}
+
+/// Merges the units of one wave onto the tree they started from. A conflict is settled here,
+/// before the next wave copies the result, unless this is the last wave: the integrator
+/// resolves those as part of integrating, as with parallel implementers.
+pub(super) async fn join(
+    cx: &Cx<'_>,
+    report: &mut Report,
+    stage: usize,
+    wave: usize,
+) -> Result<()> {
+    let output = cx.output;
+    let waves = report.plan.waves().context("the plan has no work graph")?;
+    let base = super::wave_base(output, &waves, wave);
+    let merged = super::wave_dir(output, wave).join("_merged");
+    if !report.merges.iter().any(|m| m.stage == stage) {
+        if merged.symlink_metadata().is_ok() {
+            ensure!(
+                !merged.is_symlink() && merged.canonicalize()?.starts_with(output),
+                "a merged wave escaped collaboration output"
+            );
+            std::fs::remove_dir_all(&merged)?;
+        }
+        workspace::copy_workspace(&base, &merged)?;
+        let mut sources: Vec<String> = vec![];
+        let mut conflicts = vec![];
+        let mut strays = BTreeMap::new();
+        for unit in &waves[wave] {
+            let theirs = super::wave_dir(output, wave).join(&unit.id);
+            let label = if sources.is_empty() {
+                "base".to_owned()
+            } else {
+                sources.join("+")
+            };
+            let merge = workspace::three_way(&base, &merged, &theirs, [&label, "base", &unit.id])?;
+            let changes: Vec<&Change> = merge.changes.iter().chain(&merge.marked).collect();
+            workspace::commit(&merged, &changes)?;
+            conflicts.extend(merge.conflicts);
+            let outside = workspace::changed(&base, &theirs)?
+                .into_iter()
+                .filter(|path| {
+                    !unit.paths.is_empty() && !unit.paths.iter().any(|own| path.starts_with(own))
+                })
+                .count();
+            strays.insert(unit.id.clone(), outside);
+            sources.push(unit.id.clone());
+        }
+        cx.say(format!(
+            "Merged {} parts of wave {}; {} conflict(s)",
+            sources.len(),
+            wave + 1,
+            conflicts.len()
+        ));
+        report.merges.push(MergeRecord {
+            stage,
+            sources,
+            conflicts,
+            wave: Some(wave),
+            strays,
+        });
+        super::save(output, report)?;
+    }
+    let conflicts = report
+        .merges
+        .iter()
+        .rev()
+        .find(|m| m.stage == stage)
+        .map(|m| m.conflicts.clone())
+        .unwrap_or_default();
+    if conflicts.is_empty() || wave + 1 == waves.len() {
+        return Ok(());
+    }
+    let resolved = report.sessions.iter().any(|s| {
+        s.stage == stage && s.turn == TurnKind::Resolution && s.status == AttemptStatus::Completed
+    });
+    if !resolved {
+        let turn = turn::untangle(report, stage, merged, &conflicts);
+        turn::run_group(cx, report, stage, vec![turn]).await?;
+    }
     Ok(())
 }
 
@@ -139,10 +222,10 @@ pub(super) async fn apply(cx: &Cx<'_>, report: &mut Report, stage: usize) -> Res
                     application.files = workspace::commit(&root, &changes)?;
                     application.status = ApplyStatus::Applied;
                     application.detail = None;
-                    eprintln!(
+                    cx.say(format!(
                         "Applied {} file(s) to the working tree",
                         application.files.len()
-                    );
+                    ));
                     return Ok(());
                 }
                 application.conflicts = merge.conflicts;
@@ -171,10 +254,10 @@ pub(super) async fn apply(cx: &Cx<'_>, report: &mut Report, stage: usize) -> Res
                     // The working tree changed between the two merges; apply the fresh copy.
                     application.status = ApplyStatus::Resolved;
                 } else {
-                    eprintln!(
+                    cx.say(format!(
                         "{} conflict(s) with the working tree; starting a resolution session",
                         merge.conflicts.len()
-                    );
+                    ));
                     application.conflicts = merge.conflicts;
                     application.status = ApplyStatus::Resolving;
                     application.rounds += 1;

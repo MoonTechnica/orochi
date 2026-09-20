@@ -168,20 +168,24 @@ orochi --yolo                       # approve every permission request once each
 
 - **Output always keeps flowing upward.** Even when the input box grows or shrinks across multiple lines, or you type the next message during a run, earlier output is never redrawn or overwritten (pinned by a test that reproduces the screen in a pseudo-terminal).
 - **The input box is always pinned to the bottom of the screen.** History flows above it and also stays in the terminal's scrollback. The status row below the input box shows the approval mode, the number of queued messages and the work status (`⠹ Working (12s) · esc to interrupt`).
-- **You can keep typing during a run.** Pressing Enter puts the message in the queue (`⏸ queued (1): …`), and queued messages are processed in order as soon as the running work finishes.
+- **You can keep typing during a run.** Pressing Enter puts the message in the queue (`⏸ queued (1): …`), and queued messages are processed in order as soon as the running work finishes. Esc stops the running work and the queue is still sent next; ↑ takes everything queued back into the input, one per line, to edit or drop — as in Claude Code. Unlike Claude Code, a queued message always waits for the next turn: it is not handed to the agent in the middle of the current one.
 - **Shift+Tab switches the approval mode.** If the agent provides session modes over ACP (e.g. `default` / `acceptEdits` / `plan` for Claude Agent ACP, `read-only` / `auto` for Codex ACP), it cycles through those; otherwise it cycles through Orochi's own `ask` / `always` / `never`. `/confirm` also changes it.
 - **Files and images can be attached.** Paste a path (drag & drop), or write a path after `@` and complete it with Tab; an `[Image #1]` / `[File #1]` tag is inserted in the input box and a list appears below it. Images are sent as ACP `image` blocks and text as `resource` blocks. If the agent does not support them, or the file exceeds 8 MiB, the file's location is sent instead (`resource_link`).
-- **Requests are classified by an agent, not by keywords.** Before routing, Orochi asks an agent that would run the work anyway what kind of task it is and how hard, and shows `⎿ classified as bug_fix / normal`. The answer can only raise the difficulty, never lower it, and if no agent answers in time Orochi keeps its local keyword profile. The classifier is the one adviser that sees the request text; none of it is stored (its cache is keyed by a salted hash). `[classifier] enabled = false` turns it off. Automated tests only; its accuracy with real agents is unverified.
-- **Work that splits across workspaces asks once, then runs as a team.** When the team derived from the request would have more than one implementer, Orochi shows it and asks once:
+- **Requests are classified by an agent, not by keywords.** Before routing, Orochi asks an agent that would run the work anyway what kind of task it is and how hard, and shows `⎿ classified as bug_fix / normal`. The answer can only raise the difficulty, never lower it, and if no agent answers in time Orochi keeps its local keyword profile. The classifier is the one adviser that sees the request text; none of it is stored (its cache is keyed by a salted hash). `[classifier] enabled = false` turns it off. Asking is a whole extra session and costs like one (measured on 2026-09-20: 37,630 tokens on Claude against 23,800 on Codex for the same question, almost all of it the session's fixed cost), so what each answer cost is recorded: the cheapest answerer is asked first, and once Orochi has measured both what asking costs and what work like this costs, it stops asking where the question would take more than `classifier.max_cost_share` of the work — the keyword profile stands instead, and the checks still decide whether the result was right. Automated tests only; its accuracy with real agents is unverified.
+- **Work the design divides asks once, then runs as a team.** When the design step ends by dividing the work into parts that can run side by side, Orochi shows the order and asks, the way Claude Code asks to approve a plan:
 
   ```text
-  ◆ This is more than one agent's worth of work
-    coordinator, 3 implementer(s), 3 reviewer(s), integrator, 3 discussion round(s)
-    each implementer works in its own copy; a verified result is merged back into your tree
-    ⎿ Enter or y to start the team · any other key runs it as a normal turn
+   ◆ This divides into parts that can run side by side
+     alpha ‖ beta → gamma
+     2 implementer(s), 3 reviewer(s), integrator
+     each part works in its own copy; a verified result is merged back
+
+   ❯ 1. Yes, run the parts side by side
+     2. Yes, one agent carries it out here
+     3. No, keep the design (esc)
   ```
 
-  It asks only on a terminal, and `/solo` and `/team` turns are never escalated. The report stays in `<data>/collaborations/<id>/`, so an interrupted team can be resumed with `orochi collaborate-resume --output <path>`.
+  `1` runs the parts as a team, `2` carries on with the implementation step in your working tree, and `3` or Esc builds nothing: the design stays in the conversation, and your next message carries on from it. It asks only on a terminal, and `/solo` and `/team` turns are never escalated. While the team runs, Esc or Ctrl-C stops it; the report stays in `<data>/collaborations/<id>/`, so it can be resumed with `orochi collaborate-resume --output <path>`.
 - **It remembers, across sessions and across agents.** When you state something that should hold beyond the current task ("keep diffs small", "this project uses pnpm"), the classifier picks it up in the same call (`⎿ remembered: keep diffs small`), and from then on it opens every new agent session, whichever agent is chosen. A session with two or more messages is looked back over once when you quit, for preferences that only show across messages (`looking back over this session · Esc skips`). Notes are plain Markdown in `<data>/memory/`: one file per repository, plus `USER.md` for what you say holds for every project. Lines you write yourself never expire; a note Orochi heard once expires after 90 days, one heard again after 180. `/memory` lists them, and `/memory forget r2` removes one. A `MEMORY.md` inside the repository is never read, no agent can write memory, and routing advisers never see it. Automated tests only.
 - **Say which agent you want for a kind of work.** "Use Fable for design", said once or written into memory, makes matching candidates cheaper for that kind of work: `⎿ classified as architecture / complex · you prefer fable`. It only tips a close call (cost × 0.8, Orochi's own heuristic): a candidate that fails a capability, quota or success-floor gate is never brought back. It matches a name fragment, so it survives model updates.
 - **Orochi decides the sequence of steps.** Each message is classified: a small request runs as-is in a single pass, while one involving design changes or of large scale is split into "design → implement (→ review)", and an Agent and model are re-chosen for each step. This results in a strong reasoning model for design and a fast model for implementation. Each step's answer is handed on to the next step, and follow-up instructions continue in the session that did the implementation. The decision is shown as, e.g., `⎿ complex task · design → implement`.
@@ -208,9 +212,9 @@ orochi --yolo                       # approve every permission request once each
   Each peer gets its own color, and your own session is shown in the brand color. Joins and departures are shown as well. Messages that arrive while you are typing are shown together right after you send, so the input line is not broken. When your own Agent uses a mailbox tool, a status such as "Messaging another agent" is shown instead of a tool line. `/peers` lists the Agents currently running. Nothing is shown when `[mailbox] enabled = false`.
 - Colors are fixed per role. The logo, prompt, spinner and the in-progress item of a plan use the brand color; Agent answers are blue, success green, failure red, warnings and permission requests yellow, and supplementary information grey. Markdown headings, bold, `code`, code blocks and bullet lists are colored too. No color is used when `NO_COLOR` is set or when output is not a terminal.
 - **The default for permissions is automatic approval (auto).** By default, interactive mode automatically answers an Agent's permission request with a one-time approval. To stop and have you confirm, use `--permission ask` or `/confirm ask`; to deny everything, `/confirm never` (if the configuration sets `scheduler.permission` explicitly to `allow` / `deny`, that is used instead. The default for a one-shot run `orochi "task"` remains `ask` as before).
-- When confirmation is needed, **the input box is replaced in place by the confirmation screen**. Choose `1 Yes` / `2 No` / `3 Auto` with a number key or ↑↓ and Enter; Esc denies. Once you answer, it returns to the input box, and only one line, `⏺ <tool name> → allowed once`, remains in the history.
+- When confirmation is needed, **the input box is replaced in place by the confirmation screen**, with Claude Code's choices: `1 Yes` / `2 Yes, and don't ask again this session` / `3 No, and say what to do instead (esc)`, by number key (`y` / `a` / `n` also work) or ↑↓ and Enter. Once you answer, it returns to the input box, and only one line, `⏺ <tool name> → allowed once`, remains in the history.
 - **Orochi's own mailbox tools (`orochi-mailbox`) are not confirmed.** They only contact other Agents and touch neither files nor commands. The exchanges appear in the chat display. If no other Agent is running, `read_messages` returns immediately without waiting.
-- If you deny, the work for that message stops. Give a different approach in the next message.
+- If you deny, the work for that message stops, as Claude Code stops the turn on a No without a comment: the agent is cancelled rather than left to find another way to do the same thing. Give a different approach in the next message.
 - Agents that are not installed are not shown. Only Agents that are actually unusable, e.g. due to an authentication failure, are warned about, once per session. When a failure has no known kind, the warning includes the cause the agent reported.
 
 Differences from a normal run:
@@ -234,17 +238,19 @@ Differences from a normal run:
 | `/peers` | Other Agents running in the same repository, with their working directory, branch, route and status |
 | `/status` | Working directory, the continuing Agent, model and session, and the answering policy |
 | `/memory` | What Orochi remembers about you and this repository. `/memory forget <id>` removes one item |
-| `/exit` (`/quit`), Ctrl-D | Quit |
+| `/exit` (`/quit`) | Quit |
 | Typing `/` | Matching commands are listed above the input; ↑↓ select one, Tab or Enter takes it |
 | Tab while typing `@` | Complete a file name and attach it |
 | Shift+Tab | Switch the approval mode (auto → ask → never) |
-| ↑↓ | Input history for this session (while command candidates are listed, ↑↓ moves through them) |
+| ↑↓ | Input history for this session (while command candidates are listed, ↑↓ moves through them; while messages are queued during a run, ↑ takes them back into the input) |
 | `\` at end of line + Enter | Insert a newline and keep typing. A multi-line paste becomes one message |
-| Esc during a run | Interrupt that work and return to input |
-| Ctrl-C | Clear the input. Pressing it twice when empty quits |
-| Ctrl-D | Quit |
+| Esc during a run | Stop that work (including the request's classification). What you typed stays in the input, and queued messages are sent next |
+| Esc twice at the prompt | Clear what you typed; ↑ brings it back. Esc never quits |
+| Ctrl-C | During a run, stop it (what you typed stays). Otherwise clear the input; a second press quits |
+| Ctrl-D | Delete the character after the cursor; on an empty line, a second press within 0.8 s quits |
+| Esc in a question | Close it: No on a permission request, keep the design on the team question |
 
-Keys typed during a run are not shown on screen, and everything other than Esc and permission-panel input is discarded. When stdin is not a terminal, `orochi` without a task shows help as before. `orochi chat` processes each line of standard input as one message. In that case output is produced without decoration, thinking or in-progress lines, permission requests are denied, and input lines are not used as answers to permission requests.
+These keys follow Claude Code ([interactive mode](https://code.claude.com/docs/en/interactive-mode), [permissions](https://code.claude.com/docs/en/permissions)); where OpenHands CLI differs — its Ctrl-C asks to quit instead of stopping the run, and its agent carries on after a rejected action — Orochi follows Claude Code. Keys typed during a run edit the input line as usual, and Enter queues. When stdin is not a terminal, `orochi` without a task shows help as before. `orochi chat` processes each line of standard input as one message. In that case output is produced without decoration, thinking or in-progress lines, permission requests are denied, and input lines are not used as answers to permission requests.
 
 Line editing and screen control are implemented in-house (`src/chat/term.rs`). The bottom rows are pinned with the terminal's scroll region (DECSTBM), and input reads keys directly in raw mode. It does not switch to a full screen (alternate screen), so history stays in the terminal's scrollback. On exit, the scroll region, bracketed paste and termios are restored. Even when several characters arrive at once, as when committing Japanese input, none are dropped.
 
@@ -296,7 +302,8 @@ permission = "ask"
 ```toml
 [classifier]
 enabled = true        # default; false keeps the local keyword profile only
-# agent = "claude"    # default: every enabled agent in order, within one agent's worth of time
+# agent = "claude"    # default: whichever agent has answered most cheaply here, within one agent's worth of time
+max_cost_share = 0.25 # skip asking when it would cost more than this share of what work like this costs
 
 [memory]
 enabled = true        # default
@@ -401,6 +408,8 @@ cargo test --locked
 
 The E2E tests start Python 3 ACP fixtures as real child processes. The adviser is also verified with an ACP fixture. No real account, external LLM or API billing is needed. CI targets Linux/macOS. Verification on real Windows machines and bulk termination of descendant processes on Windows are not supported.
 
+[examples/compare_live.py](examples/compare_live.py) runs the tasks of [examples/compare-suite.json](examples/compare-suite.json) three ways — each CLI alone as its owner configured it, and Orochi with both — scoring every arm by a hidden check and charging it every token its runs recorded, the classifier's included. `--validate` checks the suite without contacting an agent; `--execute` consumes quota.
+
 [examples/demo.py](examples/demo.py) lets you try the whole flow without an account.
 
 ```sh
@@ -422,13 +431,14 @@ src/router/         Task Profiler and task classification over ACP, candidate ge
 src/scheduler/      Execution, fallback, quota / circuit breaker
 src/process.rs      Agent supervisor processes, recording descendants, reclaiming after a forced kill
 src/mailbox.rs      Inter-process messages between agents (MCP server, retention-limited storage)
+src/interrupt.rs    One process-wide count of interrupts, so work between two waits still hears Esc
 src/memory.rs       Memory across sessions (user preferences, repository notes; stored separately from telemetry)
 src/context.rs      TaskEnvelope, Git information, cache key
 src/evaluator.rs    Local evaluation and process management
 src/storage.rs      SQLite, schema, repository lock
 src/learning.rs     EWMA, Bandit, prediction calibration
 src/benchmark.rs    Time-series comparison of measured candidates, holdout coefficient search
-src/collaboration/  Steps of independent ACP sessions, team composition from the task, merging parallel implementations, messages, applying to the working tree
+src/collaboration/  Steps of independent ACP sessions, team composition from the task, the order of the work (parts in waves, graph.rs), merging parallel implementations, messages, applying to the working tree
 src/quota_terminal.py Read-only quota retrieval from native CLIs
 src/quota_sources.rs CLI quota retrieval, statusline ingestion
 src/gateway.rs      Exposing Orochi over ACP v1 stdio

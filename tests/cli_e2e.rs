@@ -3,6 +3,7 @@ use orochi::{
     storage::Store,
     types::{Outcome, Provider},
 };
+use serde_json::json;
 use std::{
     path::Path,
     process::{Command, Output},
@@ -579,9 +580,10 @@ fn chat_splits_only_the_work_that_needs_more_than_one_agent() {
         &w,
         "fix the typo in the header\nrewrite the entire architecture from scratch\n",
     ));
+    // The implementation gets a read-only seat beside it; only the steps themselves count here.
     let prompts: Vec<_> = session_requests(&w)
         .into_iter()
-        .filter(|r| r.0 == "session/prompt")
+        .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
         .map(|r| r.2)
         .collect();
     assert_eq!(prompts.len(), 4);
@@ -589,6 +591,251 @@ fn chat_splits_only_the_work_that_needs_more_than_one_agent() {
     assert!(prompts[1].contains("Plan the work first"));
     assert!(prompts[2].contains("following the plan above"));
     assert!(prompts[3].contains("Review"));
+}
+
+/// The design step may divide the work into parts for Orochi to order. That answer is for
+/// Orochi: it never reaches the transcript or the next step's handover. Off a terminal, where
+/// nobody can be asked before several agents start writing, the work stays one turn.
+#[test]
+fn a_divided_design_stays_one_turn_off_a_terminal_and_its_parts_stay_out_of_sight() {
+    let mut w = Workspace::new();
+    let parts = r#"{"parts":[{"id":"alpha","brief":"build alpha","paths":["alpha"]},{"id":"beta","brief":"build beta","paths":["beta"]}]}"#;
+    w.config.agents[0].env.insert(
+        "MOCK_DESIGN_REPLY".into(),
+        format!("Build alpha and beta side by side.\n```json\n{parts}\n```\n"),
+    );
+    let output = chat(&w, "rewrite the entire architecture from scratch\n");
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Build alpha and beta side by side."),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("\"parts\"") && !stdout.contains("```"),
+        "{stdout}"
+    );
+    // The implementation may get a read-only seat beside it; only the steps count here.
+    let prompts: Vec<_> = session_requests(&w)
+        .into_iter()
+        .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
+        .map(|r| r.2)
+        .collect();
+    assert_eq!(prompts.len(), 3);
+    assert!(prompts[0].contains("\"parts\""), "{}", prompts[0]);
+    assert!(prompts[1].contains("From the previous step:\nBuild alpha and beta side by side."));
+    assert!(!prompts[1].contains("\"parts\""), "{}", prompts[1]);
+    assert!(!w.dir.path().join("data/collaborations").exists());
+
+    // JSON that is not the division of the work is part of the answer, and stays in it.
+    let mut plain = Workspace::new();
+    plain.config.agents[0].env.insert(
+        "MOCK_DESIGN_REPLY".into(),
+        "Keep the config as:\n```json\n{\"partsList\": 1}\n```\n{\"particle\": true}\n".into(),
+    );
+    let output = chat(&plain, "rewrite the entire architecture from scratch\n");
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("```json\n{\"partsList\": 1}\n```\n{\"particle\": true}"),
+        "{stdout}"
+    );
+}
+
+/// Asking an agent what a request is costs tokens like any other call. What a run cost has to
+/// include what it took to decide it, or Orochi looks cheaper than it is; the record carries
+/// the classifier's route and usage, and — not being an execution — never teaches the router.
+#[test]
+fn what_the_classifier_spent_is_recorded_beside_the_run_it_decided() {
+    let mut w = Workspace::new();
+    w.config.classifier.enabled = true;
+    w.config.agents[0].env.insert(
+        "MOCK_CLASSIFICATION".into(),
+        r#"{"task_type":"implementation","complexity":"normal","ambiguity":0.1}"#.into(),
+    );
+    success(&w.run(&["Implement the PRIVATE endpoint"]));
+    let runs = w.store().recent_runs(10).unwrap();
+    let classification: Vec<_> = runs
+        .iter()
+        .filter(|r| r.purpose == "classification")
+        .collect();
+    assert_eq!(classification.len(), 1, "{runs:?}");
+    assert_eq!(classification[0].candidate.agent, "test");
+    assert_eq!(classification[0].usage.total_tokens, Some(20));
+    assert_eq!(runs.iter().filter(|r| r.purpose == "execution").count(), 1);
+    let stored = serde_json::to_string(classification[0]).unwrap();
+    assert!(!stored.contains("PRIVATE"), "{stored}");
+}
+
+/// Asking an agent what a request is costs a session of its own. Once Orochi has measured
+/// what asking costs and what work like this costs, it stops paying for a question worth less
+/// than its share of the work, and says so instead of going quiet.
+#[test]
+fn it_stops_paying_to_ask_what_a_request_is_once_that_costs_more_than_the_work() {
+    let mut w = Workspace::new();
+    w.config.classifier.enabled = true;
+    // A share this small means: as soon as both costs are known, the question is not worth it.
+    w.config.classifier.max_cost_share = 0.01;
+    w.config.agents[0].env.insert(
+        "MOCK_CLASSIFICATION".into(),
+        r#"{"task_type":"implementation","complexity":"normal"}"#.into(),
+    );
+    let mut stderr = String::new();
+    for number in 1..=4 {
+        let output = w.run(&[&format!("Implement endpoint number {number}")]);
+        success(&output);
+        stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    }
+    let runs = w.store().recent_runs(20).unwrap();
+    // Three runs to measure both sides, and from the fourth the question is skipped.
+    assert_eq!(
+        runs.iter()
+            .filter(|r| r.purpose == "classification")
+            .count(),
+        3,
+        "{runs:?}"
+    );
+    assert_eq!(runs.iter().filter(|r| r.purpose == "execution").count(), 4);
+    assert!(stderr.contains("would cost more than the work"), "{stderr}");
+}
+
+/// The live comparison (`examples/compare_live.py`) is only worth its quota if its numbers are
+/// right: a trial is scored by the hidden check alone, and an arm is charged every token its
+/// runs spent — the classifier's and every retry's included. Driven here with the fixture.
+#[test]
+fn a_live_comparison_charges_every_token_and_scores_by_the_hidden_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
+    let agent = |id: &str| {
+        json!({"id": id, "provider": "openai", "command": "python3",
+               "args": [script.display().to_string()],
+               "env": {"MOCK_BEHAVIOR": "success", "MOCK_MODELS": "sol-test",
+                       "MOCK_CLASSIFICATION": r#"{"task_type":"implementation","complexity":"normal"}"#}})
+    };
+    let suite = json!({
+        "schema_version": 2,
+        "name": "fixture",
+        "arms": [
+            {"id": "alpha-alone", "agents": [agent("alpha")],
+             "pin": {"agent": "alpha", "model": "sol-test"}, "attempts": 1, "classifier": false},
+            {"id": "beta-alone", "agents": [agent("beta")],
+             "pin": {"agent": "beta", "model": "sol-test"}, "attempts": 1, "classifier": false},
+            {"id": "orochi", "agents": [agent("alpha"), agent("beta")],
+             "pin": null, "attempts": 2, "classifier": true},
+        ],
+        "cases": [
+            {"id": "done", "task": "Implement the endpoint", "files": {"app.py": "\n"},
+             "visible": {"command": "python3", "args": ["-c", "import pathlib; assert pathlib.Path('completed.txt').exists()"]},
+             "check": "import pathlib\nassert pathlib.Path('completed.txt').exists()\n",
+             "reference": {"completed.txt": "done\n"}},
+            {"id": "never", "task": "Implement the endpoint", "files": {"app.py": "\n"},
+             "visible": {"command": "python3", "args": ["-c", "import pathlib; assert pathlib.Path('solved.txt').exists()"]},
+             "check": "import pathlib\nassert pathlib.Path('solved.txt').exists()\n",
+             "reference": {"solved.txt": "done\n"}},
+        ],
+    });
+    let path = dir.path().join("suite.json");
+    std::fs::write(&path, serde_json::to_vec(&suite).unwrap()).unwrap();
+    let output = dir.path().join("out");
+    let run = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/compare_live.py"))
+        .args([
+            "--suite",
+            path.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .args([
+            "--binary",
+            env!("CARGO_BIN_EXE_orochi"),
+            "--timeout",
+            "30",
+            "--execute",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let results: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output.join("results.json")).unwrap()).unwrap();
+    let trial = |case: &str, arm: &str| {
+        results["trials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["case"] == case && t["arm"] == arm)
+            .unwrap()
+            .clone()
+    };
+    for arm in ["alpha-alone", "beta-alone", "orochi"] {
+        assert_eq!(trial("done", arm)["status"], "measured", "{arm}");
+        assert_eq!(trial("done", arm)["hidden_pass"], true, "{arm}");
+        assert_eq!(trial("never", arm)["hidden_pass"], false, "{arm}");
+    }
+    // One execution each alone; the orochi arm also paid for asking what the task was.
+    assert_eq!(trial("done", "alpha-alone")["tokens"]["total"], 150);
+    assert_eq!(
+        trial("done", "orochi")["tokens"]["by_purpose"]["classification"],
+        20
+    );
+    assert_eq!(trial("done", "orochi")["tokens"]["total"], 170);
+    // A failed visible check made it try the other agent, and that retry is charged too.
+    let retried = trial("never", "orochi");
+    assert_eq!(retried["attempts"], 2, "{retried}");
+    assert_eq!(retried["tokens"]["total"], 320, "{retried}");
+    let summary = std::fs::read_to_string(output.join("summary.md")).unwrap();
+    for arm in ["alpha-alone", "beta-alone", "orochi"] {
+        assert!(summary.contains(arm), "{summary}");
+    }
+    assert_eq!(results["arms"]["orochi"]["passed"], 1);
+    assert_eq!(results["arms"]["orochi"]["tokens"], 490);
+
+    // Without --execute it contacts nothing.
+    let refused = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/compare_live.py"))
+        .args(["--suite", path.to_str().unwrap(), "--output"])
+        .arg(dir.path().join("refused"))
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert!(!dir.path().join("refused").exists());
+}
+
+/// Every case of the comparison suite must fail as handed to the agents and pass with its
+/// reference solution — otherwise a pass or a failure in a live run says nothing.
+#[test]
+fn every_comparison_case_fails_as_given_and_passes_with_its_reference() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = tempfile::tempdir().unwrap();
+    let run = Command::new("python3")
+        .arg(root.join("examples/compare_live.py"))
+        .args(["--suite"])
+        .arg(root.join("examples/compare-suite.json"))
+        .args(["--output"])
+        .arg(dir.path().join("validation"))
+        .arg("--validate")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join("validation/validation.json")).unwrap(),
+    )
+    .unwrap();
+    let cases = report["cases"].as_array().unwrap();
+    assert!(cases.len() >= 10, "{report}");
+    for case in cases {
+        assert_eq!(case["starts_failing"], true, "{case}");
+        assert_eq!(case["reference_passes"], true, "{case}");
+        assert_eq!(case["visible_passes_with_reference"], true, "{case}");
+    }
 }
 
 #[test]

@@ -1,0 +1,47 @@
+{
+  "participants": [
+    {
+      "id": "alice",
+      "role": "implementer",
+      "agent": "claude",
+      "model": "haiku"
+    },
+    {
+      "id": "bob",
+      "role": "implementer",
+      "agent": "codex",
+      "model": "gpt-5.6-luna",
+      "allowed_agents": ["codex", "claude"]
+    },
+    {
+      "id": "reviewer",
+      "role": "reviewer",
+      "agent": "claude",
+      "model": "haiku"
+    },
+    {
+      "id": "integrator",
+      "role": "integrator",
+      "agent": "claude",
+      "model": "sonnet"
+    }
+  ],
+  "parts": [
+    {
+      "id": "words",
+      "brief": "Count words per line in textstats/words.py and expose it as word_counts(text)",
+      "paths": ["textstats/words.py"]
+    },
+    {
+      "id": "lines",
+      "brief": "Report blank and non-blank line counts in textstats/lines.py as line_counts(text)",
+      "paths": ["textstats/lines.py"]
+    },
+    {
+      "id": "report",
+      "brief": "Add textstats/report.py printing both counts, built on word_counts and line_counts",
+      "paths": ["textstats/report.py"],
+      "after": ["words", "lines"]
+    }
+  ]
+}

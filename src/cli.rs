@@ -197,6 +197,8 @@ pub enum PolicyCommand {
 }
 
 pub async fn execute(mut cli: Cli) -> Result<u8> {
+    // Counted from the start, so an interrupt is never lost between two waits.
+    crate::interrupt::listen().await;
     if cli.always_approve {
         cli.permission = Some(PermissionMode::Allow);
     }
@@ -724,6 +726,9 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             if dry_run {
                 // Printed as a plan file so it can be saved, edited and passed to `--plan`.
                 plan.validate(&config)?;
+                if let Some(waves) = plan.waves() {
+                    eprintln!("Order: {}", crate::collaboration::graph::summary(&waves));
+                }
                 println!("{}", serde_json::to_string_pretty(&plan)?);
                 return Ok(0);
             }
@@ -736,6 +741,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 &plan,
                 &output.expect("output is required without --dry-run"),
                 apply,
+                None,
             )
             .await?;
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -946,6 +952,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     peer: None,
                     verify: true,
                     read_only: false,
+                    place: None,
                 },
             )
             .await;

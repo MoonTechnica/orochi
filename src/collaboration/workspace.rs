@@ -128,6 +128,19 @@ pub fn scan(root: &Path) -> Result<Tree> {
     Ok(tree)
 }
 
+/// Paths that differ between two trees.
+pub fn changed(base: &Path, other: &Path) -> Result<Vec<PathBuf>> {
+    let (before, after) = (scan(base)?, scan(other)?);
+    Ok(before
+        .keys()
+        .chain(after.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|path| before.get(*path) != after.get(*path))
+        .cloned()
+        .collect())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conflict {
     pub path: PathBuf,

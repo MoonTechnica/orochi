@@ -21,6 +21,9 @@ root = None
 
 
 mcp_servers = []
+if behavior == "permission_persist":
+    # Unbuffered, so waiting on the descriptor sees a line that has already arrived.
+    sys.stdin = open(0, "rb", buffering=0)
 
 
 def mailbox_tools():
@@ -155,14 +158,18 @@ def options():
 
 
 def finish(request):
-    if behavior == "session_collaboration":
+    # A console turn outside a collaboration (a design step, a follow-up) has no role.
+    if behavior == "session_collaboration" and re.search(r'Role: (\w+)\.', request["params"]["prompt"][0]["text"]):
         prompt = request["params"]["prompt"][0]["text"]
         role = re.search(r'Role: (\w+)\.', prompt)[1].lower()
         fail_role = os.environ.get("MOCK_FAIL_ROLE")
         fail_stage = os.environ.get("MOCK_FAIL_STAGE")
         stage = re.search(r'stage (\d+)\.', prompt)[1]
         fail_model = os.environ.get("MOCK_FAIL_MODEL")
-        if fail_role == role and (fail_stage is None or fail_stage == stage) and (fail_model is None or fail_model == model):
+        fail_part = os.environ.get("MOCK_FAIL_PART")
+        participant = re.search(r'You are participant ([\w-]+) in', prompt)[1]
+        if fail_role == role and (fail_stage is None or fail_stage == stage) and (fail_model is None or fail_model == model) \
+                and (fail_part is None or fail_part == participant):
             send({"method": "session/update", "params": {"sessionId": session, "update": {
                 "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "CHECKPOINT_NOTE: preserve the chosen plan; unresolved issue remains"}}}})
             if role in ("implementer", "integrator"):
@@ -182,12 +189,18 @@ def finish(request):
             assert "CHECKPOINT_NOTE" in prompt, "missing partial handoff"
             if role in ("implementer", "integrator"):
                 assert (root / "partial.txt").read_text() == "preserved partial implementation"
-        participant = re.search(r'You are participant ([\w-]+) in', prompt)[1]
         parallel = os.environ.get("MOCK_PARALLEL")
+        parts = os.environ.get("MOCK_PARTS")
         discussion = os.environ.get("MOCK_DISCUSSION")
         messages = []
         text = "Implementation ready"
-        if "Resolve these merge conflicts" in prompt:
+        if "Resolve the conflicts between parts" in prompt:
+            shared = root / "shared.txt"
+            assert "<<<<<<< " in shared.read_text()
+            if not os.environ.get("MOCK_KEEP_MARKERS"):
+                shared.write_text("alpha+beta\n")
+            text = "Conflicts between parts resolved"
+        elif "Resolve these merge conflicts" in prompt:
             seed = root / "seed.txt"
             assert "<<<<<<< working-tree" in seed.read_text()
             seed.write_text(os.environ["MOCK_RESOLVED"])
@@ -206,11 +219,18 @@ def finish(request):
                 assert "Added validation" in prompt
                 text = "Acknowledged"
         elif role == "coordinator":
-            text = json.dumps({"plan": ["Implement, review and integrate"], "decisions": ["Check edge cases"], "open_questions": ["Verify result"], "next_step": "Follow the next scheduled stage"})
+            state = {"plan": ["Implement, review and integrate"], "decisions": ["Check edge cases"], "open_questions": ["Verify result"], "next_step": "Follow the next scheduled stage"}
+            proposal = os.environ.get("MOCK_COORDINATOR_PARTS" if stage == "0" else "MOCK_COORDINATOR_LATER_PARTS")
+            if proposal:
+                state["parts"] = json.loads(proposal)
+            text = json.dumps(state)
             if os.environ.get("MOCK_COORDINATOR_PREFIX"):
                 text = "Warning: local CLI notice\n\n```json\n" + text + "\n```"
         elif role == "reviewer":
-            if parallel:
+            if parts:
+                for part in filter(None, os.environ.get("MOCK_EXPECT_PARTS", "").split(",")):
+                    assert (root / part / "done.txt").exists(), f"the reviewer is missing {part}"
+            elif parallel:
                 assert (root / "alice.txt").exists() and (root / "bob.txt").exists()
             else:
                 assert (root / "completed.txt").read_text() == "implementation"
@@ -219,7 +239,9 @@ def finish(request):
                 messages = [{"to": "AUTHOR", "body": "Please add input validation"}, {"to": "nobody", "body": "lost"}]
             text = "REVIEW_FINDING: integrate the confirmed fix"
         elif "Integrate the implementation" in prompt:
-            if parallel:
+            if parts:
+                pass
+            elif parallel:
                 shared = root / "shared.txt"
                 assert "<<<<<<< " in shared.read_text() and "shared.txt" in prompt
                 if not os.environ.get("MOCK_KEEP_MARKERS"):
@@ -231,6 +253,27 @@ def finish(request):
                     assert "Added validation" in prompt and (root / "validation.txt").exists()
             (root / "completed.txt").write_text("integrated")
             text = "Review finding addressed"
+        elif parts and re.search(r'Your part: ([a-z0-9-]+)', prompt):
+            part = re.search(r'Your part: ([a-z0-9-]+)', prompt)[1]
+            together = os.environ.get("MOCK_RENDEZVOUS_PARTS", "").split(",")
+            if part in together:
+                meeting = Path(os.environ["MOCK_RENDEZVOUS"])
+                (meeting / part).write_text("started")
+                deadline = time.time() + 10
+                while len(list(meeting.iterdir())) < len(together):
+                    assert time.time() < deadline, "the parts of one wave did not run concurrently"
+                    time.sleep(0.05)
+            needs = dict(item.split(":") for item in os.environ.get("MOCK_PART_NEEDS", "").split(";") if item)
+            for need in filter(None, needs.get(part, "").split("/")):
+                assert (root / need / "done.txt").read_text() == need, f"{part} started without {need}"
+            shared = root / "shared.txt"
+            if part in needs and shared.exists():
+                assert "<<<<<<< " not in shared.read_text(), f"{part} started on an unresolved merge"
+            (root / part).mkdir(exist_ok=True)
+            (root / part / "done.txt").write_text(part)
+            if os.environ.get("MOCK_PART_SHARED") and part in together:
+                shared.write_text(part + "\n")
+            text = f"Part {part} ready"
         else:
             if parallel:
                 meeting = Path(os.environ["MOCK_RENDEZVOUS"])
@@ -353,9 +396,17 @@ for line in sys.stdin:
         elif os.environ.get("MOCK_CLASSIFICATION") and "You are a task classifier" in request["params"]["prompt"][0]["text"]:
             # One fixture serves as both the classifier and the executing agent: only the
             # classification request gets the labels back.
+            time.sleep(float(os.environ.get("MOCK_CLASSIFY_DELAY", "0")))
             send({"method": "session/update", "params": {"sessionId": session, "update": {
                 "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ["MOCK_CLASSIFICATION"]}}}})
             result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 20, "inputTokens": 15, "outputTokens": 5}})
+        elif os.environ.get("MOCK_DESIGN_REPLY") and "Plan the work first" in request["params"]["prompt"][0]["text"]:
+            # Streamed in small pieces, so whatever reads it sees every boundary.
+            reply = os.environ["MOCK_DESIGN_REPLY"]
+            for start in range(0, len(reply), 5):
+                send({"method": "session/update", "params": {"sessionId": session, "update": {
+                    "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": reply[start:start + 5]}}}})
+            result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 40, "inputTokens": 30, "outputTokens": 10}})
         elif behavior == "mailbox_chat":
             mailbox_chat(request)
             finish(request)
@@ -405,6 +456,38 @@ for line in sys.stdin:
             (root / "agent.pid").write_text(str(os.getpid()))
             (root / "child.pid").write_text(str(child.pid))
             time.sleep(60)
+        elif behavior == "permission_persist":
+            # A real agent told "no" may simply try something else. Only a cancelled turn stops it.
+            pending = request
+            send({"id": "permission-1", "method": "session/request_permission", "params": {
+                "sessionId": session, "toolCall": {"toolCallId": "call-1", "title": "Write fixture file", "kind": "edit"},
+                "options": [{"optionId": "deny", "name": "Deny", "kind": "reject_once"}, {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
+            import select as wait
+
+            def heard():
+                line = json.loads(sys.stdin.readline())
+                if log_path:
+                    with open(log_path, "a") as log:
+                        log.write(json.dumps(line) + "\n")
+                return line
+            # The answer and a cancellation may arrive in either order.
+            answer, cancelled = None, False
+            while answer is None:
+                line = heard()
+                if line.get("method") == "session/cancel":
+                    cancelled = True
+                elif line.get("id") == "permission-1":
+                    answer = line
+            if answer.get("result", {}).get("outcome", {}).get("optionId") == "allow":
+                finish(pending)
+                continue
+            if not cancelled and wait.select([sys.stdin], [], [], 1.5)[0]:
+                cancelled = heard().get("method") == "session/cancel"
+            if cancelled:
+                result(pending, {"stopReason": "cancelled"})
+                continue
+            (root / "alternative.txt").write_text("tried another way\n")
+            finish(pending)
         elif behavior == "permission":
             pending = request
             send({"id": "permission-1", "method": "session/request_permission", "params": {

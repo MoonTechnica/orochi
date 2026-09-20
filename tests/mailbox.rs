@@ -936,3 +936,49 @@ fn a_session_is_looked_back_over_once_at_its_end() {
     let telemetry = std::fs::read(dir.path().join("data/telemetry.sqlite3")).unwrap();
     assert!(!String::from_utf8_lossy(&telemetry).contains("PRIVATE please stop"));
 }
+
+/// A seat claims its route the moment it chooses, so the next seat of the same process sees it
+/// without waiting for the first to register with the mailbox — or for a clock to run out.
+#[test]
+fn a_route_is_busy_from_the_moment_a_seat_chooses_it() {
+    let route = ("claimed-agent".to_owned(), "claimed-model".to_owned());
+    let claim = orochi::mailbox::claim(Some("claimer"), &route.0, &route.1);
+    assert!(orochi::mailbox::busy_routes(Some("another-seat")).contains(&route));
+    assert!(orochi::mailbox::busy_agents(None).contains(&route.0));
+    // A seat is never in its own way.
+    assert!(!orochi::mailbox::busy_routes(Some("claimer")).contains(&route));
+    drop(claim);
+    assert!(!orochi::mailbox::busy_routes(Some("another-seat")).contains(&route));
+}
+
+/// The seats of one turn take their places in order — the one doing the work first — however
+/// long each one's discovery takes, so the lead is never left with what a seat did not want and
+/// no seat starts before the one it answers to is there to hear it.
+#[tokio::test]
+async fn the_seats_of_one_turn_choose_their_routes_in_order() {
+    use std::time::Duration;
+    use tokio::time::timeout;
+    let order = orochi::mailbox::Order::new(2);
+    let (lead, seat) = (order.place(0), order.place(1));
+    assert!(
+        timeout(Duration::from_millis(100), seat.turn())
+            .await
+            .is_err(),
+        "a seat chose before the lead"
+    );
+    timeout(Duration::from_secs(1), lead.turn()).await.unwrap();
+    lead.seated();
+    timeout(Duration::from_secs(1), seat.turn()).await.unwrap();
+
+    // A seat that gives up without choosing never holds up the ones after it.
+    let order = orochi::mailbox::Order::new(3);
+    let (first, second, third) = (order.place(0), order.place(1), order.place(2));
+    drop(first);
+    assert!(
+        timeout(Duration::from_millis(100), third.turn())
+            .await
+            .is_err()
+    );
+    second.seated();
+    timeout(Duration::from_secs(1), third.turn()).await.unwrap();
+}

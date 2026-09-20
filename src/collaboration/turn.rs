@@ -1,6 +1,9 @@
 //! One logical turn: prompt construction, failover across independent sessions, local
 //! validation and concurrent execution of a turn group.
-use super::{AttemptStatus, Cx, Message, Participant, Report, Role, SessionResult, workspace};
+use super::{
+    AttemptStatus, Cx, MergeRecord, Message, Participant, Report, Role, SessionResult, Unit,
+    workspace,
+};
 use crate::{
     acp::{Client, ExecutionEvent},
     agents::{AgentError, ErrorKind},
@@ -56,6 +59,10 @@ pub struct Coordination {
     pub next_step: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<Outbound>,
+    /// The first turn's division of the work, read on its own so a malformed one costs the
+    /// division and never the coordinator's turn. Never kept in the management state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<serde_json::Value>,
 }
 
 pub(super) struct Turn {
@@ -69,6 +76,8 @@ pub(super) struct Turn {
     /// Files that must not retain conflict markers.
     markers: Vec<PathBuf>,
     instruction: Option<String>,
+    /// The part of the work graph this turn carries out.
+    unit: Option<Unit>,
 }
 
 fn contained(output: &Path, path: &Path) -> Result<()> {
@@ -85,12 +94,19 @@ fn prepare(cx: &Cx<'_>, report: &Report, stage: usize, index: usize) -> Result<P
     let output = cx.output;
     let plan = &report.plan;
     let participant = &plan.participants[index];
-    let merged = output.join("merged");
-    let reviewed = if plan.indices(Role::Implementer).len() > 1 {
-        merged.clone()
-    } else {
-        output.join(&plan.participants[plan.indices(Role::Implementer)[0]].id)
+    let waves = plan.waves();
+    let reviewed = match &waves {
+        Some(waves) => super::wave_result(output, waves, waves.len() - 1),
+        None if plan.indices(Role::Implementer).len() > 1 => output.join("merged"),
+        None => output.join(&plan.participants[plan.indices(Role::Implementer)[0]].id),
     };
+    // What the parts have built so far, for a coordinator looking in between waves.
+    let built = waves.as_ref().and_then(|waves| {
+        (0..waves.len())
+            .rev()
+            .map(|wave| super::wave_result(output, waves, wave))
+            .find(|path| path.exists())
+    });
     let (root, source) = match participant.role {
         Role::Implementer => (output.join(&participant.id), output.join("baseline")),
         Role::Reviewer | Role::Integrator => (output.join(&participant.id), reviewed.clone()),
@@ -102,6 +118,8 @@ fn prepare(cx: &Cx<'_>, report: &Report, stage: usize, index: usize) -> Result<P
                 output.join(&plan.participants[plan.integrator()].id)
             } else if reviewed.exists() {
                 reviewed.clone()
+            } else if let Some(built) = built {
+                built
             } else {
                 output.join("baseline")
             };
@@ -117,10 +135,20 @@ fn prepare(cx: &Cx<'_>, report: &Report, stage: usize, index: usize) -> Result<P
     Ok(root)
 }
 
+/// The merge the integrator works from: the last one, or with parts, the last wave's.
+fn final_merge(report: &Report) -> Option<&MergeRecord> {
+    match report.plan.waves() {
+        Some(waves) => report
+            .merges
+            .iter()
+            .rev()
+            .find(|m| m.wave == Some(waves.len() - 1)),
+        None => report.merges.last(),
+    }
+}
+
 fn marked(report: &Report) -> Vec<PathBuf> {
-    report
-        .merges
-        .last()
+    final_merge(report)
         .into_iter()
         .flat_map(|m| &m.conflicts)
         .filter(|c| c.markers)
@@ -146,7 +174,48 @@ pub(super) fn scheduled(cx: &Cx<'_>, report: &Report, stage: usize, index: usize
         },
         instruction: None,
         participant,
+        unit: None,
     })
+}
+
+/// The units of one wave, each in its own copy of what the waves before it left. A seat says
+/// who may hold a part (agent, allowed agents, fallback); the part says what the work is.
+pub(super) fn wave(cx: &Cx<'_>, report: &Report, stage: usize, wave: usize) -> Result<Vec<Turn>> {
+    let output = cx.output;
+    let waves = report.plan.waves().context("the plan has no work graph")?;
+    let seats = report.plan.indices(Role::Implementer);
+    let base = super::wave_base(output, &waves, wave);
+    let mut turns = vec![];
+    for (index, unit) in waves[wave].iter().enumerate() {
+        if report.completed(stage, &unit.id) {
+            continue;
+        }
+        let root = super::wave_dir(output, wave).join(&unit.id);
+        if !root.exists() {
+            std::fs::create_dir_all(super::wave_dir(output, wave))?;
+            contained(output, &base)?;
+            contained(output, &super::wave_dir(output, wave))?;
+            workspace::copy_workspace(&base, &root)?;
+        }
+        contained(output, &root)?;
+        let mut participant = report.plan.participants[seats[index % seats.len()]].clone();
+        participant.id = unit.id.clone();
+        participant.paths = unit.paths.clone();
+        turns.push(Turn {
+            stage,
+            index,
+            participant,
+            workspace: root,
+            kind: TurnKind::Scheduled,
+            // A part in the middle of the graph may leave the project failing: the callers
+            // of what it changed can be the next wave. Only the integrated result is checked.
+            gated: false,
+            markers: vec![],
+            instruction: None,
+            unit: Some(unit.clone()),
+        });
+    }
+    Ok(turns)
 }
 
 fn pending(report: &Report, participant: &str, stage: usize) -> bool {
@@ -172,9 +241,12 @@ pub(super) fn discussion(
     round: usize,
 ) -> Result<Vec<Turn>> {
     let parallel = report.plan.indices(Role::Implementer).len() > 1;
+    let graph = !report.plan.parts.is_empty();
     let mut turns = vec![];
     for (index, participant) in report.plan.participants.iter().enumerate() {
+        // With parts, an implementer is a seat, not a session with a workspace of its own.
         if participant.role == Role::Integrator
+            || graph && participant.role == Role::Implementer
             || report.completed(stage, &participant.id)
             || !pending(report, &participant.id, stage)
         {
@@ -191,6 +263,7 @@ pub(super) fn discussion(
                 "Discussion round {round}: answer the messages addressed to you. Implementers may update files in their own workspace; other roles must not edit files."
             )),
             participant: participant.clone(),
+            unit: None,
         });
     }
     Ok(turns)
@@ -221,6 +294,37 @@ pub(super) fn resolution(
             collaboration.display()
         )),
         participant: report.plan.participants[index].clone(),
+        unit: None,
+    }
+}
+
+/// The integrator's seat settles a conflict between parts of one wave, in the merged tree,
+/// before the next wave builds on it. Only the markers are checked: the project may not pass
+/// its checks until every part is in.
+pub(super) fn untangle(
+    report: &Report,
+    stage: usize,
+    workspace: PathBuf,
+    conflicts: &[workspace::Conflict],
+) -> Turn {
+    let index = report.plan.integrator();
+    Turn {
+        stage,
+        index,
+        workspace,
+        kind: TurnKind::Resolution,
+        gated: false,
+        markers: conflicts
+            .iter()
+            .filter(|c| c.markers)
+            .map(|c| c.path.clone())
+            .collect(),
+        instruction: Some(format!(
+            "Your workspace holds the merged work of parts that ran at the same time. Resolve the conflicts between parts: {}. Keep what each part meant, remove every conflict marker and change nothing else. Parts that come later build on this tree; the project may not pass its checks yet, and that is expected.",
+            serde_json::to_string(conflicts).unwrap_or_default()
+        )),
+        participant: report.plan.participants[index].clone(),
+        unit: None,
     }
 }
 
@@ -247,7 +351,11 @@ fn prompt(
         .filter(|m| overview || m.from == participant.id || m.to == participant.id)
         .collect();
     let parallel = report.plan.indices(Role::Implementer).len() > 1;
+    let waves = report.plan.waves();
     let role = match participant.role {
+        Role::Implementer if turn.unit.is_some() => {
+            "Build your part of the task, and only that part, in your workspace. Other parts are built by other sessions: some at the same time in separate copies, some after yours on top of what you leave. Orochi merges them, so stay within the paths you own and leave the other parts alone. The project may fail its checks until every part is in; Orochi verifies the integrated result. Summarize what you changed and what the parts after yours need to know."
+        }
         Role::Coordinator => {
             "Coordinate the user's task. Read the saved plan, peer results and verification evidence. Update the implementation plan, explain decisions, track unresolved questions and recommend the next step. Do not edit files. Reply ONLY with JSON: {\"plan\":[\"...\"],\"decisions\":[\"...\"],\"open_questions\":[\"...\"],\"next_step\":\"...\",\"messages\":[]}. Orochi owns stage transitions and evaluates the final result; do not claim an unverified result is complete."
         }
@@ -272,8 +380,33 @@ fn prompt(
         text.push_str(instruction);
         text.push('\n');
     }
+    let seats = report.plan.indices(Role::Implementer).len();
+    if participant.role == Role::Coordinator
+        && stage == 0
+        && report.plan.parts.is_empty()
+        && seats > 1
+    {
+        text.push_str(&format!(
+            "This first turn decides how the work divides. If it divides into pieces that can be built without each other's code, add \"parts\": [{{\"id\":\"<lowercase letters, digits, ->\",\"brief\":\"what this part builds\",\"paths\":[\"<relative path it writes>\"],\"after\":[\"<id of a part whose code it needs>\"]}}]. Up to {seats} parts run at the same time, each in its own copy, and are merged afterwards; parts that write the same paths, or name none, run one after the other. Two parts that only have to agree on an interface can run at the same time; one that needs another's code comes after it. Leave \"parts\" out when the work does not divide.\n"
+        ));
+    }
+    if let Some(unit) = &turn.unit {
+        text.push_str(&format!(
+            "Your part: {}\n{}\nThe parts in order, one wave at a time; the parts of one wave run at the same time (JSON):\n{}\n",
+            unit.id,
+            unit.brief,
+            serde_json::to_string(&waves)?
+        ));
+    }
     if turn.kind != TurnKind::Resolution {
-        let ids: Vec<_> = report.plan.participants.iter().map(|p| &p.id).collect();
+        // With parts, implementers are seats that never answer a message themselves.
+        let ids: Vec<_> = report
+            .plan
+            .participants
+            .iter()
+            .filter(|p| waves.is_none() || p.role != Role::Implementer)
+            .map(|p| &p.id)
+            .collect();
         text.push_str(&format!(
             "You may message any other participant ({}). {}Messages are answered in later turns.\n",
             serde_json::to_string(&ids)?,
@@ -297,7 +430,7 @@ fn prompt(
     if !turn.markers.is_empty() && turn.kind == TurnKind::Scheduled {
         text.push_str(&format!(
             "Orochi merged concurrent implementations. Resolve every conflict: {}\n",
-            serde_json::to_string(&report.merges.last().map(|m| &m.conflicts))?
+            serde_json::to_string(&final_merge(report).map(|m| &m.conflicts))?
         ));
     }
     text.push_str(&format!(
@@ -318,10 +451,12 @@ fn deliver(report: &mut Report, stage: usize, from: &str, outbound: Vec<Outbound
         if report.messages.len() >= MAX_STORED_MESSAGES {
             break;
         }
+        let graph = !report.plan.parts.is_empty();
         let to = report
             .plan
             .participants
             .iter()
+            .filter(|p| !graph || p.role != Role::Implementer)
             .find(|p| p.id.eq_ignore_ascii_case(message.to.trim()))
             .map(|p| p.id.clone());
         let accepted = report
@@ -355,6 +490,8 @@ struct Selected {
     client: Client,
     candidate: ExecutionCandidate,
     events: UnboundedReceiver<ExecutionEvent>,
+    /// Keeps the route busy for the parts beside this one while the attempt runs.
+    _claim: crate::mailbox::Claim,
 }
 
 async fn select(
@@ -401,7 +538,7 @@ async fn select(
         let (tx, events) = unbounded_channel();
         let (mut clients, discovered) = tokio::select! {
             result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(tx), overrides.model.as_deref(), Some(&participant.id), false) => result?,
-            _ = tokio::signal::ctrl_c() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during discovery").into()),
+            _ = cx.since.wait() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during discovery").into()),
         };
         failures.extend(
             discovered
@@ -436,6 +573,10 @@ async fn select(
             crate::learning::random_draw(),
         );
         if let Some(candidate) = ranked.into_iter().next() {
+            // The members of a turn group choose one after another on this one task, so a
+            // claim taken here is what the next member's `busy_agents` sees.
+            let claim =
+                crate::mailbox::claim(Some(&participant.id), &candidate.agent, &candidate.model);
             let index = clients
                 .iter()
                 .position(|c| c.config.id == candidate.agent)
@@ -449,6 +590,7 @@ async fn select(
                     client,
                     candidate,
                     events,
+                    _claim: claim,
                 }),
                 failures,
             ));
@@ -469,6 +611,7 @@ enum Update {
 struct Done {
     management: Option<Coordination>,
     outbound: Vec<Outbound>,
+    parts: Option<serde_json::Value>,
 }
 
 async fn attempt(
@@ -495,6 +638,7 @@ async fn attempt(
             mut client,
             candidate,
             mut events,
+            _claim,
         }) = selected
         else {
             break;
@@ -523,7 +667,7 @@ async fn attempt(
         {
             task_prompt = format!("{note}\n\n{task_prompt}");
         }
-        eprintln!(
+        cx.say(format!(
             "Stage {}, {} ({:?}{}): {} / {}",
             turn.stage,
             participant.id,
@@ -535,7 +679,7 @@ async fn attempt(
             },
             candidate.agent,
             candidate.model
-        );
+        ));
         let slot = (turn.index, number);
         let mut session = SessionResult {
             stage: turn.stage,
@@ -565,7 +709,7 @@ async fn attempt(
             &candidate,
             task_prompt,
             &mut events,
-            config,
+            cx,
             &mut session,
             &publish,
         )
@@ -592,6 +736,7 @@ async fn attempt(
                 match crate::context::trailing_json::<Coordination>(&session.response) {
                     Some(mut state) => {
                         done.outbound = std::mem::take(&mut state.messages);
+                        done.parts = state.parts.take();
                         done.management = Some(state);
                     }
                     None => {
@@ -609,23 +754,24 @@ async fn attempt(
         if result.is_ok() && turn.gated {
             session.checks = tokio::select! {
                 checks = evaluator::evaluate(&config.evaluator, &turn.workspace) => checks,
-                _ = tokio::signal::ctrl_c() => { result = Err(AgentError::new(ErrorKind::Cancelled, "interrupted during evaluation").into()); vec![] },
+                _ = cx.since.wait() => { result = Err(AgentError::new(ErrorKind::Cancelled, "interrupted during evaluation").into()); vec![] },
             };
-            if !turn.markers.is_empty() {
-                session.checks.push(CheckResult {
-                    name: "git_conflict_markers".into(),
-                    passed: !turn
-                        .markers
-                        .iter()
-                        .any(|p| workspace::has_markers(&turn.workspace.join(p))),
-                    exit_code: None,
-                    duration_ms: 0,
-                    timed_out: false,
-                });
-            }
-            if result.is_ok() && session.checks.iter().any(|c| !c.passed) {
-                result = Err(anyhow::anyhow!("participant evaluation failed"));
-            }
+        }
+        // Markers are checked even where the project's own checks are not expected to pass.
+        if result.is_ok() && !turn.markers.is_empty() {
+            session.checks.push(CheckResult {
+                name: "git_conflict_markers".into(),
+                passed: !turn
+                    .markers
+                    .iter()
+                    .any(|p| workspace::has_markers(&turn.workspace.join(p))),
+                exit_code: None,
+                duration_ms: 0,
+                timed_out: false,
+            });
+        }
+        if result.is_ok() && session.checks.iter().any(|c| !c.passed) {
+            result = Err(anyhow::anyhow!("participant evaluation failed"));
         }
         match result {
             Ok(()) => {
@@ -658,7 +804,10 @@ async fn attempt(
                     return Err(error.into());
                 }
                 scheduler::update_failure(store, &candidate.agent, &candidate.model, &error)?;
-                eprintln!("Role {} needs replacement: {error}", participant.id);
+                cx.say(format!(
+                    "Role {} needs replacement: {error}",
+                    participant.id
+                ));
                 history.push(session);
                 if !participant.fallback {
                     break;
@@ -678,13 +827,13 @@ async fn execute(
     candidate: &ExecutionCandidate,
     prompt: String,
     events: &mut UnboundedReceiver<ExecutionEvent>,
-    config: &crate::config::Config,
+    cx: &Cx<'_>,
     session: &mut SessionResult,
     publish: &dyn Fn(&SessionResult),
 ) -> Result<bool> {
     tokio::select! {
         result = client.configure(candidate) => result?,
-        _ = tokio::signal::ctrl_c() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during session setup").into()),
+        _ = cx.since.wait() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during session setup").into()),
     }
     let mut consume = |event: ExecutionEvent| -> Result<()> {
         match event {
@@ -707,7 +856,7 @@ async fn execute(
     {
         let future = client.prompt(
             prompt,
-            Duration::from_secs(config.scheduler.prompt_timeout_secs),
+            Duration::from_secs(cx.config.scheduler.prompt_timeout_secs),
         );
         tokio::pin!(future);
         loop {
@@ -785,6 +934,13 @@ pub(super) async fn run_group(
             Ok(done) => {
                 if let Some(state) = done.management {
                     report.management = Some(state);
+                }
+                if turn.stage == 0
+                    && turn.kind == TurnKind::Scheduled
+                    && turn.participant.role == Role::Coordinator
+                    && let Some(parts) = done.parts
+                {
+                    super::adopt(cx, report, parts);
                 }
                 deliver(report, stage, &turn.participant.id, done.outbound);
                 if turn.kind == TurnKind::Scheduled && turn.participant.role == Role::Integrator {

@@ -4,7 +4,7 @@ The unit of a worker is an **independent ACP session**. Even with the same CLI a
 
 Orochi holds the task, stages, plan, decisions, open questions, responses, messages and verification results. Progress never depends on any single AI's conversation alone.
 
-Up to 4 implementers can work at the same time, and Orochi merges their results. Participants can send addressed messages to any other participant. In discussion rounds, participants with unanswered messages reply. With `--apply`, a result that passed verification is merged into the original working tree. Conflicts are resolved in a dedicated resolution session.
+Up to 4 implementers can work at the same time, and Orochi merges their results. When the work is divided into parts, Orochi runs the parts that can run side by side at the same time and the parts that build on others after them (see [The order of the work](#the-order-of-the-work-parts-and-waves)). Participants can send addressed messages to any other participant. In discussion rounds, participants with unanswered messages reply. With `--apply`, a result that passed verification is merged into the original working tree. Conflicts are resolved in a dedicated resolution session.
 
 ```mermaid
 sequenceDiagram
@@ -43,7 +43,7 @@ orochi -C /path/to/project collaborate-resume --output /path/to/results/run-001 
 
 The exit code is `0` on completion (with `--apply`, completion includes applying), `130` on cancellation, and `1` otherwise.
 
-Example configurations are [`examples/session-plan.json`](../examples/session-plan.json) and [`examples/session-plan-parallel.json`](../examples/session-plan-parallel.json), which uses parallel implementation and discussion rounds. Put the coordinator first, followed by 1–4 implementers, 1–4 reviewers and 1 integrator. The coordinator is optional.
+Example configurations are [`examples/session-plan.json`](../examples/session-plan.json), [`examples/session-plan-parallel.json`](../examples/session-plan-parallel.json), which uses parallel implementation and discussion rounds, and [`examples/session-plan-parts.json`](../examples/session-plan-parts.json), which divides the work into ordered parts. Put the coordinator first, followed by 1–4 implementers, 1–4 reviewers and 1 integrator. The coordinator is optional.
 
 The coordinator is called at the start and after each stage, and updates `plan`, `decisions`, `open_questions` and `next_step` as JSON. Each call uses an independent session and receives the management state so far together with the deliverables and verification results. Orochi manages the order of stages and the final evaluation. An AI's suggestion alone never skips a review stage or treats an unverified result as a success.
 
@@ -56,6 +56,14 @@ The coordinator is called at the start and after each stage, and updates `plan`,
 
 `[merge]` appears only with 2 or more implementers, discussion rounds only when `discussion` is set, and applying only with `--apply`. Stage numbering for existing plans (one implementer, no discussion) does not change.
 
+A plan with `parts` replaces the implementer step with one step per wave:
+
+```text
+[coordinator] → wave 1 → [merge of wave 1] → [coordinator] → wave 2 → … → reviewers → … → integrator → [coordinator] → [apply]
+```
+
+`[merge of wave N]` appears only when the wave ran more than one part. A plan without `parts` never produces these steps, so its numbering does not move.
+
 ### Parallel implementation and merging
 
 ```json
@@ -67,6 +75,33 @@ The coordinator is called at the start and after each stage, and updates `plan`,
 - Reviewers and the integrator work in copies of `merged/`. The integrator's evaluation adds a check that no markers remain in files that had conflicts (`git_conflict_markers`). If any remain, the evaluation fails and the work is handed off to another worker.
 - In parallel implementation, each implementer's working copy alone may not pass the checks for the whole project, so evaluation is not required at the implementer stage. Evaluation happens after integration. With a single implementer, the implementer stage is evaluated as before.
 - If only some implementers fail, the results of those that completed are kept. On resume, only the implementers that did not complete are run.
+
+### The order of the work: parts and waves
+
+```json
+"parts": [
+  {"id": "words",  "brief": "Count words per line", "paths": ["textstats/words.py"]},
+  {"id": "lines",  "brief": "Count blank and non-blank lines", "paths": ["textstats/lines.py"]},
+  {"id": "report", "brief": "Print both counts", "paths": ["textstats/report.py"], "after": ["words", "lines"]}
+]
+```
+
+A part is a piece of the work: `brief` says what it builds, `paths` which relative paths it writes, `after` which parts' code it needs first. With `parts`, the implementers are **seats**: each part runs on a seat (its `agent`, `allowed_agents`, `fallback` and so on), as many parts at once as there are implementer seats, and each part is its own session named after the part.
+
+Orochi reads the order itself; the list is a proposal, not an instruction:
+
+- A list that cannot be ordered — a cycle, an unknown or self-referencing `after`, a duplicate or invalid ID (lowercase letters, digits and `-`, at most 32 characters), more than 12 parts, a brief over 2 KiB, or a non-relative path — is refused whole. From a plan file that is an error; from a coordinator it leaves the team as it was. A part may not share a participant's ID.
+- **Serial unless shown independent.** Two parts with no stated order run one after the other anyway, in listed order, when they may write the same place: the same path, one path inside the other, or a part that names no `paths` (it may write anywhere, so it runs with nothing beside it).
+- A straight chain (a part whose only successor has it as its only predecessor) is fused into one session: one agent holding the whole context does a sequence better than several handing notes along.
+- A wave wider than the number of implementer seats is split into consecutive waves, in listed order.
+
+`--dry-run --plan` checks the parts and prints the order, e.g. `Order: words ‖ lines → report`.
+
+Every wave starts from what the waves before it left: the first from `baseline/`, a later one from the previous wave's merge (or its one part's workspace). The parts of one wave are merged onto that starting tree in listed order, like parallel implementers, and the merge records per part how many changed files fell outside its `paths` (`strays`) — the evidence for or against trusting declared paths enough to run parts side by side. A conflict in any wave but the last is resolved before the next wave starts: the integrator's seat gets a resolution session in the merged tree, which must leave no conflict markers; if markers remain after every candidate, the run stops as `blocked` and the next wave never starts. The last wave's conflicts go to the integrator, as with parallel implementers.
+
+Parts are not evaluated: a part in the middle may leave the project failing, because the callers of what it changed can be the next wave. Only the integrated result is evaluated, and only a real check pass is applied. With parts, implementer seats take no discussion turns and cannot be messaged.
+
+**The coordinator's first turn may divide the work.** When a plan has a coordinator, no `parts` and two or more implementer seats, the first coordinator turn is asked for an optional `"parts"` field. Orochi takes it once, when that turn completes, and only if it can order it and something runs side by side; otherwise, and for anything a later coordinator turn says, the team keeps its shape. The accepted parts are written into `report.plan`, so a resume runs the same waves.
 
 ### Addressed messages and discussion rounds
 
@@ -120,7 +155,7 @@ Paths excluded from copying, such as `.git`, `.env*` and `node_modules`, are nev
 
 To refresh quota before each stage, set `[quota] refresh_before_run = true`. By default, saved valid observations and runtime errors are used. Unknown quota is not treated as zero. While every service is unavailable, no AI work proceeds, but the run can be resumed later from the saved state.
 
-Participant IDs must be unique (case-insensitive), and `baseline` and `control` are reserved names. Several participants can use the same Agent and model.
+Participant IDs must be unique (case-insensitive), and `baseline`, `control`, `merged`, `parts`, `resolve` and `resolve-base` are reserved names. Several participants can use the same Agent and model.
 
 ## Saving and handoff
 
@@ -129,7 +164,8 @@ Participant IDs must be unique (case-insensitive), and `baseline` and `control` 
 - `task`, `plan`: the original request and the assignment and stage configuration.
 - `management`: the coordinator's plan, decisions, open questions and next proposal.
 - `messages`: addressed messages (sending stage, sender, recipient, body, rejection reason).
-- `merges`: merge results and conflicts from parallel implementation.
+- `merges`: merge results and conflicts from parallel implementation; with parts, also the `wave` merged and each part's `strays`.
+- `elapsed_ms`: wall-clock time spent running, summed over every process that worked on it.
 - `apply_requested`, `application`: whether applying to the working tree was requested, its state (`pending / resolving / resolved / applied / skipped`), applied files, conflicts and the number of resolutions.
 - `next_stage`, `status`: the resume position and `running / blocked / cancelled / completed`.
 - `sessions`: every run, including successes, failures and interruptions. Each one records its own `worker_id` and `session_id`. `turn` is `scheduled / discussion / resolution`.
@@ -158,6 +194,7 @@ ACP Agents are started through `orochi`'s own supervisor process. The supervisor
 - `control/<stage number>/`: an independent working copy for each coordinator call.
 - `<participant ID>/`: working copies for implementers, reviewers and the integrator.
 - `merged/`: the merge result of parallel implementation.
+- `parts/<wave>/<part ID>/`, `parts/<wave>/_merged/`: each part's working copy and the merge of a wave that ran more than one part.
 - `resolve-base/`, `resolve/`: the fixed copy and the working copy used when resolving conflicts with the working tree.
 - `report.json`: the state needed to resume, and the run history.
 
@@ -167,7 +204,8 @@ The report contains the task text and responses. Its storage scope differs from 
 
 ## Current scope
 
-- Supported: plan updates, handoffs, state carry-over and resuming over fixed stages; parallel implementation by up to 4 implementers with merging; multi-round addressed messaging; applying a verified result to the working tree, with conflict resolution.
+- Supported: plan updates, handoffs, state carry-over and resuming over fixed stages; parallel implementation by up to 4 implementers with merging; ordered parts run in waves; multi-round addressed messaging; applying a verified result to the working tree, with conflict resolution.
+- Parts and waves (from a plan file, from the coordinator's first turn, and from the console's design step) are covered by **automated tests only**, with mock agents. Whether real agents propose useful divisions and keep to their declared `paths` is **unverified**; `strays` exists to measure the latter.
 - Parallel implementation, discussion, integration, conflict resolution against the working tree and applying were verified against the real Claude and Codex CLIs. Recovery and resuming after a forced termination were also verified against the real Claude CLI ([Live Validation of Remaining Tasks (2026-09-16, part 2)](real-validation-20260916-2.md)).
 - Instead of several sessions editing the same directory at once, each works in its own copy and the copies are merged. Joining an existing external session is not supported.
 - Discussion rounds happen in one place, after review. An exchange in which implementers answer the integrator's questions goes only as far as the handoff notes to the coordinator after integration.

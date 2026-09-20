@@ -1,5 +1,5 @@
 use orochi::{
-    collaboration::{Participant, Plan, Role},
+    collaboration::{Participant, Plan, Role, graph::Part},
     config::{AgentConfig, Config},
     types::Provider,
 };
@@ -27,6 +27,15 @@ fn plan() -> Plan {
         })
         .collect(),
         discussion: None,
+        parts: vec![],
+    }
+}
+fn part(id: &str, paths: &[&str], after: &[&str]) -> Part {
+    Part {
+        id: id.into(),
+        brief: format!("build {id}"),
+        paths: paths.iter().map(|p| (*p).into()).collect(),
+        after: after.iter().map(|p| (*p).into()).collect(),
     }
 }
 #[test]
@@ -976,7 +985,11 @@ fn working_tree_edits_during_resolution_are_never_overwritten() {
 #[test]
 fn bundled_example_plans_validate_against_the_default_agents() {
     let config = Config::default();
-    for name in ["session-plan.json", "session-plan-parallel.json"] {
+    for name in [
+        "session-plan.json",
+        "session-plan-parallel.json",
+        "session-plan-parts.json",
+    ] {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("examples")
             .join(name);
@@ -1079,4 +1092,578 @@ fn parallel_implementers_own_disjoint_areas_or_none_at_all() {
             .count(),
         1
     );
+}
+
+mod graph {
+    use super::part;
+    use orochi::collaboration::graph::{Part, waves};
+    /// Each wave as the parts of each unit, `+`-joined when a chain was fused.
+    fn shape(parts: &[Part], width: usize) -> Vec<Vec<String>> {
+        waves(parts, width)
+            .unwrap()
+            .iter()
+            .map(|wave| wave.iter().map(|unit| unit.parts.join("+")).collect())
+            .collect()
+    }
+
+    /// A model proposes the graph; a graph that cannot be ordered is not trimmed into one
+    /// that can — it is refused whole, so the plan falls back to the shape it had.
+    #[test]
+    fn a_work_graph_that_cannot_be_ordered_is_refused_whole() {
+        let refused = [
+            vec![part("a", &["x"], &["b"]), part("b", &["y"], &["a"])],
+            vec![part("a", &["x"], &["a"])],
+            vec![part("a", &["x"], &["nowhere"])],
+            vec![part("a", &["x"], &[]), part("a", &["y"], &[])],
+            vec![part("Upper", &["x"], &[])],
+            vec![part("", &["x"], &[])],
+            vec![part(&"a".repeat(33), &["x"], &[])],
+            vec![part("a", &["../outside"], &[])],
+            vec![part("a", &["/etc"], &[])],
+            vec![],
+            (0..13).map(|i| part(&format!("p{i}"), &[], &[])).collect(),
+        ];
+        for parts in refused {
+            assert!(waves(&parts, 4).is_err(), "{parts:?}");
+        }
+        let mut long = part("a", &["x"], &[]);
+        long.brief = "x".repeat(2049);
+        assert!(waves(&[long.clone()], 4).is_err());
+        long.brief = " ".into();
+        assert!(waves(&[long], 4).is_err());
+    }
+
+    #[test]
+    fn parts_with_separate_areas_and_no_order_share_a_wave() {
+        let parts = [part("api", &["api"], &[]), part("web", &["web"], &[])];
+        assert_eq!(shape(&parts, 4), [["api", "web"]]);
+    }
+
+    /// Serial unless shown independent: two parts that may write the same place — the same
+    /// path, one inside the other, or a part that never said where it writes — run in the
+    /// order they were listed, however they were declared.
+    #[test]
+    fn parts_that_may_write_the_same_place_never_share_a_wave() {
+        let nested = [
+            part("store", &["src"], &[]),
+            part("schema", &["src/db"], &[]),
+            part("web", &["web"], &[]),
+            part("docs", &["docs/"], &[]),
+            part("guide", &["docs"], &[]),
+        ];
+        for wave in waves(&nested, 4).unwrap() {
+            for (i, a) in wave.iter().enumerate() {
+                for b in &wave[i + 1..] {
+                    let overlap = a.paths.iter().any(|x| {
+                        b.paths.iter().any(|y| {
+                            std::path::Path::new(x).starts_with(y)
+                                || std::path::Path::new(y).starts_with(x)
+                        })
+                    });
+                    assert!(!overlap, "{a:?} and {b:?} share a wave");
+                }
+            }
+        }
+        // Nobody knows what a part without paths writes, so it runs with nothing beside it.
+        let anywhere = [
+            part("api", &["api"], &[]),
+            part("web", &["web"], &[]),
+            part("everything", &[], &[]),
+        ];
+        assert_eq!(
+            shape(&anywhere, 4),
+            vec![vec!["api", "web"], vec!["everything"]]
+        );
+        // The same list always gives the same order.
+        assert_eq!(shape(&nested, 4), shape(&nested, 4));
+    }
+
+    /// A straight line of parts gains nothing from separate sessions: one agent holding the
+    /// whole context does a sequence better than three handing notes along.
+    #[test]
+    fn a_straight_chain_of_parts_runs_as_one_session() {
+        let parts = [
+            part("schema", &["db"], &[]),
+            part("api", &["api"], &["schema"]),
+            part("web", &["web"], &[]),
+        ];
+        let graph = waves(&parts, 4).unwrap();
+        assert_eq!(graph.len(), 1);
+        let fused = &graph[0][0];
+        assert_eq!(fused.id, "schema");
+        assert_eq!(fused.parts, ["schema", "api"]);
+        assert_eq!(fused.paths, ["db", "api"]);
+        let (schema, api) = (
+            fused.brief.find("build schema").unwrap(),
+            fused.brief.find("build api").unwrap(),
+        );
+        assert!(schema < api, "{}", fused.brief);
+        assert_eq!(graph[0][1].parts, ["web"]);
+
+        let line = [
+            part("a", &["a"], &[]),
+            part("b", &["b"], &["a"]),
+            part("c", &["c"], &["b", "a"]),
+        ];
+        assert_eq!(shape(&line, 4), [["a+b+c"]]);
+    }
+
+    #[test]
+    fn a_join_waits_for_every_branch_it_builds_on() {
+        let diamond = [
+            part("base", &["core"], &[]),
+            part("left", &["left"], &["base"]),
+            part("right", &["right"], &["base"]),
+            part("join", &["app"], &["left", "right"]),
+        ];
+        assert_eq!(
+            shape(&diamond, 4),
+            vec![vec!["base"], vec!["left", "right"], vec!["join"]]
+        );
+    }
+
+    #[test]
+    fn a_wave_never_runs_wider_than_the_seats_that_hold_it() {
+        let parts = [
+            part("a", &["a"], &[]),
+            part("b", &["b"], &[]),
+            part("c", &["c"], &[]),
+        ];
+        assert_eq!(shape(&parts, 2), vec![vec!["a", "b"], vec!["c"]]);
+        // One seat means one thing at a time, and that is one session, not three.
+        assert_eq!(shape(&parts, 1), [["a+b+c"]]);
+    }
+}
+
+/// The shape the work-graph scenarios share: two implementer seats, a reviewer and an
+/// integrator, and three parts of which the third needs the other two.
+fn graph_scenario() -> Scenario {
+    let mut s = Scenario::new("", "rate");
+    s.plan.participants.remove(0);
+    let mut second = s.plan.participants[0].clone();
+    second.id = "second".into();
+    s.plan.participants.insert(1, second);
+    s.plan.parts = vec![
+        part("alpha", &["alpha"], &[]),
+        part("beta", &["beta"], &[]),
+        part("gamma", &["gamma"], &["alpha", "beta"]),
+    ];
+    let shared = [
+        ("MOCK_PARTS", "1"),
+        ("MOCK_PART_NEEDS", "gamma:alpha/beta"),
+        ("MOCK_EXPECT_PARTS", "alpha,beta,gamma"),
+    ];
+    s.env(0, &shared);
+    s.env(1, &shared);
+    s
+}
+fn by_participant<'a>(report: &'a serde_json::Value, id: &str) -> Vec<&'a serde_json::Value> {
+    report["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["participant"] == id)
+        .collect()
+}
+
+/// Parts with nothing between them run at the same time, each in its own copy; a part that
+/// needs them starts only from what they merged into, and only the integrated result is
+/// verified.
+#[test]
+fn a_later_wave_starts_from_what_the_earlier_wave_merged() {
+    let mut s = graph_scenario();
+    let meeting = s.temp.path().join("rendezvous");
+    fs::create_dir(&meeting).unwrap();
+    let meeting = meeting.display().to_string();
+    let together = [
+        ("MOCK_RENDEZVOUS", meeting.as_str()),
+        ("MOCK_RENDEZVOUS_PARTS", "alpha,beta"),
+    ];
+    s.env(0, &together);
+    s.env(1, &together);
+    succeeded(&s.invoke(false));
+    let report = s.report();
+    assert_eq!(report["status"], "completed");
+    assert_eq!(report["outcome"], "success");
+    // wave 0, its merge, wave 1, review, integration
+    assert_eq!(report["next_stage"], 5);
+    for (id, stage) in [("alpha", 0), ("beta", 0), ("gamma", 2)] {
+        let sessions = by_participant(&report, id);
+        assert_eq!(sessions.len(), 1, "{id}");
+        assert_eq!(sessions[0]["stage"], stage, "{id}");
+        assert_eq!(sessions[0]["role"], "implementer");
+        assert_eq!(sessions[0]["status"], "completed");
+    }
+    // Nobody works as a seat: the seats only say who may hold a part.
+    assert!(by_participant(&report, "author").is_empty());
+    let merge = &report["merges"][0];
+    assert_eq!(merge["stage"], 1);
+    assert_eq!(merge["sources"], json!(["alpha", "beta"]));
+    assert!(merge["conflicts"].as_array().unwrap().is_empty());
+    assert_eq!(merge["strays"], json!({"alpha": 0, "beta": 0}));
+    assert!(report["elapsed_ms"].as_u64().is_some());
+    let integrated = s.output().join("integrator");
+    for id in ["alpha", "beta", "gamma"] {
+        assert_eq!(
+            fs::read_to_string(integrated.join(id).join("done.txt")).unwrap(),
+            id
+        );
+        assert!(!s.repo().join(id).exists());
+    }
+    let prompts: Vec<String> = s
+        .prompts("primary")
+        .iter()
+        .map(|r| {
+            r["params"]["prompt"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    let gamma = prompts
+        .iter()
+        .find(|p| p.contains("Your part: gamma"))
+        .unwrap();
+    assert!(gamma.contains("build gamma") && gamma.contains("build alpha"));
+    assert!(gamma.contains("Paths you own: [\"gamma\"]"));
+    // Only the integrated tree is expected to pass the project's checks.
+    for id in ["alpha", "beta", "gamma"] {
+        assert!(
+            by_participant(&report, id)[0]["checks"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn an_interrupted_wave_resumes_only_the_part_that_did_not_finish() {
+    let mut s = graph_scenario();
+    s.env(
+        0,
+        &[
+            ("MOCK_FAIL_ROLE", "implementer"),
+            ("MOCK_FAIL_PART", "beta"),
+        ],
+    );
+    s.config.agents[1].enabled = false;
+    assert!(!s.invoke(false).status.success());
+    let blocked = s.report();
+    assert_eq!(blocked["status"], "blocked");
+    assert_eq!(blocked["next_stage"], 0);
+    assert_eq!(by_participant(&blocked, "alpha")[0]["status"], "completed");
+    s.config.agents[1].enabled = true;
+    succeeded(&s.invoke(true));
+    let report = s.report();
+    assert_eq!(report["status"], "completed");
+    assert_eq!(report["outcome"], "success");
+    assert_eq!(by_participant(&report, "alpha").len(), 1);
+    let beta = by_participant(&report, "beta");
+    assert_eq!(beta.last().unwrap()["status"], "completed");
+    assert_eq!(beta.last().unwrap()["candidate"]["agent"], "backup");
+    assert!(s.prompts("backup").iter().all(|r| {
+        !r["params"]["prompt"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Your part: alpha")
+    }));
+}
+
+/// Declared write sets are guidance, not a fence. When two parts of one wave touch the same
+/// file anyway, the conflict is resolved before anything builds on it — and a merge that
+/// still carries markers stops the run rather than handing broken files to the next wave.
+#[test]
+fn a_conflict_between_parts_is_resolved_before_the_next_wave_builds_on_it() {
+    let mut s = graph_scenario();
+    fs::write(s.repo().join("shared.txt"), "base\n").unwrap();
+    let meeting = s.temp.path().join("rendezvous");
+    fs::create_dir(&meeting).unwrap();
+    let meeting = meeting.display().to_string();
+    let straying = [
+        ("MOCK_RENDEZVOUS", meeting.as_str()),
+        ("MOCK_RENDEZVOUS_PARTS", "alpha,beta"),
+        ("MOCK_PART_SHARED", "1"),
+    ];
+    s.env(0, &straying);
+    s.env(1, &straying);
+    succeeded(&s.invoke(false));
+    let report = s.report();
+    assert_eq!(report["status"], "completed");
+    let merge = &report["merges"][0];
+    assert_eq!(merge["conflicts"][0]["path"], "shared.txt");
+    assert_eq!(merge["strays"], json!({"alpha": 1, "beta": 1}));
+    let resolution: Vec<_> = report["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["turn"] == "resolution")
+        .collect();
+    assert_eq!(resolution.len(), 1);
+    assert_eq!(resolution[0]["stage"], 1);
+    assert_eq!(resolution[0]["participant"], "integrator");
+    assert_eq!(by_participant(&report, "gamma")[0]["status"], "completed");
+    assert_eq!(
+        fs::read_to_string(s.output().join("integrator/shared.txt")).unwrap(),
+        "alpha+beta\n"
+    );
+
+    let mut stuck = graph_scenario();
+    fs::write(stuck.repo().join("shared.txt"), "base\n").unwrap();
+    let meeting = stuck.temp.path().join("rendezvous");
+    fs::create_dir(&meeting).unwrap();
+    let meeting = meeting.display().to_string();
+    for agent in 0..2 {
+        stuck.env(
+            agent,
+            &[
+                ("MOCK_RENDEZVOUS", meeting.as_str()),
+                ("MOCK_RENDEZVOUS_PARTS", "alpha,beta"),
+                ("MOCK_PART_SHARED", "1"),
+                ("MOCK_KEEP_MARKERS", "1"),
+            ],
+        );
+    }
+    assert!(!stuck.invoke(false).status.success());
+    let report = stuck.report();
+    assert_eq!(report["status"], "blocked");
+    assert_eq!(report["next_stage"], 1);
+    assert!(by_participant(&report, "gamma").is_empty());
+    let attempts: Vec<_> = report["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["turn"] == "resolution")
+        .collect();
+    assert!(!attempts.is_empty());
+    for attempt in attempts {
+        assert_eq!(attempt["status"], "failed");
+        assert!(
+            attempt["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["name"] == "git_conflict_markers" && c["passed"] == false),
+            "{attempt}"
+        );
+    }
+}
+
+#[test]
+fn a_plan_file_with_parts_is_checked_and_its_order_printed_on_a_dry_run() {
+    let s = graph_scenario();
+    let output = s.invoke_with(false, &["--dry-run"]);
+    succeeded(&output);
+    let printed: Plan = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed.parts, s.plan.parts);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Order: alpha ‖ beta → gamma"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut cyclic = graph_scenario();
+    cyclic.plan.parts[0].after = vec!["gamma".into()];
+    let output = cyclic.invoke_with(false, &["--dry-run"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cycle"));
+    // A part may not take a name a participant already answers to.
+    let mut clash = graph_scenario();
+    clash.plan.parts[0].id = "reviewer".into();
+    clash.plan.parts[2].after = vec!["reviewer".into(), "beta".into()];
+    assert_eq!(
+        clash.invoke_with(false, &["--dry-run"]).status.code(),
+        Some(1)
+    );
+}
+
+/// A coordinator and two implementer seats, the coordinator proposing `proposal` as parts on
+/// its first turn and `later` on every turn after that.
+fn proposing(proposal: serde_json::Value, later: serde_json::Value) -> Scenario {
+    let mut s = Scenario::new("", "rate");
+    let mut second = s.plan.participants[1].clone();
+    second.id = "second".into();
+    s.plan.participants.insert(2, second);
+    let (proposal, later) = (proposal.to_string(), later.to_string());
+    for agent in 0..2 {
+        s.env(
+            agent,
+            &[
+                ("MOCK_PARTS", "1"),
+                ("MOCK_PART_NEEDS", "gamma:alpha/beta"),
+                ("MOCK_COORDINATOR_PARTS", proposal.as_str()),
+                ("MOCK_COORDINATOR_LATER_PARTS", later.as_str()),
+            ],
+        );
+    }
+    s
+}
+fn coordinator_prompts(s: &Scenario) -> Vec<String> {
+    s.prompts("primary")
+        .iter()
+        .map(|r| {
+            r["params"]["prompt"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .filter(|p| p.contains("Role: Coordinator."))
+        .collect()
+}
+
+/// The first coordinator turn has read the repository, so it — not a count of directories —
+/// says how the work divides. Its answer is taken once; nothing said later reshapes the graph.
+#[test]
+fn the_coordinator_divides_the_work_once_and_later_proposals_change_nothing() {
+    let mut s = proposing(
+        json!([
+            {"id": "alpha", "brief": "build alpha", "paths": ["alpha"]},
+            {"id": "beta", "brief": "build beta", "paths": ["beta"]},
+            {"id": "gamma", "brief": "build gamma", "paths": ["gamma"], "after": ["alpha", "beta"]},
+        ]),
+        json!([{"id": "late", "brief": "start over", "paths": ["late"]}]),
+    );
+    for agent in 0..2 {
+        s.env(agent, &[("MOCK_EXPECT_PARTS", "alpha,beta,gamma")]);
+    }
+    succeeded(&s.invoke(false));
+    let report = s.report();
+    assert_eq!(report["status"], "completed");
+    assert_eq!(report["outcome"], "success");
+    let parts: Vec<&str> = report["plan"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(parts, ["alpha", "beta", "gamma"]);
+    // coordinator, wave 1, merge, coordinator, wave 2, coordinator, review, coordinator,
+    // integration, coordinator
+    assert_eq!(report["next_stage"], 10);
+    assert_eq!(by_participant(&report, "gamma")[0]["stage"], 4);
+    assert!(by_participant(&report, "late").is_empty());
+    assert!(report["management"].get("parts").is_none());
+    let prompts = coordinator_prompts(&s);
+    assert!(prompts[0].contains("\"parts\"") && prompts[0].contains("Up to 2 parts"));
+    assert!(prompts[1..].iter().all(|p| !p.contains("Up to 2 parts")));
+}
+
+/// A division Orochi cannot order, or one where nothing runs side by side, changes nothing:
+/// the team keeps the shape it had. A single implementer seat is never asked for one.
+#[test]
+fn a_division_that_cannot_run_side_by_side_leaves_the_team_as_it_was() {
+    for proposal in [
+        json!([
+            {"id": "alpha", "brief": "build alpha", "paths": ["alpha"], "after": ["beta"]},
+            {"id": "beta", "brief": "build beta", "paths": ["beta"], "after": ["alpha"]},
+        ]),
+        json!([
+            {"id": "alpha", "brief": "build alpha", "paths": ["alpha"]},
+            {"id": "beta", "brief": "build beta", "paths": ["beta"], "after": ["alpha"]},
+        ]),
+        json!({"id": "not a list"}),
+    ] {
+        let s = proposing(proposal.clone(), json!([]));
+        succeeded(&s.invoke(false));
+        let report = s.report();
+        assert_eq!(report["status"], "completed", "{proposal}");
+        assert!(report["plan"].get("parts").is_none(), "{proposal}");
+        assert_eq!(report["next_stage"], 8, "{proposal}");
+        for seat in ["author", "second"] {
+            assert_eq!(by_participant(&report, seat)[0]["stage"], 1, "{proposal}");
+        }
+    }
+    let alone = Scenario::new("", "rate");
+    succeeded(&alone.invoke(false));
+    assert!(
+        coordinator_prompts(&alone)
+            .iter()
+            .all(|p| !p.contains("\"parts\""))
+    );
+}
+
+/// A design that divided the work needs no coordinator — the design was that turn — and one
+/// implementer seat for each part that runs at the same time.
+#[test]
+fn a_divided_design_seats_one_implementer_for_each_part_that_runs_at_once() {
+    use orochi::{collaboration::plan, router::profiler};
+    let dir = tempfile::tempdir().unwrap();
+    let task = profiler::profile("rewrite the entire architecture from scratch", dir.path());
+    let parts = vec![
+        part("alpha", &["alpha"], &[]),
+        part("beta", &["beta"], &[]),
+        part("gamma", &["gamma"], &["alpha", "beta"]),
+    ];
+    let team = plan::with_parts(&task, parts.clone()).unwrap();
+    team.validate(&Config::default()).unwrap();
+    let roles: Vec<Role> = team.participants.iter().map(|p| p.role).collect();
+    assert_eq!(roles.iter().filter(|r| **r == Role::Implementer).count(), 2);
+    assert!(!roles.contains(&Role::Coordinator));
+    assert_eq!(roles.last(), Some(&Role::Integrator));
+    assert!(team.discussion.is_none());
+    assert_eq!(team.parts, parts);
+
+    let wide: Vec<Part> = ["p0", "p1", "p2", "p3", "p4"]
+        .iter()
+        .map(|id| part(id, &[id], &[]))
+        .collect();
+    let team = plan::with_parts(&task, wide).unwrap();
+    team.validate(&Config::default()).unwrap();
+    assert_eq!(
+        team.participants
+            .iter()
+            .filter(|p| p.role == Role::Implementer)
+            .count(),
+        4
+    );
+    // Nothing to run side by side, or nothing Orochi can order: no team.
+    let chain = vec![part("a", &["a"], &[]), part("b", &["b"], &["a"])];
+    assert!(plan::with_parts(&task, chain).is_none());
+    let cycle = vec![part("a", &["a"], &["b"]), part("b", &["b"], &["a"])];
+    assert!(plan::with_parts(&task, cycle).is_none());
+}
+
+/// The parts of one wave choose their routes one after another, and each sees what the ones
+/// before it took: of two accounts that are otherwise equal, each gets one part.
+#[test]
+fn the_parts_of_one_wave_spread_over_accounts_that_are_otherwise_equal() {
+    let mut s = graph_scenario();
+    s.plan.parts.truncate(2);
+    for participant in &mut s.plan.participants {
+        participant.agent = String::new();
+        participant.model = None;
+    }
+    let meeting = s.temp.path().join("rendezvous");
+    fs::create_dir(&meeting).unwrap();
+    let meeting = meeting.display().to_string();
+    let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
+    s.config.agents = ["twin-a", "twin-b"]
+        .iter()
+        .map(|id| {
+            let mut twin = AgentConfig::preset(id, Provider::Openai, "python3", &[]);
+            twin.args = vec![fixture.clone()];
+            for (key, value) in [
+                ("MOCK_BEHAVIOR", "session_collaboration"),
+                ("MOCK_MODELS", "sol-test"),
+                ("MOCK_PARTS", "1"),
+                ("MOCK_EXPECT_PARTS", "alpha,beta"),
+                ("MOCK_RENDEZVOUS", meeting.as_str()),
+                ("MOCK_RENDEZVOUS_PARTS", "alpha,beta"),
+            ] {
+                twin.env.insert(key.into(), value.into());
+            }
+            twin
+        })
+        .collect();
+    succeeded(&s.invoke(false));
+    let report = s.report();
+    let agents: std::collections::BTreeSet<&str> = ["alpha", "beta"]
+        .iter()
+        .map(|id| {
+            by_participant(&report, id)[0]["candidate"]["agent"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(agents.len(), 2, "both parts ran on {agents:?}");
 }

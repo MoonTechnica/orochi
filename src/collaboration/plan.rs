@@ -3,7 +3,7 @@
 //! `Plan::validate` is the contract this has to satisfy: an optional coordinator, then 1..=4
 //! implementers, 1..=4 reviewers and exactly one integrator, 3..=10 participants in that
 //! order. Everything here decides how many of each, and what the implementers own.
-use super::{Discussion, Participant, Plan, Role};
+use super::{Discussion, Part, Participant, Plan, Role, graph};
 use crate::types::{Complexity, TaskDescriptor};
 use std::{
     collections::BTreeSet,
@@ -109,6 +109,36 @@ fn seat(id: &str, role: Role) -> Participant {
     }
 }
 
+/// One reviewer reads the code. A structural change also needs the shape read, separately from
+/// whether the lines are right, and extreme work is where a missed case costs most.
+fn reviewers(task: &TaskDescriptor) -> usize {
+    let structural = task.requires_architecture_change
+        || matches!(task.task_type.as_str(), "architecture" | "migration");
+    (1 + usize::from(structural) + usize::from(task.complexity == Complexity::Extreme)).clamp(1, 4)
+}
+
+/// A team for work the design step already divided: one implementer seat for each part that
+/// runs at the same time, reviewers as `derive` seats them, and no coordinator — the design
+/// step was that turn. `None` when Orochi cannot order the parts or none run side by side.
+pub fn with_parts(task: &TaskDescriptor, parts: Vec<Part>) -> Option<Plan> {
+    let widest = graph::waves(&parts, 4).ok()?.iter().map(Vec::len).max()?;
+    if widest < 2 {
+        return None;
+    }
+    let mut participants: Vec<Participant> = (1..=widest)
+        .map(|index| seat(&format!("implement-{index}"), Role::Implementer))
+        .collect();
+    participants.extend(
+        (1..=reviewers(task)).map(|index| seat(&format!("review-{index}"), Role::Reviewer)),
+    );
+    participants.push(seat("integrate", Role::Integrator));
+    Some(Plan {
+        participants,
+        discussion: None,
+        parts,
+    })
+}
+
 /// A team for this task. Always valid: every count is clamped to what `Plan::validate` takes.
 pub fn derive(task: &TaskDescriptor, root: &Path) -> Plan {
     let mut areas = areas(task);
@@ -123,13 +153,7 @@ pub fn derive(task: &TaskDescriptor, root: &Path) -> Plan {
     .min(areas.len().max(1))
     .clamp(1, 4);
 
-    let structural = task.requires_architecture_change
-        || matches!(task.task_type.as_str(), "architecture" | "migration");
-    // One reviewer reads the code. A structural change also needs the shape read, separately
-    // from whether the lines are right, and extreme work is where a missed case costs most.
-    let mut reviewers =
-        (1 + usize::from(structural) + usize::from(task.complexity == Complexity::Extreme))
-            .clamp(1, 4);
+    let mut reviewers = reviewers(task);
 
     // One implementer answering to one reviewer has nothing to coordinate.
     let mut coordinator =
@@ -182,5 +206,6 @@ pub fn derive(task: &TaskDescriptor, root: &Path) -> Plan {
                 2
             },
         }),
+        parts: vec![],
     }
 }

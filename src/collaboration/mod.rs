@@ -1,9 +1,11 @@
 //! Durable role handoffs. A logical role can be held by successive independent ACP sessions.
 mod apply;
+pub mod graph;
 pub mod plan;
 mod turn;
 mod workspace;
 
+pub use graph::{Part, Unit};
 pub use turn::{Coordination, Outbound, TurnKind};
 pub use workspace::{Conflict, copy_workspace};
 
@@ -17,7 +19,7 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     path::{Component, Path, PathBuf},
 };
@@ -70,6 +72,11 @@ pub struct Plan {
     pub participants: Vec<Participant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discussion: Option<Discussion>,
+    /// The work in order. Empty: every implementer takes the whole task at once, as before
+    /// parts existed. Otherwise implementers are seats the parts run on, as many at once as
+    /// there are implementers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Part>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +86,10 @@ enum Step {
     Merge,
     Discussion(usize),
     Apply,
+    /// One wave of the work graph: its units run concurrently, each in its own copy.
+    Wave(usize),
+    /// Merges a wave that ran more than one unit, before anything builds on it.
+    Join(usize),
 }
 
 fn relative(path: &str) -> bool {
@@ -100,8 +111,15 @@ impl Plan {
             ensure!(
                 !p.id.is_empty()
                     && p.id.len() <= 64
-                    && !["baseline", "control", "merged", "resolve", "resolve-base"]
-                        .contains(&p.id.to_ascii_lowercase().as_str())
+                    && ![
+                        "baseline",
+                        "control",
+                        "merged",
+                        "parts",
+                        "resolve",
+                        "resolve-base"
+                    ]
+                    .contains(&p.id.to_ascii_lowercase().as_str())
                     && p.id
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -159,13 +177,24 @@ impl Plan {
                 "discussion.max_rounds must be in 1..=6"
             );
         }
+        if !self.parts.is_empty() {
+            graph::waves(&self.parts, implementers)?;
+            ensure!(
+                self.parts
+                    .iter()
+                    .all(|part| !ids.contains(&part.id.to_ascii_lowercase())),
+                "a part may not share a participant's ID"
+            );
+        }
         Ok(())
     }
-    /// Whether the work splits across separate workspaces. One implementer gains nothing from
-    /// a workspace of its own, so this is exactly the line between what a console turn can do
-    /// in the user's tree and what needs the collaboration machinery.
-    pub fn splits_work(&self) -> bool {
-        self.indices(Role::Implementer).len() > 1
+    /// The waves the parts run in, as many units at once as there are implementer seats.
+    /// `None` without parts; `validate` refuses parts that cannot be ordered.
+    pub fn waves(&self) -> Option<Vec<Vec<Unit>>> {
+        if self.parts.is_empty() {
+            return None;
+        }
+        graph::waves(&self.parts, self.indices(Role::Implementer).len().max(1)).ok()
     }
     /// The team in one line, for the run that derived it rather than being handed it.
     pub fn summary(&self) -> String {
@@ -203,8 +232,22 @@ impl Plan {
             steps.push(Step::Turn(vec![0]));
         }
         let implementers = self.indices(Role::Implementer);
-        let merged = implementers.len() > 1;
-        turn(&mut steps, implementers);
+        let waves = self.waves();
+        // With parts, the waves have already been merged by the time anyone reviews.
+        let merged = waves.is_none() && implementers.len() > 1;
+        if let Some(waves) = &waves {
+            for (index, wave) in waves.iter().enumerate() {
+                steps.push(Step::Wave(index));
+                if wave.len() > 1 {
+                    steps.push(Step::Join(index));
+                }
+                if coordinator {
+                    steps.push(Step::Turn(vec![0]));
+                }
+            }
+        } else {
+            turn(&mut steps, implementers);
+        }
         if merged {
             steps.push(Step::Merge);
         }
@@ -276,6 +319,13 @@ pub struct MergeRecord {
     pub stage: usize,
     pub sources: Vec<String>,
     pub conflicts: Vec<Conflict>,
+    /// The wave of the work graph this merge joined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave: Option<usize>,
+    /// Per part: files it changed outside the paths it declared. The evidence for (or
+    /// against) trusting declared paths enough to run parts side by side.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub strays: BTreeMap<String, usize>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -319,6 +369,9 @@ pub struct Report {
     pub apply_requested: bool,
     #[serde(default)]
     pub application: Option<Application>,
+    /// Wall-clock time spent running, summed over every process that worked on it.
+    #[serde(default)]
+    pub elapsed_ms: u64,
 }
 impl Report {
     /// Completed, requested application reached the working tree or was not requested.
@@ -370,11 +423,82 @@ fn lock(output: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// Where the units of one wave work, each in `<id>/`, and where a wider wave is merged.
+fn wave_dir(output: &Path, wave: usize) -> PathBuf {
+    output.join("parts").join(wave.to_string())
+}
+/// The tree a wave leaves behind: its one unit's workspace, or the merge of its units. Unit
+/// IDs cannot contain `_`, so `_merged` is never a unit's.
+fn wave_result(output: &Path, waves: &[Vec<Unit>], wave: usize) -> PathBuf {
+    match waves[wave].as_slice() {
+        [only] => wave_dir(output, wave).join(&only.id),
+        _ => wave_dir(output, wave).join("_merged"),
+    }
+}
+/// The tree a wave starts from.
+fn wave_base(output: &Path, waves: &[Vec<Unit>], wave: usize) -> PathBuf {
+    if wave == 0 {
+        output.join("baseline")
+    } else {
+        wave_result(output, waves, wave - 1)
+    }
+}
+
+/// Takes the first coordinator turn's division of the work, once, when Orochi can order it
+/// and it lets something run side by side. Anything else keeps the team as it was.
+fn adopt(cx: &Cx<'_>, report: &mut Report, proposal: serde_json::Value) {
+    if !report.plan.parts.is_empty() {
+        return;
+    }
+    let mut plan = report.plan.clone();
+    plan.parts = match serde_json::from_value(proposal) {
+        Ok(parts) => parts,
+        Err(_) => {
+            cx.say("The proposed parts could not be read; keeping the team as it was".into());
+            return;
+        }
+    };
+    let waves = match plan.validate(cx.config).and_then(|()| {
+        plan.waves()
+            .context("the proposed parts could not be ordered")
+    }) {
+        Ok(waves) => waves,
+        Err(error) => {
+            cx.say(format!("{error:#}; keeping the team as it was"));
+            return;
+        }
+    };
+    if waves.iter().all(|wave| wave.len() < 2) {
+        cx.say(
+            "Nothing in the proposed parts can run side by side; keeping the team as it was".into(),
+        );
+        return;
+    }
+    cx.say(format!("Order: {}", graph::summary(&waves)));
+    report.plan = plan;
+}
+
 struct Cx<'a> {
     config: &'a Config,
     policies: &'a Registry,
     store: &'a Store,
     output: &'a Path,
+    /// Where progress goes when someone other than a terminal's stderr is showing it.
+    events: Option<crate::acp::EventSink>,
+    /// Interrupts after this stop the run, even one that came between two waits.
+    since: crate::interrupt::Since,
+}
+impl Cx<'_> {
+    fn say(&self, text: String) {
+        match &self.events {
+            Some(events) => {
+                let _ = events.send(crate::acp::ExecutionEvent::Progress(
+                    crate::acp::Progress::Note(text),
+                ));
+            }
+            None => eprintln!("{text}"),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,6 +511,7 @@ pub async fn run(
     plan: &Plan,
     output: &Path,
     apply: bool,
+    events: Option<crate::acp::EventSink>,
 ) -> Result<Report> {
     plan.validate(config)?;
     ensure!(
@@ -424,6 +549,7 @@ pub async fn run(
         merges: vec![],
         apply_requested: apply,
         application: None,
+        elapsed_ms: 0,
     };
     save(&output, &report)?;
     let cx = Cx {
@@ -431,7 +557,12 @@ pub async fn run(
         policies,
         store,
         output: &output,
+        events,
+        since: crate::interrupt::mark(),
     };
+    if let Some(waves) = report.plan.waves() {
+        cx.say(format!("Order: {}", graph::summary(&waves)));
+    }
     drive(&cx, &mut report).await?;
     Ok(report)
 }
@@ -497,15 +628,22 @@ pub async fn resume(
         policies,
         store,
         output: &output,
+        events: None,
+        since: crate::interrupt::mark(),
     };
     drive(&cx, &mut report).await?;
     Ok(report)
 }
 
 async fn drive(cx: &Cx<'_>, report: &mut Report) -> Result<()> {
+    let started = std::time::Instant::now();
     // Save all ordinary failures, including local I/O and validation failures, as a
     // resumable stage. Cancellation stops here instead of spending quota on a fallback.
-    if let Err(error) = drive_steps(cx, report).await {
+    let result = drive_steps(cx, report).await;
+    report.elapsed_ms = report
+        .elapsed_ms
+        .saturating_add(started.elapsed().as_millis() as u64);
+    if let Err(error) = result {
         let cancelled = error
             .downcast_ref::<AgentError>()
             .is_some_and(|e| e.kind == ErrorKind::Cancelled);
@@ -525,9 +663,17 @@ async fn drive(cx: &Cx<'_>, report: &mut Report) -> Result<()> {
 }
 
 async fn drive_steps(cx: &Cx<'_>, report: &mut Report) -> Result<()> {
-    let steps = report.plan.steps(report.apply_requested);
-    while report.next_stage < steps.len() {
+    loop {
+        // Read again every stage: the first coordinator turn may divide the work.
+        let steps = report.plan.steps(report.apply_requested);
+        if report.next_stage >= steps.len() {
+            break;
+        }
         let stage = report.next_stage;
+        // Merges and copies between stages never wait, so they would not hear it themselves.
+        if cx.since.interrupted() {
+            return Err(AgentError::new(ErrorKind::Cancelled, "interrupted between stages").into());
+        }
         match &steps[stage] {
             Step::Turn(group) => {
                 let turns = group
@@ -537,7 +683,12 @@ async fn drive_steps(cx: &Cx<'_>, report: &mut Report) -> Result<()> {
                     .collect::<Result<Vec<_>>>()?;
                 turn::run_group(cx, report, stage, turns).await?;
             }
-            Step::Merge => apply::merge_implementers(cx.output, report, stage)?,
+            Step::Merge => apply::merge_implementers(cx, report, stage)?,
+            Step::Wave(wave) => {
+                let turns = turn::wave(cx, report, stage, *wave)?;
+                turn::run_group(cx, report, stage, turns).await?;
+            }
+            Step::Join(wave) => apply::join(cx, report, stage, *wave).await?,
             Step::Discussion(round) => {
                 let turns = turn::discussion(cx, report, stage, *round)?;
                 if turns.is_empty() {

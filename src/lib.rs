@@ -9,6 +9,7 @@ pub mod context;
 pub mod discovery;
 pub mod evaluator;
 pub mod gateway;
+pub mod interrupt;
 pub mod learning;
 pub mod mailbox;
 pub mod memory;

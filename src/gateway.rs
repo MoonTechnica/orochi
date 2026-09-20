@@ -118,7 +118,7 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
                         let store = Store::open(&data)?;
                         let _lock = workspace_lock(&data, &store.repository_id(&root)?, config.scheduler.shared_workspace)?;
                         let policies = Registry::load(&data)?;
-                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false };
+                        let options = RunOptions { task, descriptor: None, overrides: Overrides::default(), dry_run: false, json: false, resume: None, permission: config.scheduler.permission, interactive: false, attachments: vec![], peer: None, verify: true, read_only: false, place: None };
                         tokio::select! {
                             result = scheduler::run_with_events(&config, &policies, &store, &root, options, Some(events)) => result,
                             _ = worker_cancel.wait_for(|v| *v) => Ok(130),

@@ -11,7 +11,10 @@ use std::{
     io::{BufRead, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::OnceLock,
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -514,27 +517,127 @@ pub fn busy_agents(except: Option<&str>) -> Vec<String> {
 
 /// The (agent, model) every other seat is running, so a new one can pick something else.
 pub fn busy_routes(except: Option<&str>) -> Vec<(String, String)> {
-    let Some(active) = ACTIVE.get() else {
-        return vec![];
-    };
-    let ours: Vec<(String, String)> = ours()
-        .into_iter()
-        .filter(|(_, name)| Some(name.as_str()) == except)
+    let mut routes: Vec<(String, String)> = CLAIMS
+        .lock()
+        .expect("route claims")
+        .iter()
+        .filter(|claim| except.is_none() || claim.name.as_deref() != except)
+        .map(|claim| (claim.agent.clone(), claim.model.clone()))
         .collect();
-    Mailbox::open(&active.data, &active.config)
-        .and_then(|mailbox| mailbox.peers(&active.channel))
-        .map(|peers| {
-            peers
-                .into_iter()
-                .filter(|p| !ours.iter().any(|(id, _)| *id == p.id))
-                .filter_map(|p| {
-                    let route = p.route?;
-                    let (agent, model) = route.split_once(" / ")?;
-                    Some((agent.to_owned(), model.to_owned()))
+    if let Some(active) = ACTIVE.get() {
+        let ours: Vec<(String, String)> = ours()
+            .into_iter()
+            .filter(|(_, name)| Some(name.as_str()) == except)
+            .collect();
+        routes.extend(
+            Mailbox::open(&active.data, &active.config)
+                .and_then(|mailbox| mailbox.peers(&active.channel))
+                .map(|peers| {
+                    peers
+                        .into_iter()
+                        .filter(|p| !ours.iter().any(|(id, _)| *id == p.id))
+                        .filter_map(|p| {
+                            let route = p.route?;
+                            let (agent, model) = route.split_once(" / ")?;
+                            Some((agent.to_owned(), model.to_owned()))
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .collect()
-        })
-        .unwrap_or_default()
+                .unwrap_or_default(),
+        );
+    }
+    // A seat that registered with the mailbox still holds its claim.
+    routes.sort();
+    routes.dedup();
+    routes
+}
+
+struct Claimed {
+    id: u64,
+    name: Option<String>,
+    agent: String,
+    model: String,
+}
+/// Routes this process's sessions have chosen and not let go of. A session registers with the
+/// mailbox only once it is set up, which is long after it chose; a claim is taken at the choice
+/// itself, with nothing awaited in between, so the next seat to choose already sees it.
+static CLAIMS: Mutex<Vec<Claimed>> = Mutex::new(Vec::new());
+static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
+
+/// Holds a route for as long as it lives.
+pub struct Claim(u64);
+impl Drop for Claim {
+    fn drop(&mut self) {
+        if let Ok(mut claims) = CLAIMS.lock() {
+            claims.retain(|claim| claim.id != self.0);
+        }
+    }
+}
+
+/// Marks a route taken by the named session until the returned claim is dropped.
+pub fn claim(name: Option<&str>, agent: &str, model: &str) -> Claim {
+    let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
+    CLAIMS.lock().expect("route claims").push(Claimed {
+        id,
+        name: name.map(str::to_owned),
+        agent: agent.to_owned(),
+        model: model.to_owned(),
+    });
+    Claim(id)
+}
+
+/// The order the seats of one turn take their places in: the one doing the work first, then
+/// each seat in turn, whatever order their discoveries finish in. A place is taken by choosing
+/// a route and joining the mailbox under it, so every later seat both sees what the earlier
+/// ones took and finds them there to talk to. Discovery still runs side by side; only this
+/// waits.
+pub struct Order(Arc<tokio::sync::watch::Sender<Vec<bool>>>);
+impl Order {
+    pub fn new(seats: usize) -> Self {
+        Self(Arc::new(tokio::sync::watch::Sender::new(vec![
+            false;
+            seats
+        ])))
+    }
+    pub fn place(&self, index: usize) -> Place {
+        Place {
+            order: self.0.clone(),
+            index,
+        }
+    }
+}
+
+/// One seat's place in an `Order`. Dropping it counts as having taken it, so a seat that gives
+/// up never holds up the ones after it.
+pub struct Place {
+    order: Arc<tokio::sync::watch::Sender<Vec<bool>>>,
+    index: usize,
+}
+impl Place {
+    /// Waits until every seat before this one has taken its place.
+    pub async fn turn(&self) {
+        let mut chosen = self.order.subscribe();
+        let index = self.index;
+        let _ = chosen
+            .wait_for(|chosen| chosen.iter().take(index).all(|done| *done))
+            .await;
+    }
+    /// This seat has chosen its route and joined the mailbox; the next one may go.
+    pub fn seated(&self) {
+        let index = self.index;
+        self.order.send_if_modified(|chosen| {
+            let fresh = chosen.get(index).is_some_and(|done| !done);
+            if let Some(done) = chosen.get_mut(index) {
+                *done = true;
+            }
+            fresh
+        });
+    }
+}
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.seated();
+    }
 }
 
 /// What one of this process's own peers is running, for the chat's own transcript.

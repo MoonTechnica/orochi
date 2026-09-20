@@ -209,6 +209,8 @@ pub struct RunOptions {
     pub verify: bool,
     /// Refuse this run the tools that would change the workspace (an advisory role).
     pub read_only: bool,
+    /// Where this run chooses among the seats of one turn; it waits for the seats before it.
+    pub place: Option<crate::mailbox::Place>,
 }
 #[derive(Debug, Serialize)]
 pub struct RoutePlan {
@@ -265,6 +267,9 @@ pub async fn run_turn(
         "task exceeds the 1 MiB input limit"
     );
     let loud = !options.interactive;
+    // Every wait below hears an interrupt that came since this run began, including one that
+    // arrived while nothing was waiting.
+    let since = crate::interrupt::mark();
     let report = |progress: Progress| {
         if let Some(events) = &events {
             let _ = events.send(ExecutionEvent::Progress(progress));
@@ -273,7 +278,7 @@ pub async fn run_turn(
     if config.quota.refresh_before_run {
         let results = tokio::select! {
             result = crate::quota_sources::refresh(config, store) => result?,
-            _ = tokio::signal::ctrl_c() => return Ok(130),
+            _ = since.wait() => return Ok(130),
         };
         for result in results.iter().filter(|r| loud && r.status == "unavailable") {
             eprintln!(
@@ -359,7 +364,7 @@ pub async fn run_turn(
     }
     let (mut clients, failures) = tokio::select! {
         result = discover_as(config, root, store, options.overrides.agent.as_deref(), options.permission, events.clone(), options.overrides.model.as_deref(), options.peer.as_deref(), options.read_only) => result?,
-        _ = tokio::signal::ctrl_c() => return Ok(130),
+        _ = since.wait() => return Ok(130),
     };
     if !options.dry_run {
         for failure in &failures {
@@ -384,6 +389,12 @@ pub async fn run_turn(
             .iter()
             .map(|c| (&c.config, &c.capabilities))
             .collect();
+        if let Some(place) = &options.place {
+            tokio::select! {
+                _ = place.turn() => {}
+                _ = since.wait() => return Ok(130),
+            }
+        }
         let taken = crate::mailbox::busy_routes(options.peer.as_deref());
         let busy: Vec<String> = taken.iter().map(|(agent, _)| agent.clone()).collect();
         let score = |overrides: &Overrides| {
@@ -472,7 +483,7 @@ pub async fn run_turn(
             let started = now();
             let decision = tokio::select! {
                 decision = advisory::advise(config, policies, &descriptor, &ranked, store) => decision,
-                _ = tokio::signal::ctrl_c() => return Ok(130),
+                _ = since.wait() => return Ok(130),
             };
             for consultation in &decision.consultations {
                 let mut adviser = ranked[0].clone();
@@ -556,6 +567,10 @@ pub async fn run_turn(
             continue;
         }
         attempted.insert(candidate.id.clone());
+        // Taken at the choice itself, before anything is awaited: the next seat to choose sees
+        // it at once, where the mailbox would show it only after this session is set up.
+        let _claim =
+            crate::mailbox::claim(options.peer.as_deref(), &candidate.agent, &candidate.model);
         let index = clients
             .iter()
             .position(|c| c.config.id == candidate.agent)
@@ -612,7 +627,7 @@ pub async fn run_turn(
                 if let Some(id) = resume { clients[index].load_session(&id, root).await?; }
                 clients[index].configure(&candidate).await
             } => result,
-            _ = tokio::signal::ctrl_c() => Err(AgentError::new(ErrorKind::Cancelled, "interrupted during session setup")),
+            _ = since.wait() => Err(AgentError::new(ErrorKind::Cancelled, "interrupted during session setup")),
         };
         let result = match setup {
             Ok(()) => {
@@ -623,6 +638,11 @@ pub async fn run_turn(
                 };
                 // Joining the mailbox first means the note names this session correctly.
                 clients[index].announce_route(&candidate.agent, &candidate.model);
+                // A seat that started before the one it answers to had joined would find
+                // nobody to talk to.
+                if let Some(place) = &options.place {
+                    place.seated();
+                }
                 if let Some(note) = clients[index].peer_note() {
                     text = format!("{note}\n\n{text}");
                 }
@@ -655,7 +675,7 @@ pub async fn run_turn(
                     }
                     checks = tokio::select! {
                         result = evaluator::evaluate_with(&config.evaluator, root, loud) => result,
-                        _ = tokio::signal::ctrl_c() => {
+                        _ = since.wait() => {
                             store.record(&make_record(&task_id, &repository_id, &descriptor, candidate.clone(), clients[index].usage(), clock.elapsed(), attempt, Outcome::Cancelled, vec![], Some("cancelled".into()), started, "execution"))?;
                             return Ok(130);
                         }
@@ -785,7 +805,7 @@ pub async fn run_turn(
                     let timeout = Duration::from_secs(config.scheduler.discovery_timeout_secs);
                     let restarted = tokio::select! {
                         result = tokio::time::timeout(timeout, Client::start_named(failed_config, root, options.permission, timeout, events.clone(), None, options.peer.as_deref(), options.read_only)) => result,
-                        _ = tokio::signal::ctrl_c() => return Ok(130),
+                        _ = since.wait() => return Ok(130),
                     };
                     if let Ok(Ok(client)) = restarted {
                         clients.push(client);
@@ -821,7 +841,7 @@ fn print_route(candidate: &ExecutionCandidate) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn make_record(
+pub(crate) fn make_record(
     task_id: &str,
     repo: &str,
     task: &TaskDescriptor,

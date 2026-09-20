@@ -1,8 +1,8 @@
 use orochi::{
-    config::{Config, LearningConfig, LearningStrategy},
+    config::{AgentConfig, Config, LearningConfig, LearningStrategy},
     learning,
     quota_sources::{self, Snapshot, Window},
-    router::profiler,
+    router::{classifier, profiler},
     storage::Store,
     types::*,
 };
@@ -565,4 +565,117 @@ fn tier_pooling_carries_evidence_across_a_model_replacement() {
         off.successes,
         on.successes
     );
+}
+
+/// Asking what a task is costs a whole extra ACP session, and on a given machine one agent's
+/// session is far dearer than another's (2026-09-20: 37,630 tokens against 23,800 for the same
+/// question). Which agent is asked follows what asking it has actually cost, not the order
+/// agents happen to appear in the configuration — but one that has never answered is asked
+/// once first, or its own price would stay unknown for good.
+#[test]
+fn the_classifier_asks_whichever_agent_has_answered_most_cheaply() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let config = Config {
+        agents: vec![
+            AgentConfig::preset("claude", Provider::Anthropic, "claude", &[]),
+            AgentConfig::preset("codex", Provider::Openai, "codex", &[]),
+        ],
+        ..Config::default()
+    };
+    let asked = |tokens: u64, agent: &str, at: i64| {
+        let mut record = run(at as usize, true);
+        record.purpose = "classification".into();
+        record.candidate.agent = agent.into();
+        record.usage = Usage {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        };
+        record.started_at = at;
+        record
+    };
+    assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);
+    store.record(&asked(37_630, "claude", 1)).unwrap();
+    assert_eq!(classifier::agents(&config, &store), ["codex", "claude"]);
+    store.record(&asked(23_800, "codex", 2)).unwrap();
+    assert_eq!(classifier::agents(&config, &store), ["codex", "claude"]);
+    // It follows the evidence when the evidence changes.
+    for (at, tokens) in [(3, 900), (4, 900)] {
+        store.record(&asked(tokens, "claude", at)).unwrap();
+    }
+    assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);
+    // Execution is not advice: what the work itself costs never decides who is asked.
+    for at in 5..9 {
+        let mut record = run(at, true);
+        record.candidate.agent = "codex".into();
+        record.usage = Usage {
+            total_tokens: Some(1),
+            ..Default::default()
+        };
+        store.record(&record).unwrap();
+    }
+    assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);
+}
+
+/// Asking what a task is costs a session of its own, so the question has to be worth what it
+/// costs. Once Orochi has measured both sides it asks only where the answer is cheap beside
+/// the work it would change; knowing neither, it asks — that is how it comes to know.
+#[test]
+fn a_question_that_costs_more_than_the_work_it_decides_is_not_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let config = Config {
+        agents: vec![AgentConfig::preset("codex", Provider::Openai, "codex", &[])],
+        ..Config::default()
+    };
+    let small = profiler::profile("rename the header in the readme", dir.path());
+    let big = TaskDescriptor {
+        complexity: Complexity::Extreme,
+        ..small.clone()
+    };
+    let spent = |at: usize, purpose: &str, tokens: u64, task: &TaskDescriptor| {
+        let mut record = run(at, true);
+        record.purpose = purpose.into();
+        record.candidate.agent = "codex".into();
+        record.task_type = task.task_type.clone();
+        record.complexity = Some(task.complexity);
+        record.usage = Usage {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        };
+        record.started_at = at as i64;
+        record
+    };
+    // Nothing measured yet: ask, and the asking is what makes both costs known.
+    assert!(classifier::worth_asking(&config, &store, &small));
+    for at in 0..3 {
+        store
+            .record(&spent(at, "classification", 23_800, &small))
+            .unwrap();
+    }
+    // What asking costs is known; what the work costs is not, so it still asks.
+    assert!(classifier::worth_asking(&config, &store, &small));
+    for at in 3..7 {
+        store
+            .record(&spent(at, "execution", 24_000, &small))
+            .unwrap();
+    }
+    assert!(!classifier::worth_asking(&config, &store, &small));
+    // The same question against work of another size is worth asking.
+    for at in 7..11 {
+        store
+            .record(&spent(at, "execution", 300_000, &big))
+            .unwrap();
+    }
+    assert!(classifier::worth_asking(&config, &store, &big));
+    assert!(!classifier::worth_asking(&config, &store, &small));
+    // The share is the user's to set: one that never balks keeps asking.
+    let eager = Config {
+        classifier: orochi::config::ClassifierConfig {
+            max_cost_share: 10.0,
+            ..config.classifier.clone()
+        },
+        ..config.clone()
+    };
+    assert!(classifier::worth_asking(&eager, &store, &small));
 }

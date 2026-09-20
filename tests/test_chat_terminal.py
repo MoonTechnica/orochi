@@ -6,6 +6,7 @@ the mock agent and reads the resulting screen.
 """
 import fcntl
 import importlib.util
+import json
 import os
 import pty
 import re
@@ -114,7 +115,7 @@ def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0):
             elif index < len(messages):
                 pump(60, until=open_row)
         pump(60, until=lambda s: done(s, len(messages)))
-        os.write(master, b"\x04")
+        os.write(master, b"\x04\x04")
         pump(5)
     finally:
         process.terminate()
@@ -165,13 +166,245 @@ def typing(chunks, lines=1, during_turn=False):
             os.write(master, chunk.encode())
             pump(1.5)
             shots.append(list(screen.text()))
-        os.write(master, b"\x04")
+        os.write(master, b"\x04\x04")
         pump(5)
     finally:
         process.terminate()
         process.wait(timeout=10)
         os.close(master)
     return shots
+
+
+def divided(env="", stop_at=None, answer=b"\n", follow=None):
+    """A design step that divides the work, the question answered with `answer` (Enter takes
+    the team), and whatever runs next. `env` adds fixture settings; with `stop_at`, Ctrl-C is
+    pressed once that text is on screen; `follow` is sent as the next message. Returns every
+    row drawn, the repository, the data directory and the prompts the agents received."""
+    dir = Path(tempfile.mkdtemp())
+    repo = dir / "repo"
+    repo.mkdir()
+    meeting = dir / "rendezvous"
+    meeting.mkdir()
+    parts = [
+        {"id": "alpha", "brief": "build alpha", "paths": ["alpha"]},
+        {"id": "beta", "brief": "build beta", "paths": ["beta"]},
+        {"id": "gamma", "brief": "build gamma", "paths": ["gamma"], "after": ["alpha", "beta"]},
+    ]
+    design = "Build alpha and beta side by side, then gamma.\n```json\n" + json.dumps({"parts": parts}) + "\n```\n"
+    path = dir / "config.toml"
+    path.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[[evaluator.checks]]
+name = "integrated"
+command = "python3"
+args = ["-c", "from pathlib import Path; assert Path('completed.txt').read_text() == 'integrated'"]
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[[agents]]
+id = "test"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "session_collaboration"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_DESIGN_REPLY = {json.dumps(design)}
+MOCK_PARTS = "1"
+MOCK_PART_NEEDS = "gamma:alpha/beta"
+MOCK_EXPECT_PARTS = "alpha,beta,gamma"
+MOCK_RENDEZVOUS = "{meeting}"
+MOCK_LOG = "{dir / 'agent.jsonl'}"
+{env or 'MOCK_RENDEZVOUS_PARTS = "alpha,beta"'}
+""")
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    process = subprocess.Popen(
+        [BINARY, "--config", str(path), "--data-dir", str(dir / "data"), "-C", str(repo), "chat"],
+        stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+        env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS)))
+    os.close(slave)
+    screen = screen_module.Screen(ROWS, COLS)
+
+    def pump(seconds, until=None):
+        end = time.time() + seconds
+        while time.time() < end:
+            if until and until(screen):
+                return
+            readable, _, _ = select.select([master], [], [], 0.2)
+            if not readable:
+                continue
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            screen.feed(data.decode("utf-8", "replace"))
+
+    shown = lambda text: lambda s: any(text in row for row in s.text())
+    try:
+        pump(30, until=shown("What do you want to build?"))
+        os.write(master, b"rewrite the entire architecture from scratch")
+        pump(10, until=shown("from scratch"))
+        os.write(master, b"\n")
+        pump(60, until=shown("This divides into parts"))
+        os.write(master, answer)
+        completed = lambda n: lambda s: sum("Fixture completed." in row for row in s.text()) >= n
+        if answer == b"\n":
+            if stop_at:
+                pump(60, until=shown(stop_at))
+                os.write(master, b"\x03")
+            pump(120, until=lambda s: shown("team finished")(s) or shown("team stopped")(s))
+        elif answer == b"\x1b":
+            pump(60, until=shown("keeping the design"))
+        else:
+            # One agent carries on: implementation, then its review.
+            pump(60, until=completed(2))
+        if follow:
+            done = sum("Fixture completed." in row for row in screen.text())
+            for start in range(0, len(follow), 8):
+                os.write(master, follow[start:start + 8].encode())
+                pump(0.05)
+            os.write(master, b"\n")
+            pump(60, until=completed(done + 1))
+        os.write(master, b"\x04\x04")
+        pump(5)
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+        os.close(master)
+    prompts = [
+        request["params"]["prompt"][0]["text"]
+        for request in map(json.loads, (dir / "agent.jsonl").read_text().splitlines())
+        if request.get("method") == "session/prompt"
+    ]
+    return screen.text(), repo, dir / "data", prompts
+
+
+class Console:
+    """One live session in a pty, driven a key at a time."""
+
+    def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=()):
+        self.dir = Path(tempfile.mkdtemp())
+        self.repo = self.dir / "repo"
+        self.repo.mkdir()
+        self.log = self.dir / "agent.jsonl"
+        extra = "\n".join(f"{key} = {json.dumps(value)}" for key, value in (env or {}).items())
+        path = self.dir / "config.toml"
+        path.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[classifier]
+enabled = {"true" if classifier else "false"}
+[mailbox]
+enabled = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[[agents]]
+id = "test"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "{behavior}"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LINES = "{lines}"
+MOCK_LINE_DELAY = "{delay}"
+MOCK_LOG = "{self.log}"
+{extra}
+""")
+        self.master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+        self.process = subprocess.Popen(
+            [BINARY, "--config", str(path), "--data-dir", str(self.dir / "data"),
+             "-C", str(self.repo), *args, "chat"],
+            stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+            env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS)))
+        os.close(slave)
+        self.screen = screen_module.Screen(ROWS, COLS)
+        self.wait("What do you want to build?")
+
+    def pump(self, seconds, until=None):
+        end = time.time() + seconds
+        while time.time() < end:
+            if until and until(self.screen):
+                return
+            readable, _, _ = select.select([self.master], [], [], 0.05)
+            if not readable:
+                if self.process.poll() is not None:
+                    return
+                continue
+            try:
+                data = os.read(self.master, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            self.screen.feed(data.decode("utf-8", "replace"))
+
+    def shown(self, text):
+        return any(text in row for row in self.screen.text())
+
+    def wait(self, text, seconds=60):
+        self.pump(seconds, until=lambda s: self.shown(text))
+        assert self.shown(text), f"never showed {text!r}:\n" + "\n".join(self.screen.text())
+
+    def type(self, text):
+        for start in range(0, len(text), 8):
+            os.write(self.master, text[start:start + 8].encode())
+            self.pump(0.05)
+        self.pump(0.3)
+
+    def key(self, data, settle=0.4):
+        os.write(self.master, data)
+        self.pump(settle)
+
+    def esc(self, settle=0.4):
+        # A lone Esc: nothing may follow within the decoder's 40 ms, or it reads a sequence.
+        self.key(b"\x1b", settle)
+
+    def input(self):
+        """The pinned input, first row to last: it starts at the last row that opens with >."""
+        rows = self.screen.text()
+        starts = [index for index, row in enumerate(rows) if row.startswith(">")]
+        return rows[starts[-1]:] if starts else []
+
+    def alive(self):
+        return self.process.poll() is None
+
+    def exited(self, seconds=10):
+        end = time.time() + seconds
+        while time.time() < end and self.alive():
+            self.pump(0.2)
+        return not self.alive()
+
+    def requests(self, method):
+        if not self.log.exists():
+            return []
+        return [r for r in map(json.loads, self.log.read_text().splitlines()) if r.get("method") == method]
+
+    def prompts(self):
+        return [r["params"]["prompt"][0]["text"] for r in self.requests("session/prompt")]
+
+    def rows(self):
+        return "\n".join(self.screen.text())
+
+    def close(self):
+        if self.alive():
+            self.process.terminate()
+            self.process.wait(timeout=10)
+        os.close(self.master)
 
 
 class ChatTerminal(unittest.TestCase):
@@ -259,6 +492,205 @@ class ChatTerminal(unittest.TestCase):
                 len(messages),
                 "\n".join(rows),
             )
+
+    def test_a_design_that_divides_the_work_is_offered_and_run_side_by_side(self):
+        rows, repo, _, _ = divided()
+        text = "\n".join(rows)
+        # Asked once, after the design and with the order it would run in.
+        self.assertTrue(any("alpha ‖ beta → gamma" in row for row in rows), text)
+        self.assertTrue(any("team finished · result merged" in row for row in rows), text)
+        # The division is for Orochi; the design itself stays in the transcript.
+        self.assertTrue(any("Build alpha and beta side by side" in row for row in rows), text)
+        self.assertFalse(any('"parts"' in row or "```" in row for row in rows), text)
+        for part in ("alpha", "beta", "gamma"):
+            self.assertEqual((repo / part / "done.txt").read_text(), part)
+        self.assertEqual((repo / "completed.txt").read_text(), "integrated")
+
+    def test_interrupting_a_running_team_stops_it_and_leaves_it_resumable(self):
+        rows, repo, data, _ = divided(
+            env='MOCK_FAIL_ROLE = "implementer"\nMOCK_FAIL_PART = "alpha"\nMOCK_FAILURE_KIND = "hang"',
+            stop_at="Stage 0, alpha",
+        )
+        text = "\n".join(rows)
+        self.assertTrue(any("team stopped" in row for row in rows), text)
+        self.assertTrue(any("collaborate-resume" in row for row in rows), text)
+        (report,) = (data / "collaborations").glob("*/report.json")
+        self.assertEqual(json.loads(report.read_text())["status"], "cancelled")
+        self.assertFalse((repo / "alpha").exists())
+    def test_esc_on_the_team_question_keeps_the_design_and_runs_nothing(self):
+        # As declining a plan in Claude Code: nothing is built, and the next message carries on
+        # from the design.
+        rows, repo, data, prompts = divided(answer=b"\x1b", follow="go on")
+        text = "\n".join(rows)
+        self.assertFalse((data / "collaborations").exists(), text)
+        self.assertFalse(any("following the plan above" in p for p in prompts), prompts)
+        self.assertTrue(any("keeping the design" in row for row in rows), text)
+        self.assertIn("Build alpha and beta side by side", prompts[-1])
+        self.assertTrue(prompts[-1].rstrip().endswith("go on"), prompts[-1])
+
+    def test_choosing_one_agent_carries_on_in_the_working_tree(self):
+        rows, repo, data, prompts = divided(answer=b"2")
+        self.assertFalse((data / "collaborations").exists(), "\n".join(rows))
+        self.assertTrue(any("following the plan above" in p for p in prompts), prompts)
+
+
+class ConsoleKeys(unittest.TestCase):
+    """Esc, Ctrl-C, Ctrl-D and queued messages behave as in Claude Code
+    (code.claude.com/docs/en/interactive-mode, /permissions)."""
+
+    def test_esc_at_an_idle_prompt_never_exits_and_twice_clears_the_draft(self):
+        c = Console()
+        try:
+            c.type("draft text")
+            c.esc()
+            self.assertTrue(c.alive())
+            self.assertIn("draft text", c.input()[0], c.rows())
+            c.esc(settle=0.15)
+            c.esc()
+            self.assertNotIn("draft text", " ".join(c.input()), c.rows())
+            # The cleared draft went to history.
+            c.key(b"\x1b[A")
+            self.assertIn("draft text", c.input()[0], c.rows())
+            for _ in range(4):
+                c.esc(settle=0.15)
+            c.pump(0.5)
+            self.assertTrue(c.alive(), c.rows())
+        finally:
+            c.close()
+
+    def test_ctrl_c_clears_the_input_first_and_exits_on_the_second_press(self):
+        c = Console()
+        try:
+            c.type("half a thought")
+            c.key(b"\x03")
+            self.assertNotIn("half a thought", " ".join(c.input()), c.rows())
+            self.assertTrue(c.shown("Press Ctrl-C again to exit"), c.rows())
+            self.assertTrue(c.alive())
+            c.key(b"\x03")
+            self.assertTrue(c.exited(), c.rows())
+        finally:
+            c.close()
+
+    def test_ctrl_d_deletes_forward_and_asks_before_exiting(self):
+        c = Console()
+        try:
+            c.type("ab")
+            c.key(b"\x01")
+            c.key(b"\x04")
+            self.assertEqual(c.input()[0], "> b", c.rows())
+            c.key(b"\x05")
+            c.key(b"\x7f")
+            c.key(b"\x04")
+            self.assertTrue(c.shown("Press Ctrl-D again to exit"), c.rows())
+            self.assertTrue(c.alive())
+            # Too late to count as the second press: it asks again.
+            time.sleep(1.0)
+            c.key(b"\x04", settle=0.1)
+            self.assertTrue(c.alive(), c.rows())
+            c.key(b"\x04", settle=0.1)
+            self.assertTrue(c.exited(), c.rows())
+        finally:
+            c.close()
+
+    def test_ctrl_c_during_a_turn_stops_it_and_keeps_what_was_typed(self):
+        c = Console(lines=60, delay=0.15)
+        try:
+            c.type("start working")
+            c.key(b"\n")
+            c.wait("line 2:")
+            c.type("half typed")
+            c.key(b"\x03")
+            c.wait("Interrupted")
+            self.assertIn("half typed", c.input()[0], c.rows())
+            self.assertFalse(c.shown("line 60:"), c.rows())
+            self.assertTrue(c.alive())
+        finally:
+            c.close()
+
+    def test_esc_stops_the_turn_and_sends_what_was_queued_next(self):
+        c = Console(lines=60, delay=0.15)
+        try:
+            c.type("first")
+            c.key(b"\n")
+            c.wait("line 2:")
+            c.type("second")
+            c.key(b"\n")
+            c.wait("queued (1)")
+            c.esc()
+            c.wait("Interrupted")
+            c.pump(30, until=lambda s: len(c.prompts()) >= 2)
+            prompts = c.prompts()
+            self.assertEqual(len(prompts), 2, prompts)
+            self.assertTrue(prompts[1].rstrip().endswith("second"), prompts[1])
+        finally:
+            c.close()
+
+    def test_up_takes_back_what_was_queued(self):
+        c = Console(lines=60, delay=0.15)
+        try:
+            c.type("first")
+            c.key(b"\n")
+            c.wait("line 2:")
+            for index, text in enumerate(["second", "third"], start=1):
+                c.type(text)
+                c.key(b"\n")
+                c.wait(f"queued ({index})")
+            c.key(b"\x1b[A")
+            pinned = c.input()
+            self.assertIn("second", pinned[0], c.rows())
+            self.assertTrue(any("third" in row for row in pinned), c.rows())
+            c.esc()
+            c.wait("Interrupted")
+            c.pump(2)
+            # Nothing is left in the queue to send on its own.
+            self.assertEqual(len(c.prompts()), 1, c.prompts())
+            c.key(b"\n")
+            c.pump(30, until=lambda s: len(c.prompts()) >= 2)
+            self.assertIn("second\nthird", c.prompts()[1])
+        finally:
+            c.close()
+
+    def test_esc_on_a_permission_prompt_declines_and_stops_the_turn(self):
+        # The console answers permission requests itself unless asked to stop and ask.
+        c = Console(behavior="permission_persist", args=("--permission", "ask"))
+        try:
+            c.type("edit the notes")
+            c.key(b"\n")
+            c.wait("Permission required")
+            # The choices read as Claude Code's, with No last and on Esc.
+            self.assertTrue(c.shown("1. Yes"), c.rows())
+            self.assertTrue(c.shown("2. Yes, and don't ask again this session"), c.rows())
+            self.assertTrue(c.shown("3. No, and say what to do instead (esc)"), c.rows())
+            c.esc()
+            c.wait("Stopped because the request was denied")
+            # The panel grew over the transcript and shrank again; what was above it stays.
+            self.assertTrue(c.shown("> edit the notes"), c.rows())
+            self.assertTrue(c.shown("test · sol-test"), c.rows())
+            # Told only "no", the fixture would try another way after 1.5 s; a stopped turn
+            # never gets there.
+            c.pump(2.5)
+            self.assertFalse((c.repo / "alternative.txt").exists(), c.rows())
+        finally:
+            c.close()
+
+    def test_esc_while_the_request_is_classified_starts_no_agent(self):
+        c = Console(classifier=True, env={
+            "MOCK_CLASSIFICATION": '{"task_type":"implementation","complexity":"normal","ambiguity":0.1}',
+            "MOCK_CLASSIFY_DELAY": "3",
+        })
+        try:
+            c.type("add a health endpoint")
+            c.key(b"\n")
+            c.pump(30, until=lambda s: len(c.prompts()) >= 1)
+            c.esc()
+            c.wait("Interrupted")
+            c.pump(4)
+            prompts = c.prompts()
+            self.assertEqual(len(prompts), 1, prompts)
+            self.assertIn("You are a task classifier", prompts[0])
+            self.assertTrue(c.alive())
+        finally:
+            c.close()
 
 
 if __name__ == "__main__":
