@@ -332,25 +332,6 @@ fn sending_starts_a_host_only_when_the_thread_has_none() {
     );
 }
 
-/// P3: one screen of every seat working anywhere, so many threads can be supervised without
-/// opening any of them.
-#[test]
-fn mission_control_shows_every_working_seat_across_threads() {
-    let dir = tempfile::tempdir().unwrap();
-    fixture(dir.path());
-    let client = Client::open(dir.path()).unwrap();
-
-    let working = client.working().unwrap();
-    assert_eq!(working.len(), 2, "both seats of the running turn are on it");
-    assert_eq!(working[0].role, "implementer");
-    assert_eq!(working[0].thread_title, "Fix the flaky mailbox test");
-    assert_eq!(working[0].project, "orochi");
-    assert!(
-        working.iter().any(|seat| seat.read_only),
-        "and it says which of them only reads"
-    );
-}
-
 /// P4: a person can leave a note in the room, and the room is what the Team pane shows.
 #[test]
 fn the_room_carries_what_agents_and_the_person_said() {

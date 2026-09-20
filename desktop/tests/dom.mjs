@@ -53,6 +53,15 @@ class Node {
     return found;
   }
   requestSubmit() { this.dispatch("submit"); }
+  // Enough of <dialog> for the panels: opening sets `open`, closing clears it and fires the
+  // event the page listens for.
+  showModal() { this.open = true; this.hidden = false; }
+  close() {
+    if (!this.open) return;
+    this.open = false;
+    this.hidden = true;
+    this.dispatch("close");
+  }
   contains(node) {
     if (node === this) return true;
     return this.children.some((child) => child instanceof Node && child.contains(node));
@@ -116,7 +125,7 @@ export function page(ids, markup = "") {
       .map((m) => m[1]),
   );
   for (const id of ids) {
-    const node = new Node(id === "message" ? "textarea" : "div");
+    const node = new Node(id === "message" ? "textarea" : id === "panel" ? "dialog" : "div");
     node.id = id;
     node.value = "";
     node.hidden = startsHidden.has(id);

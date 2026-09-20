@@ -53,22 +53,6 @@ pub struct Folder {
     pub updated_at: Option<i64>,
 }
 
-/// A seat working somewhere, for the one screen that watches every thread at once.
-#[derive(Debug, Clone, Serialize)]
-pub struct Working {
-    pub thread_id: String,
-    pub thread_title: String,
-    pub project: String,
-    pub role: String,
-    pub read_only: bool,
-    pub state: String,
-    pub agent: Option<String>,
-    pub model: Option<String>,
-    pub status: Option<String>,
-    pub doing: Option<String>,
-    pub since: i64,
-}
-
 /// One line in the room: an agent's message, a person's note, or someone arriving or leaving.
 #[derive(Debug, Clone, Serialize)]
 pub struct Said {
@@ -283,38 +267,6 @@ impl Client {
             &orochi::types::Overrides::default(),
             "ask",
         )
-    }
-
-    /// Every seat working right now, anywhere. Threads whose host has died are not working,
-    /// however their rows read, so the reaper runs first.
-    pub fn working(&self) -> Result<Vec<Working>> {
-        self.activity.reap_hosts()?;
-        let connection = self.activity.connection();
-        let mut statement = connection.prepare(
-            "SELECT r.thread_id, t.title, p.name, r.role, r.read_only, r.state, r.agent,
-                    r.model, r.peer_status, r.doing, r.started_at
-             FROM v_roster r
-             JOIN threads t ON t.id = r.thread_id
-             JOIN projects p ON p.id = t.project_id
-             WHERE r.ended_at IS NULL
-             ORDER BY r.started_at, r.ordinal",
-        )?;
-        let rows = statement.query_map([], |r| {
-            Ok(Working {
-                thread_id: r.get(0)?,
-                thread_title: r.get(1)?,
-                project: r.get(2)?,
-                role: r.get(3)?,
-                read_only: r.get::<_, i64>(4)? != 0,
-                state: r.get(5)?,
-                agent: r.get(6)?,
-                model: r.get(7)?,
-                status: r.get(8)?,
-                doing: r.get(9)?,
-                since: r.get(10)?,
-            })
-        })?;
-        rows.map(|row| Ok(row?)).collect()
     }
 
     /// What has been said in this thread's room, oldest first.

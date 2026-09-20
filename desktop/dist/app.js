@@ -21,7 +21,9 @@ const state = {
   folders: [],
   open: new Set(JSON.parse(localStorage.getItem("open") || "[]")),
   file: null,
-  screen: "threads",
+  // Which of Agents / Insights / Settings is open over the conversation, if any. The
+  // conversation is the window; these are asked for and dismissed.
+  panel: null,
   scope: "turn",
   comments: [],
 };
@@ -79,6 +81,9 @@ function drawSidebar() {
       row.setAttribute("aria-current", String(thread.id === state.thread));
       row.append(text("span", "mark", MARKS[thread.status] || "○"));
       row.append(text("span", "name", thread.title || "Untitled"));
+      if (thread.status === "working" && thread.seats > 1) {
+        row.append(text("span", "seats", `${thread.seats}`));
+      }
       if (thread.terminal) row.append(text("span", "term", "⌘"));
       row.addEventListener("click", () => select(thread.id));
       section.append(row);
@@ -493,33 +498,29 @@ function gauge(fraction) {
   return node;
 }
 
+/// Opens one of the panels over the conversation. Esc and the backdrop close it, as a dialog
+/// does; the conversation underneath is never replaced.
+async function openPanel(panel) {
+  state.panel = panel;
+  el("panel-title").textContent = PANELS.find(([p]) => p === panel)?.[1] || "";
+  el("panel").showModal();
+  await drawScreen();
+}
+
+function closePanel() {
+  state.panel = null;
+  el("panel").close();
+}
+
+el("panel-close").addEventListener("click", closePanel);
+el("panel").addEventListener("close", () => {
+  state.panel = null;
+});
+
 async function drawScreen() {
-  const host = el("screen");
+  const host = el("panel-body");
   host.replaceChildren();
-  if (state.screen === "working") {
-    const seats = (await call("working", {})) || [];
-    if (!seats.length) {
-      host.append(text("p", "empty", "Nothing is running."));
-      return;
-    }
-    for (const seat of seats) {
-      const card = text("div", "card");
-      const who = text("div", "who");
-      who.append(text("span", null, seat.role));
-      if (seat.read_only) who.append(text("span", "ro", "RO"));
-      who.append(text("span", "where", `${seat.project} · ${seat.thread_title}`));
-      card.append(who);
-      card.append(text("div", "where", [seat.agent, seat.model, seat.state].filter(Boolean).join(" · ")));
-      if (seat.status) card.append(text("div", "where", `"${seat.status}"`));
-      card.addEventListener("click", () => {
-        state.screen = "threads";
-        select(seat.thread_id);
-      });
-      host.append(card);
-    }
-    return;
-  }
-  if (state.screen === "agents") {
+  if (state.panel === "agents") {
     const agents = (await call("agents", {})) || [];
     if (!agents.length) {
       host.append(text("p", "empty", "Nothing has been run yet."));
@@ -539,7 +540,7 @@ async function drawScreen() {
     );
     return;
   }
-  if (state.screen === "settings") {
+  if (state.panel === "settings") {
     const [config, remembered] = await Promise.all([
       call("settings", {}),
       call("memory", {}),
@@ -602,7 +603,7 @@ async function drawScreen() {
     );
     return;
   }
-  if (state.screen === "insights") {
+  if (state.panel === "insights") {
     const stats = (await call("insights", {})) || [];
     host.append(text("h3", null, "What the routes have done"));
     if (!stats.length) {
@@ -636,8 +637,7 @@ async function drawScreen() {
 
 // Everything that is not a conversation lives behind the row at the foot of the sidebar,
 // rather than as a row of buttons competing with the threads for attention.
-const SCREENS = [
-  ["working", "Working now"],
+const PANELS = [
   ["agents", "Agents"],
   ["insights", "Insights"],
   ["sep"],
@@ -652,20 +652,18 @@ function closeAccount() {
 function openAccount() {
   const menu = el("account-menu");
   menu.replaceChildren();
-  for (const [screen, label] of SCREENS) {
-    if (screen === "sep") {
+  for (const [panel, label] of PANELS) {
+    if (panel === "sep") {
       menu.append(text("div", "sep"));
       continue;
     }
     const row = document.createElement("button");
     row.type = "button";
-    row.dataset.screen = screen;
+    row.dataset.screen = panel;
     row.append(text("span", "name", label));
-    if (state.screen === screen) row.append(text("span", "tick", "✓"));
     row.addEventListener("click", () => {
       closeAccount();
-      state.screen = screen;
-      refresh(true);
+      openPanel(panel);
     });
     menu.append(row);
   }
@@ -693,7 +691,6 @@ for (const tab of document.querySelectorAll(".tab")) {
 // Loop ----------------------------------------------------------------------
 async function select(id) {
   state.thread = id;
-  state.screen = "threads";
   await call("seen", { thread: id });
   await refresh(true);
 }
@@ -716,24 +713,8 @@ async function refresh(full) {
   }
   drawSidebar();
   folderLabel();
-  el("account-name").textContent =
-    state.screen === "threads" ? "Orochi" : SCREENS.find(([s]) => s === state.screen)?.[1] || "Orochi";
-  // A screen other than the conversation takes the middle column.
-  const conversation = state.screen === "threads";
-  el("timeline").hidden = !conversation;
-  el("composer").hidden = !conversation;
-  el("screen").hidden = conversation;
-  if (!conversation) {
-    // The header follows the screen, so it never labels one thing while showing another.
-    el("thread-where").textContent = "";
-    el("thread-title").textContent =
-      { working: "Working now", agents: "Agents", insights: "Insights", settings: "Settings" }[
-        state.screen
-      ] || "";
-    el("thread-status").textContent = "";
-    await drawScreen();
-    return;
-  }
+  // An open panel follows what it is showing; it never takes the conversation's place.
+  if (state.panel) await drawScreen();
 
   if (!state.thread) {
     el("thread-title").textContent = "Nothing selected";

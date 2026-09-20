@@ -1,9 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! The shell. It owns a window and a connection, and does nothing else: every command below
 //! is one call into `view`, which is where the app's behavior lives and where it is tested.
-use orochi_desktop::view::{
-    AgentRow, Client, Folder, Prompt, Remembered, RouteStats, Said, Working,
-};
+use orochi_desktop::view::{AgentRow, Client, Folder, Prompt, Remembered, RouteStats, Said};
 use orochi::activity::{ProjectRow, Thread};
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -52,13 +50,6 @@ fn ensure_host(open: State<'_, Open>, thread: String) -> Result<bool, String> {
         .spawn()
         .map_err(|error| format!("could not start a host for this thread: {error}"))?;
     Ok(true)
-}
-
-/// One screen of every seat working anywhere, so many threads can be watched without opening
-/// any of them.
-#[tauri::command]
-fn working(open: State<'_, Open>) -> Result<Vec<Working>, String> {
-    open.0.lock().unwrap().working().map_err(fail)
 }
 
 #[tauri::command]
@@ -236,7 +227,6 @@ fn main() {
             folders,
             new_thread,
             ensure_host,
-            working,
             room,
             say,
             agents,

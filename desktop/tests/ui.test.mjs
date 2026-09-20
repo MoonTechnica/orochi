@@ -34,7 +34,7 @@ async function open(answers = {}, { prompt } = {}) {
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
-    "screen",
+    "panel", "panel-head", "panel-title", "panel-close", "panel-body",
   ], markup);
   const localStorage = {
     store: new Map(),
@@ -273,29 +273,14 @@ test("the room shows what agents and the person said, and lets the person answer
   assert.equal(note[1].to, null, "a note with no name is for everyone");
 });
 
-test("mission control lists every seat working anywhere", async () => {
-  const working = [
-    {
-      thread_id: "t1", thread_title: "Fix the flaky test", project: "orochi",
-      role: "implementer", read_only: false, state: "working",
-      agent: "claude", model: "opus", status: "editing tests/mailbox.rs", doing: null, since: 1,
-    },
-  ];
-  const { el } = await open({ working });
-  el("account").dispatch("click");
-  el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "working")
-    .dispatch("click");
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(
-    el("thread-title").textContent,
-    "Working now",
-    "the header names the screen, so it never labels one thing while showing another",
-  );
-  const drawn = el("screen").render();
-  assert.match(drawn, /orochi · Fix the flaky test/, "with the thread each seat belongs to");
-  assert.match(drawn, /editing tests\/mailbox\.rs/);
-  assert.equal(el("timeline").hidden, true, "and the conversation makes way for it");
+test("a working thread is marked in the list rather than given a page", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  projects[0].threads[0].status = "working";
+  projects[0].threads[0].seats = 2;
+  const { el } = await open({ sidebar: projects });
+  const drawn = el("projects").render();
+  assert.match(drawn, /◉/, "the list says which thread is working");
+  assert.match(drawn, /2/, "and how many seats it has open, which is what a page would add");
 });
 
 test("insights keeps verified evidence and weak signals apart, and says so", async () => {
@@ -312,7 +297,7 @@ test("insights keeps verified evidence and weak signals apart, and says so", asy
     .find((b) => b.dataset.screen === "insights")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const drawn = el("screen").render();
+  const drawn = el("panel-body").render();
   assert.match(drawn, /86%/, "the success rate is of the verified runs");
   assert.match(drawn, /12,000/);
   assert.match(drawn, /its own estimates/, "and the screen says whose numbers these are");
@@ -331,7 +316,7 @@ test("agents shows readiness and what is left of a quota", async () => {
     .find((b) => b.dataset.screen === "agents")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const drawn = el("screen").render();
+  const drawn = el("panel-body").render();
   assert.match(drawn, /codex/);
   assert.match(drawn, /whole account/, "a `*` model is the account, not a model named star");
   assert.match(drawn, /300s/);
@@ -361,7 +346,7 @@ test("settings edit the conversation store and what is remembered", async () => 
     .find((b) => b.dataset.screen === "settings")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const host = el("screen");
+  const host = el("panel-body");
   assert.match(host.render(), /Keep conversations for/);
   assert.match(host.render(), /Prefers small commits/, "memory is shown as the text it is");
   assert.match(host.render(), /never sent to a routing adviser/);
@@ -456,7 +441,7 @@ test("a thread that appears while the window is open is drawn, not just listed",
 test("everything that is not a conversation lives behind the row at the foot", async () => {
   const { el } = await open();
   assert.equal(el("account-menu").hidden, true, "it is a menu, not a row of buttons");
-  assert.equal(el("account-name").textContent, "Orochi");
+  assert.equal(el("panel").open, false, "and nothing is over the conversation");
 
   el("account").dispatch("click");
   const items = el("account-menu")
@@ -464,8 +449,8 @@ test("everything that is not a conversation lives behind the row at the foot", a
     .map((b) => b.textContent.replace("✓", ""));
   assert.deepEqual(
     items,
-    ["Working now", "Agents", "Insights", "Settings"],
-    "with settings kept apart from the screens above it",
+    ["Agents", "Insights", "Settings"],
+    "with settings kept apart from the two above it",
   );
 
   el("account-menu").querySelectorAll("button")
@@ -473,11 +458,14 @@ test("everything that is not a conversation lives behind the row at the foot", a
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(el("account-menu").hidden, true, "choosing one closes the menu");
-  assert.equal(el("account-name").textContent, "Agents", "and the row says where you are");
+  assert.equal(el("panel").open, true, "and opens it over the conversation");
+  assert.equal(el("panel-title").textContent, "Agents");
+  assert.equal(
+    el("timeline").hidden,
+    false,
+    "the conversation stays where it is; a panel is asked for and dismissed",
+  );
 
-  // Choosing a conversation leaves the screen, as clicking a thread does anywhere else.
-  el("projects").querySelectorAll(".thread")[0].dispatch("click");
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(el("account-name").textContent, "Orochi");
-  assert.equal(el("timeline").hidden, false, "the conversation is back");
+  el("panel-close").dispatch("click");
+  assert.equal(el("panel").open, false, "and dismissed is dismissed");
 });
