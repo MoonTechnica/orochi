@@ -572,3 +572,22 @@ fn the_window_opens_on_a_data_directory_that_has_no_store_yet() {
     let client = Client::open(empty.path()).expect("an empty file is set up, not refused");
     assert!(client.sidebar(20, true).unwrap().is_empty());
 }
+
+/// The window opens filling the screen. A conversation, its sidebar and the team beside it are
+/// three columns; a small default window puts the third one off the edge.
+#[test]
+fn the_window_opens_filling_the_screen() {
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let window = &config["app"]["windows"][0];
+    assert_eq!(window["maximized"], true);
+    assert!(
+        window["width"].as_u64().unwrap() >= 1100,
+        "and unmaximizes to a size the three columns still fit in"
+    );
+}
