@@ -490,6 +490,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 &store,
                 &root,
                 crate::chat::Options {
+                    host: None,
                     overrides: Overrides {
                         agent: cli.agent,
                         model: cli.model,

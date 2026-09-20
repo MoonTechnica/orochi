@@ -23,6 +23,12 @@ pub enum Key {
     Interrupt,
     /// Ctrl-D typed at a terminal: deletes forward, or asks to leave on an empty line.
     CtrlD,
+    /// A turn a client queued, read from the store instead of a keyboard. It carries the row
+    /// it came from, so the turn is claimed rather than written again.
+    Queued {
+        turn: String,
+        text: String,
+    },
     /// Input ended (a closed pipe or terminal).
     Eof,
     KillLine,
@@ -52,6 +58,12 @@ impl Keyboard {
     }
     pub async fn next(&mut self) -> Option<Key> {
         self.keys.recv().await
+    }
+    /// A keyboard someone else types at: `orochi host` feeds it from the store. Dropping the
+    /// sender ends the session, which is how a host leaves when it has been idle long enough.
+    pub fn channel() -> (mpsc::UnboundedSender<Key>, Self) {
+        let (sender, keys) = mpsc::unbounded_channel();
+        (sender, Self { keys })
     }
 }
 

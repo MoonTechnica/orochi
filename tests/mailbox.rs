@@ -1422,3 +1422,100 @@ fn a_heavy_turn_seats_one_agent_where_work_like_it_has_measured_small() {
         "a second seat ran anyway: {stderr}"
     );
 }
+
+/// R2 and D2: the terminal and the window are one product. A thread the window runs is a
+/// thread `orochi host` runs, and a host is the console's turn loop with the keyboard replaced
+/// by the store — so the same message seats the same agents whichever end it was typed at.
+#[test]
+fn a_host_seats_a_heavy_turn_the_way_the_console_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let config = seats_config(dir.path());
+    let orochi = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_orochi"));
+        command
+            .arg("--config")
+            .arg(&config)
+            .arg("--data-dir")
+            .arg(dir.path().join("data"))
+            .arg("-C")
+            .arg(&repo)
+            .args(args);
+        command
+    };
+    let new = orochi(&["threads", "new", "--json"]).output().unwrap();
+    assert!(
+        new.status.success(),
+        "{}",
+        String::from_utf8_lossy(&new.stderr)
+    );
+    let thread = serde_json::from_slice::<Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent = orochi(&[
+        "threads",
+        "send",
+        &thread,
+        "redesign the architecture of the storage layer so every caller goes through one interface",
+    ])
+    .output()
+    .unwrap();
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+
+    let mut host = orochi(&["host", "--thread", &thread])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let read = |name: &str| std::fs::read_to_string(repo.join(name)).unwrap_or_default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    // The lead writes this once the seat beside it has answered, so it is the whole exchange.
+    while read("advice.txt").is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the two seats never talked under a host: {}",
+            std::fs::read_to_string(dir.path().join("agent.jsonl.err")).unwrap_or_default()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // A client asking it to stop is how a host leaves before its idle time is up.
+    let stop = orochi(&["threads", "stop", &thread]).output().unwrap();
+    assert!(
+        stop.status.success(),
+        "{}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let ended = host.wait().unwrap();
+    let mut stderr = String::new();
+    use std::io::Read;
+    let _ = host.stderr.take().unwrap().read_to_string(&mut stderr);
+    assert!(ended.success() || ended.code() == Some(130), "{stderr}");
+    assert!(
+        read("advice.txt").contains("watch the error path"),
+        "and the one doing the work never heard it: {stderr}"
+    );
+
+    // The window reads seats from the store, so every one of them has to be there to be
+    // shown: the design step alone, then the implement step with the reviewer beside it.
+    let activity = orochi::activity::Activity::attach(&dir.path().join("data"), 30).unwrap();
+    let mut statement = activity
+        .connection()
+        .prepare("SELECT s.role FROM seats s JOIN turns t ON t.id=s.turn_id WHERE t.thread_id=?1 ORDER BY s.id")
+        .unwrap();
+    let roles: Vec<String> = statement
+        .query_map([&thread], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        roles.iter().any(|role| role == "reviewer"),
+        "the seat beside the work is recorded for the window to show: {roles:?}"
+    );
+    assert!(roles.len() >= 3, "{roles:?}");
+}

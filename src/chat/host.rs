@@ -5,12 +5,16 @@
 //! the questions they raise open for that client to answer. It exists so that closing the app
 //! does not stop the work, and so that a thread has exactly one owner whether that owner is a
 //! terminal or not.
+//!
+//! There is no second turn loop here. A loop of its own would drift from the console's the
+//! moment either changed — it did, and a message that seated two agents in a terminal ran
+//! alone in the window. This reads rows and types them; everything that happens next is
+//! `chat::Session`.
 use crate::{
-    activity::{Activity, Shared, TurnState, share},
+    activity::{Activity, Shared, share},
+    chat::{Options, term::Key},
     config::{Config, PermissionMode},
-    policy::Registry,
-    scheduler::{self, Continuation, RunOptions},
-    storage::{Store, workspace_lock},
+    storage::Store,
     types::Overrides,
 };
 use anyhow::{Context, Result};
@@ -50,7 +54,8 @@ pub async fn run(config: &Config, data: &Path, thread: &str) -> Result<u8> {
     };
 
     // One owner per thread: the unique index refuses a second host, and a host whose process
-    // is gone has already released it.
+    // is gone has already released it. Registered here rather than inside the session, because
+    // being second is a reason not to start at all.
     let host = activity
         .lock()
         .expect("activity store")
@@ -61,135 +66,96 @@ pub async fn run(config: &Config, data: &Path, thread: &str) -> Result<u8> {
         host: host.clone(),
     };
 
-    let policies = Registry::load(data)?;
-    let repository = store.repository_id(&cwd)?;
-    let _lock = workspace_lock(data, &repository, config.scheduler.shared_workspace)?;
-    let idle = Duration::from_secs(config.activity.host_idle_secs);
+    let (keys, keyboard) = crate::chat::term::Keyboard::channel();
+    let typist = tokio::spawn(feed(
+        activity.clone(),
+        thread.to_owned(),
+        host.clone(),
+        keys,
+        Duration::from_secs(config.activity.host_idle_secs),
+    ));
+    let code = crate::chat::run_with(
+        config,
+        data,
+        &store,
+        &cwd,
+        Options {
+            overrides,
+            host: Some(host),
+            resume: None,
+            permission,
+            thread: Some(thread.to_owned()),
+        },
+        Some(keyboard),
+    )
+    .await;
+    typist.abort();
+    code
+}
+
+/// Types what the client wrote. A queued turn is a message; a control is the key or the
+/// command the same request is at a terminal, so both ends reach the one implementation of
+/// what each means. Letting the sender drop ends the session, which is how a host leaves.
+async fn feed(
+    activity: Shared,
+    thread: String,
+    host: String,
+    keys: tokio::sync::mpsc::UnboundedSender<Key>,
+    idle: Duration,
+) {
     let mut last = Instant::now();
-    let mut continuation: Option<Continuation> = None;
+    let line = |keys: &tokio::sync::mpsc::UnboundedSender<Key>, text: &str| {
+        keys.send(Key::Paste(text.to_owned())).is_ok() && keys.send(Key::Enter).is_ok()
+    };
     loop {
-        if let Some((kind, _payload)) = activity
+        let control = activity
             .lock()
             .expect("activity store")
-            .take_control(thread)?
-        {
-            match kind.as_str() {
-                // Every rule about what an interrupt means lives in `interrupt.rs`; raising
-                // the real signal is how this host says it without inventing a second path.
-                "interrupt" | "stop" => {
-                    #[cfg(unix)]
-                    unsafe {
-                        libc::raise(libc::SIGINT);
-                    }
-                    if kind == "stop" {
-                        return Ok(130);
-                    }
+            .take_control(&thread);
+        if let Ok(Some((kind, payload))) = control {
+            let sent = match kind.as_str() {
+                "interrupt" | "stop" => keys.send(Key::Interrupt).is_ok(),
+                "new" => line(&keys, "/new"),
+                "reroute" => line(&keys, "/reroute"),
+                "set_permission" => {
+                    line(&keys, &format!("/confirm {}", payload.unwrap_or_default()))
                 }
-                "new" => continuation = None,
-                _ => {}
+                // The agent's own session modes are cycled, not named, so the request is the
+                // same key a person presses.
+                "set_mode" => keys.send(Key::ShiftTab).is_ok(),
+                _ => true,
+            };
+            if !sent || kind == "stop" {
+                return;
             }
             last = Instant::now();
         }
         let queued = activity
             .lock()
             .expect("activity store")
-            .next_queued(thread)?;
-        let Some((turn, text)) = queued else {
-            if last.elapsed() >= idle {
-                return Ok(0);
+            .next_queued(&thread);
+        match queued {
+            Ok(Some((turn, text))) => {
+                let claimed = activity
+                    .lock()
+                    .expect("activity store")
+                    .claim_turn(&turn, &host);
+                if !matches!(claimed, Ok(true)) {
+                    continue;
+                }
+                if keys.send(Key::Queued { turn, text }).is_err() {
+                    return;
+                }
+                last = Instant::now();
             }
-            activity.lock().expect("activity store").heartbeat(&host)?;
-            tokio::time::sleep(POLL).await;
-            continue;
-        };
-        if !activity
-            .lock()
-            .expect("activity store")
-            .claim_turn(&turn, &host)?
-        {
-            continue;
+            _ => {
+                if last.elapsed() >= idle {
+                    return;
+                }
+                let _ = activity.lock().expect("activity store").heartbeat(&host);
+                tokio::time::sleep(POLL).await;
+            }
         }
-        let seat = {
-            let db = activity.lock().expect("activity store");
-            db.create_seat(&turn, 0, "implementer", true, false, None, None)
-                .map(|seat| crate::activity::SeatRef {
-                    thread: thread.to_owned(),
-                    turn: turn.clone(),
-                    seat,
-                    store: activity.clone(),
-                })?
-        };
-        let resume = continuation
-            .as_ref()
-            .filter(|c| c.loadable)
-            .map(|c| c.session.session_id.clone());
-        let pinned = continuation.as_ref().map(|c| Overrides {
-            agent: Some(c.session.agent.clone()),
-            model: Some(c.session.model.clone()),
-            reasoning: c.session.reasoning.clone(),
-            mode: c.session.mode.clone(),
-        });
-        let code = scheduler::run_turn(
-            config,
-            &policies,
-            &store,
-            &cwd,
-            RunOptions {
-                task: text,
-                descriptor: None,
-                overrides: pinned.unwrap_or_else(|| overrides.clone()),
-                dry_run: false,
-                json: false,
-                resume,
-                permission,
-                // A client renders progress from the store, so this is a chat turn in every
-                // way except that nothing is watching stderr.
-                interactive: true,
-                attachments: vec![],
-                peer: None,
-                verify: true,
-                read_only: false,
-                place: None,
-                seat: Some(seat.clone()),
-                // Nobody here can answer a permission request; the question waits for the
-                // client that asked for the work.
-                answerer: crate::activity::recorder::Answerer::Store,
-            },
-            None,
-            &mut continuation,
-        )
-        .await;
-        let state = match &code {
-            Ok(0) => TurnState::Completed,
-            Ok(130) => TurnState::Interrupted,
-            _ => TurnState::Failed,
-        };
-        let db = activity.lock().expect("activity store");
-        db.turn_state(&turn, state)?;
-        db.seat_state(
-            &seat.seat,
-            match state {
-                TurnState::Completed => crate::activity::SeatState::Done,
-                TurnState::Interrupted => crate::activity::SeatState::Cancelled,
-                _ => crate::activity::SeatState::Failed,
-            },
-        )?;
-        if let Some(current) = &continuation {
-            db.set_continuation(
-                thread,
-                Some(
-                    &serde_json::json!({
-                        "agent": current.session.agent, "model": current.session.model,
-                        "reasoning": current.session.reasoning, "mode": current.session.mode,
-                        "session_id": current.session.session_id,
-                        "loadable": current.loadable, "modes": current.modes,
-                    })
-                    .to_string(),
-                ),
-            )?;
-        }
-        drop(db);
-        last = Instant::now();
     }
 }
 

@@ -152,6 +152,9 @@ const SHORTCUTS: [(&str, &str); 10] = [
 pub struct Options {
     /// Apply to the first message and to every message routed again.
     pub overrides: Overrides,
+    /// A host row already registered for this thread, so a second owner is refused before any
+    /// work starts rather than after. `orochi host` takes it; a terminal registers its own.
+    pub host: Option<String>,
     /// A recorded session the first message continues.
     pub resume: Option<String>,
     pub permission: PermissionMode,
@@ -164,6 +167,9 @@ pub struct Options {
 struct Message {
     text: String,
     attachments: Vec<Attachment>,
+    /// The queued turn this message already is, when a client wrote it. `None` means the row
+    /// is still to be written, which is what typing at a terminal does.
+    queued: Option<String>,
     /// What the user asked for explicitly; otherwise Orochi decides.
     steps: Steps,
 }
@@ -316,6 +322,8 @@ struct Session<'a> {
     quit: bool,
     /// Where this conversation is written down, when `activity.enabled`.
     recorded: Option<Recorded>,
+    /// No terminal at either end: the turns come from the store and so do the answers.
+    headless: bool,
 }
 
 /// The conversation store for one console session. The thread is opened by the first message
@@ -327,10 +335,20 @@ struct Recorded {
     thread: Option<String>,
     host: Option<String>,
     turn: Option<String>,
+    /// What this session is to the store: a terminal a person types at, or a headless host a
+    /// client queued work for. It names the owner and the origin of the turns it writes.
+    kind: &'static str,
+    origin: &'static str,
 }
 
 impl Recorded {
-    fn open(config: &Config, store: &Store, root: &Path, thread: Option<&String>) -> Option<Self> {
+    fn open(
+        config: &Config,
+        store: &Store,
+        root: &Path,
+        thread: Option<&String>,
+        headless: bool,
+    ) -> Option<Self> {
         if !config.activity.enabled {
             return None;
         }
@@ -344,6 +362,8 @@ impl Recorded {
                 activity,
                 thread: thread.cloned(),
                 host: None,
+                kind: if headless { "headless" } else { "terminal" },
+                origin: if headless { "desktop" } else { "terminal" },
                 turn: None,
             })
         })() {
@@ -363,7 +383,7 @@ impl Recorded {
                     .activity
                     .lock()
                     .expect("activity store")
-                    .register_host(Some(&thread), "terminal")
+                    .register_host(Some(&thread), self.kind)
                     .ok();
             }
             return Ok(thread);
@@ -383,7 +403,7 @@ impl Recorded {
             session.overrides,
             session.permission,
         )?;
-        let host = self.store().register_host(Some(&thread), "terminal").ok();
+        let host = self.store().register_host(Some(&thread), self.kind).ok();
         self.host = host;
         self.thread = Some(thread.clone());
         Ok(thread)
@@ -404,9 +424,14 @@ impl Recorded {
     }
 }
 
-/// The console answers its own permission questions; a client may answer them first.
-fn answerer(mode: PermissionMode) -> crate::activity::recorder::Answerer {
-    crate::activity::recorder::Answerer::Local(mode)
+/// The console answers its own permission questions; a client may answer them first. With no
+/// terminal at either end there is nobody here to ask, so the row is the only answerer and the
+/// client that queued the work answers it.
+fn answerer(mode: PermissionMode, headless: bool) -> crate::activity::recorder::Answerer {
+    match headless {
+        true => crate::activity::recorder::Answerer::Store,
+        false => crate::activity::recorder::Answerer::Local(mode),
+    }
 }
 
 /// What `Recorded::thread` needs from the session without borrowing all of it.
@@ -424,14 +449,31 @@ pub async fn run(
     root: &Path,
     options: Options,
 ) -> Result<u8> {
+    run_with(config, data, store, root, options, None).await
+}
+
+/// The same conversation, with the keyboard replaced by whatever `keys` is fed from. `orochi
+/// host` passes a channel it fills from the store; there is no second turn loop, because a
+/// second one would drift from this one the moment either changed.
+pub async fn run_with(
+    config: &Config,
+    data: &Path,
+    store: &Store,
+    root: &Path,
+    options: Options,
+    keys: Option<Keyboard>,
+) -> Result<u8> {
     // Esc and Ctrl-C interrupt by raising SIGINT, so the handler must exist before any turn.
     #[cfg(unix)]
     let _sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let tty = std::io::stdin().is_terminal()
+    let headless = keys.is_some();
+    let tty = !headless
+        && std::io::stdin().is_terminal()
         && std::io::stdout().is_terminal()
         && std::io::stderr().is_terminal();
-    let keyboard = Keyboard::start(tty);
+    let keyboard = keys.unwrap_or_else(|| Keyboard::start(tty));
     let options_thread = options.thread.clone();
+    let options_host = options.host.clone();
     let approval = Approval {
         confirm: options.permission,
         modes: vec![],
@@ -459,7 +501,13 @@ pub async fn run(
         approval,
         twice: Twice::default(),
         quit: false,
-        recorded: Recorded::open(config, store, root, options_thread.as_ref()),
+        headless,
+        recorded: Recorded::open(config, store, root, options_thread.as_ref(), headless).map(
+            |mut recorded| {
+                recorded.host = options_host;
+                recorded
+            },
+        ),
     };
     if tty {
         session.view.welcome(config, data, root, &session.feed);
@@ -612,6 +660,7 @@ impl Session<'_> {
                     self.view.result(WARN, &format!("/{command} <task>"));
                 } else {
                     return Some(Message {
+                        queued: None,
                         text: argument.to_owned(),
                         attachments: message.attachments,
                         steps: if command == "solo" {
@@ -786,6 +835,14 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
     let picking = !term.suggestions.is_empty();
     let navigating = picking && matches!(key, Key::Up | Key::Down);
     match key {
+        Key::Queued { turn, text } => {
+            return Action::Send(Message {
+                queued: Some(turn),
+                text,
+                attachments: vec![],
+                steps: Steps::Auto,
+            });
+        }
         Key::Char(c) => term.prompt.insert(&c.to_string()),
         Key::Paste(text) => return paste(term, &text, root),
         // Enter takes the highlighted candidate unless what is typed is already a command,
@@ -808,6 +865,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                 resolve_references(term, root);
                 let (text, attachments) = term.prompt.take();
                 return Action::Send(Message {
+                    queued: None,
                     text,
                     attachments,
                     steps: Steps::Auto,
@@ -1139,13 +1197,17 @@ impl Session<'_> {
         };
         let opened = (|| -> Result<()> {
             let thread = recorded.thread(&context)?;
-            let turn = recorded.store().queue_turn(
-                &thread,
-                &message.text,
-                &message.attachments,
-                steps_asked,
-                "terminal",
-            )?;
+            // A message a client queued is already a row; writing another would show it twice.
+            let turn = match &message.queued {
+                Some(turn) => turn.clone(),
+                None => recorded.store().queue_turn(
+                    &thread,
+                    &message.text,
+                    &message.attachments,
+                    steps_asked,
+                    recorded.origin,
+                )?,
+            };
             if let Some(host) = &recorded.host {
                 recorded.store().claim_turn(&turn, host)?;
             }
@@ -1625,6 +1687,7 @@ impl Session<'_> {
                 }
             );
             let step = Message {
+                queued: None,
                 text,
                 attachments: if index == 0 {
                     message.attachments.clone()
@@ -1660,6 +1723,7 @@ impl Session<'_> {
                 match proceed {
                     Proceed::Team(plan) => {
                         let team = Message {
+                            queued: None,
                             text: format!(
                                 "{}\n\nThe design step concluded:\n{handover}",
                                 message.text
@@ -1908,6 +1972,7 @@ impl Session<'_> {
         let mut stopping = false;
         let mut exiting: Option<Instant> = None;
         let mut listening = true;
+        let headless = self.headless;
         let approval = &mut self.approval;
         let queue = &mut self.queue;
         let keyboard = &mut self.keyboard;
@@ -1940,7 +2005,7 @@ impl Session<'_> {
                     read_only: !seats[0].writes,
                     place: Some(order.place(0)),
                     seat: recorded_seats[0].clone(),
-                    answerer: answerer(approval.confirm),
+                    answerer: answerer(approval.confirm, headless),
                 },
                 Some(events),
                 &mut continuation,
@@ -1974,7 +2039,7 @@ impl Session<'_> {
                                 read_only: true,
                                 place: Some(order.place(index + 1)),
                                 seat: aside_seat,
-                                answerer: answerer(PermissionMode::Allow),
+                                answerer: answerer(PermissionMode::Allow, headless),
                             },
                             Some(sender),
                             slot,

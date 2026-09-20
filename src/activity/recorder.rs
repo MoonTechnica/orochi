@@ -573,6 +573,10 @@ impl Asking {
             .map_err(|error| tracing::debug!(%error, "permission not recorded"))
             .ok();
         let downstream = match (downstream, self.answerer) {
+            // The row is the only answerer, whether or not anything is watching this run: a
+            // watcher with no terminal cannot answer, and holding a channel it never answers
+            // on would read as a refusal the moment the sender dropped.
+            (_, Answerer::Store) => None,
             (Some(downstream), _) => Some(downstream),
             (None, Answerer::Local(permission)) => {
                 let store = self.store.clone();
@@ -589,8 +593,6 @@ impl Asking {
                 });
                 return;
             }
-            // Headless: the row is the only answerer, so wait for it.
-            (None, Answerer::Store) => None,
         };
         // With someone listening, they and the store race, and the loser's dialog closes when
         // it sees the row answered. With nobody, the row is the only answerer — and then there
