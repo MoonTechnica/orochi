@@ -45,7 +45,7 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 
 #app {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 300px;
+  grid-template-columns: 260px minmax(0, 1fr) 320px;
   height: 100%;
 }
 @media (max-width: 900px) {
@@ -123,6 +123,8 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 #thread-status { margin-left: auto; color: var(--muted); font-size: 12px; }
 
 #timeline { flex: 1; overflow: auto; padding: var(--gutter); }
+/* A conversation is read, so it keeps a comfortable measure however wide the window is. */
+#timeline .turn, #timeline .ask { max-width: 900px; }
 .turn { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 18px; }
 .turn:first-child { border-top: 0; margin-top: 0; padding-top: 0; }
 .you { white-space: pre-wrap; margin: 0 0 10px; max-width: 78ch; }
@@ -378,7 +380,8 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 [data-tone="4"] { --tone: #7dcfff; } [data-tone="5"] { --tone: #f7768e; }
 [data-tone="6"] { --tone: #73daca; } [data-tone="7"] { --tone: #ff9e64; }
 
-.said { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; margin-top: 10px; }
+.said { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; margin-top: 12px; }
+.turn .said { margin-left: 2px; }
 .said[data-run="true"] { margin-top: 1px; }
 .said .who {
   grid-column: 1 / -1; display: flex; gap: 6px; align-items: center;

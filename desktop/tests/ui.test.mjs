@@ -319,15 +319,15 @@ test("a sent message also makes sure something is running it", async () => {
   );
 });
 
-test("the room shows what agents and the person said, and lets the person answer", async () => {
+test("what the agents said reaches the conversation, and the person can answer them", async () => {
   const said = [
     { seq: 1, kind: "joined", who: "reviewer", whom: null, via: "mailbox", text: "", at: 1, role: null, model: null },
     { seq: 2, kind: "message", who: "reviewer", whom: "implementer", via: "mailbox", text: "the sleep hides it", at: 2, role: "reviewer", model: "opus" },
   ];
   const { el, calls } = await open({ room: said });
-  const drawn = el("room").render();
-  assert.match(drawn, /reviewer joined/, "arriving is a line in the room");
-  assert.match(drawn, /the sleep hides it/);
+  assert.match(el("room").render(), /reviewer joined/, "arriving is a line beside the room");
+  const drawn = el("timeline").render();
+  assert.match(drawn, /the sleep hides it/, "and what was said is in the conversation");
   assert.match(drawn, /to implementer/, "and each message says who it was for");
 
   el("say").value = "prefer the simpler shape";
@@ -338,7 +338,7 @@ test("the room shows what agents and the person said, and lets the person answer
   assert.equal(note[1].to, null, "a note with no name is for everyone");
 });
 
-test("the room reads as a group chat: who is speaking, to whom, and when", async () => {
+test("the conversation reads as a group chat: who is speaking, to whom, and when", async () => {
   const said = [
     { seq: 1, kind: "joined", who: "implementer", whom: null, via: "mailbox", text: "", at: 100, role: null, model: null },
     { seq: 2, kind: "message", who: "implementer", whom: "all", via: "mailbox", text: "anything to know before I touch the parser?", at: 120, role: "implementer", model: "sonnet" },
@@ -347,7 +347,7 @@ test("the room reads as a group chat: who is speaking, to whom, and when", async
     { seq: 5, kind: "message", who: "you", whom: "all", via: "user", text: "prefer the simpler shape", at: 160, role: null, model: null },
   ];
   const { el } = await open({ room: said });
-  const room = el("room");
+  const room = el("timeline");
   const drawn = room.render();
 
   // Every speaker is a face, and the same speaker is always the same face.
@@ -380,12 +380,53 @@ test("the room reads as a group chat: who is speaking, to whom, and when", async
   const mine = room.querySelectorAll(".said").find((n) => n.dataset.who === "you");
   assert.equal(mine.dataset.mine, "true", `the person's own note is theirs: ${drawn}`);
 
-  // Arriving and leaving are not messages.
-  assert.match(drawn, /implementer joined/);
+  // Arriving and leaving are not messages, and are not in the conversation.
+  assert.doesNotMatch(drawn, /implementer joined/);
   assert.equal(
-    room.querySelectorAll(".said.system").length,
+    el("room").querySelectorAll(".said.system").length,
     1,
-    "a join is one system line and not a bubble",
+    "a join is one system line, beside the conversation",
+  );
+});
+
+test("the conversation is the group chat: the agents talk to each other in it", async () => {
+  const thread = structuredClone(recorded.thread);
+  thread.items = [
+    { seq: 1, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "sonnet", kind: "user_message", status: null, text: "split the parser", data: null, truncated: false, patches: 0, at: 100 },
+    { seq: 2, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "sonnet", kind: "agent_message", status: null, text: "done, one function per rule", data: null, truncated: false, patches: 0, at: 160 },
+  ];
+  const said = [
+    { seq: 1, kind: "message", who: "implementer", whom: "all", via: "mailbox", text: "anything to know before I touch it?", at: 120, role: "implementer", model: "sonnet" },
+    { seq: 2, kind: "message", who: "reviewer", whom: "implementer", via: "mailbox", text: "the retry never fires", at: 140, role: "reviewer", model: "opus" },
+  ];
+  const { el } = await open({ thread, room: said });
+  const drawn = el("timeline").render();
+
+  assert.match(drawn, /split the parser/, "what the person asked");
+  assert.match(drawn, /anything to know before I touch it\?/, "what one agent asked the other");
+  assert.match(drawn, /the retry never fires/, "and what it answered");
+  assert.match(drawn, /done, one function per rule/, "and the reply to the person");
+
+  // In the order they were said, not the transcript first and the room after.
+  const at = (needle) => drawn.indexOf(needle);
+  assert.ok(
+    at("split the parser") < at("anything to know") &&
+      at("anything to know") < at("the retry never fires") &&
+      at("the retry never fires") < at("done, one function"),
+    `one conversation, in time order: ${drawn}`,
+  );
+
+  // Each voice is a face, and the reviewer is in the middle of the page rather than beside it.
+  assert.ok(
+    el("timeline").querySelectorAll(".avatar").length >= 2,
+    `the agents have faces here: ${drawn}`,
+  );
+
+  // The side pane is who is in the room, not a second copy of what was said.
+  assert.doesNotMatch(
+    el("room").render(),
+    /the retry never fires/,
+    "the same message is not shown twice in two places",
   );
 });
 
@@ -610,7 +651,7 @@ test("a thread nobody has written in yet says so, rather than being Untitled", a
   assert.equal(el("thread-title").textContent, "New conversation");
 });
 
-test("the room fills in as the agents talk, without being asked", async () => {
+test("the conversation fills in as the agents talk, without being asked", async () => {
   const answers = {
     room: [
       { seq: 1, kind: "message", who: "reviewer", whom: "implementer", via: "mailbox",
@@ -619,7 +660,7 @@ test("the room fills in as the agents talk, without being asked", async () => {
     changed: [],
   };
   const { el, tick } = await open(answers);
-  assert.match(el("room").render(), /the sleep hides it/);
+  assert.match(el("timeline").render(), /the sleep hides it/);
 
   // A seat says something else while the window is open; the feed names the conversation.
   answers.room = [
@@ -632,7 +673,7 @@ test("the room fills in as the agents talk, without being asked", async () => {
   await tick();
 
   assert.match(
-    el("room").render(),
+    el("timeline").render(),
     /taking tests\/mailbox\.rs/,
     "what the agents say appears as they say it, not when you next click",
   );

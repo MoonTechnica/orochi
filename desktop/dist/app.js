@@ -138,7 +138,7 @@ function work(items) {
   return node;
 }
 
-function drawTimeline(thread) {
+function drawTimeline(thread, said = []) {
   const host = el("timeline");
   const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
   host.replaceChildren();
@@ -148,8 +148,28 @@ function drawTimeline(thread) {
     if (pending.length && turn) turn.append(work(pending));
     pending = [];
   };
-  for (const item of thread.items) {
-    // Only the lead's work is in the transcript; the read-only seats speak in the Team pane.
+  // One conversation. What the agents say to each other belongs in it, in the order it was
+  // said — a table where half the talk happens in another column is two rooms, not one.
+  const spoken = said
+    .filter((line) => line.kind === "message")
+    .map((line) => ({ ...line, kind: "said", at: line.at }));
+  const stream = [...thread.items, ...spoken].sort(
+    (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
+  );
+  let voice = null;
+  for (const item of stream) {
+    if (item.kind === "said") {
+      flush();
+      if (!turn) {
+        turn = text("div", "turn");
+        host.append(turn);
+      }
+      turn.append(bubble(item, voice === item.who));
+      voice = item.who;
+      continue;
+    }
+    voice = null;
+    // A read-only seat's own working notes stay out; what it had to say it said in the room.
     if (item.lane !== null && item.lane !== undefined && item.lane > 0) continue;
     if (item.kind === "user_message") {
       flush();
@@ -179,6 +199,28 @@ function drawTimeline(thread) {
     host.append(askCard(prompt));
   }
   if (stick) host.scrollTop = host.scrollHeight;
+}
+
+/// One message from one agent to another, in the conversation rather than beside it.
+function bubble(line, run) {
+  const node = text("div", "said");
+  node.dataset.via = line.via;
+  node.dataset.who = line.who;
+  node.dataset.tone = tone(line.who);
+  if (line.via === "user") node.dataset.mine = "true";
+  if (run) {
+    node.dataset.run = "true";
+  } else {
+    const who = text("div", "who");
+    who.append(text("span", "avatar", line.who.slice(0, 1).toLowerCase()));
+    who.append(text("span", "name", line.who));
+    who.append(text("span", "to", !line.whom || line.whom === "all" ? "everyone" : `to ${line.whom}`));
+    if (line.model) who.append(text("span", "model", line.model));
+    who.append(text("span", "at", clock(line.at)));
+    node.append(who);
+  }
+  node.append(text("div", "body", line.text));
+  return node;
 }
 
 function askCard(prompt) {
@@ -421,47 +463,20 @@ function tone(name) {
 const clock = (at) =>
   new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+/// Who is in the room, and what each of them is doing. What they said is in the conversation.
 async function drawRoom(thread) {
   const host = el("room");
   host.replaceChildren();
-  const said = await call("room", { thread: thread.thread.id });
-  if (!said || !said.length) {
-    host.append(text("p", "empty", "Nothing said yet."));
+  const events = (state.said || []).filter((line) => line.kind !== "message");
+  if (!events.length) {
+    host.append(text("p", "empty", "Nobody has come or gone yet."));
     return;
   }
-  // A run of messages from one speaker is one turn of the conversation, headed once — the way
-  // a group chat reads. Anything that is not a message breaks the run.
-  let last = null;
-  for (const line of said) {
-    if (line.kind !== "message") {
-      const mark = line.kind === "joined" ? "●" : line.kind === "left" ? "○" : "⎿";
-      const what = line.kind === "status" ? line.text : line.kind;
-      host.append(text("div", "said system", `${mark} ${line.who} ${what}`));
-      last = null;
-      continue;
-    }
-    const node = text("div", "said");
-    node.dataset.via = line.via;
-    node.dataset.who = line.who;
-    node.dataset.tone = tone(line.who);
-    if (line.via === "user") node.dataset.mine = "true";
-    if (last !== line.who) {
-      const who = text("div", "who");
-      who.append(text("span", "avatar", line.who.slice(0, 1).toLowerCase()));
-      who.append(text("span", "name", line.who));
-      const to = !line.whom || line.whom === "all" ? "everyone" : `to ${line.whom}`;
-      who.append(text("span", "to", to));
-      if (line.model) who.append(text("span", "model", line.model));
-      who.append(text("span", "at", clock(line.at)));
-      node.append(who);
-    } else {
-      node.dataset.run = "true";
-    }
-    node.append(text("div", "body", line.text));
-    host.append(node);
-    last = line.who;
+  for (const line of events.slice(-12)) {
+    const mark = line.kind === "joined" ? "●" : line.kind === "left" ? "○" : "⎿";
+    const what = line.kind === "status" ? line.text : line.kind;
+    host.append(text("div", "said system", `${mark} ${line.who} ${what}`));
   }
-  host.scrollTop = host.scrollHeight;
 }
 
 el("say-form").addEventListener("submit", async (event) => {
@@ -767,7 +782,11 @@ async function refresh(full) {
   el("thread-title").textContent = thread.thread.title || "New conversation";
   el("thread-status").textContent = thread.thread.status;
   el("interrupt").hidden = thread.thread.status !== "working";
-  drawTimeline(thread);
+  // The room is read first: what the agents said to each other is part of the conversation,
+  // so the conversation cannot be drawn without it.
+  const said = (await call("room", { thread: thread.thread.id })) || [];
+  state.said = said;
+  drawTimeline(thread, said);
   drawTeam(thread);
   drawChanges(thread);
   drawRoom(thread);

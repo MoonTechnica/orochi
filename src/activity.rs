@@ -330,6 +330,9 @@ pub struct ItemRow {
     pub data: Option<serde_json::Value>,
     pub truncated: bool,
     pub patches: i64,
+    /// When it was written, so a client can read the conversation and what the agents said to
+    /// each other as the one exchange they were.
+    pub at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -734,7 +737,7 @@ impl Activity {
             .connection
             .prepare(
                 "SELECT seq, turn_id, turn_ordinal, lane, role, agent, model, kind, status,
-                        text, data, truncated, patches
+                        text, data, truncated, patches, created_at
                  FROM v_timeline WHERE thread_id=?1 ORDER BY seq",
             )?
             .query_map([id], |r| {
@@ -754,6 +757,7 @@ impl Activity {
                         .and_then(|d| serde_json::from_str(&d).ok()),
                     truncated: r.get::<_, i64>(11)? != 0,
                     patches: r.get(12)?,
+                    at: r.get(13)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;

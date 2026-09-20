@@ -561,13 +561,17 @@ One column, in `items.id` order, grouped by turn. Three levels of detail, Claude
 - **Prompts:** a `permission` prompt is a card at the point in the timeline where the tool call is, with the agent's own options (allow once / always / reject). `team` is the plan-approval dialog: the proposed parts as a small graph (`v_board`), *Run as a team* / *Keep the design*. Esc on either does what it does in the terminal.
 - **Second seats stay out of the timeline**, as they stay out of the transcript today: what a read-only seat has to say arrives as messages, shown inline as compact chat bubbles and in full in the Team tab. A lane filter ("show reviewer's work") reveals its items for the curious.
 
-### 6.4 Team — `v_room`, `v_roster`
+### 6.4 Team — `v_roster` (and `v_room`, in the conversation)
 
-The part no other client has. Top: the **roster** — one row per seat: role, agent and model, a provider-colored avatar, `RO` for read-only, state, the agent's own `set_status` line, the tool it is in, elapsed time, tokens, split into *Active* and *Done* as Codex's subagent panel is; clicking a seat filters the timeline to its lane. Below: the **room** — mailbox messages as chat bubbles colored by sender (the same name-derived colors as the terminal), `→ name` or `→ all` on each, with `joined`, `left` and status changes as system lines between them. A collaboration's handoff messages appear in the same room, marked as relayed by Orochi.
+What the agents say to each other is **in the conversation**, interleaved by time with what the
+person and the lead said: one table, not two rooms. Each voice carries a face whose colour is
+derived from the name, a run of messages from one speaker sits under one header, and who it was
+for is said in words. A conversation with half its talk in another column was read as two
+unrelated panes (2026-09-21), which is what it was.
 
-Two scopes, one switch: *this thread* (messages from and to this thread's peers, plus broadcasts while its turns ran) and *this repository* (everything in the project's channel, across threads and terminals — what `orochi peers --messages` shows).
-
-**The user in the room** (`via = 'user'`): a message box that posts to one seat or to all. It is delivered the way every mailbox message is — when the agent next calls `read_messages` — so it is a note left on the table, not an interruption, and the UI says so ("delivered when the agent next checks"). It lifts a documented limitation (*"a way for a person to send messages"*) without changing the agent-facing protocol: the host registers one peer named `user` per thread. Whether agents act on such a note mid-turn is **unverified** and must be measured before this is presented as steering. (Codex has `turn/steer` for this; ACP v1 has no equivalent, so the mailbox is the only road that works for every agent.)
+The Team pane is therefore **who is in the room** — the roster, each seat with its face, its
+agent and model, and what it is doing — plus arrivals, departures and status changes, and the
+box for leaving the team a note. It is presence, not transcript.
 
 ### 6.5 Changes — `v_turn_files` + `git diff`
 
