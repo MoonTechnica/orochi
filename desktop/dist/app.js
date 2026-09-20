@@ -777,6 +777,17 @@ setInterval(async () => {
   await refresh(changed.includes(state.thread));
 }, 200);
 
-el("new-thread").addEventListener("click", () => openFolders());
+// Where the work already happens: the open thread's folder, else the one worked in last.
+// Only somewhere that has never been worked in has to be chosen, and then by the system's own
+// picker. Opening the composer's menu from up here would put it a screen away from the hand
+// that asked for it, and the click that opened it would close it again on its way out.
+el("new-thread").addEventListener("click", async (event) => {
+  event.stopPropagation();
+  closeFolders();
+  const open = state.projects.flatMap((p) => p.threads.map((t) => [p, t]))
+    .find(([, t]) => t.id === state.thread);
+  const root = open?.[0].root ?? state.folders[0]?.root;
+  await (root ? startIn(root) : chooseFolder());
+});
 
 refresh(true);

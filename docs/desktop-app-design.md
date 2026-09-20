@@ -581,6 +581,15 @@ Stage, revert, commit and PR are out of the first release; the app surfaces the 
 
 Multiline input; Enter sends, Shift-Enter breaks the line; `@` completes paths in the thread's `cwd`; pasted or dropped files become attachments (a pasted image is written under `<data>/attachments/<thread>/` and deleted with the thread); `/` lists the console's commands. Three selectors, each a persistent chip: **route** (*Auto*, or pin agent / model / reasoning — `threads.overrides`), **approvals** (the agent's own session modes when it has them, else ask / always / never — the Shift-Tab cycle), **steps** (*Auto* / *Solo* / *Team*). While a turn runs, Enter queues (the queue is shown above the input and can be taken back), Esc interrupts. All of it is the terminal console's behavior reached with a mouse; where they could differ, Claude Code's behavior decides (R9).
 
+**New thread** starts one where the work already happens — the open thread's folder, else the
+one worked in last — and only asks when nowhere has been worked in yet, through the system's
+own folder picker. It does not open the composer's folder menu: that menu belongs beside the
+chip that owns it, a screen away from this button, and the click that opened it from here
+closed it again on the way out (fixed 2026-09-21). `desktop/tests/dom.mjs` now carries events
+to the document and builds the markup's real nesting, so a handler that opens something and a
+document handler that closes what was not clicked meet in the tests the way they meet in the
+window.
+
 ### 6.7 Mission control — `v_roster` across threads
 
 One screen of every seat that is working right now, across projects: a card per seat grouped by thread, columns by state (choosing → working → asking → checking). Open prompts float to the top with their buttons, so ten threads can be supervised without opening any. This is also the menu-bar popover.

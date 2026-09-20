@@ -36,7 +36,20 @@ class Node {
     this.listeners.get(name).push(handler);
   }
   dispatch(name, event = {}) {
-    for (const handler of this.listeners.get(name) || []) handler({ preventDefault() {}, target: this, ...event });
+    // Events reach the document, as they do in a browser. Without this a handler that opens
+    // something and a document handler that closes what was not clicked look independent here
+    // and cancel each other in the window. The app delegates only from the document, so
+    // walking the ancestors in between would buy nothing.
+    let stopped = false;
+    const carried = {
+      preventDefault() {},
+      stopPropagation() { stopped = true; },
+      target: this,
+      ...event,
+    };
+    for (const handler of this.listeners.get(name) || []) handler(carried);
+    if (stopped) return;
+    for (const handler of document.listeners.get(name) || []) handler(carried);
   }
   // A node's own subtree, not every node ever made: a stale row from an earlier test would
   // otherwise answer for this one.
@@ -106,12 +119,13 @@ export const document = {
     }
     return document.byId.get(id);
   },
-  // The page's own tree: every element the test registered, and their descendants.
+  // The page's own tree: every element the test registered, and their descendants. Registered
+  // elements nest, so the same node is reachable twice and is counted once.
   querySelectorAll(selector) {
     const roots = [...document.byId.values()];
-    const found = roots.filter((n) => matches(n, selector));
-    for (const root of roots) found.push(...root.querySelectorAll(selector));
-    return found;
+    const found = new Set(roots.filter((n) => matches(n, selector)));
+    for (const root of roots) for (const n of root.querySelectorAll(selector)) found.add(n);
+    return [...found];
   },
 };
 
@@ -132,29 +146,37 @@ export function page(ids, markup = "") {
     document.all.add(node);
     document.byId.set(id, node);
   }
-  // The buttons the markup declares, under the container they are declared in. Without them
-  // the app would find no tabs and no screens to switch between — and the test would be
-  // passing over a page that does not exist.
-  let container = null;
-  for (const tag of markup.match(/<(div|button|section|aside|main|header)\b[^>]*>/g) || []) {
-    const id = tag.match(/\bid="([^"]+)"/)?.[1];
-    if (!tag.startsWith("<button")) {
-      if (id && document.byId.has(id)) container = document.byId.get(id);
+  // The markup's own nesting, so an element really is inside the one that declares it: two of
+  // the app's handlers close a menu when the click was outside the box it belongs to, and
+  // without a tree `contains` answers for nothing. Anonymous buttons are built here too, or
+  // the app would find no tabs and no screens to switch between.
+  const empty = new Set(["meta", "link", "br", "img", "input", "hr"]);
+  const stack = [];
+  for (const [full, closing, tag, attributes] of markup.matchAll(/<(\/?)([a-z0-9]+)([^>]*)>/g)) {
+    if (closing) {
+      const at = stack.findLastIndex((frame) => frame.tag === tag);
+      if (at >= 0) stack.length = at;
       continue;
     }
-    // A button with its own id was registered above; only the anonymous ones belong here.
-    if (id) continue;
-    const node = new Node("button");
-    const className = tag.match(/\bclass="([^"]+)"/)?.[1];
-    if (className) node.className = className;
-    for (const [, key, value] of tag.matchAll(/\bdata-([a-z-]+)="([^"]+)"/g)) {
-      node.dataset[key.replace(/-(\w)/g, (_, c) => c.toUpperCase())] = value;
+    const id = attributes.match(/\bid="([^"]+)"/)?.[1];
+    let node = id ? document.byId.get(id) ?? null : null;
+    if (!id && tag === "button") {
+      node = new Node("button");
+      const className = attributes.match(/\bclass="([^"]+)"/)?.[1];
+      if (className) node.className = className;
+      for (const [, key, value] of attributes.matchAll(/\bdata-([a-z-]+)="([^"]+)"/g)) {
+        node.dataset[key.replace(/-(\w)/g, (_, c) => c.toUpperCase())] = value;
+      }
+      for (const [, key, value] of attributes.matchAll(/\b(aria-[a-z]+)="([^"]+)"/g)) {
+        node.setAttribute(key, value);
+      }
+      document.all.add(node);
     }
-    for (const [, key, value] of tag.matchAll(/\b(aria-[a-z]+)="([^"]+)"/g)) {
-      node.setAttribute(key, value);
+    if (node) {
+      const parent = stack.map((frame) => frame.node).filter(Boolean).pop();
+      if (parent && parent !== node) parent.append(node);
     }
-    document.all.add(node);
-    if (container) container.append(node);
+    if (!empty.has(tag) && !full.endsWith("/>")) stack.push({ tag, node });
   }
 }
 

@@ -23,7 +23,7 @@ const source = readFileSync(join(here, "../dist/app.js"), "utf8");
 const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
-async function open(answers = {}, { prompt } = {}) {
+async function open(answers = {}, { prompt, pick } = {}) {
   const calls = [];
   page([
     "sidebar", "projects", "sidebar-foot", "new-thread",
@@ -45,6 +45,8 @@ async function open(answers = {}, { prompt } = {}) {
     // The page asks for a comment the way a page does.
     prompt: prompt || (() => null),
     __TAURI__: {
+      // The system's own folder picker, which the window never replaces with a typed path.
+      dialog: { open: async (options) => (pick ? pick(options) : null) },
       core: {
         invoke(name, args) {
           calls.push([name, args]);
@@ -241,6 +243,42 @@ test("choosing a folder starts a thread in it", async () => {
     "the folder chosen is the folder the thread works in",
   );
   assert.equal(el("folder-menu").hidden, true, "and the menu closes behind it");
+});
+
+test("new thread starts one where the work already happens", async () => {
+  const { el, calls } = await open();
+  el("new-thread").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(
+    calls.find(([name]) => name === "new_thread")?.[1],
+    { root: recorded.sidebar[0].root },
+    "the open thread's own folder, without asking again for what is already known",
+  );
+  assert.equal(
+    el("folder-menu").hidden,
+    true,
+    "and no menu is left open at the other end of the window",
+  );
+});
+
+test("new thread asks where, when nowhere has been worked in yet", async () => {
+  const picked = [];
+  const { el, calls } = await open({ sidebar: [], thread: null, folders: [] }, {
+    pick: (options) => {
+      picked.push(options);
+      return "/work/fresh";
+    },
+  });
+  el("new-thread").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(picked.length, 1, "the system's own picker, not a typed path");
+  assert.deepEqual(
+    calls.find(([name]) => name === "new_thread")?.[1],
+    { root: "/work/fresh" },
+    "and the thread starts in what was chosen",
+  );
 });
 
 test("a sent message also makes sure something is running it", async () => {
