@@ -76,11 +76,15 @@ When several Orochi processes opened a new data directory at the same time, SQLi
   - Each run took about 95 seconds and about 26,000 tokens by each adapter's reported figures.
 - Tool calls from Claude Code have not been verified against the real CLI, because of usage limits.
 
+A person can leave a note in the room with `orochi peers --say "…"` (`--to <name>` for one
+agent), or from the desktop window's Team pane. It is stored as an ordinary message from a
+peer named `user`, so nothing about the agent-facing protocol changes.
+
 ## Not supported
 
 - Sessions through `orochi serve` (the ACP Gateway).
 - Participation by agents started without going through Orochi.
-- A way for a person to send messages from the CLI (`orochi peers` is view-only).
+- Notifying an agent of an arriving message by interrupting it: a note from a person waits with the rest until the agent reads its messages. Whether agents act on one left mid-turn is **unverified** against the real CLIs.
 - Notifying an agent of an arriving message by interrupting it. Messages are delivered when the agent calls `read_messages`.
 
 ## Unit of a peer
