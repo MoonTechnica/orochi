@@ -377,12 +377,15 @@ Policy sources:
 
 Data is saved to `$XDG_DATA_HOME/orochi`, or `~/.local/share/orochi` when that is unset.
 
-- `telemetry.sqlite3`: runs, sessions, runtime, quota_snapshots, the schema version and a local salt (migrated to schema v2 in this release)
+- `telemetry.sqlite3`: runs, sessions, runtime, quota_snapshots, the schema version and a local salt (schema v2; the generated columns added in this release are additive, so an older Orochi can still share the file)
+- `activity.sqlite3`: the conversation — what you asked, what the agents answered, what they changed and what they said to each other
 - `policies.json`: the installed Policy
 - `locks/`: locks for same-repository runs
 - `adapters/`: auto-installed ACP adapters and the npm cache
 
-Task text, conversations, source code, diff bodies, Agent stderr and test output are not saved to the DB. The repository identifier is a hash using a local salt. The TaskEnvelope is held only in memory during a run. Conversations saved by the Agent itself and records on the Provider side are a separate matter.
+Task text, conversations, source code, diff bodies, Agent stderr and test output are **not** saved to `telemetry.sqlite3`; its repository identifier is a hash using a local salt, and the TaskEnvelope is held only in memory during a run. That is the file you can hand over for debugging or benchmarking.
+
+The conversation itself is saved to `activity.sqlite3`, so that history survives quitting and a desktop client can show it. That file is `0600`, overwrites deleted rows (`secure_delete`), keeps threads for `activity.retention_days` (30 by default; pinned threads are exempt), and is not created at all with `activity.enabled = false`. `orochi threads` lists what is in it, `orochi threads show <id>` prints one conversation, and `orochi threads delete <id>` (or `--all`) removes it for good. Nothing in it is ever sent anywhere: no adviser or agent reads it, and the one exception is a conversation replaying its own earlier turns to its own next agent. Conversations saved by the Agent itself and records on the Provider side are a separate matter.
 
 Common authentication / rate-limit errors, structured `resetAt` / `reset_at` / `resetsAt` (Unix seconds) and `retryAfter` / `retry_after` (seconds) are observed. Unless `data.scope = "model"` is explicit, a rate limit applies to the whole Agent. Non-standardized subscription quota is never guessed and shown as healthy.
 
@@ -435,7 +438,9 @@ src/interrupt.rs    One process-wide count of interrupts, so work between two wa
 src/memory.rs       Memory across sessions (user preferences, repository notes; stored separately from telemetry)
 src/context.rs      TaskEnvelope, Git information, cache key
 src/evaluator.rs    Local evaluation and process management
-src/storage.rs      SQLite, schema, repository lock
+src/storage.rs      SQLite telemetry, schema, repository lock
+src/activity.rs     The conversation store a desktop client reads: threads, turns, seats, items, patches, prompts, controls, the room, and the views over them
+src/activity/recorder.rs  Writes the one event stream down on its way to whoever asked for it
 src/learning.rs     EWMA, Bandit, prediction calibration
 src/benchmark.rs    Time-series comparison of measured candidates, holdout coefficient search
 src/collaboration/  Steps of independent ACP sessions, team composition from the task, the order of the work (parts in waves, graph.rs), merging parallel implementations, messages, applying to the working tree
@@ -444,6 +449,7 @@ src/quota_sources.rs CLI quota retrieval, statusline ingestion
 src/gateway.rs      Exposing Orochi over ACP v1 stdio
 src/chat/           Interactive mode (screen display, queueing, approval modes, attachments, session continuation)
 src/chat/term.rs    Terminal control (input box pinned to the bottom, key input, scroll region)
+src/chat/host.rs    A conversation with no terminal: runs the turns a client queued and leaves its questions for that client
 src/policy.rs       Policy validation and updates
 src/config.rs       Configuration, default Agent presets
 src/cli.rs          User-facing commands

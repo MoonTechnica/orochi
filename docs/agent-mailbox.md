@@ -50,8 +50,9 @@ The task prompt gets a short addition with the agent's own peer name, the other 
 
 ## Storage and safety
 
-- Messages are stored in `mailbox.sqlite3` in the data directory (permissions 0600). It is a separate file from `telemetry.sqlite3`, which holds the run records, and message bodies never enter the run records.
-- Message bodies may contain work content. Messages past the retention period are deleted the next time the mailbox is opened.
+- Messages are stored in `activity.sqlite3` in the data directory (permissions 0600), beside the turns they belong to, so a message can be shown next to the seat that sent it. With `activity.enabled = false` they keep their own `mailbox.sqlite3` instead, with the behavior described here. Either way it is a separate file from `telemetry.sqlite3`, which holds the run records, and message bodies never enter the run records.
+- A peer that stops running keeps its row (`left_at`), because a room has to say who said what and who was there when they said it; it is no longer a *running* peer, so it cannot be messaged. Joining, leaving, `set_status` and `set_route` are recorded as events rather than values that were overwritten.
+- Message bodies may contain work content. A message that belongs to a conversation lives as long as that conversation does; one that belongs to none is deleted past the retention period, the next time the mailbox is opened.
 - For each peer, only the name, worktree path, branch name, route, status, and the owning process's PID and start time are stored. Task text is not stored.
 - A peer whose owning process has exited disappears from the list the next time it is read (judged by PID and start time, which tells a reused PID apart). Direct messages are tied to the peer ID, so joining later under the same name does not let you read messages addressed to the previous peer. Broadcast messages sent before you joined cannot be read either (you would end up answering questions asked when you did not exist). Only messages that arrive after joining are read.
 - An agent's MCP server starts as a child process of the agent and is covered by the reclamation performed by Orochi's supervisor process.

@@ -2,7 +2,17 @@
 
 Written: 2026-09-20.
 
-**Status (as of 2026-09-20): design only. Nothing in this document is implemented.** It changes one documented invariant (§3); that change and the three other open points were decided on 2026-09-20 (§10). The invariant text in `CLAUDE.md`, `README.md` and `docs/agent-mailbox.md` changes when P0 ships, not before.
+**Status (as of 2026-09-20)**
+
+| Phase | Status |
+|---|---|
+| P0 Store | **Implemented; automated tests only** (mock agents). `activity.sqlite3`, the recorder, the views, `orochi threads`, the telemetry changes of §5. The console, `orochi run`, `collaborate` and `serve` all write rows |
+| P1 Control | **Implemented; automated tests only.** Prompts and controls through the store, `orochi host`, `chat --continue`, the mailbox move, the failed-check tail |
+| P2–P4 | **Not started.** The desktop app itself |
+
+Behavior against real agent CLIs is **unverified**: everything above is exercised by the fixture agent only. The measurements §2 and §9 call for (flush and poll latency, disk growth) have **not** been taken, and the figures there remain estimates.
+
+The four open points were decided on 2026-09-20 (§10). The invariant text in `CLAUDE.md`, `README.md` and `docs/agent-mailbox.md` is updated as part of P0/P1.
 
 ## 0. Goal and starting point
 
@@ -589,8 +599,8 @@ A form over `config.toml` (`orochi config show` / validated writes through `Conf
 
 | Phase | Delivers | Proven by |
 |---|---|---|
-| **P0 Store** | `activity.sqlite3`, the recorder, views, `orochi threads`, the telemetry changes of §5. Console, `run`, `collaborate` and `serve` all write rows. No behavior change a user can see except that history exists | Fixture tests with the mock agent: a thread read back through `v_timeline` equals the live event sequence (R8); byte-level privacy tests of §3; an old-schema `telemetry.sqlite3` still opens and an `INSERT` without column names still succeeds against the new columns (R5); measured flush and poll latency |
-| **P1 Control** | Prompts and controls through the store; `orochi host`; `chat --continue`; the mailbox move; the failed-check tail (`evaluator` hands it to the recorder, `CheckResult` and `RunRecord` stay as they are) | Terminal test: a second process answers a permission question and interrupts a turn the terminal owns; a queued turn inserted from outside runs next; a killed host leaves a thread that reads *interrupted* and resumes |
+| **P0 Store** ✅ | `activity.sqlite3`, the recorder, views, `orochi threads`, the telemetry changes of §5. Console, `run`, `collaborate` and `serve` all write rows. No behavior change a user can see except that history exists | Fixture tests with the mock agent: a thread read back through `v_timeline` equals the live event sequence (R8); byte-level privacy tests of §3; an old-schema `telemetry.sqlite3` still opens and an `INSERT` without column names still succeeds against the new columns (R5); measured flush and poll latency |
+| **P1 Control** ✅ | Prompts and controls through the store; `orochi host`; `chat --continue`; the mailbox move; the failed-check tail (`evaluator` hands it to the recorder, `CheckResult` and `RunRecord` stay as they are) | Terminal test: a second process answers a permission question and interrupts a turn the terminal owns; a queued turn inserted from outside runs next; a killed host leaves a thread that reads *interrupted* and resumes |
 | **P2 App, observing and conversing** | Tauri shell, sidebar, thread, composer, prompts, notifications, Team tab read-only | The app's Rust commands tested against fixture databases; the WebView tested against recorded view output. No agent account needed, as everywhere else |
 | **P3 Review and supervise** | Changes tab with Apply, mission control, Agents, Insights, settings, work-graph board | — |
 | **P4 The user in the room** | `via='user'` messages | Against real CLIs: do agents read and act on a mid-turn note? Shipped as steering only if they do |
@@ -621,4 +631,4 @@ P0 and P1 are worth having with no app at all: persistent history, `--continue`,
 | 3 | Check output, never stored today | **Store the last 200 lines of a failed check** on the `checks` item (`data.checks[].tail`), bounded like any item text, only in `activity.sqlite3`, dropped with `activity.enabled = false`. Passing checks store nothing. Ships in P1, not P0 |
 | 4 | D3 — the shell | **Tauri 2 with a React + TypeScript WebView**, outside the macOS sandbox. The front-end framework is not load-bearing: the WebView only renders typed view rows |
 
-Scope of this work: the design. Implementation starts with P0 when it is asked for.
+P0 and P1 shipped on 2026-09-20; P2 onwards is the app itself.
