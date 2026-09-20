@@ -604,6 +604,23 @@ fn a_heavy_turn_seats_a_read_only_agent_beside_the_one_doing_the_work() {
             >= 2,
         "{prompts:?}"
     );
+    // `read_messages` returns at once unless it is asked to wait, so both seats are told to
+    // ask. Against the real CLIs on 2026-09-20 the reviewer read once, found an empty room
+    // because the lead was still reading the repository, and ended its turn 25 seconds in.
+    for prompt in prompts.iter().filter(|p| p.contains("Running now:")) {
+        assert!(
+            prompt.contains("wait_seconds"),
+            "a seat with someone to hear from is told how to actually wait: {prompt}"
+        );
+    }
+    let aside = prompts
+        .iter()
+        .find(|p| p.contains("one of"))
+        .expect("the seat beside the lead");
+    assert!(
+        aside.contains("empty read is not the end"),
+        "and that an empty room means the others are still working: {aside}"
+    );
     for expected in [
         "beside implement: reviewer",
         "✉ implement",
@@ -1224,6 +1241,22 @@ fn a_message_between_agents_belongs_to_the_conversation_it_was_sent_from() {
         vec![Some(thread)],
         "and the feed names it, so a window watching that conversation notices"
     );
+
+    // The room says who spoke, not just what was said.
+    let (who, role, model): (String, Option<String>, Option<String>) = activity
+        .connection()
+        .query_row(
+            "SELECT who, role, model FROM v_room WHERE kind='message' ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(who, "reviewer");
+    assert_eq!(
+        (role.as_deref(), model.as_deref()),
+        (Some("reviewer"), Some("opus")),
+        "with the seat it was sitting in and the model it was running"
+    );
 }
 
 /// When a seat has finished, an agent looking for it is told so. Against the real CLIs on
@@ -1257,4 +1290,43 @@ fn a_peer_that_has_finished_is_named_as_finished() {
         .to_string();
     assert!(unknown.contains("list_peers"), "{unknown}");
     let _ = activity;
+}
+
+/// The MCP server runs as a child of the *agent*, so it inherits the agent's working
+/// directory, not Orochi's. A relative `--data-dir` then pointed it at a directory of its own
+/// and it quietly built a second, empty room: against the real CLIs on 2026-09-20 every tool
+/// answered "this agent's Orochi run is no longer registered", and `set_status` reported
+/// success while updating nothing.
+#[test]
+fn the_room_an_agent_reaches_is_the_one_orochi_is_in_whatever_its_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let config = fixture_config(dir.path(), "alone", "", true);
+    // Started the way a person starts it: from Orochi's own directory, naming the data
+    // directory relatively. The agent, and the server it spawns, run in the repository.
+    let output = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .current_dir(dir.path())
+        .arg("--config")
+        .arg(&config)
+        .args(["--data-dir", "data"])
+        .arg("-C")
+        .arg(&repo)
+        .args(["--peer-name", "alone", "Implement the greeting"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        std::fs::read_to_string(dir.path().join("alone.jsonl.err")).unwrap_or_default()
+    );
+    let found = std::fs::read_to_string(repo.join("found.txt")).unwrap();
+    assert!(found.starts_with("alone"), "{found}");
+    assert!(
+        !repo.join("data").exists(),
+        "the agent built a room of its own under the repository"
+    );
 }

@@ -1402,3 +1402,36 @@ fn a_registry_with_the_retired_task_profiles_still_loads() {
             .contains("task_profiles")
     );
 }
+
+/// Two Orochi runs starting at once on one data directory: both open the store, and the
+/// generated columns are added by whichever gets the write lock first. Reading which columns
+/// exist *before* taking that lock let both decide to add them, and the loser failed to open
+/// at all with `duplicate column name` (seen on 2026-09-20 from a concurrent mailbox run).
+#[test]
+fn several_runs_opening_one_store_at_once_migrate_it_exactly_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let gate = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                gate.wait();
+                Store::open(&data).expect("a concurrent open is not a broken store");
+            });
+        }
+    });
+    let store = Store::open(&data).unwrap();
+    let columns: Vec<String> = store
+        .connection()
+        .prepare("SELECT name FROM pragma_table_xinfo('runs')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        columns.iter().filter(|c| *c == "purpose").count(),
+        1,
+        "{columns:?}"
+    );
+}

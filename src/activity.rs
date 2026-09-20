@@ -477,12 +477,16 @@ impl Activity {
             crate::storage::setup(
                 &connection,
                 &format!(
-                    "BEGIN IMMEDIATE; {SCHEMA} {TRIGGERS} {VIEWS}
+                    "BEGIN IMMEDIATE; {SCHEMA} {TRIGGERS}
                      PRAGMA application_id={APPLICATION_ID};
                      PRAGMA user_version={USER_VERSION}; COMMIT;"
                 ),
             )?;
         }
+        // Every open, because a view is a definition and not data: changing one then needs no
+        // version of its own, and an older binary's copy cannot outlive the columns it was
+        // written against.
+        crate::storage::setup(&connection, VIEWS)?;
         let activity = Self {
             connection,
             retention_days,
@@ -1860,6 +1864,7 @@ CREATE TRIGGER IF NOT EXISTS ch_peers_u AFTER UPDATE ON peers BEGIN
 /// the views expose `host_pid` / `host_start` and the reader applies `process::alive`, the
 /// same judgement `mailbox::prune` makes.
 const VIEWS: &str = r#"
+BEGIN IMMEDIATE;
 DROP VIEW IF EXISTS v_projects;
 CREATE VIEW v_projects AS
 SELECT p.id, p.root, p.name, p.pinned, p.collapsed, p.hidden_at,
@@ -1911,7 +1916,7 @@ SELECT m.project_id, m.thread_id, m.id AS seq, 'message' AS kind,
        a.agent, a.model, s.role
 FROM messages m
 LEFT JOIN peers pe ON pe.id=m.sender
-LEFT JOIN attempts a ON a.id=pe.attempt_id
+LEFT JOIN attempts a ON a.peer_id=pe.id
 LEFT JOIN seats s ON s.id=a.seat_id
 UNION ALL
 SELECT pe.project_id, NULL AS thread_id, e.id AS seq, e.kind,
@@ -1919,7 +1924,7 @@ SELECT pe.project_id, NULL AS thread_id, e.id AS seq, e.kind,
        a.agent, a.model, s.role
 FROM peer_events e
 JOIN peers pe ON pe.id=e.peer_id
-LEFT JOIN attempts a ON a.id=pe.attempt_id
+LEFT JOIN attempts a ON a.peer_id=pe.id
 LEFT JOIN seats s ON s.id=a.seat_id;
 
 DROP VIEW IF EXISTS v_roster;
@@ -1937,7 +1942,7 @@ FROM seats s
 JOIN turns tn ON tn.id=s.turn_id
 LEFT JOIN attempts a ON a.seat_id=s.id
   AND a.n=(SELECT max(a2.n) FROM attempts a2 WHERE a2.seat_id=s.id)
-LEFT JOIN peers pe ON pe.attempt_id=a.id;
+LEFT JOIN peers pe ON pe.id=a.peer_id;
 
 DROP VIEW IF EXISTS v_turn_files;
 CREATE VIEW v_turn_files AS
@@ -1976,4 +1981,5 @@ SELECT a.id AS attempt_id, tn.thread_id, s.turn_id, s.id AS seat_id, s.role,
        a.considered, a.run_id, a.outcome, a.error_kind, a.error, a.checks, a.usage,
        a.started_at, a.ended_at
 FROM attempts a JOIN seats s ON s.id=a.seat_id JOIN turns tn ON tn.id=s.turn_id;
+COMMIT;
 "#;

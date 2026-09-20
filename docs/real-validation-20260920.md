@@ -11,8 +11,9 @@ the fixture agent. Evidence is the store itself; the scratch directory is local 
 | 3 | The ACP fields `acp.rs` stopped dropping | **Confirmed.** Real Claude sends `available_commands_update`, `usage_update`, and tool calls with `kind` and `rawInput` |
 | 4 | A patch's path | **Bug found and fixed.** A real agent names the file absolutely; the pane wanted the repository's own name |
 | 5 | P4: does an agent act on a note left mid-turn? | **Confirmed with Sonnet, not with Haiku.** The mechanism works; whether it is read depends on the model |
+| 6 | Do two seats actually converse? | **Confirmed** on two Claude Sonnet seats, six messages, after a working-directory defect that made every mailbox tool fail while reporting success |
 
-Cost: four runs, about 771,000 tokens by the adapters' own figures, all on the cheapest models
+Cost: five runs, about 771,000 tokens by the adapters' own figures, all on the cheapest models
 that could answer.
 
 ## 1. A real rate limit reports its kind, not the text it was read from
@@ -88,6 +89,30 @@ So the mechanism is sound and **a capable model does act on a mid-turn note**. W
 claimed is that any agent will: Haiku, told plainly to call the tool, did not. The Team pane's
 wording — "delivered when the agent next checks" — is the honest one, and it should stay.
 
+## 6. Two real agents holding a conversation
+
+The question the Team pane exists to answer: do two seats of one chat turn actually talk to
+each other, or only appear to? One turn on two Claude Sonnet seats — a lead and a read-only
+one — exchanged **six messages** in the room, each naming the other and answering what it
+said, ending with the lead's `all` broadcast that the work was done.
+
+Getting there took one defect, and it is the reason a mailbox can look healthy while nothing
+arrives. The MCP server runs as a child of the **agent**, so it inherits the agent's working
+directory, not Orochi's. A relative `--data-dir` therefore resolved against the repository:
+the server built a second, empty room beside the user's code, every tool answered "this
+agent's Orochi run is no longer registered", and `set_status` reported success while updating
+nothing — an UPDATE by id matches no rows without failing. `mailbox::join` now resolves the
+data directory before handing it to any agent, pinned by
+`the_room_an_agent_reaches_is_the_one_orochi_is_in_whatever_its_working_directory`.
+
+Two further defects were found by the same run and are fixed: `v_room` and `v_roster` joined
+`peers.attempt_id`, a column nothing populates, so the room showed messages without naming
+who sent them; and the seat prompts described `read_messages` as waiting, when it returns at
+once unless given `wait_seconds`.
+
+All six messages carry a `thread_id` and all six appear in the change feed, so the window
+updates as they are said rather than at the end of the turn.
+
 ## What is still not established
 
 - **Antigravity and Gemini** remain unvalidated here, as in earlier records.
@@ -95,5 +120,6 @@ wording — "delivered when the agent next checks" — is the honest one, and it
   `app.css` in a browser (`desktop/dist/preview.html`), which found and fixed four layout
   defects; the packaged window uses the same WebKit but its own chrome, and has not been
   looked at.
-- **A collaboration on real agents under the store.** `collaborate` records rows in the
-  fixture tests only; Codex's account was spent before a two-agent run could be measured.
+- **`collaborate` on real agents.** The seats of one chat turn are measured above; the
+  separate `collaborate` path, with its copied workspaces and merges, records rows in the
+  fixture tests only. Codex's account was spent before a two-agent run could be measured.

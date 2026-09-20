@@ -259,6 +259,76 @@ fn chat_with(w: &Workspace, args: &[&str], input: &str) -> Output {
         .unwrap();
     child.wait_with_output().unwrap()
 }
+/// Collects a running child's output without waiting for it to end.
+fn drain(
+    mut source: impl std::io::Read + Send + 'static,
+) -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let into = std::sync::Arc::clone(&sink);
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = source.read(&mut buffer) {
+            if read == 0 {
+                break;
+            }
+            into.lock().unwrap().extend_from_slice(&buffer[..read]);
+        }
+    });
+    sink
+}
+fn seen(sink: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> String {
+    String::from_utf8_lossy(&sink.lock().unwrap()).into_owned()
+}
+/// Waits for something to appear, so a test never depends on how fast the machine is.
+fn until(what: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !ready() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Drives the console the way a person does: the next line is typed only once the reply to
+/// the last one has arrived. Writing a whole script into the pipe at once instead lets a
+/// command that answers during a turn (`/status`, `/peers`) run before the turn it is asking
+/// about has chosen anything.
+fn chat_steps(w: &Workspace, lines: &[&str]) -> Output {
+    let mut child = w
+        .command()
+        .arg("chat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = drain(child.stdout.take().unwrap());
+    let stderr = drain(child.stderr.take().unwrap());
+    let mut replies = 0;
+    for line in lines {
+        writeln!(stdin, "{line}").unwrap();
+        stdin.flush().unwrap();
+        if line.starts_with('/') {
+            continue;
+        }
+        replies += 1;
+        until(&format!("reply {replies} never arrived"), || {
+            seen(&stdout).matches("Fixture completed.\n").count() >= replies
+        });
+    }
+    drop(stdin);
+    let status = child.wait().unwrap();
+    let (stdout, stderr) = (
+        stdout.lock().unwrap().clone(),
+        stderr.lock().unwrap().clone(),
+    );
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
 /// (method, sessionId, prompt text) of the session requests the fixture received, in order.
 fn session_requests(w: &Workspace) -> Vec<(String, String, String)> {
     w.log()
@@ -286,9 +356,17 @@ fn session_requests(w: &Workspace) -> Vec<(String, String, String)> {
 #[test]
 fn chat_continues_the_routed_session_until_reroute_or_new() {
     let w = Workspace::new();
-    let output = chat(
+    let output = chat_steps(
         &w,
-        "First PRIVATE_CHAT_QUESTION\nSecond\n/status\n/reroute\nThird\n/new\nFourth\n",
+        &[
+            "First PRIVATE_CHAT_QUESTION",
+            "Second",
+            "/status",
+            "/reroute",
+            "Third",
+            "/new",
+            "Fourth",
+        ],
     );
     success(&output);
     assert_eq!(
@@ -297,7 +375,8 @@ fn chat_continues_the_routed_session_until_reroute_or_new() {
             .count(),
         4
     );
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Agent        test · sol-test"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Agent        test · sol-test"), "{stderr}");
     let requests = session_requests(&w);
     let methods: Vec<_> = requests.iter().map(|r| r.0.as_str()).collect();
     assert_eq!(

@@ -796,6 +796,12 @@ pub fn join(
     name: Option<&str>,
 ) -> Result<Membership> {
     Mailbox::open(data, config)?;
+    // The MCP server runs as a child of the *agent* and inherits the agent's working
+    // directory, so a relative data directory would send it looking somewhere else — where it
+    // would quietly build a second, empty room and tell every agent it was not registered.
+    let data = data
+        .canonicalize()
+        .with_context(|| format!("cannot resolve the data directory {}", data.display()))?;
     let channel = channel(root, salt);
     let default_name = format!(
         "{}-{}",
@@ -878,7 +884,7 @@ pub fn prompt_note_for(peer: &SessionPeer) -> Option<String> {
         note.push_str(" No other peer is running now; call read_messages before you finish.");
     } else {
         note.push_str(&format!(
-            " Running now: {}. Before you change anything: read_messages, then set_status naming the part you are taking — the paths or the area, not the whole repository — and leave the parts others have already claimed to them. When what you produce is what a peer is waiting on, such as a decision they will build on or an interface they will call, send it the moment it holds rather than at the end, and say what is settled and what is still open; when you are the one waiting, ask for it instead of guessing. If you need the same files, account or tools as a peer, agree who goes first instead of racing. Call read_messages again before you finish.",
+            " Running now: {}. Before you change anything: read_messages (pass wait_seconds to wait for one), then set_status naming the part you are taking — the paths or the area, not the whole repository — and leave the parts others have already claimed to them. When what you produce is what a peer is waiting on, such as a decision they will build on or an interface they will call, send it the moment it holds rather than at the end, and say what is settled and what is still open; when you are the one waiting, ask for it instead of guessing. If you need the same files, account or tools as a peer, agree who goes first instead of racing. Call read_messages again before you finish.",
             others.join(", ")
         ));
     }

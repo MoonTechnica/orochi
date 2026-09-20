@@ -871,3 +871,30 @@ fn the_first_message_names_the_conversation_and_later_ones_do_not() {
         .unwrap();
     assert_eq!(title(&named), "Release checklist");
 }
+
+/// The window, the host and every run open this store, and each open recreates the views. A
+/// view is dropped before it is created, so two opens at once must not meet between the two.
+#[test]
+fn several_openers_at_once_leave_the_views_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let gate = std::sync::Barrier::new(8);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                gate.wait();
+                Activity::open(&data, 30).expect("a concurrent open is not a broken store");
+            });
+        }
+    });
+    let activity = Activity::open(&data, 30).unwrap();
+    let views: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='view'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(views >= 9, "{views} views");
+}

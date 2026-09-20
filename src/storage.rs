@@ -21,6 +21,7 @@ const SCHEMA_MINOR: i64 = 1;
 /// The distinction `calibrate` makes is kept here: only a verified outcome is evidence, and a
 /// weak signal (what the user did next) is counted beside it, never inside it.
 const VIEWS: &str = r#"
+BEGIN IMMEDIATE;
 DROP VIEW IF EXISTS v_runs;
 CREATE VIEW v_runs AS
 SELECT id, task_id, repository_id, task_type, agent, model, started_at,
@@ -79,6 +80,7 @@ SELECT q.agent,
        json_extract(w.value,'$.model') AS model,
        json_extract(w.value,'$.affects_routing') AS affects_routing
 FROM quota_snapshots q, json_each(q.record,'$.windows') w;
+COMMIT;
 "#;
 
 /// Columns the learning queries filter on, so the planner has an index to use instead of
@@ -134,13 +136,17 @@ fn minor_migrations(connection: &Connection) -> Result<()> {
     if applied >= SCHEMA_MINOR {
         return setup(connection, VIEWS);
     }
-    // Another process may have applied these between the read and the write, and a column
-    // already there is not an error worth failing an `open` over.
-    let existing: std::collections::BTreeSet<String> = connection
-        .prepare("SELECT name FROM pragma_table_info('runs')")?
+    // What is already there is read inside the write transaction, not before it: two runs
+    // starting at once would otherwise both find a column missing and both add it, and
+    // SQLite has no `ADD COLUMN IF NOT EXISTS`. A virtual generated column is a hidden one,
+    // so it is `table_xinfo` that lists it and `table_info` that never does.
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+    let existing: std::collections::BTreeSet<String> = transaction
+        .prepare("SELECT name FROM pragma_table_xinfo('runs')")?
         .query_map([], |r| r.get::<_, String>(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut sql = String::from("BEGIN IMMEDIATE;");
+    let mut sql = String::new();
     for (column, path) in GENERATED {
         if !existing.contains(*column) {
             sql.push_str(&format!(
@@ -152,10 +158,10 @@ fn minor_migrations(connection: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS runs_learning ON runs(agent, model, task_type, purpose, started_at);
          CREATE INDEX IF NOT EXISTS runs_tier ON runs(provider, task_type, complexity, started_at);
          CREATE INDEX IF NOT EXISTS runs_purpose ON runs(purpose, started_at);
-         INSERT INTO metadata VALUES ('schema_minor', '1') ON CONFLICT(key) DO UPDATE SET value=excluded.value;
-         COMMIT;",
+         INSERT INTO metadata VALUES ('schema_minor', '1') ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
     );
-    setup(connection, &sql)?;
+    transaction.execute_batch(&sql)?;
+    transaction.commit()?;
     // A view is a definition, not data: recreating it costs nothing and keeps an older
     // binary's copy from outliving the columns it was written against.
     setup(connection, VIEWS)

@@ -74,6 +74,15 @@ def converse(request):
     assert "orochi-mailbox" in text, "missing coordination note"
     proc, tool = mailbox_tools()
     role, other = os.environ["MOCK_MAILBOX_ROLE"], os.environ["MOCK_MAILBOX_PEER"]
+    if role == "alone":
+        # No peer to wait for: the only question is whether the server this agent spawned --
+        # in the agent's working directory, not Orochi's -- reached Orochi's own room.
+        tool("set_status", status="checking the room")
+        me = [p for p in tool("list_peers")["peers"] if p["you"]]
+        assert me, "this session is not in the room the agent was pointed at"
+        (root / "found.txt").write_text(me[0]["name"])
+        proc.terminate()
+        return
     deadline = time.time() + 20
     while not any(p["name"] == other for p in tool("list_peers")["peers"]):
         assert time.time() < deadline, "peer never appeared"

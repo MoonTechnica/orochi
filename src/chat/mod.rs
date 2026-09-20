@@ -2223,10 +2223,12 @@ fn alongside(lead: &str, beside: &[Role]) -> String {
          working tree:\n{}\n\nThey read everything and change nothing — every write tool is \
          refused for them — so they cannot collide with your work, and they are already \
          running: never start another agent or another Orochi yourself. Reach them with the \
-         mailbox tools: send_message (to one name, or to \"all\") and read_messages, which waits \
-         for a reply. You are `{lead}` to them, you own every change, and you tell them when the \
-         work is done. Report back to the user yourself: what was said, what you concluded, and \
-         what you did.\n\n{LANGUAGE}",
+         mailbox tools: send_message (to one name, or to \"all\") and read_messages, which \
+         waits for a reply only if you pass wait_seconds. They are waiting on you, so tell them \
+         what you are doing early rather than at the end. You are `{lead}` to them and you own \
+         every change; send_message to \"all\" when the work is done, or they will wait for \
+         nothing. Report back to the user yourself: what was said, what you concluded, and what \
+         you did.\n\n{LANGUAGE}",
         if count == 1 { "is" } else { "are" },
         who.join("\n")
     )
@@ -2247,9 +2249,12 @@ fn beside_seat(lead: &str, role: &Role, seats: &[Role], text: &str) -> String {
          others are already there.\n\nWhat the user asked:\n{text}\n\nRead what you need, then \
          send_message with what you have — to `{lead}`, to another seat by name, or to \"all\" \
          when everyone should hear it. Short and concrete, no preamble, and answer what others \
-         send you rather than repeating yourself. Then read_messages (it waits for a reply) and \
-         keep going until `{lead}` says it is done. End your turn then, or once you have nothing \
-         left worth saying.\n\n{LANGUAGE}",
+         send you rather than repeating yourself.\n\nThen call read_messages with \
+         wait_seconds 120: it returns at once unless you ask it to wait, and the others are \
+         usually still reading when you finish. Answer whatever arrives, then read again. An \
+         empty read is not the end — it means they are still working. End your turn when \
+         `{lead}` says the work is done, or after two full waits in a row that brought \
+         nothing.\n\n{LANGUAGE}",
         name = role.name,
         total = seats.len(),
         brief = role.brief,
