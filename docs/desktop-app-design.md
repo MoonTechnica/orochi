@@ -8,7 +8,8 @@ Written: 2026-09-20.
 |---|---|
 | P0 Store | **Implemented; automated tests only** (mock agents). `activity.sqlite3`, the recorder, the views, `orochi threads`, the telemetry changes of §5. The console, `orochi run`, `collaborate` and `serve` all write rows |
 | P1 Control | **Implemented; automated tests only.** Prompts and controls through the store, `orochi host`, `chat --continue`, the mailbox move, the failed-check tail |
-| P2–P4 | **Not started.** The desktop app itself |
+| P2 App | **Implemented; automated tests only.** A Tauri 2 window: sidebar, thread, composer with a folder picker, approval cards, Team and Changes panes. Its command layer is tested against fixture stores and `dist/app.js` against recorded view output. Its **appearance** is unverified — no screen was available |
+| P3–P4 | **Not started.** Mission control, Insights, settings, the work-graph board, and the user in the room |
 
 Behavior against real agent CLIs is **unverified**: everything above is exercised by the fixture agent only. The measurements §2 and §9 call for (flush and poll latency, disk growth) have **not** been taken, and the figures there remain estimates.
 
@@ -601,7 +602,7 @@ A form over `config.toml` (`orochi config show` / validated writes through `Conf
 |---|---|---|
 | **P0 Store** ✅ | `activity.sqlite3`, the recorder, views, `orochi threads`, the telemetry changes of §5. Console, `run`, `collaborate` and `serve` all write rows. No behavior change a user can see except that history exists | Fixture tests with the mock agent: a thread read back through `v_timeline` equals the live event sequence (R8); byte-level privacy tests of §3; an old-schema `telemetry.sqlite3` still opens and an `INSERT` without column names still succeeds against the new columns (R5); measured flush and poll latency |
 | **P1 Control** ✅ | Prompts and controls through the store; `orochi host`; `chat --continue`; the mailbox move; the failed-check tail (`evaluator` hands it to the recorder, `CheckResult` and `RunRecord` stay as they are) | Terminal test: a second process answers a permission question and interrupts a turn the terminal owns; a queued turn inserted from outside runs next; a killed host leaves a thread that reads *interrupted* and resumes |
-| **P2 App, observing and conversing** | Tauri shell, sidebar, thread, composer, prompts, notifications, Team tab read-only | The app's Rust commands tested against fixture databases; the WebView tested against recorded view output. No agent account needed, as everywhere else |
+| **P2 App, observing and conversing** ✅ | Tauri shell, sidebar, thread, composer, folder picker, prompts, Team tab read-only (notifications remain) | The app's Rust commands tested against fixture databases; the WebView tested against recorded view output. No agent account needed, as everywhere else |
 | **P3 Review and supervise** | Changes tab with Apply, mission control, Agents, Insights, settings, work-graph board | — |
 | **P4 The user in the room** | `via='user'` messages | Against real CLIs: do agents read and act on a mid-turn note? Shipped as steering only if they do |
 

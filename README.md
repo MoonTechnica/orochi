@@ -455,6 +455,23 @@ src/config.rs       Configuration, default Agent presets
 src/cli.rs          User-facing commands
 ```
 
+## Desktop window
+
+`desktop/` is a window onto the same conversations, built on the store above: threads grouped
+under the folder they work in, the turn's timeline, the seats at it, the files it changed, and
+the questions waiting for an answer. It writes only rows — a queued message, an answer, a
+control — so the window and a terminal are peers rather than one driving the other, and a
+question raised in either can be answered in either.
+
+```sh
+cargo run --manifest-path desktop/src-tauri/Cargo.toml     # run the window
+cargo test --manifest-path desktop/src-tauri/Cargo.toml    # its tests (needs node)
+```
+
+It is its own Cargo workspace, so the binary's `cargo test`, `clippy` and `fmt` never build a
+webview. Its appearance has not been verified against a screen; its behavior is covered by
+tests over fixture stores and recorded view output.
+
 ACP specification references: [Rust SDK](https://github.com/agentclientprotocol/rust-sdk), [Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options).
 
 ## License
