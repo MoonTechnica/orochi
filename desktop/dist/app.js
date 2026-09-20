@@ -281,13 +281,17 @@ function drawTeam(thread) {
   for (const seat of thread.seats) {
     const node = text("div", "seat");
     node.dataset.state = seat.state;
+    node.dataset.tone = tone(seat.role);
     const who = text("div", "who");
-    who.append(text("span", null, seat.role));
-    if (seat.read_only) who.append(text("span", "ro", "RO"));
+    const face = text("span", "avatar", seat.role.slice(0, 1).toLowerCase());
+    face.dataset.tone = node.dataset.tone;
+    who.append(face);
+    who.append(text("span", "name", seat.role));
+    if (seat.read_only) who.append(text("span", "ro", "reads only"));
     node.append(who);
     node.append(text("div", "what", [seat.agent, seat.model, seat.reasoning].filter(Boolean).join(" · ")));
-    if (seat.peer_status) node.append(text("div", "what", `"${seat.peer_status}"`));
-    if (seat.doing) node.append(text("div", "what", seat.doing.split("\n")[0]));
+    if (seat.peer_status) node.append(text("div", "what doing", seat.peer_status));
+    else if (seat.doing) node.append(text("div", "what doing", seat.doing.split("\n")[0]));
     host.append(node);
   }
 }
@@ -406,6 +410,17 @@ for (const button of document.querySelectorAll(".scope")) {
 // The room ------------------------------------------------------------------
 // Agents talk to each other here, and so can the person — delivered when the agent next reads
 // its messages, which is a note on the table rather than an interruption.
+/// A speaker's own colour, decided from the name so it is the same in every message and in
+/// the roster beside them. Eight is enough for a table this size and they stay far apart.
+function tone(name) {
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) % 997;
+  return String(hash % 8);
+}
+
+const clock = (at) =>
+  new Date(at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 async function drawRoom(thread) {
   const host = el("room");
   host.replaceChildren();
@@ -414,18 +429,39 @@ async function drawRoom(thread) {
     host.append(text("p", "empty", "Nothing said yet."));
     return;
   }
+  // A run of messages from one speaker is one turn of the conversation, headed once — the way
+  // a group chat reads. Anything that is not a message breaks the run.
+  let last = null;
   for (const line of said) {
     if (line.kind !== "message") {
       const mark = line.kind === "joined" ? "●" : line.kind === "left" ? "○" : "⎿";
-      host.append(text("div", "said system", `${mark} ${line.who} ${line.kind === "status" ? line.text : line.kind}`));
+      const what = line.kind === "status" ? line.text : line.kind;
+      host.append(text("div", "said system", `${mark} ${line.who} ${what}`));
+      last = null;
       continue;
     }
     const node = text("div", "said");
     node.dataset.via = line.via;
-    node.append(text("div", "who", `${line.who} → ${line.whom || "all"}`));
+    node.dataset.who = line.who;
+    node.dataset.tone = tone(line.who);
+    if (line.via === "user") node.dataset.mine = "true";
+    if (last !== line.who) {
+      const who = text("div", "who");
+      who.append(text("span", "avatar", line.who.slice(0, 1).toLowerCase()));
+      who.append(text("span", "name", line.who));
+      const to = !line.whom || line.whom === "all" ? "everyone" : `to ${line.whom}`;
+      who.append(text("span", "to", to));
+      if (line.model) who.append(text("span", "model", line.model));
+      who.append(text("span", "at", clock(line.at)));
+      node.append(who);
+    } else {
+      node.dataset.run = "true";
+    }
     node.append(text("div", "body", line.text));
     host.append(node);
+    last = line.who;
   }
+  host.scrollTop = host.scrollHeight;
 }
 
 el("say-form").addEventListener("submit", async (event) => {

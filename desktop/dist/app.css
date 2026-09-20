@@ -8,6 +8,8 @@
   --brand: #f7b731;
   --danger: #c64c38;
   --ok: #4fb477;
+  /* One step up from the panel, for anything that sits on it: a chat bubble, a card. */
+  --raised: #1d2027;
   --radius: 8px;
   --gutter: 16px;
 }
@@ -19,6 +21,7 @@
     --line: #e2e5ea;
     --text: #1b1d22;
     --muted: #666d7d;
+    --raised: #eceef2;
   }
 }
 * { box-sizing: border-box; }
@@ -179,17 +182,26 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 .tab { border: 0; border-radius: 0; padding: 8px 12px; color: var(--muted); }
 .tab[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--brand); }
 .pane { flex: 1; overflow: auto; padding: var(--gutter); }
+/* The room takes the height the roster and the box leave it, and scrolls on its own, so new
+   messages arrive at the bottom the way they do in a chat rather than pushing the page. */
+#pane-team { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#pane-team #roster { flex: none; }
+#pane-team #room { flex: 1; min-height: 0; }
+#pane-team #say-form, #pane-team #say-hint { flex: none; }
 
+/* Who is in the room, read as a chat header rather than as a list of machines. */
 .seat { border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 8px; }
-.seat .who { display: flex; gap: 6px; align-items: baseline; }
+.seat .who { display: flex; gap: 6px; align-items: center; }
+.seat .who .name { font-weight: 600; }
 .seat .ro { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
-.seat .what { color: var(--muted); font-size: 12px; }
-.seat[data-state="working"] .who::before { content: "●"; color: var(--ok); }
-.seat[data-state="done"] .who::before { content: "●"; color: var(--muted); }
-.seat[data-state="failed"] .who::before { content: "●"; color: var(--danger); }
-.seat[data-state="choosing"] .who::before,
-.seat[data-state="starting"] .who::before { content: "○"; color: var(--muted); }
-.seat[data-state="asking"] .who::before { content: "●"; color: var(--brand); }
+.seat .what { color: var(--muted); font-size: 12px; padding-left: 26px; }
+.seat .doing { font-style: italic; }
+.seat[data-state="working"] .who .name::after { content: "●"; color: var(--ok); }
+.seat[data-state="done"] .who .name::after { content: "●"; color: var(--muted); }
+.seat[data-state="failed"] .who .name::after { content: "●"; color: var(--danger); }
+.seat[data-state="choosing"] .who .name::after,
+.seat[data-state="starting"] .who .name::after { content: "○"; color: var(--muted); }
+.seat[data-state="asking"] .who .name::after { content: "●"; color: var(--brand); }
 
 .file { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
 .file .stat { margin-left: auto; font-size: 12px; }
@@ -352,12 +364,46 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 .card .where { color: var(--muted); font-size: 12px; }
 
 /* Room ------------------------------------------------------------------- */
-#room { margin-top: 8px; }
-.said { margin-bottom: 8px; }
-.said .who { font-size: 12px; color: var(--muted); }
-.said .body { white-space: pre-wrap; }
-.said[data-via="user"] .who { color: var(--brand); }
-.said.system { color: var(--muted); font-size: 12px; }
+/* The room is a group chat: a face per speaker, a run of their messages under one header,
+   and the person's own notes on the other side of the table. */
+#room { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.avatar {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600; text-transform: lowercase;
+  background: var(--tone); color: #12151a; flex: none;
+}
+[data-tone="0"] { --tone: #7aa2f7; } [data-tone="1"] { --tone: #9ece6a; }
+[data-tone="2"] { --tone: #e0af68; } [data-tone="3"] { --tone: #bb9af7; }
+[data-tone="4"] { --tone: #7dcfff; } [data-tone="5"] { --tone: #f7768e; }
+[data-tone="6"] { --tone: #73daca; } [data-tone="7"] { --tone: #ff9e64; }
+
+.said { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; margin-top: 10px; }
+.said[data-run="true"] { margin-top: 1px; }
+.said .who {
+  grid-column: 1 / -1; display: flex; gap: 6px; align-items: center;
+  font-size: 12px; color: var(--muted); margin-bottom: 2px;
+}
+.said .who .name { color: var(--text); font-weight: 600; }
+.said .who .to::before { content: "· "; }
+.said .who .model { opacity: 0.7; }
+.said .who .at { margin-left: auto; font-variant-numeric: tabular-nums; }
+.said .body {
+  grid-column: 2; white-space: pre-wrap; word-break: break-word;
+  background: var(--raised); border-radius: 10px; padding: 6px 10px;
+  border-left: 2px solid var(--tone, var(--line));
+}
+.said[data-run="true"] .body { border-top-left-radius: 4px; }
+/* The person is at the table too, and sits on the other side of it. */
+.said[data-mine="true"] .body {
+  background: color-mix(in srgb, var(--brand) 16%, var(--raised));
+  border-left-color: var(--brand);
+}
+.said[data-mine="true"] .who .name { color: var(--brand); }
+.said.system {
+  display: block; color: var(--muted); font-size: 12px; text-align: center;
+  margin: 10px 0 2px; opacity: 0.8;
+}
 #say-form { margin-top: 8px; }
 #say { width: 100%; background: var(--bg); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
 #say-hint { font-size: 11px; margin: 4px 0 0; }

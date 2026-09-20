@@ -92,9 +92,20 @@ class TextNode {
   get textContent() { return this._text; }
   render(depth) { return this._text.trim() ? `${"  ".repeat(depth)}${this._text}` : ""; }
 }
+/// `tag`, `.class`, and the two together or stacked (`.said.system`), which is as much as the
+/// page asks for. A selector the page uses and this does not understand would silently match
+/// nothing, so anything else is refused rather than guessed at.
 function matches(node, selector) {
-  if (selector.startsWith(".")) return node.className.split(/\s+/).includes(selector.slice(1));
-  return node.tagName.toLowerCase() === selector.toLowerCase();
+  const parts = selector.trim().split(/(?=\.)/).filter(Boolean);
+  return parts.every((part) => {
+    if (part.startsWith(".")) {
+      return node.className.split(/\s+/).includes(part.slice(1));
+    }
+    if (!/^[a-z][a-z0-9]*$/i.test(part)) {
+      throw new Error(`the page asked for a selector this shim does not understand: ${selector}`);
+    }
+    return node.tagName.toLowerCase() === part.toLowerCase();
+  });
 }
 
 export const document = {
