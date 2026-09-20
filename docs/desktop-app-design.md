@@ -17,9 +17,10 @@ The window's **appearance** was checked on 2026-09-20 by rendering the same `app
 found four things and fixed them: tables stretched to the window's width, form controls left
 in the browser's own style, a heading that named the conversation while showing a screen, and
 `---`/`+++` diff lines coloured as changes. It has not been looked at inside the Tauri window
-itself, which uses the same WebKit but its own chrome. The
-Changes pane shows the patches a turn recorded but not the working tree, and has no Apply
-button; git actions remain out of scope, as §6.5 says.
+itself, which uses the same WebKit but its own chrome.
+
+Still out of scope, as §6.5 says: staging, reverting, committing and opening a pull request.
+The Changes pane reads the tree; it does not drive git.
 
 Behavior against real agent CLIs is **unverified**: everything above is exercised by the fixture agent only, because a test must never spend the user's quota. The measurements §2 and §9 call for **have** been taken (§2) and are asserted as bounds in `tests/activity.rs`.
 
@@ -615,7 +616,7 @@ A form over `config.toml` (`orochi config show` / validated writes through `Conf
 | **P0 Store** ✅ | `activity.sqlite3`, the recorder, views, `orochi threads`, the telemetry changes of §5. Console, `run`, `collaborate` and `serve` all write rows. No behavior change a user can see except that history exists | Fixture tests with the mock agent: a thread read back through `v_timeline` equals the live event sequence (R8); byte-level privacy tests of §3; an old-schema `telemetry.sqlite3` still opens and an `INSERT` without column names still succeeds against the new columns (R5); measured flush and poll latency |
 | **P1 Control** ✅ | Prompts and controls through the store; `orochi host`; `chat --continue`; the mailbox move; the failed-check tail (`evaluator` hands it to the recorder, `CheckResult` and `RunRecord` stay as they are) | Terminal test: a second process answers a permission question and interrupts a turn the terminal owns; a queued turn inserted from outside runs next; a killed host leaves a thread that reads *interrupted* and resumes |
 | **P2 App, observing and conversing** ✅ | Tauri shell, sidebar, thread, composer, folder picker, prompts, Team tab read-only (notifications remain) | The app's Rust commands tested against fixture databases; the WebView tested against recorded view output. No agent account needed, as everywhere else |
-| **P3 Review and supervise** ✅ | Mission control, Agents, Insights, work-graph board, Settings (Changes/Apply remains) | Client tests over fixture stores; UI tests over recorded view output |
+| **P3 Review and supervise** ✅ | Changes with its git scopes and line comments, mission control, Agents, Insights, work-graph board, Settings | Client tests over fixture stores (including a real `git init` for the scopes); UI tests over recorded view output |
 | **P4 The user in the room** ✅ (unverified) | `via='user'` messages, from the terminal and the window | Library test: a note reaches a peer's `read_messages`. **Against real CLIs: do agents read and act on a mid-turn note? Not yet run** |
 
 P0 and P1 are worth having with no app at all: persistent history, `--continue`, and answering a prompt from another terminal.

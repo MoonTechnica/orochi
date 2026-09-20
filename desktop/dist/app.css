@@ -302,3 +302,14 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 .part[data-state="merged"] { border-color: var(--ok); }
 .part[data-state="failed"] { border-color: var(--danger); }
 .part .paths { color: var(--muted); font-size: 12px; }
+
+/* Changes ---------------------------------------------------------------- */
+#scopes { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+.scope { border: 0; padding: 3px 8px; color: var(--muted); font-size: 12px; border-radius: 6px; }
+.scope[aria-selected="true"] { color: var(--text); background: var(--line); }
+.diff span { display: block; }
+.diff span:hover { background: color-mix(in srgb, var(--line) 60%, transparent); cursor: text; }
+#review-form { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.comment { font-size: 12px; margin-bottom: 6px; }
+.comment .at { color: var(--muted); }
+.comment button { border: 0; color: var(--muted); padding: 0 4px; }

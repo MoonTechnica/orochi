@@ -2,19 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Orochi — preview</title>
 <link rel="stylesheet" href="app.css">
-<script>
-// A preview of the window in an ordinary browser, answering with the same recorded view output
-// the tests use. It exists so the page can be *looked* at; the app itself gets these answers
-// from the core.
-window.__PREVIEW__ = true;
-</script>
 </head>
 <body>
 <div id="app">
   <aside id="sidebar">
-    <header><button id="new-thread" title="Start a thread here">+ New thread</button></header>
+    <header>
+      <button id="new-thread" title="Start a thread here">+ New thread</button>
+    </header>
     <nav id="projects" aria-label="Projects"></nav>
     <div id="sidebar-screens">
       <button type="button" class="screen" data-screen="threads" aria-current="true">Threads</button>
@@ -25,6 +22,7 @@ window.__PREVIEW__ = true;
     </div>
     <footer id="sidebar-foot"></footer>
   </aside>
+
   <main id="thread">
     <header id="thread-head">
       <span id="thread-where"></span>
@@ -48,6 +46,7 @@ window.__PREVIEW__ = true;
       </div>
     </form>
   </main>
+
   <aside id="side">
     <div id="tabs" role="tablist">
       <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
@@ -62,7 +61,19 @@ window.__PREVIEW__ = true;
       </form>
       <p id="say-hint" class="empty">Delivered when the agent next checks.</p>
     </section>
-    <section id="pane-changes" class="pane" hidden></section>
+    <section id="pane-changes" class="pane" hidden>
+      <div id="scopes" role="tablist">
+        <button type="button" class="scope" data-scope="turn" aria-selected="true">Last turn</button>
+        <button type="button" class="scope" data-scope="unstaged" aria-selected="false">Unstaged</button>
+        <button type="button" class="scope" data-scope="staged" aria-selected="false">Staged</button>
+        <button type="button" class="scope" data-scope="branch" aria-selected="false">Branch</button>
+      </div>
+      <div id="files"></div>
+      <form id="review-form" hidden>
+        <div id="review-list"></div>
+        <button type="submit" id="review-send">Send as a message</button>
+      </form>
+    </section>
     <section id="pane-plan" class="pane" hidden></section>
   </aside>
 </div>

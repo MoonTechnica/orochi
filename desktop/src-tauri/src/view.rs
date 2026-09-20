@@ -8,7 +8,7 @@
 //! It never speaks to a host, and there is no second protocol: a message sent from here is a
 //! row, and the host that owns the thread finds it on its next look.
 use anyhow::{Context, Result, ensure};
-use orochi::activity::{Activity, Origin, ProjectRow, Thread, VIEW_API};
+use orochi::activity::{Activity, FileRow, Origin, ProjectRow, Thread, VIEW_API};
 use orochi::storage::Store;
 use serde::Serialize;
 use std::{collections::BTreeSet, path::Path};
@@ -420,6 +420,83 @@ impl Client {
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// The scopes §6.5 offers over the working tree. `last turn` is the stored patches; these
+    /// three are `git diff`, which is the authority for review — what a turn recorded is what
+    /// the agent *said* it changed, and the tree may have moved on since.
+    fn scope_args(scope: &str) -> Result<Vec<&'static str>> {
+        Ok(match scope {
+            "unstaged" => vec!["diff"],
+            "staged" => vec!["diff", "--cached"],
+            // Everything since this branch left the one it came from.
+            "branch" => vec!["diff", "--merge-base", "HEAD@{upstream}"],
+            other => anyhow::bail!("no diff scope called {other}"),
+        })
+    }
+
+    fn cwd(&self, thread: &str) -> Result<std::path::PathBuf> {
+        let cwd: String = self.activity.connection().query_row(
+            "SELECT cwd FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )?;
+        Ok(std::path::PathBuf::from(cwd))
+    }
+
+    /// What the working tree has in this scope, with its stats.
+    pub fn tree_files(&self, thread: &str, scope: &str) -> Result<Vec<FileRow>> {
+        let cwd = self.cwd(thread)?;
+        let mut args = Self::scope_args(scope)?;
+        args.push("--numstat");
+        let out = orochi::context::git(&cwd, &args)
+            // A branch with no upstream has nothing to compare against; that is not an error
+            // worth a dialog, it is an empty list.
+            .or_else(|| {
+                (scope == "branch").then(|| {
+                    orochi::context::git(&cwd, &["diff", "--numstat", "HEAD"]).unwrap_or_default()
+                })
+            })
+            .unwrap_or_default();
+        Ok(out
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let added = fields.next()?;
+                let removed = fields.next()?;
+                let path = fields.next()?;
+                Some(FileRow {
+                    turn: String::new(),
+                    path: path.to_owned(),
+                    // `-` is git's way of saying binary.
+                    change: "modify".into(),
+                    added: added.parse().unwrap_or(0),
+                    removed: removed.parse().unwrap_or(0),
+                    latest_patch: 0,
+                })
+            })
+            .collect())
+    }
+
+    /// One file's diff in that scope.
+    pub fn tree_patch(&self, thread: &str, scope: &str, path: &str) -> Result<String> {
+        let cwd = self.cwd(thread)?;
+        let mut args = Self::scope_args(scope)?;
+        args.push("--");
+        args.push(path);
+        Ok(orochi::context::git(&cwd, &args).unwrap_or_default())
+    }
+
+    /// Turns comments left on a diff into the next message. There is no review mechanism of
+    /// its own here: it is a message, routed like any other, continuing the same thread.
+    pub fn comment(&self, thread: &str, comments: &[(String, u64, String)]) -> Result<String> {
+        ensure!(!comments.is_empty(), "there is nothing to say");
+        let text = comments
+            .iter()
+            .map(|(path, line, note)| format!("{path}:{line} — {note}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        self.send(thread, &text)
     }
 
     /// The work graph of a turn, when it has one.

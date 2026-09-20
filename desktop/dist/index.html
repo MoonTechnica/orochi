@@ -61,7 +61,19 @@
       </form>
       <p id="say-hint" class="empty">Delivered when the agent next checks.</p>
     </section>
-    <section id="pane-changes" class="pane" hidden></section>
+    <section id="pane-changes" class="pane" hidden>
+      <div id="scopes" role="tablist">
+        <button type="button" class="scope" data-scope="turn" aria-selected="true">Last turn</button>
+        <button type="button" class="scope" data-scope="unstaged" aria-selected="false">Unstaged</button>
+        <button type="button" class="scope" data-scope="staged" aria-selected="false">Staged</button>
+        <button type="button" class="scope" data-scope="branch" aria-selected="false">Branch</button>
+      </div>
+      <div id="files"></div>
+      <form id="review-form" hidden>
+        <div id="review-list"></div>
+        <button type="submit" id="review-send">Send as a message</button>
+      </form>
+    </section>
     <section id="pane-plan" class="pane" hidden></section>
   </aside>
 </div>

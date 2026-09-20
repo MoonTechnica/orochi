@@ -480,3 +480,94 @@ fn every_conversation_can_be_deleted_from_the_window() {
         "the conversations are gone; the project keeps its place"
     );
 }
+
+/// §6.5: the working tree is the authority for review, so the Changes pane reads `git diff`
+/// as well as the patches a turn recorded. The stored ones are what remains once the tree has
+/// moved on; the live ones are what is actually there now.
+#[test]
+fn the_changes_pane_reads_the_working_tree_as_well_as_what_was_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let repo = dir.path().join("worktree");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("kept.txt"), "one\ntwo\n").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "base"]);
+    std::fs::write(repo.join("kept.txt"), "one\nchanged\n").unwrap();
+
+    let client = Client::open(dir.path()).unwrap();
+    let thread = client.new_thread(&repo).unwrap();
+
+    let unstaged = client.tree_files(&thread, "unstaged").unwrap();
+    assert_eq!(unstaged.len(), 1);
+    assert_eq!(unstaged[0].path, "kept.txt");
+    assert_eq!((unstaged[0].added, unstaged[0].removed), (1, 1));
+
+    let diff = client.tree_patch(&thread, "unstaged", "kept.txt").unwrap();
+    assert!(
+        diff.contains("-two") && diff.contains("+changed"),
+        "the pane shows what is actually in the tree: {diff}"
+    );
+
+    git(&["add", "."]);
+    assert!(
+        client.tree_files(&thread, "unstaged").unwrap().is_empty(),
+        "staging moves a file between the scopes, as git says it does"
+    );
+    assert_eq!(client.tree_files(&thread, "staged").unwrap().len(), 1);
+    assert_eq!(
+        client.tree_files(&thread, "branch").unwrap().len(),
+        1,
+        "and the branch scope is everything since the merge base"
+    );
+}
+
+/// Comments on a diff become the next message, rather than a review mechanism of their own.
+#[test]
+fn review_comments_become_the_next_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+
+    let turn = client
+        .comment(
+            &thread,
+            &[
+                ("src/lib.rs".into(), 12, "this allocates in a loop".into()),
+                ("src/lib.rs".into(), 40, "and this can be `?`".into()),
+            ],
+        )
+        .unwrap();
+    let text: String = Activity::attach(dir.path(), 30)
+        .unwrap()
+        .connection()
+        .query_row(
+            "SELECT text FROM items WHERE turn_id=?1 AND kind='user_message'",
+            [&turn],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        text,
+        "src/lib.rs:12 — this allocates in a loop\nsrc/lib.rs:40 — and this can be `?`",
+        "one message carrying every comment, in the order they were left"
+    );
+    assert!(
+        client.comment(&thread, &[]).is_err(),
+        "an empty review is not a message"
+    );
+}

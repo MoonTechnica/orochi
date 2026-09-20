@@ -22,6 +22,8 @@ const state = {
   open: new Set(JSON.parse(localStorage.getItem("open") || "[]")),
   file: null,
   screen: "threads",
+  scope: "turn",
+  comments: [],
 };
 
 function report(text) {
@@ -286,13 +288,27 @@ function drawTeam(thread) {
 }
 
 async function drawChanges(thread) {
-  const host = el("pane-changes");
+  const host = el("files");
   host.replaceChildren();
-  if (!thread.files.length) {
-    host.append(text("p", "empty", "Nothing changed in this conversation yet."));
+  // "Last turn" is what the agent said it changed, which is all that survives the tree moving
+  // on. The git scopes are what is actually there now, and they are the authority.
+  const files =
+    state.scope === "turn"
+      ? thread.files
+      : (await call("tree_files", { thread: thread.thread.id, scope: state.scope })) || [];
+  if (!files.length) {
+    host.append(
+      text(
+        "p",
+        "empty",
+        state.scope === "turn"
+          ? "Nothing changed in this conversation yet."
+          : "Nothing in this scope.",
+      ),
+    );
     return;
   }
-  for (const file of thread.files) {
+  for (const file of files) {
     const row = text("div", "file");
     row.append(text("span", "name", file.path));
     const stat = text("span", "stat");
@@ -301,24 +317,85 @@ async function drawChanges(thread) {
     stat.append(text("span", "del", `−${file.removed}`));
     row.append(stat);
     host.append(row);
+
     const diff = text("pre", "diff");
-    diff.hidden = state.file !== file.latest_patch;
+    diff.hidden = true;
     host.append(diff);
     row.addEventListener("click", async () => {
-      state.file = diff.hidden ? file.latest_patch : null;
       diff.hidden = !diff.hidden;
-      if (!diff.hidden && !diff.childElementCount) {
-        const patch = await call("patch", { id: file.latest_patch });
-        diff.replaceChildren();
-        for (const line of (patch || "").split("\n")) {
-          // `---` and `+++` name the file; they are not a line that changed.
-          const header = line.startsWith("@") || line.startsWith("+++") || line.startsWith("---");
-          const kind = header ? "h" : line.startsWith("+") ? "i" : line.startsWith("-") ? "d" : null;
-          diff.append(text("span", kind, line + "\n"));
-        }
+      if (diff.hidden || diff.childElementCount) return;
+      const patch =
+        state.scope === "turn"
+          ? await call("patch", { id: file.latest_patch })
+          : await call("tree_patch", {
+              thread: thread.thread.id,
+              scope: state.scope,
+              path: file.path,
+            });
+      diff.replaceChildren();
+      let line = 0;
+      for (const row of (patch || "").split("\n")) {
+        const header = row.startsWith("@") || row.startsWith("+++") || row.startsWith("---");
+        const kind = header ? "h" : row.startsWith("+") ? "i" : row.startsWith("-") ? "d" : null;
+        if (!header) line += 1;
+        const node = text("span", kind, row + "\n");
+        const at = line;
+        // Clicking a line is how a comment is left, which is how the next message is written.
+        node.addEventListener("click", () => {
+          const note = window.prompt(`Comment on ${file.path}:${at}`);
+          if (!note) return;
+          state.comments.push([file.path, at, note]);
+          drawReview();
+        });
+        diff.append(node);
       }
     });
   }
+}
+
+/// The comments waiting to be sent. They are not a review mechanism of their own: they become
+/// one message, routed like any other, continuing the same conversation.
+function drawReview() {
+  const form = el("review-form");
+  const list = el("review-list");
+  list.replaceChildren();
+  form.hidden = state.comments.length === 0;
+  state.comments.forEach(([path, line, note], index) => {
+    const row = text("div", "comment");
+    row.append(text("span", "at", `${path}:${line} `));
+    row.append(text("span", null, note));
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = "×";
+    drop.addEventListener("click", () => {
+      state.comments.splice(index, 1);
+      drawReview();
+    });
+    row.append(drop);
+    list.append(row);
+  });
+}
+
+el("review-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!state.comments.length || !state.thread) return;
+  const comments = state.comments;
+  state.comments = [];
+  drawReview();
+  await call("comment", { thread: state.thread, comments });
+  await call("ensure_host", { thread: state.thread });
+  await refresh(true);
+});
+
+for (const button of document.querySelectorAll(".scope")) {
+  button.addEventListener("click", async () => {
+    state.scope = button.dataset.scope;
+    for (const other of document.querySelectorAll(".scope")) {
+      other.setAttribute("aria-selected", String(other === button));
+    }
+    const thread = await call("thread", { id: state.thread });
+    if (thread) await drawChanges(thread);
+  });
 }
 
 // The room ------------------------------------------------------------------

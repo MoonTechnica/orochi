@@ -97,6 +97,43 @@ fn board(open: State<'_, Open>, thread: String) -> Result<Vec<serde_json::Value>
 }
 
 #[tauri::command]
+fn tree_files(
+    open: State<'_, Open>,
+    thread: String,
+    scope: String,
+) -> Result<Vec<orochi::activity::FileRow>, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .tree_files(&thread, &scope)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn tree_patch(
+    open: State<'_, Open>,
+    thread: String,
+    scope: String,
+    path: String,
+) -> Result<String, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .tree_patch(&thread, &scope, &path)
+        .map_err(fail)
+}
+
+/// Comments left on a diff, sent as the next message.
+#[tauri::command]
+fn comment(
+    open: State<'_, Open>,
+    thread: String,
+    comments: Vec<(String, u64, String)>,
+) -> Result<String, String> {
+    open.0.lock().unwrap().comment(&thread, &comments).map_err(fail)
+}
+
+#[tauri::command]
 fn settings(open: State<'_, Open>) -> Result<serde_json::Value, String> {
     open.0.lock().unwrap().settings().map_err(fail)
 }
@@ -205,6 +242,9 @@ fn main() {
             agents,
             insights,
             board,
+            tree_files,
+            tree_patch,
+            comment,
             settings,
             save_settings,
             memory,

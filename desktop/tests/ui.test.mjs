@@ -23,7 +23,7 @@ const source = readFileSync(join(here, "../dist/app.js"), "utf8");
 const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
-async function open(answers = {}) {
+async function open(answers = {}, { prompt } = {}) {
   const calls = [];
   page([
     "sidebar", "projects", "sidebar-foot", "new-thread",
@@ -32,6 +32,7 @@ async function open(answers = {}) {
     "folder-picker", "folder", "folder-name", "folder-menu",
     "tabs", "pane-team", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
+    "scopes", "files", "review-form", "review-list", "review-send",
     "sidebar-screens", "screen",
   ], markup);
   const localStorage = {
@@ -40,6 +41,8 @@ async function open(answers = {}) {
     setItem(key, value) { this.store.set(key, value); },
   };
   const window = {
+    // The page asks for a comment the way a page does.
+    prompt: prompt || (() => null),
     __TAURI__: {
       core: {
         invoke(name, args) {
@@ -47,6 +50,11 @@ async function open(answers = {}) {
           if (name in answers) return Promise.resolve(answers[name]);
           const fallback = {
             sidebar: recorded.sidebar,
+            tree_files: [
+              { turn: "", path: "src/auth.ts", change: "modify", added: 9, removed: 2, latest_patch: 0 },
+            ],
+            tree_patch: "--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -1,2 +1,2 @@\n-const a = 1;\n+const a = 2;\n",
+            comment: "turn",
             folders: [
               { name: "orochi", root: "/work/orochi", threads: 2, updated_at: 2 },
               { name: "web-app", root: "/work/web-app", threads: 1, updated_at: 1 },
@@ -173,7 +181,7 @@ test("the changes pane lists what the turn changed with its stats", async () => 
     { turn: "t", path: "tests/mailbox.rs", change: "modify", added: 12, removed: 4, latest_patch: 1 },
   ];
   const { el } = await open({ thread });
-  const drawn = el("pane-changes").render();
+  const drawn = el("files").render();
   assert.match(drawn, /tests\/mailbox\.rs/);
   assert.match(drawn, /\+12/);
   assert.match(drawn, /−4/);
@@ -356,4 +364,53 @@ test("settings edit the conversation store and what is remembered", async () => 
   wipe.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(calls.some(([name]) => name === "forget_all"), "and then it happens");
+});
+
+test("the changes pane switches between what was recorded and what is in the tree", async () => {
+  const thread = structuredClone(recorded.thread);
+  thread.files = [
+    { turn: "t", path: "tests/mailbox.rs", change: "modify", added: 12, removed: 4, latest_patch: 1 },
+  ];
+  const { el, calls } = await open({ thread });
+  assert.match(el("files").render(), /tests\/mailbox\.rs/, "it opens on the turn's own patches");
+
+  el("scopes").querySelectorAll("button")
+    .find((b) => b.dataset.scope === "unstaged")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    calls.find(([name]) => name === "tree_files")[1],
+    { thread: thread.thread.id, scope: "unstaged" },
+    "and asks git for the scope that was chosen",
+  );
+  assert.match(el("files").render(), /src\/auth\.ts/, "showing what is actually in the tree");
+});
+
+test("comments on a diff collect, and go as one message", async () => {
+  const thread = structuredClone(recorded.thread);
+  thread.files = [
+    { turn: "t", path: "tests/mailbox.rs", change: "modify", added: 12, removed: 4, latest_patch: 1 },
+  ];
+  const { el, calls } = await open(
+    { thread, patch: "@@ -1,1 +1,1 @@\n-old\n+new\n" },
+    { prompt: () => "this allocates in a loop" },
+  );
+  assert.equal(el("review-form").hidden, true, "nothing to send yet");
+
+  // Open the file, then comment on a line.
+  el("files").querySelectorAll("div").find((d) => d.className === "file").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const lines = el("files").querySelectorAll("span").filter((n) => n.className === "d");
+  lines[0].dispatch("click");
+
+  assert.equal(el("review-form").hidden, false, "a comment makes the review sendable");
+  assert.match(el("review-list").render(), /this allocates in a loop/);
+
+  el("review-form").dispatch("submit");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const sent = calls.find(([name]) => name === "comment");
+  assert.equal(sent[1].comments.length, 1);
+  assert.equal(sent[1].comments[0][0], "tests/mailbox.rs");
+  assert.equal(sent[1].comments[0][2], "this allocates in a loop");
+  assert.equal(el("review-form").hidden, true, "and the list empties behind it");
 });
