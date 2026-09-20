@@ -571,3 +571,23 @@ fn review_comments_become_the_next_message() {
         "an empty review is not a message"
     );
 }
+
+/// Someone who installs the window before ever running the CLI has no store yet, and someone
+/// whose store was left half-made by an older build has a file that is not one. Neither is a
+/// reason to refuse to open a window.
+#[test]
+fn the_window_opens_on_a_data_directory_that_has_no_store_yet() {
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::open(dir.path()).expect("a first run has nothing to read, not an error");
+    assert!(
+        client.sidebar(20, true).unwrap().is_empty(),
+        "and it shows an empty window rather than inventing something"
+    );
+    assert!(dir.path().join("activity.sqlite3").exists());
+
+    // A file that is not a store — what an interrupted first run leaves behind.
+    let empty = tempfile::tempdir().unwrap();
+    std::fs::write(empty.path().join("activity.sqlite3"), b"").unwrap();
+    let client = Client::open(empty.path()).expect("an empty file is set up, not refused");
+    assert!(client.sidebar(20, true).unwrap().is_empty());
+}

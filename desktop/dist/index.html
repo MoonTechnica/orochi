@@ -13,14 +13,15 @@
       <button id="new-thread" title="Start a thread here">+ New thread</button>
     </header>
     <nav id="projects" aria-label="Projects"></nav>
-    <div id="sidebar-screens">
-      <button type="button" class="screen" data-screen="threads" aria-current="true">Threads</button>
-      <button type="button" class="screen" data-screen="working">Working</button>
-      <button type="button" class="screen" data-screen="agents">Agents</button>
-      <button type="button" class="screen" data-screen="insights">Insights</button>
-      <button type="button" class="screen" data-screen="settings">Settings</button>
-    </div>
-    <footer id="sidebar-foot"></footer>
+    <footer id="sidebar-foot">
+      <div id="notice"></div>
+      <div id="account-menu" role="menu" hidden></div>
+      <button type="button" id="account" aria-haspopup="menu" aria-expanded="false">
+        <span id="account-mark">◈</span>
+        <span id="account-name">Orochi</span>
+        <span id="account-chevron">⌃</span>
+      </button>
+    </footer>
   </aside>
 
   <main id="thread">

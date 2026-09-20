@@ -33,7 +33,8 @@ async function open(answers = {}, { prompt } = {}) {
     "tabs", "pane-team", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
-    "sidebar-screens", "screen",
+    "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
+    "screen",
   ], markup);
   const localStorage = {
     store: new Map(),
@@ -73,16 +74,25 @@ async function open(answers = {}, { prompt } = {}) {
       },
     },
   };
-  // A scope of its own, with the globals the page would have given it.
+  // A scope of its own, with the globals the page would have given it. The poll is held
+  // rather than run, so a test drives time instead of waiting for it.
+  let poll = () => {};
   new Function("window", "document", "localStorage", "setInterval", source)(
     window,
     document,
     localStorage,
-    () => 0,
+    (fn) => {
+      poll = fn;
+      return 0;
+    },
   );
   // The app refreshes on load; give its promises a tick to settle.
   await new Promise((resolve) => setTimeout(resolve, 20));
-  return { calls, el: (id) => document.getElementById(id) };
+  const tick = async () => {
+    await poll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  return { calls, tick, el: (id) => document.getElementById(id) };
 }
 
 test("the sidebar lists a project's threads with the mark for their state", async () => {
@@ -272,7 +282,8 @@ test("mission control lists every seat working anywhere", async () => {
     },
   ];
   const { el } = await open({ working });
-  el("sidebar-screens").querySelectorAll("button")
+  el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button")
     .find((b) => b.dataset.screen === "working")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -296,7 +307,8 @@ test("insights keeps verified evidence and weak signals apart, and says so", asy
     },
   ];
   const { el } = await open({ insights });
-  el("sidebar-screens").querySelectorAll("button")
+  el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button")
     .find((b) => b.dataset.screen === "insights")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -314,7 +326,8 @@ test("agents shows readiness and what is left of a quota", async () => {
     },
   ];
   const { el } = await open({ agents });
-  el("sidebar-screens").querySelectorAll("button")
+  el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button")
     .find((b) => b.dataset.screen === "agents")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -343,7 +356,8 @@ test("settings edit the conversation store and what is remembered", async () => 
     settings,
     memory: { user: "Prefers small commits.\n", path: "/data/memory/USER.md" },
   });
-  el("sidebar-screens").querySelectorAll("button")
+  el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button")
     .find((b) => b.dataset.screen === "settings")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -413,4 +427,57 @@ test("comments on a diff collect, and go as one message", async () => {
   assert.equal(sent[1].comments[0][0], "tests/mailbox.rs");
   assert.equal(sent[1].comments[0][2], "this allocates in a loop");
   assert.equal(el("review-form").hidden, true, "and the list empties behind it");
+});
+
+test("a thread that appears while the window is open is drawn, not just listed", async () => {
+  // The window opens on an empty store, as a first run does.
+  const answers = { sidebar: [], thread: null, folders: [], changed: [] };
+  const { el, calls, tick } = await open(answers);
+  assert.match(el("timeline").render(), /Choose a folder/, "nothing to show yet");
+
+  // Someone starts a thread in a terminal; the feed names it on the next tick.
+  const project = structuredClone(recorded.sidebar[0]);
+  answers.sidebar = [project];
+  answers.thread = recorded.thread;
+  answers.changed = [project.threads[0].id];
+  await tick();
+
+  assert.equal(
+    el("thread-title").textContent,
+    recorded.thread.thread.title,
+    "the first thread to appear is drawn, not only added to the list",
+  );
+  assert.ok(
+    calls.some(([name]) => name === "seen"),
+    "and looking at it is what makes it read",
+  );
+});
+
+test("everything that is not a conversation lives behind the row at the foot", async () => {
+  const { el } = await open();
+  assert.equal(el("account-menu").hidden, true, "it is a menu, not a row of buttons");
+  assert.equal(el("account-name").textContent, "Orochi");
+
+  el("account").dispatch("click");
+  const items = el("account-menu")
+    .querySelectorAll("button")
+    .map((b) => b.textContent.replace("✓", ""));
+  assert.deepEqual(
+    items,
+    ["Working now", "Agents", "Insights", "Settings"],
+    "with settings kept apart from the screens above it",
+  );
+
+  el("account-menu").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "agents")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("account-menu").hidden, true, "choosing one closes the menu");
+  assert.equal(el("account-name").textContent, "Agents", "and the row says where you are");
+
+  // Choosing a conversation leaves the screen, as clicking a thread does anywhere else.
+  el("projects").querySelectorAll(".thread")[0].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("account-name").textContent, "Orochi");
+  assert.equal(el("timeline").hidden, false, "the conversation is back");
 });

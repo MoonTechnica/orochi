@@ -244,9 +244,50 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 #folder-menu .where { color: var(--muted); font-size: 11px; }
 
 /* Screens ---------------------------------------------------------------- */
-#sidebar-screens { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px var(--gutter); border-top: 1px solid var(--line); }
-.screen { border: 0; padding: 3px 8px; color: var(--muted); font-size: 12px; }
-.screen[aria-current="true"] { color: var(--text); background: var(--line); }
+/* One row at the foot, and a menu above it — everything that is not a conversation lives
+   behind it, rather than as a row of buttons competing with the threads. */
+#sidebar-foot { position: relative; padding: 8px 10px; border-top: 1px solid var(--line); }
+#notice { color: var(--muted); font-size: 12px; padding: 0 6px 6px; }
+#notice:empty { display: none; }
+#account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: left;
+}
+#account:hover { background: var(--line); }
+#account-mark { color: var(--brand); }
+#account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#account-chevron { margin-left: auto; color: var(--muted); font-size: 11px; }
+#account-menu {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 8px;
+  right: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .35);
+  z-index: 20;
+}
+#account-menu button {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: left;
+}
+#account-menu button:hover { background: var(--line); }
+#account-menu .tick { margin-left: auto; color: var(--brand); }
+#account-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
 #screen { flex: 1; overflow: auto; padding: var(--gutter); }
 #screen > h3 { margin-bottom: 12px; }
 /* Sized to its content, not to the window: a five-column table stretched across a wide

@@ -139,10 +139,11 @@ pub struct Remembered {
 
 impl Client {
     pub fn open(data: &Path) -> Result<Self> {
-        // Read-only at the connection level would be wrong here — the window writes the four
-        // things it is allowed to write — but the version gate is the same one a reader makes:
-        // a store this build does not understand is refused rather than half-rendered.
-        let activity = Activity::attach(data, 0)?;
+        // The window is a front door as much as the CLI is: someone may install it before
+        // ever running `orochi`, and an interrupted first run leaves a file that is not yet a
+        // store. `open` sets either up. The version gate below is still the one a reader
+        // makes — a store this build does not understand is refused, not half-rendered.
+        let activity = Activity::open(data, 0)?;
         let api: i64 = activity
             .connection()
             .query_row("PRAGMA user_version", [], |r| r.get(0))?;

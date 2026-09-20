@@ -27,7 +27,7 @@ const state = {
 };
 
 function report(text) {
-  el("sidebar-foot").textContent = text;
+  el("notice").textContent = text;
 }
 
 function text(tag, className, value) {
@@ -634,15 +634,51 @@ async function drawScreen() {
   }
 }
 
-for (const button of document.querySelectorAll(".screen")) {
-  button.addEventListener("click", () => {
-    state.screen = button.dataset.screen;
-    for (const other of document.querySelectorAll(".screen")) {
-      other.setAttribute("aria-current", String(other === button));
-    }
-    refresh(true);
-  });
+// Everything that is not a conversation lives behind the row at the foot of the sidebar,
+// rather than as a row of buttons competing with the threads for attention.
+const SCREENS = [
+  ["working", "Working now"],
+  ["agents", "Agents"],
+  ["insights", "Insights"],
+  ["sep"],
+  ["settings", "Settings"],
+];
+
+function closeAccount() {
+  el("account-menu").hidden = true;
+  el("account").setAttribute("aria-expanded", "false");
 }
+
+function openAccount() {
+  const menu = el("account-menu");
+  menu.replaceChildren();
+  for (const [screen, label] of SCREENS) {
+    if (screen === "sep") {
+      menu.append(text("div", "sep"));
+      continue;
+    }
+    const row = document.createElement("button");
+    row.type = "button";
+    row.dataset.screen = screen;
+    row.append(text("span", "name", label));
+    if (state.screen === screen) row.append(text("span", "tick", "✓"));
+    row.addEventListener("click", () => {
+      closeAccount();
+      state.screen = screen;
+      refresh(true);
+    });
+    menu.append(row);
+  }
+  menu.hidden = false;
+  el("account").setAttribute("aria-expanded", "true");
+}
+
+el("account").addEventListener("click", () => {
+  el("account-menu").hidden ? openAccount() : closeAccount();
+});
+document.addEventListener("click", (event) => {
+  if (!el("sidebar-foot").contains?.(event.target)) closeAccount();
+});
 
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => {
@@ -657,6 +693,7 @@ for (const tab of document.querySelectorAll(".tab")) {
 // Loop ----------------------------------------------------------------------
 async function select(id) {
   state.thread = id;
+  state.screen = "threads";
   await call("seen", { thread: id });
   await refresh(true);
 }
@@ -672,9 +709,15 @@ async function refresh(full) {
   state.folders = folders || [];
   if (!state.thread) {
     state.thread = state.projects.flatMap((p) => p.threads)[0]?.id || null;
+    // A thread chosen here was not on screen a moment ago, whatever the feed said moved:
+    // drawing the list without drawing the conversation leaves a window that lists one
+    // thing and shows another.
+    full = full || state.thread !== null;
   }
   drawSidebar();
   folderLabel();
+  el("account-name").textContent =
+    state.screen === "threads" ? "Orochi" : SCREENS.find(([s]) => s === state.screen)?.[1] || "Orochi";
   // A screen other than the conversation takes the middle column.
   const conversation = state.screen === "threads";
   el("timeline").hidden = !conversation;
