@@ -138,15 +138,30 @@ function work(items) {
   return node;
 }
 
+/// How a route was chosen — an agent that could not be reached, an account cooling down, the
+/// label the classifier settled on. Worth keeping and not worth reading: four of them beside
+/// one reply drowned it.
+function aside(notes) {
+  const node = document.createElement("details");
+  node.className = "aside";
+  const count = notes.length;
+  node.append(text("summary", null, `▸ ${count} routing note${count > 1 ? "s" : ""}`));
+  for (const item of notes) node.append(text("div", null, item.text));
+  return node;
+}
+
 function drawTimeline(thread, said = []) {
   const host = el("timeline");
   const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
   host.replaceChildren();
   let turn = null;
   let pending = [];
+  let notes = [];
   const flush = () => {
     if (pending.length && turn) turn.append(work(pending));
     pending = [];
+    if (notes.length && turn) turn.append(aside(notes));
+    notes = [];
   };
   // One conversation. What the agents say to each other belongs in it, in the order it was
   // said — a table where half the talk happens in another column is two rooms, not one.
@@ -186,13 +201,15 @@ function drawTimeline(thread, said = []) {
       pending.push(item);
       continue;
     }
+    if (item.kind === "note" || item.kind === "unavailable") {
+      notes.push(item);
+      continue;
+    }
     flush();
     if (item.kind === "route") turn.append(chip(item));
     else if (item.kind === "agent_message") turn.append(text("p", "reply", item.text));
     else if (item.kind === "checks") turn.append(checks(item));
-    else if (item.kind === "note" || item.kind === "unavailable") {
-      turn.append(text("div", "note", item.text));
-    }
+
   }
   flush();
   for (const prompt of state.prompts.filter((p) => p.thread_id === thread.thread.id)) {
@@ -320,9 +337,14 @@ function drawTeam(thread) {
     host.append(text("p", "empty", "No one is seated yet."));
     return;
   }
-  for (const seat of thread.seats) {
+  // Who is in the room now: the seats of the turn in hand. Every earlier turn's seats are in
+  // the store too, and listing them all showed one agent three times for having sat three
+  // times.
+  const latest = thread.seats[thread.seats.length - 1].turn_id;
+  for (const seat of thread.seats.filter((s) => s.turn_id === latest)) {
     const node = text("div", "seat");
     node.dataset.state = seat.state;
+    node.dataset.who = seat.role;
     node.dataset.tone = tone(seat.role);
     const who = text("div", "who");
     const face = text("span", "avatar", seat.role.slice(0, 1).toLowerCase());

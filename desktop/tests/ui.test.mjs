@@ -430,6 +430,61 @@ test("the conversation is the group chat: the agents talk to each other in it", 
   );
 });
 
+test("the routing notes are folded away, and the route itself is not", async () => {
+  const thread = structuredClone(recorded.thread);
+  const note = (seq, text) => ({
+    seq, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude",
+    model: "sonnet", kind: "note", status: null, text, data: null, truncated: false,
+    patches: 0, at: 100 + seq,
+  });
+  thread.items = [
+    { ...note(1, "split the parser"), kind: "user_message" },
+    note(2, "classifier codex unavailable: Unavailable: cooldown; keeping the local profile"),
+    note(3, "classifier gemini unavailable: executable not found: gemini"),
+    note(4, "classified as discussion / normal"),
+    { ...note(5, "agent/account is in cooldown"), kind: "unavailable" },
+    { ...note(6, ""), kind: "route", data: { agent: "claude", model: "sonnet", reasoning: "medium" } },
+    { ...note(7, "done"), kind: "agent_message" },
+  ];
+  const { el } = await open({ thread });
+  const timeline = el("timeline");
+  const drawn = timeline.render();
+
+  // The route is the one thing here worth a line of its own.
+  assert.match(drawn, /claude · sonnet · medium/, "which agent ran is not noise");
+  assert.match(drawn, /done/, "and neither is the reply");
+
+  // Four notes about how the route was chosen are one fold, not four lines of body text.
+  const folds = timeline.querySelectorAll("details").filter((d) => d.className === "aside");
+  assert.equal(folds.length, 1, `the notes are gathered into one: ${drawn}`);
+  assert.match(folds[0].render(), /4 routing notes/, "which says how many it holds");
+  assert.match(folds[0].render(), /executable not found: gemini/, "and still holds them");
+  assert.equal(
+    timeline.querySelectorAll(".note").length,
+    0,
+    "none of them is left loose in the conversation",
+  );
+});
+
+test("the roster is who is in the room now, not everyone who ever sat", async () => {
+  const thread = structuredClone(recorded.thread);
+  const seat = thread.seats[0];
+  thread.seats = [
+    { ...seat, seat_id: "s1", turn_id: "t1", ordinal: 0, role: "implementer", state: "done" },
+    { ...seat, seat_id: "s2", turn_id: "t2", ordinal: 0, role: "implementer", state: "working" },
+    { ...seat, seat_id: "s3", turn_id: "t2", ordinal: 1, role: "reviewer", state: "working" },
+  ];
+  const { el } = await open({ thread });
+  const roster = el("roster");
+  const seats = roster.querySelectorAll(".seat");
+  assert.equal(seats.length, 2, `the seats of the turn in hand: ${roster.render()}`);
+  assert.deepEqual(
+    seats.map((n) => n.dataset.who),
+    ["implementer", "reviewer"],
+    "and the same name is not listed once per turn it has taken",
+  );
+});
+
 test("the roster reads as who is in the room, not as a list of machines", async () => {
   const { el } = await open();
   const roster = el("roster");

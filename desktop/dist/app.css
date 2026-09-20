@@ -136,6 +136,10 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 .work { color: var(--muted); font-size: 12px; margin: 0 0 6px; }
 .work summary { cursor: pointer; }
 .work pre { white-space: pre-wrap; margin: 4px 0 0; color: var(--text); }
+/* How the route was chosen: kept, folded, and quieter than anything anyone said. */
+.aside { color: var(--muted); font-size: 12px; margin: 0 0 6px; opacity: 0.75; }
+.aside summary { cursor: pointer; }
+.aside div { padding-left: 14px; }
 .note { color: var(--muted); font-size: 12px; }
 .checks { font-size: 12px; }
 .checks .fail { color: var(--danger); }
