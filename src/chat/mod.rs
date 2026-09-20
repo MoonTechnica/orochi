@@ -155,6 +155,9 @@ pub struct Options {
     /// A recorded session the first message continues.
     pub resume: Option<String>,
     pub permission: PermissionMode,
+    /// A recorded conversation this session carries on, so its turns accumulate in the thread
+    /// that already holds them instead of starting another.
+    pub thread: Option<String>,
 }
 
 /// One queued user message.
@@ -327,7 +330,7 @@ struct Recorded {
 }
 
 impl Recorded {
-    fn open(config: &Config, store: &Store, root: &Path) -> Option<Self> {
+    fn open(config: &Config, store: &Store, root: &Path, thread: Option<&String>) -> Option<Self> {
         if !config.activity.enabled {
             return None;
         }
@@ -339,7 +342,7 @@ impl Recorded {
             Ok(Self {
                 repository_id: store.repository_id(root)?,
                 activity,
-                thread: None,
+                thread: thread.cloned(),
                 host: None,
                 turn: None,
             })
@@ -353,8 +356,17 @@ impl Recorded {
     }
 
     fn thread(&mut self, session: &SessionContext<'_>) -> Result<String> {
-        if let Some(thread) = &self.thread {
-            return Ok(thread.clone());
+        if let Some(thread) = self.thread.clone() {
+            if self.host.is_none() {
+                // A continued conversation takes ownership of its thread on its first message.
+                self.host = self
+                    .activity
+                    .lock()
+                    .expect("activity store")
+                    .register_host(Some(&thread), "terminal")
+                    .ok();
+            }
+            return Ok(thread);
         }
         let project = self
             .store()
@@ -419,6 +431,7 @@ pub async fn run(
         && std::io::stdout().is_terminal()
         && std::io::stderr().is_terminal();
     let keyboard = Keyboard::start(tty);
+    let options_thread = options.thread.clone();
     let approval = Approval {
         confirm: options.permission,
         modes: vec![],
@@ -446,7 +459,7 @@ pub async fn run(
         approval,
         twice: Twice::default(),
         quit: false,
-        recorded: Recorded::open(config, store, root),
+        recorded: Recorded::open(config, store, root, options_thread.as_ref()),
     };
     if tty {
         session.view.welcome(config, data, root, &session.feed);
@@ -1188,6 +1201,17 @@ impl Session<'_> {
     }
 
     fn close_turn(&mut self, state: crate::activity::TurnState) {
+        // What this conversation is routed to, so `--continue` and a client can pick it up
+        // where a process that has since exited left it.
+        let current = self.conversation.current.as_ref().map(|c| {
+            serde_json::json!({
+                "agent": c.session.agent, "model": c.session.model,
+                "reasoning": c.session.reasoning, "mode": c.session.mode,
+                "session_id": c.session.session_id,
+                "loadable": c.loadable, "modes": c.modes,
+            })
+            .to_string()
+        });
         let Some(recorded) = &mut self.recorded else {
             return;
         };
@@ -1195,6 +1219,9 @@ impl Session<'_> {
             && let Err(error) = recorded.store().turn_state(&turn, state)
         {
             tracing::debug!(%error, "turn not closed");
+        }
+        if let (Some(thread), Some(current)) = (recorded.thread.clone(), current) {
+            let _ = recorded.store().set_continuation(&thread, Some(&current));
         }
     }
 

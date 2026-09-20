@@ -2236,3 +2236,50 @@ fn a_headless_host_runs_queued_turns_and_leaves_its_questions_for_a_client() {
         .unwrap();
     assert_eq!(left, 0, "a host that ends releases its thread");
 }
+
+/// A conversation outlives the process that held it. Before the store, quitting the console
+/// threw away `Conversation::turns`; now `--continue` picks the thread back up, with what was
+/// said in it, so the next message is a reply rather than a fresh start.
+#[test]
+fn continue_picks_up_the_thread_the_last_console_session_left() {
+    let workspace = Workspace::new();
+    success(&chat(&workspace, "remember the number 41\n"));
+
+    let data = workspace.dir.path().join("data");
+    let before = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let first = before.sidebar(20, true).unwrap()[0].threads[0].id.clone();
+    drop(before);
+
+    success(&chat_with(&workspace, &["--continue"], "add one\n"));
+
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let projects = activity.sidebar(20, true).unwrap();
+    assert_eq!(
+        projects[0].threads.len(),
+        1,
+        "continuing does not start a second thread"
+    );
+    let thread = activity.thread(&first).unwrap().unwrap();
+    let asked: Vec<&str> = thread
+        .items
+        .iter()
+        .filter(|i| i.kind == "user_message")
+        .map(|i| i.text.as_str())
+        .collect();
+    assert_eq!(
+        asked,
+        vec!["remember the number 41", "add one"],
+        "both messages are turns of one conversation"
+    );
+    assert_eq!(
+        thread.thread.title, "remember the number 41",
+        "and it keeps the name it was given by its opening"
+    );
+
+    // The second process continued the recorded session rather than starting a fresh one.
+    let loads = session_requests(&workspace)
+        .iter()
+        .filter(|(method, ..)| method == "session/load")
+        .count();
+    assert_eq!(loads, 1, "the agent was asked to load what it already had");
+}

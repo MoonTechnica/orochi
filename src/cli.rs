@@ -409,6 +409,15 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             );
         }
     }
+    // `--continue` picks up the conversation as well as the session: its turns belong in the
+    // thread that already holds them.
+    let mut continued_thread = None;
+    if cli.continue_last && config.activity.enabled {
+        continued_thread =
+            crate::activity::Activity::open(&paths.data, config.activity.retention_days)
+                .and_then(|activity| activity.latest_thread(&store.repository_id(&root)?))
+                .unwrap_or_default();
+    }
     if cli.continue_last {
         let repo = store.repository_id(&root)?;
         match store.sessions(Some(&repo))?.into_iter().next() {
@@ -479,6 +488,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         PermissionMode::Ask => PermissionMode::Allow,
                         chosen => chosen,
                     }),
+                    thread: continued_thread,
                 },
             )
             .await;

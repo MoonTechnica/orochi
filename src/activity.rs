@@ -1300,6 +1300,20 @@ impl Activity {
         Ok(())
     }
 
+    /// The conversation this directory was last having, for `--continue`. Archived threads
+    /// and threads of other directories are not it.
+    pub fn latest_thread(&self, repository_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT id FROM threads WHERE repository_id=?1 AND archived_at IS NULL
+                 AND origin IN ('console','desktop') ORDER BY updated_at DESC LIMIT 1",
+                [repository_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// The next turn waiting to run in a thread, oldest first.
     pub fn next_queued(&self, thread: &str) -> Result<Option<(String, String)>> {
         Ok(self
