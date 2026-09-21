@@ -10,16 +10,16 @@
 <div id="app">
   <aside id="sidebar">
     <header>
-      <button id="new-thread" title="Start a thread here">+ New thread</button>
+      <button id="new-thread" title="Start a thread here"><span class="label">New thread</span></button>
     </header>
     <nav id="projects" aria-label="Projects"></nav>
     <footer id="sidebar-foot">
       <div id="notice"></div>
       <div id="account-menu" role="menu" hidden></div>
       <button type="button" id="account" aria-haspopup="menu" aria-expanded="false">
-        <span id="account-mark">◈</span>
+        <span id="account-mark"></span>
         <span id="account-name">Orochi</span>
-        <span id="account-chevron">⌃</span>
+        <span id="account-chevron"></span>
       </button>
     </footer>
   </aside>
@@ -40,7 +40,7 @@
           </button>
           <div id="folder-menu" role="menu" hidden></div>
         </div>
-        <span id="composer-hint">⌘Enter to send · Enter for a new line</span>
+        <span id="composer-hint">Cmd-Enter to send &middot; Enter for a new line</span>
         <button type="button" id="interrupt" hidden>Stop</button>
         <button type="submit" id="send">Send</button>
       </div>
@@ -80,7 +80,7 @@
   <dialog id="panel">
     <header id="panel-head">
       <h2 id="panel-title"></h2>
-      <button type="button" id="panel-close" aria-label="Close">✕</button>
+      <button type="button" id="panel-close" aria-label="Close"></button>
     </header>
     <div id="panel-body"></div>
   </dialog>

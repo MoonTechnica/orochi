@@ -21,6 +21,7 @@ const recorded = {
 /// looking at the first one's screen.
 const source = readFileSync(join(here, "../dist/app.js"), "utf8");
 const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
+const css = readFileSync(join(here, "../dist/app.css"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
 async function open(answers = {}, { prompt, pick } = {}) {
@@ -103,14 +104,17 @@ test("the sidebar lists a project's threads with the mark for their state", asyn
   assert.match(drawn, /repo/, "the project heads its section");
   assert.match(drawn, /Fix the flaky mailbox placement test/);
   assert.match(drawn, /Refactor the scheduler retry loop/);
-  assert.match(drawn, /●/, "and each thread carries its status mark");
+  assert.ok(
+    el("projects").querySelectorAll(".state").length >= 2,
+    "and each thread carries its status mark",
+  );
 });
 
 test("a turn reads as what was asked, who took it, and what came back", async () => {
   const { el } = await open();
   const drawn = el("timeline").render();
   assert.match(drawn, /you[\s\S]*Fix the flaky mailbox placement test/);
-  assert.match(drawn, /⟡ test · sol-test/, "the route chip says which agent took it");
+  assert.match(drawn, /test · sol-test/, "the route chip says which agent took it");
   assert.match(drawn, /Fixture completed\./, "and the reply is in the conversation");
   assert.equal(
     el("thread-title").textContent,
@@ -304,7 +308,7 @@ test("the composer sends on cmd-enter and breaks the line on enter", async () =>
   );
   assert.equal(prevented, 1, "and the line break it would have made is not also inserted");
   // The hint is the page's own words, so it is the page that is read for them.
-  assert.match(markup, /\u2318Enter to send/, "the hint says what the keys do");
+  assert.match(markup, /Cmd-Enter to send/, "the hint says what the keys do");
   assert.doesNotMatch(markup, /Shift-Enter for a new line/, "and not what they used to do");
 });
 
@@ -431,6 +435,20 @@ test("the conversation is the group chat: the agents talk to each other in it", 
   );
 });
 
+test("what the window draws as an icon is drawn, not typed", async () => {
+  const { el } = await open();
+  // Characters standing in for pictures: a box-drawing glyph is whatever font the machine
+  // has, at whatever weight, and never matches the icons beside it.
+  const glyphs = /[\u2190-\u21FF\u2300-\u23FF\u25A0-\u27BF\u2B00-\u2BFF\u{1F300}-\u{1FAFF}]/u;
+  for (const id of ["timeline", "projects", "roster", "room", "composer-row", "sidebar-foot"]) {
+    const drawn = el(id).render();
+    assert.doesNotMatch(drawn, glyphs, `${id} draws its icons: ${drawn}`);
+  }
+  // And the markup does not type them either.
+  assert.doesNotMatch(markup, glyphs, "nor does the page they sit on");
+  assert.doesNotMatch(css, glyphs, "nor the stylesheet, through `content`");
+});
+
 test("every voice is drawn the same way, and named by what it is doing", async () => {
   const thread = structuredClone(recorded.thread);
   thread.items = [
@@ -547,7 +565,10 @@ test("a working thread is marked in the list rather than given a page", async ()
   projects[0].threads[0].seats = 2;
   const { el } = await open({ sidebar: projects });
   const drawn = el("projects").render();
-  assert.match(drawn, /◉/, "the list says which thread is working");
+  assert.ok(
+    el("projects").querySelectorAll(".state").some((n) => n.dataset.icon === "loader"),
+    "the list says which thread is working",
+  );
   assert.match(drawn, /2/, "and how many seats it has open, which is what a page would add");
 });
 

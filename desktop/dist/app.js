@@ -40,13 +40,13 @@ function text(tag, className, value) {
 }
 
 const MARKS = {
-  needs_you: "!",
-  working: "◉",
-  queued: "⋯",
-  interrupted: "⏸",
-  failed: "×",
-  unread: "●",
-  idle: "○",
+  needs_you: "message",
+  working: "loader",
+  queued: "clock",
+  interrupted: "pause",
+  failed: "x",
+  unread: "dot",
+  idle: "circle",
 };
 
 // Sidebar -------------------------------------------------------------------
@@ -79,12 +79,12 @@ function drawSidebar() {
       row.className = "thread";
       row.dataset.status = thread.status;
       row.setAttribute("aria-current", String(thread.id === state.thread));
-      row.append(text("span", "mark", MARKS[thread.status] || "○"));
+      row.append(drawn(MARKS[thread.status] || "circle", "state"));
       row.append(text("span", "name", thread.title || "New conversation"));
       if (thread.status === "working" && thread.seats > 1) {
         row.append(text("span", "seats", `${thread.seats}`));
       }
-      if (thread.terminal) row.append(text("span", "term", "⌘"));
+      if (thread.terminal) row.append(drawn("terminal", "term"));
       row.addEventListener("click", () => select(thread.id));
       section.append(row);
     }
@@ -97,7 +97,10 @@ function chip(item) {
   const d = item.data || {};
   const parts = [d.agent, d.model, d.reasoning].filter(Boolean).join(" · ");
   const node = text("div", "route");
-  node.append(text("span", "chip", `⟡ ${parts}`));
+  const chipped = text("span", "chip");
+  chipped.append(drawn("git-branch"));
+  chipped.append(text("span", null, parts));
+  node.append(chipped);
   if (d.resumed) node.append(document.createTextNode("  continues the recorded session"));
   return node;
 }
@@ -113,7 +116,10 @@ function checks(item) {
   }[d.outcome] || d.outcome;
   node.append(text("div", d.outcome === "success" ? "pass" : "fail", verdict));
   for (const check of d.checks || []) {
-    node.append(text("div", check.passed ? "pass" : "fail", `${check.passed ? "✓" : "✗"} ${check.name}`));
+    const row = text("div", check.passed ? "pass" : "fail");
+    row.append(drawn(check.passed ? "check" : "x"));
+    row.append(text("span", null, check.name));
+    node.append(row);
     // The one place check output is kept: the last lines of one that failed.
     if (check.tail) node.append(text("pre", null, check.tail));
   }
@@ -128,7 +134,10 @@ function work(items) {
   const summary = [];
   if (thoughts.length) summary.push("Thought");
   if (tools.length) summary.push(`${tools.length} tool call${tools.length > 1 ? "s" : ""}`);
-  node.append(text("summary", null, `▸ ${summary.join(", ")}`));
+  const head = text("summary", null);
+  head.append(drawn("chevron-right"));
+  head.append(text("span", null, summary.join(", ")));
+  node.append(head);
   for (const item of items) {
     const d = item.data || {};
     const label = item.kind === "thought" ? "thinking" : `${d.title || "tool"} ${d.detail || ""}`;
@@ -145,7 +154,10 @@ function aside(notes) {
   const node = document.createElement("details");
   node.className = "aside";
   const count = notes.length;
-  node.append(text("summary", null, `▸ ${count} routing note${count > 1 ? "s" : ""}`));
+  const head = text("summary", null);
+  head.append(drawn("chevron-right"));
+  head.append(text("span", null, `${count} routing note${count > 1 ? "s" : ""}`));
+  node.append(head);
   for (const item of notes) node.append(text("div", null, item.text));
   return node;
 }
@@ -246,7 +258,60 @@ const ICONS = {
   users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "circle:9,7,4", "M22 21v-2a4 4 0 0 0-3-3.87"],
   message: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
   bot: ["M12 8V4H8", "rect:4,8,16,12", "M2 14h2", "M20 14h2", "M15 13v2", "M9 13v2"],
+  folder: ["M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"],
+  "chevron-up": ["m18 15-6-6-6 6"],
+  "chevron-right": ["m9 18 6-6-6-6"],
+  x: ["M18 6 6 18", "m6 6 12 12"],
+  check: ["M20 6 9 17l-5-5"],
+  plus: ["M5 12h14", "M12 5v14"],
+  clock: ["circle:12,12,10", "M12 6v6l4 2"],
+  pause: ["rect:6,4,4,16", "rect:14,4,4,16"],
+  circle: ["circle:12,12,10"],
+  dot: ["circle:12,12,4"],
+  loader: ["M12 2v4", "m16.2 7.8 2.9-2.9", "M18 12h4", "m16.2 16.2 2.9 2.9", "M12 18v4", "m4.9 19.1 2.9-2.9", "M2 12h4", "m4.9 4.9 2.9 2.9"],
+  "git-branch": ["M6 3v12", "circle:18,6,3", "circle:6,18,3", "M18 9a9 9 0 0 1-9 9"],
+  "log-in": ["M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4", "m10 17 5-5-5-5", "M15 12H3"],
+  "log-out": ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4", "m16 17 5-5-5-5", "M21 12H9"],
+  activity: ["M22 12h-4l-3 9L9 3l-3 9H2"],
+  hexagon: ["M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"],
 };
+
+/// One drawing, wherever the window shows a picture. A character standing in for an icon is
+/// whatever font the machine happens to have, at whatever weight, and never matches the ones
+/// beside it.
+function drawn(which, klass = "icon") {
+  const host = text("span", klass);
+  host.dataset.icon = which;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [key, value] of Object.entries({
+    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round",
+  })) {
+    svg.setAttribute(key, value);
+  }
+  for (const shape of ICONS[which] || ICONS.circle) {
+    let node;
+    if (shape.startsWith("circle:")) {
+      const [cx, cy, r] = shape.slice(7).split(",");
+      node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      node.setAttribute("cx", cx);
+      node.setAttribute("cy", cy);
+      node.setAttribute("r", r);
+    } else if (shape.startsWith("rect:")) {
+      const [x, y, w, h] = shape.slice(5).split(",");
+      node = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      for (const [key, value] of [["x", x], ["y", y], ["width", w], ["height", h], ["rx", "2"]]) {
+        node.setAttribute(key, value);
+      }
+    } else {
+      node = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      node.setAttribute("d", shape);
+    }
+    svg.append(node);
+  }
+  host.append(svg);
+  return host;
+}
 
 /// Which drawing a name gets. A role says what a seat is for, so the role picks the icon.
 function icon(name) {
@@ -267,41 +332,10 @@ function icon(name) {
   return "bot";
 }
 
-/// The drawing itself, in the speaker's own colour.
+/// The drawing for a seat, in its own colour.
 function mark(name) {
-  const which = icon(name);
-  const host = text("span", "mark");
-  host.dataset.icon = which;
+  const host = drawn(icon(name), "mark");
   host.dataset.tone = tone(name);
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  for (const [key, value] of Object.entries({
-    viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
-    "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round",
-  })) {
-    svg.setAttribute(key, value);
-  }
-  for (const shape of ICONS[which]) {
-    if (shape.startsWith("circle:")) {
-      const [cx, cy, r] = shape.slice(7).split(",");
-      const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      node.setAttribute("cx", cx);
-      node.setAttribute("cy", cy);
-      node.setAttribute("r", r);
-      svg.append(node);
-    } else if (shape.startsWith("rect:")) {
-      const [x, y, w, h] = shape.slice(5).split(",");
-      const node = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      for (const [key, value] of [["x", x], ["y", y], ["width", w], ["height", h], ["rx", "2"]]) {
-        node.setAttribute(key, value);
-      }
-      svg.append(node);
-    } else {
-      const node = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      node.setAttribute("d", shape);
-      svg.append(node);
-    }
-  }
-  host.append(svg);
   return host;
 }
 
@@ -383,7 +417,7 @@ async function openFolders() {
     row.type = "button";
     row.append(text("span", "name", folder.name));
     row.append(text("span", "where", folder.root));
-    if (current && current.project === folder.name) row.append(text("span", "tick", "✓"));
+    if (current && current.project === folder.name) row.append(drawn("check", "tick"));
     row.addEventListener("click", () => startIn(folder.root));
     menu.append(row);
   }
@@ -588,9 +622,13 @@ async function drawRoom(thread) {
     return;
   }
   for (const line of events.slice(-12)) {
-    const mark = line.kind === "joined" ? "●" : line.kind === "left" ? "○" : "⎿";
     const what = line.kind === "status" ? line.text : line.kind;
-    host.append(text("div", "said system", `${mark} ${named(line)} ${what}`));
+    const row = text("div", "said system");
+    row.append(drawn(
+      line.kind === "joined" ? "log-in" : line.kind === "left" ? "log-out" : "activity",
+    ));
+    row.append(text("span", null, `${named(line)} ${what}`));
+    host.append(row);
   }
 }
 
