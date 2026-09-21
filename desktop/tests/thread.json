@@ -32,7 +32,9 @@
       "text": "Fix the flaky mailbox placement test",
       "data": null,
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000000000,
+      "failed": false
     },
     {
       "seq": 2,
@@ -53,7 +55,9 @@
         "resumed": false
       },
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000001000,
+      "failed": false
     },
     {
       "seq": 3,
@@ -68,7 +72,9 @@
       "text": "Fixture completed.",
       "data": null,
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000002000,
+      "failed": false
     },
     {
       "seq": 4,
@@ -94,7 +100,9 @@
         }
       },
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000003000,
+      "failed": false
     },
     {
       "seq": 5,
@@ -109,7 +117,9 @@
       "text": "and add a regression test for it",
       "data": null,
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000004000,
+      "failed": false
     },
     {
       "seq": 6,
@@ -130,7 +140,9 @@
         "resumed": true
       },
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000005000,
+      "failed": false
     },
     {
       "seq": 7,
@@ -145,7 +157,9 @@
       "text": "Fixture completed.",
       "data": null,
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000006000,
+      "failed": false
     },
     {
       "seq": 8,
@@ -171,7 +185,9 @@
         }
       },
       "truncated": false,
-      "patches": 0
+      "patches": 0,
+      "at": 1769000007000,
+      "failed": false
     }
   ],
   "seats": [

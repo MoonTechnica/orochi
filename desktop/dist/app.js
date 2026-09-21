@@ -170,7 +170,7 @@ function checks(item, seats = []) {
   // A seat that may change nothing has nothing to check. "Unverified" says a check was owed
   // and not made; here none was ever owed, and the two read very differently to someone
   // looking at a discussion that went perfectly well.
-  const seat = seats.find((s) => s.turn_id === item.turn && s.ordinal === item.lane);
+  const seat = seats.find((s) => s.turn === item.turn && s.ordinal === item.lane);
   const nothing =
     d.outcome === "partial_success" && !(d.checks || []).length && seat?.read_only;
   const verdict = nothing
@@ -328,7 +328,7 @@ function drawTimeline(thread, said = []) {
   // says can be written down. That is the longest a person waits with nothing to read, so the
   // window says what is happening rather than sitting still.
   if (thread.thread.status === "working") {
-    const seats = thread.seats.filter((s) => s.turn_id === thread.seats.at(-1)?.turn_id);
+    const seats = thread.seats.filter((s) => s.turn === thread.seats.at(-1)?.turn);
     const live = text("div", "live-turn");
     if (!seats.length) {
       live.append(drawn("loader", "state"));
@@ -577,8 +577,8 @@ function drawTeam(thread) {
   // Who is in the room now: the seats of the turn in hand. Every earlier turn's seats are in
   // the store too, and listing them all showed one agent three times for having sat three
   // times.
-  const latest = thread.seats[thread.seats.length - 1].turn_id;
-  for (const seat of thread.seats.filter((s) => s.turn_id === latest)) {
+  const latest = thread.seats[thread.seats.length - 1].turn;
+  for (const seat of thread.seats.filter((s) => s.turn === latest)) {
     const node = text("div", "seat");
     node.dataset.state = seat.state;
     node.dataset.who = seat.role;

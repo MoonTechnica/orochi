@@ -100,6 +100,29 @@ async function open(answers = {}, { prompt, pick, language } = {}) {
   return { calls, tick, el: (id) => document.getElementById(id) };
 }
 
+/// Every test here builds rows by hand, and a name invented in one of them is a name the page
+/// can then read for ever without anything failing: `seats[].turn_id` did not exist, the page
+/// looked for it, no seat was ever found, and three tests passed over it. What the core sends
+/// is what these fixtures are made of, so a field that is not there is caught here.
+test("the fixtures carry the fields the core actually sends", async () => {
+  const seat = recorded.thread.seats[0];
+  const item = recorded.thread.items[0];
+  for (const [what, row, fields] of [
+    ["seat", seat, ["seat_id", "turn", "ordinal", "role", "lead", "read_only", "state"]],
+    ["item", item, ["seq", "turn", "lane", "kind", "text", "at"]],
+  ]) {
+    for (const field of fields) {
+      assert.ok(field in row, `${what} has no ${field}: ${Object.keys(row)}`);
+    }
+  }
+  // And the page reads no seat field the core does not send. `seat.` only: `s.` is any short
+  // name in the file, and guessing at those is how a wrong field got read in the first place.
+  const source = readFileSync(join(here, "../dist/app.js"), "utf8");
+  for (const [, field] of source.matchAll(/\bseat\.([a-z_]+)/g)) {
+    assert.ok(field in seat, `the page reads seat.${field}, which is not sent`);
+  }
+});
+
 test("the sidebar lists a project's threads with the mark for their state", async () => {
   const { el } = await open();
   const drawn = el("projects").render();
@@ -132,11 +155,12 @@ test("both messages of one conversation are drawn as separate turns", async () =
   assert.match(turns[1].render(), /and add a regression test for it/);
 });
 
-test("the team pane seats everyone at the turn, read-only marked", async () => {
+test("the team pane seats whoever is at the turn in hand, read-only marked", async () => {
   const { el } = await open();
   const drawn = el("roster").render();
-  assert.match(drawn, /fixer/);
+  // The recorded conversation has two turns, one seat each. The room is the second one's.
   assert.match(drawn, /tester/);
+  assert.doesNotMatch(drawn, /fixer/, "not everyone who ever sat in this conversation");
   assert.match(drawn, /sol-test/, "each seat shows the route it took");
 });
 
@@ -453,7 +477,7 @@ test("the window speaks the language the person set their machine to", async () 
 test("a turn with nothing to verify says so, rather than that it was not verified", async () => {
   const thread = structuredClone(recorded.thread);
   const seat = thread.seats[0];
-  thread.seats = [{ ...seat, seat_id: "s1", turn_id: "t1", ordinal: 0, role: "facilitator", read_only: true }];
+  thread.seats = [{ ...seat, seat_id: "s1", turn: "t1", ordinal: 0, role: "facilitator", read_only: true }];
   const base = {
     turn: "t1", turn_ordinal: 1, lane: 0, role: "facilitator", agent: "claude", model: "haiku",
     status: null, data: null, truncated: false, patches: 0, failed: false,
@@ -469,7 +493,7 @@ test("a turn with nothing to verify says so, rather than that it was not verifie
   assert.match(drawn, /nothing to verify/i);
 
   // A seat that could have changed something, and was not checked, still says unverified.
-  thread.seats = [{ ...seat, seat_id: "s1", turn_id: "t1", ordinal: 0, role: "implementer", read_only: false }];
+  thread.seats = [{ ...seat, seat_id: "s1", turn: "t1", ordinal: 0, role: "implementer", read_only: false }];
   thread.items[0].role = "implementer";
   thread.items[1].role = "implementer";
   const wrote = await open({ thread, room: [] });
@@ -547,7 +571,7 @@ test("a message that has been sent says so, from the moment it is sent", async (
 
   // Once a seat exists, it says what that seat is doing rather than that something is.
   thread.seats = [
-    { ...recorded.thread.seats[0], seat_id: "s1", turn_id: "t1", ordinal: 0, role: "implementer",
+    { ...recorded.thread.seats[0], seat_id: "s1", turn: "t1", ordinal: 0, role: "implementer",
       state: "working", doing: "reading tests/mailbox.rs", read_only: false },
   ];
   const second = await open({ thread, room: [] });
@@ -663,9 +687,9 @@ test("the roster is who is in the room now, not everyone who ever sat", async ()
   const thread = structuredClone(recorded.thread);
   const seat = thread.seats[0];
   thread.seats = [
-    { ...seat, seat_id: "s1", turn_id: "t1", ordinal: 0, role: "implementer", state: "done" },
-    { ...seat, seat_id: "s2", turn_id: "t2", ordinal: 0, role: "implementer", state: "working" },
-    { ...seat, seat_id: "s3", turn_id: "t2", ordinal: 1, role: "reviewer", state: "working" },
+    { ...seat, seat_id: "s1", turn: "t1", ordinal: 0, role: "implementer", state: "done" },
+    { ...seat, seat_id: "s2", turn: "t2", ordinal: 0, role: "implementer", state: "working" },
+    { ...seat, seat_id: "s3", turn: "t2", ordinal: 1, role: "reviewer", state: "working" },
   ];
   const { el } = await open({ thread });
   const roster = el("roster");
