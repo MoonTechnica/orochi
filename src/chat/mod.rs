@@ -1927,6 +1927,10 @@ impl Session<'_> {
         }
         // Inside a plan the seat keeps the step's name; on its own it takes the task's.
         let lead = phase.map_or(seats[0].name, |p| p.name);
+        // First, not last. Appending it changes what a prompt ends with, which several tests
+        // pin for their own reasons; and a small model told at the end to match the user's
+        // language, after pages of English instructions, answered in English anyway.
+        task = format!("{LANGUAGE}\n\n{task}");
         if !beside.is_empty() {
             task = format!("{task}\n\n{}", alongside(lead, &beside));
             let names: Vec<&str> = beside.iter().map(|role| role.name).collect();

@@ -1912,3 +1912,33 @@ fn a_record_written_before_the_newest_fields_still_reads_back() {
     let current = orochi::learning::estimate(&config, 0.5, 9_413.0, &[record]);
     assert!(current.tokens > 9_413.0, "{}", current.tokens);
 }
+
+/// A read-only seat runs in the agent's own plan mode, and the one call that ends that mode
+/// and hands over the answer is counted as a write. Refusing it walled the seat in with its
+/// conclusion and ended the turn: on 2026-09-21 a discussion produced one message, because the
+/// agent leading it was killed by `ExitPlanMode` before it could say anything.
+#[test]
+fn leaving_a_mode_is_not_a_change_and_is_not_refused() {
+    let request = |title: &str, tool: &str| json!({"toolCall": {"title": title, "kind": "other", "rawInput": {"tool_name": tool}}});
+    assert!(orochi::acp::coordination_tool(&request(
+        "Tool: ExitPlanMode",
+        "ExitPlanMode"
+    )));
+    assert!(orochi::acp::coordination_tool(&request(
+        "exit plan mode",
+        ""
+    )));
+    assert!(orochi::acp::coordination_tool(&request(
+        "mcp__orochi-mailbox__read_messages",
+        ""
+    )));
+    // Everything that does change something still is.
+    assert!(!orochi::acp::coordination_tool(&request(
+        "Write src/main.rs",
+        "Write"
+    )));
+    assert!(!orochi::acp::coordination_tool(&request(
+        "Bash: rm -rf",
+        "Bash"
+    )));
+}

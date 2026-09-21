@@ -1134,12 +1134,27 @@ pub(crate) fn reject_once_option(request: &Value) -> Option<String> {
 }
 
 /// Orochi's own mailbox tools only talk to other agents: they touch nothing to approve.
-pub(crate) fn coordination_tool(request: &Value) -> bool {
+pub fn coordination_tool(request: &Value) -> bool {
     let title = request["toolCall"]["title"]
         .as_str()
         .unwrap_or_default()
         .to_ascii_lowercase();
-    title.contains("orochi-mailbox") || title.contains("orochi_mailbox")
+    if title.contains("orochi-mailbox") || title.contains("orochi_mailbox") {
+        return true;
+    }
+    // Leaving a mode is not doing anything. A read-only seat is put into the agent's own plan
+    // mode, and the one call that ends it and delivers the answer counts as a write — so
+    // refusing it walled the seat in with its own conclusion and killed the turn (2026-09-21).
+    let named = format!(
+        "{title} {}",
+        request["toolCall"]["rawInput"]["tool_name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    );
+    ["exitplanmode", "exit_plan_mode", "exit plan mode"]
+        .iter()
+        .any(|mode| named.contains(mode))
 }
 
 pub(crate) fn describe_permission(request: &Value) -> String {
