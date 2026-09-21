@@ -665,3 +665,33 @@ fn the_room_is_timed_on_the_same_clock_as_the_conversation() {
         );
     }
 }
+
+/// A host outlives the call that started it, and goes on writing to stderr as it works. The
+/// pipe it was started with is read for long enough to say why it stopped, and then it must
+/// keep being read — the first line written after the reader went away killed the host, which
+/// is why a message sent from the window sat there with nothing happening (2026-09-21).
+#[test]
+#[cfg(unix)]
+fn a_host_survives_the_call_that_started_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("orochi");
+    // Talks the whole time, as a host does, and says when it was killed for talking.
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 40 ]; do echo \"working $i\" >&2; i=$((i+1)); \
+             sleep 0.1; done\necho done > {}\n",
+            dir.path().join("finished").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    view::start_host(&path, "thread-1").expect("it is running");
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    assert!(
+        dir.path().join("finished").exists(),
+        "the host was cut off the moment it wrote something"
+    );
+}

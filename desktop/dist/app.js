@@ -39,6 +39,16 @@ function text(tag, className, value) {
   return node;
 }
 
+/// What a seat is doing before it has said anything, in words rather than a state name.
+const AT = {
+  choosing: "choosing an agent…",
+  starting: "starting up…",
+  working: "working…",
+  asking: "waiting for your answer",
+  done: "done",
+  failed: "failed",
+};
+
 const MARKS = {
   needs_you: "message",
   working: "loader",
@@ -240,6 +250,32 @@ function drawTimeline(thread, said = []) {
 
   }
   flush();
+  // Sending starts a process, which has to find its agents and choose one before anything it
+  // says can be written down. That is the longest a person waits with nothing to read, so the
+  // window says what is happening rather than sitting still.
+  if (thread.thread.status === "working") {
+    const seats = thread.seats.filter((s) => s.turn_id === thread.seats.at(-1)?.turn_id);
+    const live = text("div", "live-turn");
+    if (!seats.length) {
+      live.append(drawn("loader", "state"));
+      live.append(text("span", null, "Starting the agent…"));
+    } else {
+      for (const seat of seats) {
+        const row = text("div", "at-work");
+        row.append(mark(seat.role));
+        row.append(text("span", "name", seat.role));
+        row.append(
+          text("span", "what", seat.peer_status || seat.doing?.split("\n")[0] || AT[seat.state] || seat.state),
+        );
+        live.append(row);
+      }
+    }
+    if (!turn) {
+      turn = text("div", "turn loose");
+      host.append(turn);
+    }
+    turn.append(live);
+  }
   for (const prompt of state.prompts.filter((p) => p.thread_id === thread.thread.id)) {
     host.append(askCard(prompt));
   }

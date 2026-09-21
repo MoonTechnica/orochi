@@ -665,3 +665,14 @@ details[open] > summary .icon { transform: rotate(90deg); }
 #new-thread, #account { display: flex; align-items: center; gap: 6px; }
 #folder { display: inline-flex; align-items: center; gap: 6px; }
 .said.system { display: flex; align-items: center; gap: 6px; justify-content: flex-start; }
+
+/* What is happening while nothing has been said yet. */
+.live-turn { margin-top: 14px; color: var(--muted); font-size: 13px; }
+.live-turn > span { margin-left: 6px; }
+.at-work { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.at-work .name { color: var(--text); font-weight: 600; font-size: 13px; }
+.at-work .what { font-style: italic; }
+.live-turn .state svg, .at-work .mark svg { animation: none; }
+@keyframes turning { to { transform: rotate(360deg); } }
+.live-turn .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }
+.thread .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }

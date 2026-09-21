@@ -24,6 +24,18 @@ pub fn start_host(binary: &std::path::Path, thread: &str) -> Result<()> {
         .with_context(|| format!("could not start {}", binary.display()))?;
     std::thread::sleep(std::time::Duration::from_millis(400));
     let Some(status) = child.try_wait()? else {
+        // It is running, and it goes on writing as it works. The pipe has to keep being read
+        // for as long as it does: the first line written after this end went away would kill
+        // it, and a full buffer would stop it just as dead.
+        if let Some(mut errors) = child.stderr.take() {
+            std::thread::Builder::new()
+                .name("orochi-host-stderr".into())
+                .spawn(move || {
+                    let mut sink = [0u8; 4096];
+                    while matches!(errors.read(&mut sink), Ok(read) if read > 0) {}
+                })
+                .ok();
+        }
         return Ok(());
     };
     let mut said = String::new();

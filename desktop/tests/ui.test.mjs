@@ -435,6 +435,34 @@ test("the conversation is the group chat: the agents talk to each other in it", 
   );
 });
 
+test("a message that has been sent says so, from the moment it is sent", async () => {
+  const thread = structuredClone(recorded.thread);
+  thread.thread.status = "working";
+  thread.items = [
+    { seq: 1, turn: "t1", turn_ordinal: 1, lane: 0, role: null, agent: null, model: null, kind: "user_message", status: null, text: "split the parser", data: null, truncated: false, patches: 0, at: 1000 },
+  ];
+  // Sent, claimed, and nothing chosen yet: the longest a person waits with nothing to read.
+  thread.seats = [];
+  const { el } = await open({ thread, room: [] });
+  const drawn = el("timeline").render();
+  assert.match(drawn, /Starting/i, `something happens the moment it is sent: ${drawn}`);
+
+  // Once a seat exists, it says what that seat is doing rather than that something is.
+  thread.seats = [
+    { ...recorded.thread.seats[0], seat_id: "s1", turn_id: "t1", ordinal: 0, role: "implementer",
+      state: "working", doing: "reading tests/mailbox.rs", read_only: false },
+  ];
+  const second = await open({ thread, room: [] });
+  const live = second.el("timeline").render();
+  assert.match(live, /implementer/, "who is at work");
+  assert.match(live, /reading tests\/mailbox\.rs/, "and what they are doing");
+
+  // A thread that is not working says nothing of the sort.
+  thread.thread.status = "idle";
+  const quiet = await open({ thread, room: [] });
+  assert.doesNotMatch(quiet.el("timeline").render(), /Starting/i);
+});
+
 test("what the window draws as an icon is drawn, not typed", async () => {
   const { el } = await open();
   // No emoji, and no character standing in for a picture: either is whatever font the machine
