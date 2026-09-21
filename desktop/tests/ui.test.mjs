@@ -437,9 +437,13 @@ test("the conversation is the group chat: the agents talk to each other in it", 
 
 test("what the window draws as an icon is drawn, not typed", async () => {
   const { el } = await open();
-  // Characters standing in for pictures: a box-drawing glyph is whatever font the machine
-  // has, at whatever weight, and never matches the icons beside it.
-  const glyphs = /[\u2190-\u21FF\u2300-\u23FF\u25A0-\u27BF\u2B00-\u2BFF\u{1F300}-\u{1FAFF}]/u;
+  // No emoji, and no character standing in for a picture: either is whatever font the machine
+  // happens to have, at whatever weight, and never matches the icons beside it. Arrows, box
+  // drawing, dingbats, every pictograph block, a keycap and the variation selector that forces
+  // emoji presentation. Ordinary punctuation — an em dash, an ellipsis, a minus — is not an
+  // icon and is left alone.
+  const glyphs =
+    /[\u2190-\u21FF\u2300-\u23FF\u25A0-\u27BF\u2B00-\u2BFF\u20E3\uFE0F\u{1F000}-\u{1FBFF}]/u;
   for (const id of ["timeline", "projects", "roster", "room", "composer-row", "sidebar-foot"]) {
     const drawn = el(id).render();
     assert.doesNotMatch(drawn, glyphs, `${id} draws its icons: ${drawn}`);
