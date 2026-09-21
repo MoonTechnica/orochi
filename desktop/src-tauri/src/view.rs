@@ -113,6 +113,17 @@ pub struct Said {
     pub model: Option<String>,
 }
 
+/// What one look at a thread found: whether the agent running it has gone, and whether there
+/// is work nobody has picked up.
+#[derive(Debug, Clone, Serialize)]
+pub struct Watch {
+    /// A turn was left unfinished by a host that is no longer there. Said once: the turn is
+    /// written down as interrupted, so the next look has nothing new to report.
+    pub lost: bool,
+    /// Work is queued and no host owns the thread, so one has to be started for it to run.
+    pub queued: bool,
+}
+
 /// An agent's readiness, as `orochi status` reports it.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentRow {
@@ -594,6 +605,27 @@ impl Client {
 
     /// Whether this thread has no living owner. A message to a thread a terminal is holding
     /// belongs to that terminal; one to a thread nobody owns needs a host started for it.
+    /// Looked at on every poll, because a host can stop while the window stays open — its
+    /// machine sleeps, it is killed, it crashes — and nothing else here would ever notice.
+    pub fn watch(&self, thread: &str) -> Result<Watch> {
+        let running: bool = self.activity.connection().query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND state='running')",
+            [thread],
+            |r| r.get(0),
+        )?;
+        self.activity.reap_hosts()?;
+        let (still, queued): (bool, bool) = self.activity.connection().query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND state='running'),
+                    EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND state='queued')",
+            [thread],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(Watch {
+            lost: running && !still,
+            queued,
+        })
+    }
+
     pub fn needs_host(&self, thread: &str) -> Result<bool> {
         self.activity.reap_hosts()?;
         let owned: bool = self.activity.connection().query_row(

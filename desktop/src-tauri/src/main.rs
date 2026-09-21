@@ -30,6 +30,12 @@ fn new_thread(open: State<'_, Open>, root: String) -> Result<String, String> {
         .map_err(fail)
 }
 
+/// One look at a thread: has the agent running it gone, and is anything waiting to be run.
+#[tauri::command]
+fn watch(open: State<'_, Open>, thread: String) -> Result<orochi_desktop::view::Watch, String> {
+    open.0.lock().unwrap().watch(&thread).map_err(fail)
+}
+
 /// Starts the thread's host if it has none, so a message sent here actually runs. A thread a
 /// terminal is holding keeps its owner; this never takes one over.
 #[tauri::command]
@@ -228,6 +234,7 @@ fn main() {
             folders,
             new_thread,
             ensure_host,
+            watch,
             room,
             say,
             agents,

@@ -695,3 +695,47 @@ fn a_host_survives_the_call_that_started_it() {
         "the host was cut off the moment it wrote something"
     );
 }
+
+/// A host can stop while the window is still open — its machine sleeps, it is killed, it
+/// crashes. Nothing noticed: the turn stayed `running` for ever and the window went on showing
+/// an agent at work that was not there (2026-09-21). The window watches for it now, says the
+/// turn was left unfinished, and starts a host again for work that never began.
+#[test]
+fn a_thread_whose_host_is_gone_is_noticed_and_picked_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _prompt) = fixture(dir.path());
+    {
+        let store = share(Activity::open(dir.path(), 30).unwrap());
+        let db = store.lock().unwrap();
+        // The fixture's own host, but from a process that is gone, holding a turn it will
+        // never finish.
+        db.connection()
+            .execute(
+                "UPDATE hosts SET pid=?1, start=1 WHERE thread_id=?2",
+                rusqlite::params![i64::from(i32::MAX), &thread],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "UPDATE turns SET state='running',
+                        host_id=(SELECT id FROM hosts WHERE thread_id=?1) WHERE thread_id=?1",
+                [&thread],
+            )
+            .unwrap();
+    }
+    let client = Client::open(dir.path()).unwrap();
+    let watch = client.watch(&thread).unwrap();
+    assert!(watch.lost, "the window is told the agent stopped");
+    assert!(!watch.queued, "and that nothing is waiting to be run");
+
+    let state: String = rusqlite::Connection::open(dir.path().join("activity.sqlite3"))
+        .unwrap()
+        .query_row("SELECT state FROM turns WHERE thread_id=?1", [&thread], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(state, "interrupted", "the turn stops claiming to be running");
+
+    // A second look has nothing new to report: it is said once, not every time.
+    assert!(!client.watch(&thread).unwrap().lost);
+}

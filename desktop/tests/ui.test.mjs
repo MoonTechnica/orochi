@@ -435,6 +435,33 @@ test("the conversation is the group chat: the agents talk to each other in it", 
   );
 });
 
+test("an agent that stopped is noticed and said, and queued work is picked up again", async () => {
+  const answers = { watch: { lost: true, queued: true }, changed: [] };
+  const { el, calls } = await open(answers);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.match(
+    el("notice").render(),
+    /stopped/i,
+    `the window says the agent went, rather than showing one at work that is not there: ${el("notice").render()}`,
+  );
+  assert.ok(
+    calls.some(([name]) => name === "ensure_host"),
+    "and starts one again for the work that was waiting",
+  );
+
+  // Nothing wrong, nothing said, and nothing started behind the person's back.
+  answers.watch = { lost: false, queued: false };
+  const quiet = await open(answers);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.doesNotMatch(quiet.el("notice").render(), /stopped/i);
+  assert.equal(
+    quiet.calls.some(([name]) => name === "ensure_host"),
+    false,
+    "a thread with nothing to run is left alone",
+  );
+});
+
 test("a message that has been sent says so, from the moment it is sent", async () => {
   const thread = structuredClone(recorded.thread);
   thread.thread.status = "working";

@@ -971,6 +971,14 @@ async function refresh(full) {
   el("thread-title").textContent = thread.thread.title || "New conversation";
   el("thread-status").textContent = thread.thread.status;
   el("interrupt").hidden = thread.thread.status !== "working";
+  // A host can stop while this window stays open — its machine sleeps, it is killed, it
+  // crashes — and nothing else here would notice: the turn would claim to be running for ever
+  // under an agent that is not there. Looked at on every pass.
+  const watch = await call("watch", { thread: thread.thread.id });
+  if (watch?.lost) {
+    report("The agent running this conversation stopped; the turn was left unfinished.");
+  }
+  if (watch?.queued) await call("ensure_host", { thread: thread.thread.id });
   // The room is read first: what the agents said to each other is part of the conversation,
   // so the conversation cannot be drawn without it.
   const said = (await call("room", { thread: thread.thread.id })) || [];
