@@ -1152,9 +1152,17 @@ pub fn coordination_tool(request: &Value) -> bool {
             .unwrap_or_default()
             .to_ascii_lowercase()
     );
-    ["exitplanmode", "exit_plan_mode", "exit plan mode"]
-        .iter()
-        .any(|mode| named.contains(mode))
+    // The call is named for what the agent shows the user — "Approve Plan" on Claude — and not
+    // for the tool behind it, so both are looked at.
+    [
+        "exitplanmode",
+        "exit_plan_mode",
+        "exit plan mode",
+        "approve plan",
+        "plan mode",
+    ]
+    .iter()
+    .any(|mode| named.contains(mode))
 }
 
 pub(crate) fn describe_permission(request: &Value) -> String {

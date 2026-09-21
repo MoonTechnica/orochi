@@ -1928,6 +1928,8 @@ fn leaving_a_mode_is_not_a_change_and_is_not_refused() {
         "exit plan mode",
         ""
     )));
+    // What the agent shows the user is the name Orochi sees; Claude calls it this.
+    assert!(orochi::acp::coordination_tool(&request("Approve Plan", "")));
     assert!(orochi::acp::coordination_tool(&request(
         "mcp__orochi-mailbox__read_messages",
         ""
