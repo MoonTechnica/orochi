@@ -552,8 +552,14 @@ async fn select(
             )
         });
         let sink = tee.as_ref().map_or(tx, |tee| tee.sink());
+        // The seat works in a copy, but what the user approved is the repository's, so both the
+        // file and the choices are read from the repository itself.
+        let choices = crate::mcp::choices(store.data_dir(), &store.repository_id(&report.root)?);
+        let (mut mcp, _) = crate::mcp::servers(&scoped.mcp, &report.root, &choices);
+        let vault = crate::mcp::oauth::Vault::new(store.data_dir(), &scoped.mcp);
+        crate::mcp::oauth::authorize(&mut mcp, &vault).await;
         let (mut clients, discovered) = tokio::select! {
-            result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(sink), overrides.model.as_deref(), Some(&participant.id), false) => result?,
+            result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(sink), overrides.model.as_deref(), Some(&participant.id), false, &mcp) => result?,
             _ = cx.since.wait() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during discovery").into()),
         };
         failures.extend(

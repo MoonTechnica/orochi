@@ -292,10 +292,14 @@ MOCK_LOG = "{dir / 'agent.jsonl'}"
 class Console:
     """One live session in a pty, driven a key at a time."""
 
-    def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=()):
+    def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
+                 files=None):
         self.dir = Path(tempfile.mkdtemp())
         self.repo = self.dir / "repo"
         self.repo.mkdir()
+        # What the repository holds before the session starts, such as its own .mcp.json.
+        for name, text in (files or {}).items():
+            (self.repo / name).write_text(text)
         self.log = self.dir / "agent.jsonl"
         extra = "\n".join(f"{key} = {json.dumps(value)}" for key, value in (env or {}).items())
         path = self.dir / "config.toml"
@@ -695,3 +699,60 @@ class ConsoleKeys(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepositoryMcpServers(unittest.TestCase):
+    """A repository's own .mcp.json servers are asked about as Claude Code 2.1.278 asks: before
+    they are used, with its wording and options, "Continue without" focused by default, Esc as
+    "no", and the answer remembered for the repository."""
+
+    ONE = json.dumps({"mcpServers": {"notes": {"command": "python3", "args": ["-c", "pass"]}}})
+    TWO = json.dumps({"mcpServers": {"alpha": {"command": "python3"}, "beta": {"command": "python3"}}})
+
+    def given(self, c):
+        """The MCP servers the agent's session was opened with."""
+        c.type("hello")
+        c.key(b"\n")
+        c.wait("Fixture completed.")
+        return [s["name"] for s in c.requests("session/new")[-1]["params"].get("mcpServers", [])]
+
+    def test_a_repository_server_is_asked_about_first_and_esc_refuses_it_for_good(self):
+        c = Console(files={".mcp.json": self.ONE})
+        try:
+            c.wait("New MCP server found in this project: notes")
+            for option in ("Use this MCP server", "Use this and all future MCP servers in this project",
+                           "Continue without using this MCP server"):
+                self.assertTrue(c.shown(option), c.rows())
+            self.assertTrue(any("❯" in row and "Continue without using this MCP server" in row
+                                for row in c.screen.text()), "no is the default:\n" + c.rows())
+            c.esc()
+            c.wait("not using notes")
+            self.assertEqual(self.given(c), [], c.rows())
+            choices = json.loads((c.dir / "data/mcp/choices.json").read_text())
+            self.assertEqual([list(v["disabled"]) for v in choices.values()], [["notes"]])
+        finally:
+            c.close()
+
+    def test_an_approved_repository_server_reaches_the_agent(self):
+        c = Console(files={".mcp.json": self.ONE})
+        try:
+            c.wait("New MCP server found in this project: notes")
+            c.key(b"1")
+            c.wait("using notes from this repository's .mcp.json")
+            self.assertEqual(self.given(c), ["notes"], c.rows())
+        finally:
+            c.close()
+
+    def test_several_new_servers_are_one_checklist_every_one_ticked_to_begin_with(self):
+        c = Console(files={".mcp.json": self.TWO})
+        try:
+            c.wait("2 new MCP servers found in this project")
+            self.assertTrue(c.shown("Select any you wish to enable."), c.rows())
+            self.assertTrue(c.shown("[✔] alpha") and c.shown("[✔] beta"), c.rows())
+            c.key(b" ")
+            self.assertTrue(c.shown("[ ] alpha"), c.rows())
+            c.key(b"\n")
+            c.wait("using beta from this repository's .mcp.json")
+            self.assertEqual(self.given(c), ["beta"], c.rows())
+        finally:
+            c.close()

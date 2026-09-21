@@ -40,6 +40,9 @@ pub struct Capabilities {
     pub embedded: bool,
     pub model_selector: Option<Selector>,
     pub legacy_models: bool,
+    /// MCP transports beyond stdio, which every agent must take.
+    #[serde(default)]
+    pub mcp: crate::mcp::Support,
 }
 
 /// Flatten ACP select groups without losing opaque IDs.
@@ -329,6 +332,11 @@ pub struct Client {
     events: Option<EventSink>,
     /// This session's mailbox identity; agents in one process are separate peers.
     peer: Option<crate::mailbox::SessionPeer>,
+    /// The MCP servers this session is given beyond the mailbox, and the ones this agent
+    /// turned out not to take, as (name, reason). Both are settled once, from the capabilities
+    /// it advertised.
+    mcp: Vec<McpServer>,
+    mcp_skipped: Vec<(String, String)>,
     pub config: AgentConfig,
     discovery_model: Option<String>,
     connection: ConnectionTo<Agent>,
@@ -379,12 +387,21 @@ impl Client {
         model: Option<&str>,
     ) -> Result<Self, AgentError> {
         Self::start_named(
-            config, root, permission, timeout, events, model, None, false,
+            config,
+            root,
+            permission,
+            timeout,
+            events,
+            model,
+            None,
+            false,
+            vec![],
         )
         .await
     }
     /// `peer` names this session in the mailbox (a collaboration role, say); a `read_only`
-    /// session is refused the tools that would change the workspace.
+    /// session is refused the tools that would change the workspace; `mcp` is what the user
+    /// configured this run to give it beyond the mailbox.
     #[allow(clippy::too_many_arguments)]
     pub async fn start_named(
         config: AgentConfig,
@@ -395,9 +412,10 @@ impl Client {
         model: Option<&str>,
         peer: Option<&str>,
         read_only: bool,
+        mcp: Vec<crate::config::McpServerConfig>,
     ) -> Result<Self, AgentError> {
         Self::start_inner(
-            config, root, permission, timeout, events, model, false, peer, read_only,
+            config, root, permission, timeout, events, model, false, peer, read_only, mcp,
         )
         .await
     }
@@ -419,6 +437,7 @@ impl Client {
             true,
             None,
             false,
+            vec![],
         )
         .await
     }
@@ -433,6 +452,7 @@ impl Client {
         isolated: bool,
         peer: Option<&str>,
         read_only: bool,
+        mcp: Vec<crate::config::McpServerConfig>,
     ) -> Result<Self, AgentError> {
         let observations = Arc::new(Mutex::new(Observation::default()));
         let debug_state = observations.clone();
@@ -618,6 +638,8 @@ impl Client {
             peer: (!isolated)
                 .then(|| crate::mailbox::register_session(peer))
                 .flatten(),
+            mcp: vec![],
+            mcp_skipped: vec![],
             discovery_model: model.map(str::to_owned),
             config,
             connection,
@@ -632,6 +654,7 @@ impl Client {
                 embedded: false,
                 model_selector: None,
                 legacy_models: false,
+                mcp: crate::mcp::Support::default(),
             },
             timeout,
             lease,
@@ -655,6 +678,16 @@ impl Client {
         let prompt = &agent_capabilities["promptCapabilities"];
         client.capabilities.image = prompt["image"].as_bool().unwrap_or(false);
         client.capabilities.embedded = prompt["embeddedContext"].as_bool().unwrap_or(false);
+        let advertised_mcp = &agent_capabilities["mcpCapabilities"];
+        client.capabilities.mcp = crate::mcp::Support {
+            http: advertised_mcp["http"].as_bool().unwrap_or(false),
+            sse: advertised_mcp["sse"].as_bool().unwrap_or(false),
+        };
+        // Routing advisers get no tools beyond the agent's own, so they are given no servers.
+        let (attached, skipped) =
+            crate::mcp::attach(if isolated { &[] } else { &mcp }, client.capabilities.mcp);
+        client.mcp = attached;
+        client.mcp_skipped = skipped;
         client.new_session(root).await?;
         Ok(client)
     }
@@ -733,14 +766,22 @@ impl Client {
             })
         })
     }
-    /// The mailbox server for this session's own peer, unless this is a routing adviser.
+    /// What this session gets beyond the agent's own tools: the mailbox server for its own
+    /// peer first — a routing adviser has neither — then the MCP servers configured for this
+    /// run, minus the ones this agent cannot take.
     fn coordination(&self) -> Vec<McpServer> {
-        match self.peer.as_ref().and_then(crate::mailbox::server_for) {
+        let mut servers = match self.peer.as_ref().and_then(crate::mailbox::server_for) {
             Some((name, command, args)) => vec![McpServer::Stdio(
                 McpServerStdio::new(name, command).args(args),
             )],
             None => vec![],
-        }
+        };
+        servers.extend(self.mcp.iter().cloned());
+        servers
+    }
+    /// MCP servers this agent did not get, as (name, reason), for whoever is reporting.
+    pub fn mcp_skipped(&self) -> &[(String, String)] {
+        &self.mcp_skipped
     }
     /// Coordination instructions naming this session's peer.
     /// This session's identity in the room, so the seat it fills can be joined to what it

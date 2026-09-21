@@ -54,7 +54,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 11] = [
+const COMMANDS: [Command; 12] = [
     Command {
         name: "help",
         aliases: &[],
@@ -124,6 +124,13 @@ const COMMANDS: [Command; 11] = [
         usage: "[forget <id>]",
         about: "Show what Orochi remembers about you and this repository",
         anytime: true,
+    },
+    Command {
+        name: "mcp",
+        aliases: &[],
+        usage: "[login <name>|logout <name>]",
+        about: "Show the MCP servers agents are given here, and sign in to the remote ones",
+        anytime: false,
     },
     Command {
         name: "exit",
@@ -322,6 +329,9 @@ struct Session<'a> {
     approval: Approval,
     twice: Twice,
     quit: bool,
+    /// `/mcp`, kept for the loop to run once the key that typed it has been handled: it is the
+    /// one command that needs the network and a browser, so it is not over when `dispatch` is.
+    mcp: Option<String>,
     /// Where this conversation is written down, when `activity.enabled`.
     recorded: Option<Recorded>,
     /// No terminal at either end: the turns come from the store and so do the answers.
@@ -503,6 +513,7 @@ pub async fn run_with(
         approval,
         twice: Twice::default(),
         quit: false,
+        mcp: None,
         headless,
         recorded: Recorded::open(config, store, root, options_thread.as_ref(), headless).map(
             |mut recorded| {
@@ -528,6 +539,8 @@ impl Session<'_> {
         let mut resized =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?;
         let mut mail = mail_ticker();
+        // Claude Code asks at startup, before anything is typed; so does this.
+        self.review_repository_servers().await;
         loop {
             let message = loop {
                 if self.quit {
@@ -537,7 +550,10 @@ impl Session<'_> {
                 if let Some(queued) = self.queue.pop_front() {
                     match self.dispatch(queued, false) {
                         Some(message) => break Some(message),
-                        None => continue,
+                        None => {
+                            self.run_mcp().await;
+                            continue;
+                        }
                     }
                 }
                 let key = tokio::select! {
@@ -557,6 +573,7 @@ impl Session<'_> {
                         if let Some(message) = self.dispatch(message, false) {
                             break Some(message);
                         }
+                        self.run_mcp().await;
                     }
                     Action::Cycle => {
                         self.approval.cycle();
@@ -626,6 +643,7 @@ impl Session<'_> {
                 self.view.rows(status);
             }
             "memory" => self.memory(argument),
+            "mcp" => self.mcp = Some(argument.to_owned()),
             "new" | "clear" => {
                 // Moving on to something else says nothing about the last answer.
                 self.awaiting = None;
@@ -1135,6 +1153,9 @@ struct Pending {
 
 impl Session<'_> {
     async fn run_turn(&mut self, message: Message) -> Result<()> {
+        // A server added to `.mcp.json` since the last turn is asked about before this one uses
+        // it, so nothing reaches a console turn undecided.
+        self.review_repository_servers().await;
         // Carrying on after reading the answer is a (small) vote for how it was routed. Carrying
         // on after stopping it is not: that is usually the user adding what they forgot to say.
         if let Some(Awaiting {
@@ -1347,6 +1368,125 @@ impl Session<'_> {
         self.view.rows(rows);
     }
 
+    /// `/mcp`: what the agents here are given, and the browser sign-in for a remote server.
+    /// The token is Orochi's, so signing in once covers whichever agent the next turn picks.
+    async fn run_mcp(&mut self) {
+        let Some(argument) = self.mcp.take() else {
+            return;
+        };
+        let choices = match self.store.repository_id(self.root) {
+            Ok(repository) => crate::mcp::choices(self.data, &repository),
+            Err(_) => Default::default(),
+        };
+        let (inventory, notes) = crate::mcp::inventory(&self.config.mcp, self.root, &choices);
+        let vault = crate::mcp::oauth::Vault::new(self.data, &self.config.mcp);
+        let named = |verb: &str| -> Option<crate::config::McpServerConfig> {
+            let name = argument[verb.len()..].trim();
+            inventory
+                .iter()
+                .find(|(s, _)| s.name == name)
+                .map(|(s, _)| s.clone())
+        };
+        if argument.starts_with("logout") {
+            match named("logout") {
+                Some(server) => match vault.forget(&server.name) {
+                    Ok(true) => self
+                        .view
+                        .note(&format!("Forgot the token for {}", server.name)),
+                    Ok(false) => self
+                        .view
+                        .note(&format!("Nothing stored for {}", server.name)),
+                    Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
+                },
+                None => self
+                    .view
+                    .result(WARN, "/mcp logout <name> · /mcp lists the servers"),
+            }
+            return;
+        }
+        if argument.starts_with("login") {
+            let Some(server) = named("login") else {
+                self.view
+                    .result(WARN, "/mcp login <name> · /mcp lists the servers");
+                return;
+            };
+            self.view.note(&format!("Signing in to {}…", server.name));
+            let pending = match crate::mcp::oauth::begin(&server, &vault).await {
+                Ok(pending) => pending,
+                Err(error) => return self.view.result(ERR, &format!("✗ {error:#}")),
+            };
+            let rows = vec![
+                self.view
+                    .paint(MUTED, "Opened your browser. If it did not open:"),
+                pending.url().to_owned(),
+                self.view.paint(
+                    MUTED,
+                    "Waiting · over SSH, paste here the address the browser ended up at · Esc stops",
+                ),
+            ];
+            self.view.rows(rows);
+            pending.open_browser();
+            // Two ways in at once: this machine's loopback socket, and the address pasted back
+            // by hand — over SSH the browser is elsewhere and never reaches this socket.
+            let cancelled = || anyhow::anyhow!("sign-in cancelled");
+            let code = loop {
+                tokio::select! {
+                    result = pending.wait() => break result,
+                    key = self.keyboard.next() => {
+                        let Some(key) = key else { break Err(cancelled()) };
+                        match press(&mut self.view.term, key, self.root) {
+                            Action::Escape | Action::Interrupt | Action::Quit => {
+                                break Err(cancelled());
+                            }
+                            Action::Send(message) => match pending.pasted(&message.text) {
+                                Ok(code) => break Ok(code),
+                                Err(error) => self.view.result(WARN, &format!("{error:#}")),
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            };
+            let signed_in = match code {
+                Ok(code) => pending.redeem(code, &vault).await,
+                Err(error) => Err(error),
+            };
+            match signed_in {
+                Ok(()) => self
+                    .view
+                    .result(OK, &format!("Signed in to {}", server.name)),
+                Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
+            }
+            return;
+        }
+        self.view.note("Checking the MCP servers…");
+        let mut rows = vec![self.view.paint(BOLD, "MCP servers")];
+        if inventory.is_empty() {
+            rows.push(
+                self.view
+                    .paint(MUTED, "  none configured for this directory"),
+            );
+        }
+        for (server, source) in &inventory {
+            let state = crate::cli::mcp_row(server, source, &vault).await;
+            let from = match source {
+                crate::mcp::Source::Configured => "",
+                crate::mcp::Source::Repository { .. } => " (.mcp.json)",
+            };
+            rows.push(format!(
+                "  {:<28} {}",
+                format!("{}{from}", server.name),
+                self.view.paint(MUTED, &state)
+            ));
+        }
+        rows.extend(notes.iter().map(|note| self.view.paint(MUTED, note)));
+        rows.push(self.view.paint(
+            MUTED,
+            "  /mcp login <name> signs in to a remote server for every agent",
+        ));
+        self.view.rows(rows);
+    }
+
     /// The session's one look back at everything the user said, for what held across it.
     /// The user is on their way out, so it says it is happening and Esc skips it.
     async fn distill(&mut self) {
@@ -1503,6 +1643,7 @@ impl Session<'_> {
                     "Yes, one agent carries it out here",
                     "No, keep the design (esc)",
                 ],
+                0,
             )
             .await;
         Some(match choice {
@@ -1514,8 +1655,13 @@ impl Session<'_> {
 
     /// A question in the pinned area, answered as Claude Code's dialogs are: ↑↓ and Enter, or
     /// an option's number. Esc and Ctrl-C close it without choosing.
-    async fn choose(&mut self, heading: Vec<String>, options: &[&str]) -> Option<usize> {
-        let mut selected = 0;
+    async fn choose(
+        &mut self,
+        heading: Vec<String>,
+        options: &[&str],
+        default: usize,
+    ) -> Option<usize> {
+        let mut selected = default;
         let choice = loop {
             let mut rows = vec![self.view.paint(MUTED, &"─".repeat(self.view.width()))];
             rows.extend(heading.iter().cloned());
@@ -1554,6 +1700,155 @@ impl Session<'_> {
         self.view.term.overlay = None;
         self.refresh_status(None);
         choice
+    }
+
+    /// Several items, each ticked or not, every one ticked to begin with: Space toggles, Enter
+    /// takes what is ticked, Esc takes nothing. `None` is Esc.
+    async fn checklist(&mut self, heading: Vec<String>, items: &[String]) -> Option<Vec<bool>> {
+        let mut ticked = vec![true; items.len()];
+        let mut selected = 0;
+        let chosen = loop {
+            let mut rows = vec![self.view.paint(MUTED, &"─".repeat(self.view.width()))];
+            rows.extend(heading.iter().cloned());
+            rows.push(String::new());
+            for (index, item) in items.iter().enumerate() {
+                let mark = if ticked[index] { "[✔]" } else { "[ ]" };
+                let label = format!("{mark} {item}");
+                rows.push(if index == selected {
+                    format!(
+                        " {} {}",
+                        self.view.paint(BRAND, "❯"),
+                        self.view.paint(&format!("1;{BRAND}"), &label)
+                    )
+                } else {
+                    format!("   {}", self.view.paint(MUTED, &label))
+                });
+            }
+            self.view.term.overlay = Some(rows);
+            self.view.term.status = self.view.paint(
+                MUTED,
+                " Space to select · Enter to enable selected · ↑↓ to navigate · Esc to reject all",
+            );
+            self.view.term.render();
+            match self.keyboard.next().await {
+                Some(Key::Up) => selected = (selected + items.len() - 1) % items.len(),
+                Some(Key::Down) => selected = (selected + 1) % items.len(),
+                Some(Key::Char(' ')) => ticked[selected] = !ticked[selected],
+                Some(Key::Enter) => break Some(ticked),
+                None | Some(Key::Escape | Key::Interrupt | Key::Eof) => break None,
+                _ => {}
+            }
+        };
+        self.view.term.overlay = None;
+        self.refresh_status(None);
+        chosen
+    }
+
+    /// The repository's own MCP servers nobody has decided about, asked about the way Claude
+    /// Code asks: before any is used, only where someone is at a terminal to answer, remembered
+    /// for this repository, and "no" both by default and on Esc — the file is the repository's,
+    /// and a server is a command. A run nobody can be asked in loads them without asking, as
+    /// Claude Code's `-p` does; that is `mcp::servers`, not this.
+    async fn review_repository_servers(&mut self) {
+        if !self.tty {
+            return;
+        }
+        let Ok(repository) = self.store.repository_id(self.root) else {
+            return;
+        };
+        let choices = crate::mcp::choices(self.data, &repository);
+        let pending = crate::mcp::pending(&self.config.mcp, self.root, &choices);
+        if pending.is_empty() {
+            return;
+        }
+        let what = |server: &crate::config::McpServerConfig| match server.transport {
+            crate::config::McpTransport::Stdio => {
+                format!("{} {}", server.command, server.args.join(" "))
+            }
+            _ => server.url.clone(),
+        };
+        let decisions: Vec<crate::mcp::Decision> = if let [(server, _)] = pending.as_slice() {
+            let heading = vec![
+                self.view.paint(
+                    WARN,
+                    &format!("New MCP server found in this project: {}", server.name),
+                ),
+                self.view
+                    .paint(MUTED, &fit(&what(server), self.view.width())),
+                self.view.paint(
+                    MUTED,
+                    "MCP servers may execute code or access system resources.",
+                ),
+            ];
+            let choice = self
+                .choose(
+                    heading,
+                    &[
+                        "Use this MCP server",
+                        "Use this and all future MCP servers in this project",
+                        "Continue without using this MCP server",
+                    ],
+                    2,
+                )
+                .await;
+            vec![match choice {
+                Some(0) => crate::mcp::Decision::Use,
+                Some(1) => crate::mcp::Decision::UseAll,
+                _ => crate::mcp::Decision::Refuse,
+            }]
+        } else {
+            let heading = vec![
+                self.view.paint(
+                    WARN,
+                    &format!("{} new MCP servers found in this project", pending.len()),
+                ),
+                self.view.paint(MUTED, "Select any you wish to enable."),
+            ];
+            let items: Vec<String> = pending
+                .iter()
+                .map(|(server, _)| {
+                    fit(
+                        &format!("{} · {}", server.name, what(server)),
+                        self.view.width() - 8,
+                    )
+                })
+                .collect();
+            match self.checklist(heading, &items).await {
+                Some(ticked) => ticked
+                    .into_iter()
+                    .map(|on| match on {
+                        true => crate::mcp::Decision::Use,
+                        false => crate::mcp::Decision::Refuse,
+                    })
+                    .collect(),
+                None => vec![crate::mcp::Decision::Refuse; pending.len()],
+            }
+        };
+        let mut using = vec![];
+        let mut refused = vec![];
+        for ((server, digest), decision) in pending.iter().zip(decisions) {
+            if let Err(error) =
+                crate::mcp::decide(self.data, &repository, &server.name, digest, decision)
+            {
+                self.view.result(ERR, &format!("✗ {error:#}"));
+            }
+            match decision {
+                crate::mcp::Decision::Refuse => refused.push(server.name.clone()),
+                _ => using.push(server.name.clone()),
+            }
+        }
+        if !using.is_empty() {
+            self.view.note(&format!(
+                "using {} from this repository's .mcp.json",
+                using.join(", ")
+            ));
+        }
+        if !refused.is_empty() {
+            self.view.note(&format!(
+                "not using {} · orochi mcp reset-project-choices asks again",
+                refused.join(", ")
+            ));
+        }
     }
 
     /// Runs the derived team and reports where it got to. The report lives under the data

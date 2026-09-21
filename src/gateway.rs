@@ -25,6 +25,8 @@ struct Session {
     cancel: Option<watch::Sender<bool>>,
     /// The thread this session is in the conversation store, opened by its first prompt.
     thread: Option<String>,
+    /// The MCP servers the client asked for, passed on to whichever agent runs each prompt.
+    mcp: Vec<crate::config::McpServerConfig>,
 }
 type Sessions = Arc<Mutex<BTreeMap<String, Session>>>;
 struct Running {
@@ -130,14 +132,19 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
                 .agent_info(Implementation::new("orochi", env!("CARGO_PKG_VERSION"))))
         }, agent_client_protocol::on_receive_request!())
         .on_receive_request(async move |request: NewSessionRequest, responder, _cx| {
-            if !new_init.load(Ordering::Acquire) || !request.cwd.is_absolute() || !request.mcp_servers.is_empty() || !request.additional_directories.is_empty() {
+            if !new_init.load(Ordering::Acquire) || !request.cwd.is_absolute() || !request.additional_directories.is_empty() {
                 return responder.respond_with_error(invalid());
             }
+            // The client's own MCP servers are the session's, whichever agent Orochi picks for
+            // each prompt. Only stdio, which is all Orochi advertises and all every agent owes.
+            let Ok(mcp) = crate::mcp::forwarded(&request.mcp_servers) else {
+                return responder.respond_with_error(invalid());
+            };
             let root = match request.cwd.canonicalize() { Ok(p) if p.is_dir() => p, _ => return responder.respond_with_error(invalid()) };
             let mut sessions = new_sessions.lock().unwrap();
             if sessions.len() >= 128 { return responder.respond_with_internal_error("session limit reached; restart the gateway"); }
             let id = uuid::Uuid::new_v4().to_string();
-            sessions.insert(id.clone(), Session { root, history: String::new(), cancel: None, thread: None });
+            sessions.insert(id.clone(), Session { root, history: String::new(), cancel: None, thread: None, mcp });
             responder.respond(NewSessionResponse::new(id))
         }, agent_client_protocol::on_receive_request!())
         .on_receive_notification(async move |request: CancelNotification, _cx| {
@@ -160,16 +167,23 @@ pub async fn serve(config: Config, data: PathBuf) -> anyhow::Result<()> {
             if text.trim().is_empty() { return responder.respond_with_error(invalid()); }
             let id = request.session_id.to_string();
             let (cancel, cancellation) = watch::channel(false);
-            let (root, history, thread) = {
+            let (root, history, thread, forwarded) = {
                 let mut sessions = prompt_sessions.lock().unwrap();
                 let Some(session) = sessions.get_mut(&id) else { return responder.respond_with_error(invalid()); };
                 if session.cancel.is_some() { return responder.respond_with_error(invalid()); }
                 session.cancel = Some(cancel.clone());
-                (session.root.clone(), session.history.clone(), session.thread.clone())
+                (session.root.clone(), session.history.clone(), session.thread.clone(), session.mcp.clone())
             };
             let running = Running { sessions: prompt_sessions.clone(), id: id.clone(), cancel };
             let task = if history.is_empty() { text.clone() } else { format!("Previous conversation (context):\n{history}\n\nCurrent user request:\n{text}") };
-            let config = config.clone(); let data = data.clone();
+            let mut config = config.clone(); let data = data.clone();
+            // A forwarded server is one more server this run's configuration has; the name this
+            // machine configured keeps its own server.
+            for server in forwarded {
+                if !config.mcp.servers.iter().any(|s| s.name == server.name) {
+                    config.mcp.servers.push(server);
+                }
+            }
             let (events, receiver) = mpsc::unbounded_channel();
             let (finished, done) = oneshot::channel();
             let (opened_tx, opened_rx) = oneshot::channel();

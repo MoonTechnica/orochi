@@ -13,6 +13,7 @@ pub mod gateway;
 pub mod interrupt;
 pub mod learning;
 pub mod mailbox;
+pub mod mcp;
 pub mod memory;
 pub mod policy;
 #[cfg(unix)]

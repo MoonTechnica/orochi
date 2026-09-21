@@ -107,6 +107,12 @@ fn find(command: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|p| executable(p))
 }
 
+/// An MCP server's command, resolved the way an agent's is: an absolute path as given, a bare
+/// name from an absolute `PATH` entry, nothing else. ACP asks for an absolute path.
+pub fn locate(command: &str) -> Option<PathBuf> {
+    find(command, &std::env::var_os("PATH").unwrap_or_default())
+}
+
 #[derive(Debug, Serialize)]
 pub struct Availability {
     pub installed: bool,

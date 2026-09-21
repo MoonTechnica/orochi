@@ -37,7 +37,7 @@ orochi peers --messages --json      # also show messages within the retention pe
 
 ## What agents see
 
-When an agent session starts (ACP `session/new`), Orochi passes it the stdio MCP server `orochi-mailbox` (Orochi's own executable). Under the ACP specification, every agent supports stdio MCP. It is not passed to adviser sessions.
+When an agent session starts (ACP `session/new`), Orochi passes it the stdio MCP server `orochi-mailbox` (Orochi's own executable), first and before any other. Under the ACP specification, every agent supports stdio MCP. It is not passed to adviser sessions. The MCP servers the user configured under `[mcp]` follow it in the same request; `orochi-mailbox` is a reserved name, so none of them can take its place.
 
 | Tool | Description |
 |---|---|

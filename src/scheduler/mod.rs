@@ -38,8 +38,19 @@ pub async fn discover(
     only_agent: Option<&str>,
     permission: PermissionMode,
 ) -> Result<(Vec<Client>, Vec<DiscoveryFailure>)> {
+    // A listing starts no MCP server: nothing is going to call its tools.
     discover_agents(
-        config, root, store, only_agent, permission, None, None, true, None, false,
+        config,
+        root,
+        store,
+        only_agent,
+        permission,
+        None,
+        None,
+        true,
+        None,
+        false,
+        &[],
     )
     .await
 }
@@ -56,9 +67,10 @@ pub(crate) async fn discover_as(
     model: Option<&str>,
     peer: Option<&str>,
     read_only: bool,
+    mcp: &[crate::config::McpServerConfig],
 ) -> Result<(Vec<Client>, Vec<DiscoveryFailure>)> {
     discover_agents(
-        config, root, store, only_agent, permission, events, model, false, peer, read_only,
+        config, root, store, only_agent, permission, events, model, false, peer, read_only, mcp,
     )
     .await
 }
@@ -74,6 +86,7 @@ async fn discover_agents(
     include_advisers: bool,
     peer: Option<&str>,
     read_only: bool,
+    mcp: &[crate::config::McpServerConfig],
 ) -> Result<(Vec<Client>, Vec<DiscoveryFailure>)> {
     let runtime = store.runtime()?;
     let timeout = Duration::from_secs(config.scheduler.discovery_timeout_secs);
@@ -103,6 +116,7 @@ async fn discover_agents(
     }
     let results: Vec<_> = stream::iter(configs.into_iter().map(|agent| {
         let events = events.clone();
+        let mcp = mcp.to_vec();
         async move {
             let launch = match discovery::prepare(&agent, &config.discovery, store.data_dir()).await
             {
@@ -112,7 +126,7 @@ async fn discover_agents(
             let result = tokio::time::timeout(
                 timeout,
                 Client::start_named(
-                    launch, root, permission, timeout, events, model, peer, read_only,
+                    launch, root, permission, timeout, events, model, peer, read_only, mcp,
                 ),
             )
             .await
@@ -416,8 +430,30 @@ async fn run_recorded(
             descriptor.complexity.key()
         );
     }
+    // Resolved once: every seat of this run, and any agent restarted after a failure, is given
+    // the same servers, whatever the repository's own file says afterwards.
+    let choices = crate::mcp::choices(store.data_dir(), &repository_id);
+    let (mut mcp, mut sources) = crate::mcp::servers(&config.mcp, root, &choices);
+    // The token Orochi holds travels to the agent in the server's headers: the agent is what
+    // connects. A sign-in that cannot be renewed is said here rather than at the agent's 401.
+    let vault = crate::mcp::oauth::Vault::new(store.data_dir(), &config.mcp);
+    let stale = crate::mcp::oauth::authorize(&mut mcp, &vault).await;
+    for note in stale {
+        if loud {
+            eprintln!("{note}");
+        } else {
+            report(Progress::Note(note));
+        }
+    }
+    for note in crate::mcp::once(root, std::mem::take(&mut sources)) {
+        if loud {
+            eprintln!("{note}");
+        } else {
+            report(Progress::Note(note));
+        }
+    }
     let (mut clients, failures) = tokio::select! {
-        result = discover_as(config, root, store, options.overrides.agent.as_deref(), options.permission, events.clone(), options.overrides.model.as_deref(), options.peer.as_deref(), options.read_only) => result?,
+        result = discover_as(config, root, store, options.overrides.agent.as_deref(), options.permission, events.clone(), options.overrides.model.as_deref(), options.peer.as_deref(), options.read_only, &mcp) => result?,
         _ = since.wait() => return Ok(130),
     };
     if !options.dry_run {
@@ -430,6 +466,21 @@ async fn run_recorded(
                     error: failure.error.clone(),
                 });
             }
+        }
+    }
+    // A tool that was meant for this run and an agent cannot take is said beside the agents
+    // that could not be started at all, naming the one that could not take it.
+    for (agent, name, reason) in clients.iter().flat_map(|client| {
+        client
+            .mcp_skipped()
+            .iter()
+            .map(|(name, reason)| (&client.config.id, name, reason))
+    }) {
+        let note = format!("MCP server {name} left out for {agent}: {reason}");
+        if loud {
+            eprintln!("{note}");
+        } else {
+            report(Progress::Note(note));
         }
     }
     let mut attempted = BTreeSet::new();
@@ -922,7 +973,7 @@ async fn run_recorded(
                 {
                     let timeout = Duration::from_secs(config.scheduler.discovery_timeout_secs);
                     let restarted = tokio::select! {
-                        result = tokio::time::timeout(timeout, Client::start_named(failed_config, root, options.permission, timeout, events.clone(), None, options.peer.as_deref(), options.read_only)) => result,
+                        result = tokio::time::timeout(timeout, Client::start_named(failed_config, root, options.permission, timeout, events.clone(), None, options.peer.as_deref(), options.read_only, mcp.clone())) => result,
                         _ = since.wait() => return Ok(130),
                     };
                     if let Ok(Ok(client)) = restarted {

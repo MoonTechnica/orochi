@@ -121,6 +121,11 @@ pub enum Command {
         #[arg(long)]
         discover: bool,
     },
+    /// Show the MCP servers agents are given here, and sign in to the remote ones.
+    Mcp {
+        #[command(subcommand)]
+        command: Option<McpCommand>,
+    },
     /// List agents Orochi is running in this repository (all worktrees) and their messages.
     Peers {
         #[arg(long)]
@@ -229,6 +234,25 @@ pub enum PolicyCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum McpCommand {
+    /// Show every server, where it came from, and whether it is signed in.
+    List,
+    /// Sign in to a remote server in a browser; the token is Orochi's, for every agent.
+    Login {
+        name: String,
+        /// Print the authorization URL and take the address the browser ended up at, for a
+        /// session whose browser is on another machine.
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Forget one server's token.
+    Logout { name: String },
+    /// Forget which of this repository's `.mcp.json` servers were approved or refused, so the
+    /// next console session asks again (as `claude mcp reset-project-choices`).
+    ResetProjectChoices,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum ThreadCommand {
     /// Show one thread's timeline, seats and changed files.
     Show { id: String },
@@ -303,6 +327,11 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 let mut config = Config::load(&paths.config)?;
                 for agent in &mut config.agents {
                     for value in agent.env.values_mut() {
+                        *value = "[redacted]".into();
+                    }
+                }
+                for server in &mut config.mcp.servers {
+                    for value in server.env.values_mut().chain(server.headers.values_mut()) {
                         *value = "[redacted]".into();
                     }
                 }
@@ -508,6 +537,94 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 },
             )
             .await;
+        }
+        Some(Command::Mcp { command }) => {
+            let repository = store.repository_id(&root)?;
+            let choices = crate::mcp::choices(&paths.data, &repository);
+            let (inventory, notes) = crate::mcp::inventory(&config.mcp, &root, &choices);
+            let vault = crate::mcp::oauth::Vault::new(&paths.data, &config.mcp);
+            match command.unwrap_or(McpCommand::List) {
+                McpCommand::List => {
+                    let mut rows = Vec::new();
+                    for (server, source) in &inventory {
+                        rows.push((server, source, mcp_row(server, source, &vault).await));
+                    }
+                    if cli.json {
+                        let rows: Vec<_> = rows
+                            .iter()
+                            .map(|(server, source, state)| {
+                                let from = match source {
+                                    crate::mcp::Source::Configured => "config",
+                                    crate::mcp::Source::Repository { .. } => ".mcp.json",
+                                };
+                                json!({"name": server.name, "from": from, "state": state})
+                            })
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(
+                                &json!({"servers": rows, "notes": notes})
+                            )?
+                        );
+                    } else {
+                        if inventory.is_empty() {
+                            println!("No MCP servers are configured for this directory.");
+                        }
+                        for (server, source, state) in &rows {
+                            let from = match source {
+                                crate::mcp::Source::Configured => "",
+                                crate::mcp::Source::Repository { .. } => " (.mcp.json)",
+                            };
+                            println!("{:<28} {state}", format!("{}{from}", server.name));
+                        }
+                        for note in notes {
+                            println!("{note}");
+                        }
+                    }
+                }
+                McpCommand::Login { name, no_browser } => {
+                    let (server, _) = inventory
+                        .iter()
+                        .find(|(s, _)| s.name == name)
+                        .with_context(|| {
+                            format!("no MCP server {name}; `orochi mcp` lists them")
+                        })?;
+                    let pending = crate::mcp::oauth::begin(server, &vault).await?;
+                    if no_browser {
+                        // The browser is on another machine, so nothing will reach this
+                        // loopback socket; the address it ends up at comes back by hand.
+                        println!("Open this to sign in to {name}:\n{}", pending.url());
+                        print!("\nPaste the address the browser ended up at: ");
+                        std::io::stdout().flush()?;
+                        let mut pasted = String::new();
+                        std::io::stdin().read_line(&mut pasted)?;
+                        let code = pending.pasted(&pasted)?;
+                        pending.redeem(code, &vault).await?;
+                    } else {
+                        println!(
+                            "Opening the browser to sign in to {name}. If it did not open:\n{}",
+                            pending.url()
+                        );
+                        pending.open_browser();
+                        pending.finish(&vault).await?;
+                    }
+                    println!("Signed in to {name}.");
+                }
+                McpCommand::Logout { name } => match vault.forget(&name)? {
+                    true => println!("Forgot the token for {name}."),
+                    false => println!("Nothing stored for {name}."),
+                },
+                McpCommand::ResetProjectChoices => {
+                    match crate::mcp::reset(&paths.data, &repository)? {
+                        true => println!(
+                            "Forgot every choice about this repository's .mcp.json servers; \
+                             the next console session asks again."
+                        ),
+                        false => println!("Nothing was chosen about this repository's servers."),
+                    }
+                }
+            }
+            return Ok(0);
         }
         Some(Command::Peers { messages, say, to }) => {
             let mailbox = crate::mailbox::Mailbox::open(&paths.data, &config.mailbox)?;
@@ -1232,6 +1349,44 @@ fn thread_mark(status: &str) -> &'static str {
         "failed" => "×",
         "unread" => "●",
         _ => "○",
+    }
+}
+
+/// Where one server stands. A repository server nobody has decided about is not asked — it is
+/// not connected to until it is approved, in the words `claude mcp list` uses.
+pub(crate) async fn mcp_row(
+    server: &crate::config::McpServerConfig,
+    source: &crate::mcp::Source,
+    vault: &crate::mcp::oauth::Vault,
+) -> String {
+    use crate::mcp::{Approval, Source};
+    match source {
+        Source::Repository {
+            approval: Approval::Pending,
+            ..
+        } => "⏸ Pending approval (run orochi to approve)".into(),
+        Source::Repository {
+            approval: Approval::Rejected,
+            ..
+        } => "✘ Rejected (orochi mcp reset-project-choices asks again)".into(),
+        _ => mcp_state(&crate::mcp::oauth::state(server, vault).await),
+    }
+}
+
+/// One phrase for where a server stands, the same words in the terminal and in `--json`.
+pub(crate) fn mcp_state(state: &crate::mcp::oauth::State) -> String {
+    use crate::mcp::oauth::State;
+    match state {
+        State::Stdio => "local command".into(),
+        State::Configured => "signed in with a configured header".into(),
+        State::SignedIn { expires_in: None } => "signed in".into(),
+        State::SignedIn {
+            expires_in: Some(seconds),
+        } => format!("signed in, {} minutes left", (seconds / 60).max(0)),
+        State::Stale => "sign in again (/mcp login)".into(),
+        State::NeedsSignIn => "not signed in (/mcp login)".into(),
+        State::Open => "no sign-in needed".into(),
+        State::Unreachable(error) => format!("unreachable: {error}"),
     }
 }
 

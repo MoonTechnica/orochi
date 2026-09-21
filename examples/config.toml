@@ -81,3 +81,27 @@ max_age_secs = 300
 [council]
 enabled = false
 # See docs/adaptive-routing.md for frontier and council.members settings.
+
+# MCP servers attached to every agent session, beside Orochi's own `orochi-mailbox`.
+# Advisers and the classifier get none. `http` / `sse` need an agent that advertises them.
+[mcp]
+# Read the target repository's own `.mcp.json` too, the way the CLIs do. An MCP server is a
+# command and this is the one thing the repository contributes, so `false` turns it off.
+trust_repository = true
+# The console asks before using one of the repository's servers, as Claude Code does; `true`
+# uses them all without asking (Claude Code's enableAllProjectMcpServers, for every project).
+enable_all_repository_servers = false
+# Remote servers' OAuth tokens: the macOS keychain, or a 0600 file elsewhere or when false.
+keychain = true
+# [[mcp.servers]]
+# name = "notes"
+# command = "mcp-notes"        # absolute, or a name found on PATH
+# args = ["--root", "/srv/notes"]
+# env = { NOTES_TOKEN = "..." }
+# [[mcp.servers]]
+# name = "docs"
+# type = "http"                # "stdio" (default), "http" or "sse"
+# url = "https://mcp.example.com/"
+# headers = { Authorization = "Bearer ${DOCS_TOKEN}" }   # ${VAR} is read from the environment
+# oauth_client_id = ""         # only for a server that registers no client on the spot;
+#                              # `orochi mcp login docs` signs in and stores the token

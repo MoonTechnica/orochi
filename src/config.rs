@@ -22,6 +22,7 @@ pub struct Config {
     pub council: CouncilConfig,
     pub quota: QuotaConfig,
     pub mailbox: MailboxConfig,
+    pub mcp: McpConfig,
     pub activity: ActivityConfig,
 }
 impl Default for Config {
@@ -45,9 +46,67 @@ impl Default for Config {
             council: CouncilConfig::default(),
             quota: QuotaConfig::default(),
             mailbox: MailboxConfig::default(),
+            mcp: McpConfig::default(),
             activity: ActivityConfig::default(),
         }
     }
+}
+
+/// MCP servers every agent session is given, beside Orochi's own mailbox server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpConfig {
+    pub servers: Vec<McpServerConfig>,
+    /// Also give them the servers the target repository names in its own `.mcp.json`, the way
+    /// the CLIs themselves read it. On: a repository that ships one ships it for the agent
+    /// working there. It is the one thing Orochi takes from the repository, so every entry
+    /// still passes `mcp::check`, the console asks before using one, and a run nobody can be
+    /// asked in says which servers came from it.
+    pub trust_repository: bool,
+    /// Use every repository's servers without asking: Claude Code's
+    /// `enableAllProjectMcpServers`, for every project at once.
+    pub enable_all_repository_servers: bool,
+    /// Keep remote servers' OAuth tokens in the macOS keychain, as Claude Code keeps its own.
+    /// Off, or on any other system, they are a `0600` file beside Orochi's data.
+    pub keychain: bool,
+}
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            servers: vec![],
+            trust_repository: true,
+            enable_all_repository_servers: false,
+            keychain: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Http,
+    Sse,
+}
+
+/// One MCP server, in the shape `.mcp.json` already uses: a command, or a URL.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct McpServerConfig {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub transport: McpTransport,
+    /// stdio: the executable, absolute or a bare name on PATH.
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    /// http/sse: the endpoint, and the headers each request to it carries.
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    /// http/sse: the OAuth client this machine was given by hand, for a server that registers
+    /// none on the spot. Empty asks the server to register one (`orochi mcp login`).
+    pub oauth_client_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -576,6 +635,15 @@ impl Config {
                 && (1..=1000).contains(&self.mailbox.max_messages_per_hour),
             "mailbox.retention_secs must be 60..=2592000 and max_messages_per_hour 1..=1000"
         );
+        let mut servers = std::collections::BTreeSet::new();
+        for server in &self.mcp.servers {
+            crate::mcp::check(server)?;
+            ensure!(
+                servers.insert(&server.name),
+                "duplicate MCP server: {}",
+                server.name
+            );
+        }
         ensure!(
             (0..=3650).contains(&self.activity.retention_days),
             "activity.retention_days must be 0..=3650 (0 keeps threads until deleted)"

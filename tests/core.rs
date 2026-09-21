@@ -118,6 +118,7 @@ fn caps(models: &[&str]) -> Capabilities {
         embedded: true,
         model_selector: None,
         legacy_models: false,
+        mcp: Default::default(),
         models: models
             .iter()
             .map(|m| ModelCapabilities {
@@ -1943,4 +1944,287 @@ fn leaving_a_mode_is_not_a_change_and_is_not_refused() {
         "Bash: rm -rf",
         "Bash"
     )));
+}
+
+/// MCP servers are the user's own tools, so they come from the user's own configuration: a
+/// repository names none unless it has been trusted by hand, and Orochi's own server keeps its
+/// name whatever anyone else calls theirs.
+mod mcp {
+    use orochi::config::{Config, McpServerConfig, McpTransport};
+
+    fn stdio(name: &str, command: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.into(),
+            command: command.into(),
+            ..Default::default()
+        }
+    }
+    fn remote(name: &str, url: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.into(),
+            transport: McpTransport::Http,
+            url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_repositorys_own_file_is_read_but_never_names_what_orochi_would_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".mcp.json"),
+            r#"{"mcpServers": {"repo": {"command": "python3"},
+                               "notes": {"command": "/usr/bin/false"},
+                               "orochi-mailbox": {"command": "python3"},
+                               "relative": {"command": "./tools/serve.sh"}}}"#,
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.mcp.servers = vec![stdio("notes", "python3")];
+
+        let (servers, notes) = orochi::mcp::servers(&config.mcp, dir.path(), &Default::default());
+        let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["notes", "repo"],
+            "it adds what it alone names: the configured server keeps its name, Orochi's own \
+             is reserved, and a relative command is never run"
+        );
+        assert_eq!(
+            servers[0].command, "python3",
+            "the user's own entry, not the repository's"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("using repo from")),
+            "a run says what the repository contributed: {notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("relative")),
+            "and what it would not run: {notes:?}"
+        );
+        // Said once per repository, not on every turn of a conversation.
+        assert!(!orochi::mcp::once(dir.path(), notes.clone()).is_empty());
+        assert!(orochi::mcp::once(dir.path(), notes).is_empty());
+
+        config.mcp.trust_repository = false;
+        let (servers, notes) = orochi::mcp::servers(&config.mcp, dir.path(), &Default::default());
+        assert_eq!(servers.len(), 1, "turned off, the file is not read");
+        assert!(notes.is_empty());
+    }
+
+    /// Claude Code's `.mcp.json` approvals, kept in Orochi's own data because the repository is
+    /// never written to: undecided until asked, "no" remembered, and an approved entry that the
+    /// file later rewrites is undecided again — that rewrite is how a trusted name would be made
+    /// to start something else.
+    #[test]
+    fn a_repository_server_is_used_as_decided_and_asked_about_again_once_its_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let file = |command: &str| {
+            std::fs::write(
+                dir.path().join(".mcp.json"),
+                format!(
+                    r#"{{"mcpServers": {{"lint": {{"command": "{command}"}},
+                                        "docs": {{"command": "python3"}}}}}}"#
+                ),
+            )
+            .unwrap()
+        };
+        file("python3");
+        let config = Config::default();
+        let names = |choices: &orochi::mcp::Choices| -> Vec<String> {
+            orochi::mcp::servers(&config.mcp, dir.path(), choices)
+                .0
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        };
+        let pending = |choices: &orochi::mcp::Choices| -> Vec<(String, String)> {
+            orochi::mcp::pending(&config.mcp, dir.path(), choices)
+                .into_iter()
+                .map(|(s, digest)| (s.name, digest))
+                .collect()
+        };
+
+        let undecided = orochi::mcp::choices(data.path(), "repo");
+        assert_eq!(pending(&undecided).len(), 2);
+        assert_eq!(
+            names(&undecided).len(),
+            2,
+            "a run nobody can ask in loads what is undecided, as Claude Code's -p does"
+        );
+        let (_, notes) = orochi::mcp::servers(&config.mcp, dir.path(), &undecided);
+        assert!(
+            notes.iter().any(|n| n.contains("without asking")),
+            "{notes:?}"
+        );
+
+        let asked = pending(&undecided);
+        let digest = |name: &str| asked.iter().find(|(n, _)| n == name).unwrap().1.clone();
+        use orochi::mcp::Decision;
+        orochi::mcp::decide(data.path(), "repo", "lint", &digest("lint"), Decision::Use).unwrap();
+        orochi::mcp::decide(
+            data.path(),
+            "repo",
+            "docs",
+            &digest("docs"),
+            Decision::Refuse,
+        )
+        .unwrap();
+        let decided = orochi::mcp::choices(data.path(), "repo");
+        assert!(pending(&decided).is_empty());
+        assert_eq!(
+            names(&decided),
+            vec!["lint"],
+            "refused is never loaded, anywhere"
+        );
+        let (_, notes) = orochi::mcp::servers(&config.mcp, dir.path(), &decided);
+        assert!(
+            !notes.iter().any(|n| n.contains("without asking")),
+            "an approved server was the user's decision and is not announced: {notes:?}"
+        );
+        assert!(
+            orochi::mcp::choices(data.path(), "another")
+                .enabled
+                .is_empty(),
+            "one repository's choices are not another's"
+        );
+
+        file("/usr/bin/false");
+        let rewritten = orochi::mcp::choices(data.path(), "repo");
+        assert_eq!(
+            pending(&rewritten)
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect::<Vec<_>>(),
+            vec!["lint"],
+            "the approved entry, rewritten, is asked about again"
+        );
+
+        orochi::mcp::decide(
+            data.path(),
+            "repo",
+            "lint",
+            &digest("lint"),
+            Decision::UseAll,
+        )
+        .unwrap();
+        assert!(
+            pending(&orochi::mcp::choices(data.path(), "repo")).is_empty(),
+            "\"all future servers in this project\" approves what the file says next"
+        );
+        assert!(orochi::mcp::reset(data.path(), "repo").unwrap());
+        assert_eq!(
+            pending(&orochi::mcp::choices(data.path(), "repo")).len(),
+            2,
+            "reset-project-choices asks about everything again"
+        );
+    }
+
+    #[test]
+    fn a_configured_server_is_refused_a_reserved_name_a_relative_command_and_a_plaintext_url() {
+        let refused = |server: McpServerConfig| {
+            let mut config = Config::default();
+            config.mcp.servers = vec![server];
+            config.validate().is_err()
+        };
+        assert!(refused(stdio("orochi-mailbox", "python3")));
+        assert!(refused(stdio("notes", "./serve.sh")));
+        assert!(refused(stdio("notes", "")));
+        assert!(refused(stdio("notes with spaces", "python3")));
+        assert!(refused(remote("notes", "http://example.com/mcp")));
+        assert!(refused(McpServerConfig {
+            url: "https://example.com/mcp".into(),
+            ..stdio("notes", "python3")
+        }));
+        let mut config = Config::default();
+        config.mcp.servers = vec![stdio("notes", "python3"), stdio("notes", "/usr/bin/false")];
+        assert!(config.validate().is_err(), "one name, one server");
+
+        let mut config = Config::default();
+        config.mcp.servers = vec![
+            stdio("notes", "python3"),
+            stdio("absolute", "/usr/bin/false"),
+            remote("remote", "https://example.com/mcp"),
+            remote("local", "http://localhost:3000/mcp"),
+        ];
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn an_agent_is_given_the_stdio_servers_it_must_support_and_told_what_it_cannot_take() {
+        let servers = vec![
+            stdio("notes", "python3"),
+            stdio("gone", "orochi-no-such-executable"),
+            remote("remote", "https://example.com/mcp"),
+        ];
+        let (attached, skipped) = orochi::mcp::attach(&servers, Default::default());
+        let named: Vec<String> = attached
+            .iter()
+            .map(|s| {
+                serde_json::to_value(s).unwrap()["name"]
+                    .as_str()
+                    .unwrap()
+                    .into()
+            })
+            .collect();
+        assert_eq!(named, vec!["notes"]);
+        let command = serde_json::to_value(&attached[0]).unwrap()["command"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            std::path::Path::new(&command).is_absolute(),
+            "ACP asks for an absolute path: {command}"
+        );
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert!(skipped.iter().any(|(name, _)| name == "gone"));
+        assert!(skipped.iter().any(|(name, _)| name == "remote"));
+
+        let support = orochi::mcp::Support {
+            http: true,
+            sse: false,
+        };
+        let (attached, skipped) = orochi::mcp::attach(&servers, support);
+        assert_eq!(
+            attached.len(),
+            2,
+            "an agent that says it takes http gets it"
+        );
+        assert_eq!(skipped.len(), 1);
+    }
+
+    /// Orochi advertises no MCP transport beyond stdio, so a client that sends another one is
+    /// sending what it was never offered.
+    #[test]
+    fn a_client_session_takes_stdio_servers_and_refuses_what_orochi_never_advertised() {
+        let server = |value: serde_json::Value| {
+            serde_json::from_value::<Vec<agent_client_protocol::schema::v1::McpServer>>(
+                serde_json::json!([value]),
+            )
+            .unwrap()
+        };
+        let forwarded = orochi::mcp::forwarded(&server(serde_json::json!({
+            "name": "notes", "command": "/usr/bin/false", "args": ["--quiet"],
+            "env": [{"name": "TOKEN", "value": "x"}]
+        })))
+        .unwrap();
+        assert_eq!(forwarded.len(), 1);
+        assert_eq!(forwarded[0].command, "/usr/bin/false");
+        assert_eq!(forwarded[0].args, vec!["--quiet"]);
+        assert_eq!(forwarded[0].env["TOKEN"], "x");
+
+        assert!(
+            orochi::mcp::forwarded(&server(serde_json::json!({
+                "type": "http", "name": "remote", "url": "https://example.com/mcp", "headers": []
+            })))
+            .is_err()
+        );
+        assert!(
+            orochi::mcp::forwarded(&server(serde_json::json!({
+                "name": "orochi-mailbox", "command": "/usr/bin/false", "args": [], "env": []
+            })))
+            .is_err()
+        );
+    }
 }

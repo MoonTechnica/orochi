@@ -238,6 +238,7 @@ Differences from a normal run:
 | `/peers` | Other Agents running in the same repository, with their working directory, branch, route and status |
 | `/status` | Working directory, the continuing Agent, model and session, and the answering policy |
 | `/memory` | What Orochi remembers about you and this repository. `/memory forget <id>` removes one item |
+| `/mcp` | The MCP servers agents here are given and where each stands (signed in, pending approval, rejected). `/mcp login <name>` signs in through a browser, or by pasting back the address it ended up at; `/mcp logout <name>` forgets the token |
 | `/exit` (`/quit`) | Quit |
 | Typing `/` | Matching commands are listed above the input; ↑↓ select one, Tab or Enter takes it |
 | Tab while typing `@` | Complete a file name and attach it |
@@ -312,6 +313,65 @@ repo_chars = 2500     # budget for this repository's notes
 ```
 
 Specifying `agents` replaces the default 4 entries. Multiple custom IDs can be registered. If an Agent can use a browser or web search, declare `browser` / `web` explicitly. These two items are not inferred from ACP's standard capabilities alone.
+
+### MCP servers
+
+The MCP servers declared here are attached to every agent session Orochi starts, whichever agent it picks, beside Orochi's own `orochi-mailbox` server. Routing advisers and the classifier get none: they run in an empty temporary directory with permissions denied and have nothing to call.
+
+```toml
+[mcp]
+trust_repository = true                # default: read the repository's own .mcp.json (below)
+enable_all_repository_servers = false  # default: ask before using one (Claude Code's enableAllProjectMcpServers)
+keychain = true                        # default: tokens in the macOS keychain; a 0600 file elsewhere
+
+[[mcp.servers]]
+name = "notes"
+command = "mcp-notes"      # absolute, or a name found on PATH
+args = ["--root", "/srv/notes"]
+env = { NOTES_TOKEN = "${NOTES_TOKEN}" }
+
+[[mcp.servers]]
+name = "docs"
+type = "http"              # "stdio" (default), "http" or "sse"
+url = "https://mcp.example.com/"
+# oauth_client_id = "..."  # only for a server that registers no client on the spot
+```
+
+- A stdio command is resolved to an absolute path the same way agent executables are, because ACP requires one; a relative `PATH` entry is never used. A command that cannot be found is reported and the session starts without it
+- `http` and `sse` go only to an agent that advertises them in `mcpCapabilities`; every agent must accept stdio. A server an agent cannot take is left out of that agent's session and named on stderr (one muted line in the console). Measured on 2026-09-22: claude-agent-acp 0.77.0 advertises both, codex-acp only `http`
+- `${VAR}` and `${VAR:-default}` are expanded in `env` and `headers` values, so a token stays in the environment rather than in the configuration file (Codex's `--bearer-token-env-var`). A variable that is set nowhere leaves that server out, naming the variable
+- `orochi-mailbox` is Orochi's own name and cannot be taken. `env` and `headers` values are redacted by `orochi config show`, and no part of this configuration reaches telemetry
+
+**Signing in to a remote server (OAuth).** Orochi is the OAuth client, not the agent: it holds the token and hands every session the authorized server, so signing in once covers whichever agent the next turn picks, including a CLI that cannot sign in on its own.
+
+```sh
+orochi mcp                          # every server, where it came from, and where it stands
+orochi mcp login docs               # opens a browser; the token is stored for every agent
+orochi mcp login docs --no-browser  # prints the URL and takes the address the browser ended up at
+orochi mcp logout docs
+```
+
+`/mcp`, `/mcp login <name>` and `/mcp logout <name>` do the same from the console. While a sign-in waits, pasting the address the browser ended up at finishes it, so a console reached over SSH (where nothing can reach this machine's loopback address) works too.
+
+The shape follows the CLIs Orochi drives, checked against the installed `claude mcp` and `codex mcp` on 2026-09-22: `login` / `logout` per server and `--no-browser` are theirs, `oauth_client_id` is Codex's `--oauth-client-id`, and tokens go to the macOS keychain as Claude Code's do.
+
+- The flow is the MCP specification's (2025-11-25): the server's `401` names its protected resource metadata (RFC 9728) or it is looked for at the well-known places in the specified order; that names the authorization server, whose metadata is tried in the specified order (for an issuer with a path: RFC 8414 insertion, OpenID Connect insertion, OpenID Connect appending); a client ID given by hand comes first, else one is registered on the spot (RFC 7591); the scope a `401` asks for outranks the resource's `scopes_supported`; and the code is exchanged with PKCE (S256) against an exact `http://127.0.0.1:<port>/callback` redirect with `state` checked, naming the resource the token is for (RFC 8707)
+- A server whose metadata does not offer PKCE is refused before anything is registered, as the specification requires. One with no metadata at all, or no way to register a client and no `oauth_client_id`, says so and suggests putting a token in its `headers`
+- Tokens are refreshed before a run, not at the agent's `401`; one that can no longer be refreshed says so in the run. A credential you configured yourself in `headers` is never replaced by a stored one
+- On macOS tokens are kept in the login keychain (service `orochi-mcp`, one item per server, written through `security`'s stdin so the token never appears in `ps`; an item too large for its 4 KiB line falls back to argv, as Claude Code does). Elsewhere, or with `keychain = false`, they are `<data-dir>/mcp/credentials.json` (`0600`). A file left from before the keychain moves there the first time it is read
+
+**The target repository's own `.mcp.json`** is read as well, in the format the CLIs use, because a repository that ships one ships it for the agent working there. `trust_repository = false` turns this off. It is the one thing Orochi takes from the target repository, and an MCP server is a command, so it is handled as Claude Code handles it (2.1.278, read from the installed binary):
+
+- **The console asks first.** At startup, and before any turn after the file gained a server, it shows `New MCP server found in this project: <name>` with **Use this MCP server** / **Use this and all future MCP servers in this project** / **Continue without using this MCP server**. "Continue without" is the default and Esc means it too. Several new servers come as one checklist (`N new MCP servers found in this project`, all ticked, Space toggles, Esc rejects all)
+- The answer is remembered for the repository, in Orochi's own data (`<data-dir>/mcp/choices.json`) because the repository is never written to. `orochi mcp reset-project-choices` forgets it, and the next console session asks again. `orochi mcp` lists an undecided server as `⏸ Pending approval` and a refused one as `✘ Rejected`
+- An approval covers the entry as written. If the file later rewrites an approved entry, it is asked about again: that rewrite is how a name you trusted would be made to start something else. (Claude Code approves by name only)
+- **A run nobody can be asked in** (a one-shot run, `serve`, `collaborate`, a headless host) uses undecided servers without asking, as Claude Code does in `-p` and SDK sessions, and says so once per repository (`using notes from this repository's .mcp.json without asking`). A refused server is never used anywhere
+- A repository cannot send an agent's own credentials to a server it names: in a remote entry's `url` and `headers`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `AWS_BEARER_TOKEN_BEDROCK`, `HTTPS_PROXY` and `NPM_TOKEN` (Claude Code's list), plus what the other agents Orochi drives sign in with (`OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `CLAUDE_CODE_OAUTH_TOKEN`, the AWS keys) and the other proxy variables, read as empty. Other variables expand as usual
+- A repository entry never replaces a server of the same name declared above, and one Orochi would not run (a relative command, the name `orochi-mailbox`, a plaintext URL to anything but localhost) is left out with the reason
+
+When Orochi itself runs as an ACP agent (`orochi serve`), the MCP servers the client passes on `session/new` are added to the ones configured here for that session's prompts. Orochi advertises no MCP transport beyond stdio, so a client sending `http` or `sse` is refused.
+
+What was verified against real agents and real providers, and what was not, is in [Real Validation 2026-09-22](docs/real-validation-20260922.md).
 
 ### Adviser (Router)
 
@@ -434,6 +494,8 @@ src/router/         Task Profiler and task classification over ACP, candidate ge
 src/scheduler/      Execution, fallback, quota / circuit breaker
 src/process.rs      Agent supervisor processes, recording descendants, reclaiming after a forced kill
 src/mailbox.rs      Inter-process messages between agents (MCP server, retention-limited storage)
+src/mcp.rs          The MCP servers a session is given: configured, named by the repository's own .mcp.json, and forwarded by an ACP client
+src/mcp/oauth.rs    Signing in to a remote MCP server on the agents' behalf (spec-order discovery, registration, PKCE, refresh; keychain or 0600 file)
 src/interrupt.rs    One process-wide count of interrupts, so work between two waits still hears Esc
 src/memory.rs       Memory across sessions (user preferences, repository notes; stored separately from telemetry)
 src/context.rs      TaskEnvelope, Git information, cache key

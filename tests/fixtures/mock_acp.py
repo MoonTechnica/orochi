@@ -368,6 +368,7 @@ for line in sys.stdin:
             sys.exit(2)
         else:
             result(request, {"protocolVersion": 1, "agentCapabilities": {"loadSession": not os.environ.get("MOCK_NO_LOAD"),
+                "mcpCapabilities": {"http": bool(os.environ.get("MOCK_MCP_HTTP")), "sse": False},
                 "promptCapabilities": {"image": not os.environ.get("MOCK_NO_IMAGE"), "embeddedContext": True}}, "agentInfo": {"name": "fixture", "version": "1"}, "authMethods": []})
     elif method in ("session/new", "session/load"):
         root = Path(params["cwd"])
