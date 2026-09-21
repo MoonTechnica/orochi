@@ -135,6 +135,8 @@ def seats(request):
                         {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
         answer = json.loads(sys.stdin.readline())
         (root / "refused.txt").write_text(json.dumps(answer.get("result", {})))
+        # Refused that one call, not sent away: the seat is still here afterwards.
+        (root / "after.txt").write_text("still here")
         if os.environ.get("MOCK_MID_REPLY"):
             # Speak up while the lead is answering, not before: the lead writes advice.txt
             # just before it starts streaming its reply.

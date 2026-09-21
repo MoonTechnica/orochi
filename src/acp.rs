@@ -552,7 +552,10 @@ impl Client {
                                         ),
                                     )));
                                 }
-                                None
+                                // Refuse the call, not the agent. Cancelling ends the turn, and
+                                // a seat whose whole job is to talk was being sent away the
+                                // first time it reached for a file — so nothing was ever said.
+                                reject_once_option(&value)
                             } else if coordination_tool(&value) {
                                 allow_once_option(&value)
                             } else if let Some(events) = &permission_events
@@ -1115,6 +1118,17 @@ pub(crate) fn allow_once_option(request: &Value) -> Option<String> {
         .as_array()?
         .iter()
         .find(|v| v["kind"] == "allow_once")?["optionId"]
+        .as_str()
+        .map(String::from)
+}
+
+/// Saying no to one call, which is not the same as sending the agent away. An agent offers
+/// this option precisely so it can be refused and carry on.
+pub(crate) fn reject_once_option(request: &Value) -> Option<String> {
+    request["options"]
+        .as_array()?
+        .iter()
+        .find(|v| v["kind"] == "reject_once")?["optionId"]
         .as_str()
         .map(String::from)
 }

@@ -576,11 +576,16 @@ fn a_heavy_turn_seats_a_read_only_agent_beside_the_one_doing_the_work() {
         "the working agent never heard back: {stderr}"
     );
     assert!(!read("asked.txt").is_empty(), "the second seat never ran");
-    // Its write tools are refused inside Orochi, so the user is never asked about them.
+    // Its write tools are refused inside Orochi, so the user is never asked about them — and
+    // refusing one call is not sending the seat away: it is here to read and say what it sees.
+    let refused = read("refused.txt");
     assert!(
-        read("refused.txt").contains("cancelled"),
-        "a read-only seat was allowed to edit: {}",
-        read("refused.txt")
+        !refused.contains("\"allow"),
+        "a read-only seat was allowed to edit: {refused}"
+    );
+    assert!(
+        !read("after.txt").is_empty(),
+        "being told no ended the seat's turn: {refused}"
     );
     assert!(!stderr.contains("Patch the parser"), "{stderr}");
     // Both seats are told to answer as the user wrote, or they drift into different languages.
