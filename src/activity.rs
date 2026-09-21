@@ -333,6 +333,10 @@ pub struct ItemRow {
     /// When it was written, so a client can read the conversation and what the agents said to
     /// each other as the one exchange they were.
     pub at: i64,
+    /// The attempt this came from did not work out, and another one followed. What such an
+    /// attempt said is usually the provider explaining itself, which is worth keeping and not
+    /// worth reading as if the agent had said it.
+    pub failed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -737,7 +741,8 @@ impl Activity {
             .connection
             .prepare(
                 "SELECT seq, turn_id, turn_ordinal, lane, role, agent, model, kind, status,
-                        text, data, truncated, patches, created_at
+                        text, data, truncated, patches, created_at,
+                        (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id)
                  FROM v_timeline WHERE thread_id=?1 ORDER BY seq",
             )?
             .query_map([id], |r| {
@@ -758,6 +763,10 @@ impl Activity {
                     truncated: r.get::<_, i64>(11)? != 0,
                     patches: r.get(12)?,
                     at: r.get(13)?,
+                    failed: matches!(
+                        r.get::<_, Option<String>>(14)?.as_deref(),
+                        Some("failure" | "cancelled")
+                    ),
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;

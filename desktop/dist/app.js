@@ -160,13 +160,15 @@ function work(items) {
 /// How a route was chosen — an agent that could not be reached, an account cooling down, the
 /// label the classifier settled on. Worth keeping and not worth reading: four of them beside
 /// one reply drowned it.
-function aside(notes) {
+function aside(notes, what) {
   const node = document.createElement("details");
   node.className = "aside";
   const count = notes.length;
   const head = text("summary", null);
   head.append(drawn("chevron-right"));
-  head.append(text("span", null, `${count} routing note${count > 1 ? "s" : ""}`));
+  head.append(
+    text("span", null, what || `${count} routing note${count > 1 ? "s" : ""}`),
+  );
   node.append(head);
   for (const item of notes) node.append(text("div", null, item.text));
   return node;
@@ -237,6 +239,19 @@ function drawTimeline(thread, said = []) {
     }
     if (item.kind === "note" || item.kind === "unavailable") {
       notes.push(item);
+      continue;
+    }
+    // An attempt that failed and was followed by another: what it said is almost always the
+    // provider explaining itself, and reading that as the agent's own words is how a usage
+    // limit came to look like something an agent had decided to say.
+    if (item.failed && item.text) {
+      flush();
+      if (!turn) {
+        turn = text("div", "turn loose");
+        host.append(turn);
+      }
+      turn.append(aside([item], "an attempt that failed, and what it said"));
+      voice = null;
       continue;
     }
     flush();

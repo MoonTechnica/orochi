@@ -24,7 +24,7 @@ const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
 const css = readFileSync(join(here, "../dist/app.css"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
-async function open(answers = {}, { prompt, pick } = {}) {
+async function open(answers = {}, { prompt, pick, language } = {}) {
   const calls = [];
   page([
     "sidebar", "projects", "sidebar-foot", "new-thread",
@@ -45,6 +45,7 @@ async function open(answers = {}, { prompt, pick } = {}) {
   const window = {
     // The page asks for a comment the way a page does.
     prompt: prompt || (() => null),
+    navigator: { language: language || "en-US" },
     __TAURI__: {
       // The system's own folder picker, which the window never replaces with a typed path.
       dialog: { open: async (options) => (pick ? pick(options) : null) },
@@ -433,6 +434,36 @@ test("the conversation is the group chat: the agents talk to each other in it", 
     /the retry never fires/,
     "the same message is not shown twice in two places",
   );
+});
+
+test("what a failed attempt said is kept, folded, and not read as the agent's own words", async () => {
+  const thread = structuredClone(recorded.thread);
+  const item = (seq, over) => ({
+    seq, turn: "t1", turn_ordinal: 1, lane: 0, role: "facilitator", agent: "codex",
+    model: "gpt-5.6-luna", kind: "agent_message", status: "completed", text: "", data: null,
+    truncated: false, patches: 0, at: 1000 + seq, failed: false, ...over,
+  });
+  thread.items = [
+    item(1, { kind: "user_message", text: "discuss it", role: null }),
+    item(2, { text: "You've hit your usage limit. Upgrade to Pro", failed: true }),
+    item(3, { text: "So: tests before, or after?", model: "haiku", agent: "claude" }),
+  ];
+  const { el } = await open({ thread, room: [] });
+  const timeline = el("timeline");
+  const drawn = timeline.render();
+
+  assert.match(drawn, /So: tests before, or after\?/, "what the agent did say is what is read");
+  const posts = timeline.querySelectorAll(".post");
+  assert.deepEqual(
+    posts.map((p) => p.dataset.who),
+    ["you", "facilitator"],
+    "the provider explaining itself is not one of the voices",
+  );
+
+  const folds = timeline.querySelectorAll("details").filter((d) => d.className === "aside");
+  assert.equal(folds.length, 1, `it is kept, out of the way: ${drawn}`);
+  assert.match(folds[0].render(), /attempt that failed/i, "and says what it is");
+  assert.match(folds[0].render(), /usage limit/, "and still holds every word of it");
 });
 
 test("an agent that stopped is noticed and said, and queued work is picked up again", async () => {
