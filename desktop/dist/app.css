@@ -676,3 +676,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 @keyframes turning { to { transform: rotate(360deg); } }
 .live-turn .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }
 .thread .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }
+
+/* A turn with nothing to check is not a turn that failed a check. */
+.checks .pass { color: var(--ok); }
+.checks div.pass:first-child { color: var(--muted); }

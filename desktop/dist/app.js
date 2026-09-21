@@ -86,6 +86,7 @@ const WORDS = {
     "Nobody has come or gone yet.": "まだ誰の出入りもありません。",
     "Nothing said yet.": "まだ何も話されていません。",
     "an attempt that failed, and what it said": "失敗した試行と、その内容",
+    "nothing to verify": "検証対象なし",
     Team: "チーム",
     Changes: "変更",
     Plan: "計画",
@@ -163,16 +164,26 @@ function chip(item) {
   return node;
 }
 
-function checks(item) {
+function checks(item, seats = []) {
   const d = item.data || {};
   const node = text("div", "checks");
-  const verdict = {
-    success: "verified",
-    partial_success: "unverified",
-    failure: "failed",
-    cancelled: "stopped",
-  }[d.outcome] || d.outcome;
-  node.append(text("div", d.outcome === "success" ? "pass" : "fail", verdict));
+  // A seat that may change nothing has nothing to check. "Unverified" says a check was owed
+  // and not made; here none was ever owed, and the two read very differently to someone
+  // looking at a discussion that went perfectly well.
+  const seat = seats.find((s) => s.turn_id === item.turn && s.ordinal === item.lane);
+  const nothing =
+    d.outcome === "partial_success" && !(d.checks || []).length && seat?.read_only;
+  const verdict = nothing
+    ? t("nothing to verify")
+    : {
+        success: "verified",
+        partial_success: "unverified",
+        failure: "failed",
+        cancelled: "stopped",
+      }[d.outcome] || d.outcome;
+  node.append(
+    text("div", d.outcome === "success" || nothing ? "pass" : "fail", verdict),
+  );
   for (const check of d.checks || []) {
     const row = text("div", check.passed ? "pass" : "fail");
     row.append(drawn(check.passed ? "check" : "x"));
@@ -309,7 +320,7 @@ function drawTimeline(thread, said = []) {
       turn.append(post({ who, model: item.model, at: item.at, text: item.text }, voice === who));
       voice = who;
     }
-    else if (item.kind === "checks") turn.append(checks(item));
+    else if (item.kind === "checks") turn.append(checks(item, thread.seats));
 
   }
   flush();

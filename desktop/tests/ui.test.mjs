@@ -450,6 +450,32 @@ test("the window speaks the language the person set their machine to", async () 
   }
 });
 
+test("a turn with nothing to verify says so, rather than that it was not verified", async () => {
+  const thread = structuredClone(recorded.thread);
+  const seat = thread.seats[0];
+  thread.seats = [{ ...seat, seat_id: "s1", turn_id: "t1", ordinal: 0, role: "facilitator", read_only: true }];
+  const base = {
+    turn: "t1", turn_ordinal: 1, lane: 0, role: "facilitator", agent: "claude", model: "haiku",
+    status: null, data: null, truncated: false, patches: 0, failed: false,
+  };
+  thread.items = [
+    { ...base, seq: 1, kind: "user_message", text: "discuss it", at: 1000 },
+    { ...base, seq: 2, kind: "checks", text: "", at: 2000,
+      data: { outcome: "partial_success", checks: [] } },
+  ];
+  const { el } = await open({ thread, room: [] });
+  const drawn = el("timeline").render();
+  assert.doesNotMatch(drawn, /unverified/, `nothing was there to verify: ${drawn}`);
+  assert.match(drawn, /nothing to verify/i);
+
+  // A seat that could have changed something, and was not checked, still says unverified.
+  thread.seats = [{ ...seat, seat_id: "s1", turn_id: "t1", ordinal: 0, role: "implementer", read_only: false }];
+  thread.items[0].role = "implementer";
+  thread.items[1].role = "implementer";
+  const wrote = await open({ thread, room: [] });
+  assert.match(wrote.el("timeline").render(), /unverified/);
+});
+
 test("what a failed attempt said is kept, folded, and not read as the agent's own words", async () => {
   const thread = structuredClone(recorded.thread);
   const item = (seq, over) => ({
