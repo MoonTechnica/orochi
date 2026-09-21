@@ -48,6 +48,54 @@ const AT = {
   done: "done",
   failed: "failed",
 };
+/// The words the markup ships with, said again in the window's language once it is open.
+const LABELS = {
+  "new-thread": "New thread",
+  "composer-hint": "Cmd-Enter to send · Enter for a new line",
+  send: "Send",
+  interrupt: "Stop",
+  "say-hint": "Delivered when the agent next checks.",
+};
+
+/// The window's own words. It says them in the language the machine is set to, because a
+/// Japanese conversation framed in English labels reads as two things at once. A language it
+/// has no words for gets English; nothing is half-translated.
+const WORDS = {
+  ja: {
+    "New thread": "新しいスレッド",
+    "New conversation": "新しい会話",
+    "Cmd-Enter to send · Enter for a new line": "⌘Enter で送信 · Enter で改行",
+    Send: "送信",
+    Stop: "停止",
+    "Message…": "メッセージ…",
+    "Message the team…": "チームにメモ…",
+    "Delivered when the agent next checks.": "エージェントが次に確認したときに届きます。",
+    "Starting the agent…": "エージェントを起動しています…",
+    "choosing an agent…": "エージェントを選んでいます…",
+    "starting up…": "起動しています…",
+    "working…": "作業しています…",
+    "waiting for your answer": "あなたの返答を待っています",
+    done: "完了",
+    failed: "失敗",
+    everyone: "全員",
+    "No folder": "フォルダ未選択",
+    Recent: "最近",
+    "Nowhere yet.": "まだありません。",
+    "Open folder…": "フォルダを開く…",
+    "No one is seated yet.": "まだ誰も席に着いていません。",
+    "Nobody has come or gone yet.": "まだ誰の出入りもありません。",
+    "Nothing said yet.": "まだ何も話されていません。",
+    "an attempt that failed, and what it said": "失敗した試行と、その内容",
+    Team: "チーム",
+    Changes: "変更",
+    Plan: "計画",
+  },
+};
+
+/// One word, in the window's language.
+const LANG = (typeof window !== "undefined" && window.navigator?.language) || "en";
+const SAID = WORDS[LANG.slice(0, 2)] || {};
+const t = (word) => SAID[word] || word;
 
 const MARKS = {
   needs_you: "message",
@@ -90,7 +138,7 @@ function drawSidebar() {
       row.dataset.status = thread.status;
       row.setAttribute("aria-current", String(thread.id === state.thread));
       row.append(drawn(MARKS[thread.status] || "circle", "state"));
-      row.append(text("span", "name", thread.title || "New conversation"));
+      row.append(text("span", "name", thread.title || t("New conversation")));
       if (thread.status === "working" && thread.seats > 1) {
         row.append(text("span", "seats", `${thread.seats}`));
       }
@@ -208,7 +256,7 @@ function drawTimeline(thread, said = []) {
       const who = named(item);
       const whom =
         !item.whom || item.whom === "all"
-          ? "everyone"
+          ? t("everyone")
           : `to ${roles.get(item.whom) || item.whom}`;
       turn.append(
         post(
@@ -250,7 +298,7 @@ function drawTimeline(thread, said = []) {
         turn = text("div", "turn loose");
         host.append(turn);
       }
-      turn.append(aside([item], "an attempt that failed, and what it said"));
+      turn.append(aside([item], t("an attempt that failed, and what it said")));
       voice = null;
       continue;
     }
@@ -273,14 +321,14 @@ function drawTimeline(thread, said = []) {
     const live = text("div", "live-turn");
     if (!seats.length) {
       live.append(drawn("loader", "state"));
-      live.append(text("span", null, "Starting the agent…"));
+      live.append(text("span", null, t("Starting the agent…")));
     } else {
       for (const seat of seats) {
         const row = text("div", "at-work");
         row.append(mark(seat.role));
         row.append(text("span", "name", seat.role));
         row.append(
-          text("span", "what", seat.peer_status || seat.doing?.split("\n")[0] || AT[seat.state] || seat.state),
+          text("span", "what", seat.peer_status || seat.doing?.split("\n")[0] || t(AT[seat.state] || seat.state)),
         );
         live.append(row);
       }
@@ -449,7 +497,7 @@ async function answer(prompt, option) {
 // a repository is one click away; the last entry opens the system's own picker.
 function folderLabel() {
   const thread = state.projects.flatMap((p) => p.threads).find((t) => t.id === state.thread);
-  el("folder-name").textContent = thread ? thread.project : "No folder";
+  el("folder-name").textContent = thread ? thread.project : t("No folder");
 }
 
 function closeFolders() {
@@ -462,7 +510,7 @@ async function openFolders() {
   menu.replaceChildren();
   const current = state.projects.flatMap((p) => p.threads).find((t) => t.id === state.thread);
 
-  menu.append(text("div", "head", "Recent"));
+  menu.append(text("div", "head", t("Recent")));
   for (const folder of state.folders) {
     const row = document.createElement("button");
     row.type = "button";
@@ -472,12 +520,12 @@ async function openFolders() {
     row.addEventListener("click", () => startIn(folder.root));
     menu.append(row);
   }
-  if (!state.folders.length) menu.append(text("div", "where", "Nowhere yet."));
+  if (!state.folders.length) menu.append(text("div", "where", t("Nowhere yet.")));
 
   menu.append(text("div", "sep"));
   const pick = document.createElement("button");
   pick.type = "button";
-  pick.append(text("span", "name", "Open folder…"));
+  pick.append(text("span", "name", t("Open folder…")));
   pick.addEventListener("click", chooseFolder);
   menu.append(pick);
 
@@ -512,7 +560,7 @@ function drawTeam(thread) {
   const host = el("roster");
   host.replaceChildren();
   if (!thread.seats.length) {
-    host.append(text("p", "empty", "No one is seated yet."));
+    host.append(text("p", "empty", t("No one is seated yet.")));
     return;
   }
   // Who is in the room now: the seats of the turn in hand. Every earlier turn's seats are in
@@ -669,7 +717,7 @@ async function drawRoom(thread) {
   host.replaceChildren();
   const events = (state.said || []).filter((line) => line.kind !== "message");
   if (!events.length) {
-    host.append(text("p", "empty", "Nobody has come or gone yet."));
+    host.append(text("p", "empty", t("Nobody has come or gone yet.")));
     return;
   }
   for (const line of events.slice(-12)) {
@@ -983,7 +1031,7 @@ async function refresh(full) {
   if (!thread) return;
   el("thread-where").textContent = `${thread.thread.project} · ${thread.thread.branch || "—"}`;
   // The first message names it; until then it is a conversation you have not started.
-  el("thread-title").textContent = thread.thread.title || "New conversation";
+  el("thread-title").textContent = thread.thread.title || t("New conversation");
   el("thread-status").textContent = thread.thread.status;
   el("interrupt").hidden = thread.thread.status !== "working";
   // A host can stop while this window stays open — its machine sleeps, it is killed, it
@@ -1058,5 +1106,18 @@ el("new-thread").addEventListener("click", async (event) => {
   const root = open?.[0].root ?? state.folders[0]?.root;
   await (root ? startIn(root) : chooseFolder());
 });
+
+// The page ships English; it says the same words in the window's language before it is read.
+for (const [id, word] of Object.entries(LABELS)) {
+  const node = el(id);
+  const label = node.querySelectorAll?.(".label")[0];
+  (label || node).textContent = t(word);
+}
+for (const tab of document.querySelectorAll(".tab")) {
+  tab.textContent = t(tab.textContent);
+}
+for (const [id, word] of [["message", "Message…"], ["say", "Message the team…"]]) {
+  el(id).setAttribute("placeholder", t(word));
+}
 
 refresh(true);

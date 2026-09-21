@@ -537,6 +537,21 @@ impl Client {
                         );
                         let decision = if active {
                             if read_only && writes && !coordination_tool(&value) {
+                                // Said, not merely done: an agent told "no" explains itself in
+                                // its own words, and a reader is left guessing who refused it
+                                // and why. This seat cannot write, and that is Orochi's answer.
+                                if let Some(events) = &permission_events {
+                                    let what = value["toolCall"]["title"]
+                                        .as_str()
+                                        .unwrap_or("that")
+                                        .to_owned();
+                                    let _ = events.send(ExecutionEvent::Progress(Progress::Note(
+                                        format!(
+                                            "refused {what}: this seat is here to read and \
+                                             comment, and may change nothing"
+                                        ),
+                                    )));
+                                }
                                 None
                             } else if coordination_tool(&value) {
                                 allow_once_option(&value)

@@ -46,6 +46,7 @@ async function open(answers = {}, { prompt, pick, language } = {}) {
     // The page asks for a comment the way a page does.
     prompt: prompt || (() => null),
     navigator: { language: language || "en-US" },
+    navigator: { language: language || "en-US" },
     __TAURI__: {
       // The system's own folder picker, which the window never replaces with a typed path.
       dialog: { open: async (options) => (pick ? pick(options) : null) },
@@ -434,6 +435,19 @@ test("the conversation is the group chat: the agents talk to each other in it", 
     /the retry never fires/,
     "the same message is not shown twice in two places",
   );
+});
+
+test("the window speaks the language the person set their machine to", async () => {
+  const japanese = await open({}, { language: "ja-JP" });
+  const drawn = japanese.el("composer-row").render() + japanese.el("sidebar").render();
+  assert.match(drawn, /\u9001\u4fe1/, `its own words are in the same language: ${drawn}`);
+  assert.doesNotMatch(drawn, /Cmd-Enter to send/);
+
+  // Anywhere else, and where the language is not one it has words for, it says it in English.
+  for (const language of ["en-GB", "fi-FI"]) {
+    const other = await open({}, { language });
+    assert.match(other.el("composer-row").render(), /Cmd-Enter to send/, language);
+  }
 });
 
 test("what a failed attempt said is kept, folded, and not read as the agent's own words", async () => {

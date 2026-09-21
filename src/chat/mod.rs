@@ -212,8 +212,10 @@ const PHASES: [Phase; 3] = [
 
 /// Every prompt Orochi writes is English, whatever the user writes in; without this the seats
 /// answer in different languages.
-const LANGUAGE: &str = "Write your answer, and every message you send to another agent, in the language the user \
-     used in the request.";
+const LANGUAGE: &str = "Language: write your answer, and every message you send to another agent, in the \
+     language the user wrote the request in. This holds even when the repository, the code and these \
+     instructions are in English — match the user, not the surroundings. It applies to a refusal and to \
+     an explanation of why you stopped as much as to the work itself.";
 
 /// What a key press asks the session to do.
 enum Action {
@@ -2124,7 +2126,15 @@ impl Session<'_> {
                         screen.mail(feed.as_mut().expect("feed"));
                     }
                     _ = resized.recv() => screen.view.term.resized(),
-                    result = &mut run => break result,
+                    result = &mut run => {
+                        // The one leading has stopped. The prompts ask it to say so itself,
+                        // and one that was refused, failed or simply forgot never does — and
+                        // everyone else waits out a read for a voice that has gone.
+                        if !finished.is_empty() || !asides.is_empty() {
+                            let _ = crate::mailbox::closing_note(lead, None);
+                        }
+                        break result;
+                    }
                 }
             }
         };

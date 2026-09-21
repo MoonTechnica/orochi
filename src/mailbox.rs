@@ -892,6 +892,32 @@ pub fn prompt_note_for(peer: &SessionPeer) -> Option<String> {
     Some(note)
 }
 
+/// Tells the room that the one leading this turn has finished. The prompts ask an agent to
+/// say so itself, and an agent that was refused, failed or simply forgot never does — leaving
+/// everyone else waiting out a timeout for a voice that has gone.
+pub fn closing_note(lead: &str, thread: Option<&str>) -> Result<()> {
+    let Some((data, channel, config)) = active_channel() else {
+        return Ok(());
+    };
+    let mailbox = Mailbox::open(&data, &config)?;
+    let Some(speaker) = mailbox
+        .peers(&channel)?
+        .into_iter()
+        .find(|peer| peer.name == lead)
+    else {
+        return Ok(());
+    };
+    let said = mailbox.send(
+        &speaker.id,
+        "all",
+        "The work of this turn is finished; nothing more is coming from me.",
+    );
+    if said.is_err() {
+        mailbox.speak(&channel, None, &format!("{lead} has finished."), thread)?;
+    }
+    Ok(())
+}
+
 pub fn active_channel() -> Option<(PathBuf, String, MailboxConfig)> {
     let active = ACTIVE.get()?;
     Some((
