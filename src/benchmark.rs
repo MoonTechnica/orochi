@@ -226,6 +226,9 @@ fn replay_from(
                             context_restore_tokens: 0.0,
                             quota_multiplier: c.expected_cost * c.success_probability
                                 / c.expected_tokens,
+                            // A replayed record carries its own cost; re-pricing it here would
+                            // move a replay result when a policy is updated.
+                            price_multiplier: 1.0,
                             session_tokens: 0.0,
                         });
                     c.prediction = Some(Prediction {

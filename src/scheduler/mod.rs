@@ -208,6 +208,12 @@ pub struct RunOptions {
     /// phases). Passed on so one turn is classified once and every decision reads the same
     /// answer, rather than the scheduler asking again about text the console rewrote.
     pub descriptor: Option<TaskDescriptor>,
+    /// What to ask of the model for this run, where it is a part of the task rather than the
+    /// whole of it: the phase that carries out a settled plan asks less than the phase that
+    /// arrives at one. `None` asks for the task's own complexity. It reaches the scorer and
+    /// stops there; the record keeps the task's complexity, so the learning strata are not
+    /// split by which phase a run happened to be.
+    pub difficulty: Option<Complexity>,
     pub dry_run: bool,
     pub json: bool,
     pub resume: Option<String>,
@@ -517,6 +523,7 @@ async fn run_recorded(
                     time: now(),
                     busy: &busy,
                     taken: &taken,
+                    difficulty: options.difficulty,
                 },
             )
         };

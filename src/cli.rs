@@ -1301,6 +1301,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 RunOptions {
                     task,
                     descriptor: None,
+                    difficulty: None,
                     overrides,
                     dry_run: cli.dry_run,
                     json: cli.json,

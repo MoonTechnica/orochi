@@ -195,6 +195,9 @@ struct Phase {
     instruction: &'static str,
     /// The phase passes its reply on to the next one.
     hands_over: bool,
+    /// The phase carries out what another phase decided, so it asks one step less of the
+    /// model than the turn's own complexity. Deciding is where the capability is needed.
+    asks_less: bool,
 }
 const DESIGN: usize = 0;
 const IMPLEMENT: usize = 1;
@@ -202,16 +205,19 @@ const REVIEW: usize = 2;
 const PHASES: [Phase; 3] = [
     Phase {
         name: "design",
+        asks_less: false,
         instruction: "Plan the work first (設計 / architecture). Change nothing yet. Answer with what has to happen, the pieces involved, the risks, and how the result will be checked. Answer in the language the user used. If the work divides into parts that can be built without each other's code, end with one line holding only {\"parts\":[{\"id\":\"<lowercase letters, digits, ->\",\"brief\":\"what this part builds\",\"paths\":[\"<relative paths it writes>\"],\"after\":[\"<ids of parts whose code it needs>\"]}]}; two parts that only have to agree on an interface need not wait for each other. Leave it out when the work does not divide.",
         hands_over: true,
     },
     Phase {
         name: "implement",
+        asks_less: true,
         instruction: "Carry out the task, following the plan above. Verify the result yourself. Answer in the language the user used.",
         hands_over: true,
     },
     Phase {
         name: "review",
+        asks_less: false,
         instruction: "Review (レビュー) the work just done. Change nothing. Report what is wrong or missing, most important first, in the language the user used. End with one line: \"VERDICT: fix\" when something must change, or \"VERDICT: ok\" when it is sound.",
         hands_over: true,
     },
@@ -2293,6 +2299,9 @@ impl Session<'_> {
                 RunOptions {
                     task,
                     descriptor: Some(profile.clone()),
+                    difficulty: phase
+                        .filter(|p| p.asks_less)
+                        .map(|_| profile.complexity.eased()),
                     overrides,
                     dry_run: false,
                     json: false,
@@ -2328,6 +2337,7 @@ impl Session<'_> {
                             RunOptions {
                                 task,
                                 descriptor: None,
+                                difficulty: None,
                                 overrides: Overrides::default(),
                                 dry_run: false,
                                 json: false,

@@ -29,6 +29,44 @@ pub struct ModelRule {
     pub tier: String,
     pub relative_tokens: f64,
     pub success_prior: [f64; 4],
+    /// How much more a token here costs than `relative_tokens` already assumes. Two models of
+    /// one tier can be a factor apart in price and identical in everything else, and no token
+    /// count says so. It is a correction and not a price list: 1.0, the default, leaves a
+    /// model priced exactly as it was before this field existed, so only a model whose price
+    /// departs from its tier needs one. It multiplies the cost and never the token
+    /// prediction, which the EWMA learns from and calibration compares against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_premium: Option<f64>,
+    /// What this model is for, in a sentence, for the one adviser that reads the task. It
+    /// carries what the numbers cannot: two frontier models with the same prior and the same
+    /// price still differ in what they are good at. Absent, `describe` generates one from the
+    /// tier and the price, so a model nobody has written about is still described.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_for: Option<String>,
+}
+impl ModelRule {
+    /// The cost correction to apply on top of the token prior; neutral unless stated.
+    pub fn price(&self) -> f64 {
+        self.price_premium.unwrap_or(1.0)
+    }
+    /// The line the classifier is shown for this rule. A rule that says nothing is described
+    /// from what it does say, so adding a model to a provider never means writing prose.
+    pub fn describe(&self) -> String {
+        if let Some(use_for) = &self.use_for {
+            return use_for.clone();
+        }
+        let price = match self.relative_tokens * self.price() {
+            c if c >= 1.5 => "costly",
+            c if c <= 0.7 => "cheap",
+            _ => "mid-priced",
+        };
+        match self.tier.as_str() {
+            "frontier" => format!("{price}; the provider's most capable tier"),
+            "standard" => format!("{price}; capable enough for most work"),
+            "small" => format!("{price}; for small, well-specified work"),
+            _ => format!("{price}; not characterised here, treat as standard"),
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,6 +179,18 @@ impl Registry {
                         && m.relative_tokens > 0.0
                         && m.relative_tokens <= 100.0,
                     "invalid model prior"
+                );
+                ensure!(
+                    m.price_premium
+                        .is_none_or(|c| c.is_finite() && c > 0.0 && c <= 100.0),
+                    "invalid price premium"
+                );
+                ensure!(
+                    m.use_for.as_ref().is_none_or(|u| {
+                        let u = u.trim();
+                        !u.is_empty() && u.chars().count() <= 200
+                    }),
+                    "invalid model description"
                 );
                 ensure!(
                     m.success_prior

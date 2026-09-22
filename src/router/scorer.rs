@@ -12,6 +12,12 @@ use std::{collections::BTreeMap, path::Path};
 
 /// Cost multiplier for a candidate the user said they want. An Orochi heuristic, not measured.
 const PREFERENCE: f64 = 0.8;
+/// Cost multiplier for the candidate the classifier read the work onto. Sized to cross the
+/// price gap between two models of one tier — 2x on Anthropic, where the most capable model
+/// costs twice the one below it and scores identically — and no further: a judgment about
+/// what suits the work may pick within the capable field, not leap out of it. An Orochi
+/// heuristic, not measured.
+const SUITED: f64 = 0.45;
 
 pub struct ScoringContext<'a> {
     pub task: &'a TaskDescriptor,
@@ -28,6 +34,11 @@ pub struct ScoringContext<'a> {
     /// The (agent, model) every other seat is running: a seat of its own is worth more than
     /// the same model twice, so these are dropped whenever anything else is left.
     pub taken: &'a [(String, String)],
+    /// What to ask of the model for this seat's part of the work, where that is not the whole
+    /// task's complexity: carrying out a settled plan asks less than arriving at one. It picks
+    /// the success prior and the reasoning level, and nothing else — the descriptor keeps the
+    /// task's own complexity, which is what seating, escalation and the learning strata read.
+    pub difficulty: Option<Complexity>,
 }
 
 pub fn candidates(
@@ -38,6 +49,7 @@ pub fn candidates(
     // One query per seat, not per reasoning level and mode of it.
     let mut floors: BTreeMap<(String, String), f64> = BTreeMap::new();
     let task = cx.task;
+    let difficulty = cx.difficulty.unwrap_or(task.complexity);
     let overrides = cx.overrides;
     for (agent, capabilities) in agents {
         if overrides.agent.as_ref().is_some_and(|a| a != &agent.id) {
@@ -68,7 +80,7 @@ pub fn candidates(
                 Some(explicit.clone())
             } else {
                 model.reasoning.as_ref().and_then(|s| {
-                    policy.reasoning(task.complexity, &s.values, Some(&s.current), &model.model)
+                    policy.reasoning(difficulty, &s.values, Some(&s.current), &model.model)
                 })
             };
             if !policy.permits(&model.model, reasoning.as_deref()) {
@@ -90,7 +102,7 @@ pub fn candidates(
                 model.modes.as_ref().map(|s| s.current.clone())
             };
             let rule = policy.model_rule(&model.model);
-            let prior = rule.success_prior[task.complexity.index()];
+            let prior = rule.success_prior[difficulty.index()];
             let affinity = policy.cache_rules.stable_prefix
                 && cx.sessions.iter().any(|s| {
                     s.agent == agent.id
@@ -122,7 +134,16 @@ pub fn candidates(
                 expected_cost: 0.0,
                 confidence: 0.0,
                 reasons: vec![
-                    format!("{} {} task", task.complexity.key(), task.task_type),
+                    if difficulty == task.complexity {
+                        format!("{} {} task", task.complexity.key(), task.task_type)
+                    } else {
+                        format!(
+                            "{} {} task, asked of the model as {}",
+                            task.complexity.key(),
+                            task.task_type,
+                            difficulty.key()
+                        )
+                    },
                     format!(
                         "{} policy v{}; {} model prior",
                         agent.provider, policy.version, rule.tier
@@ -217,6 +238,7 @@ pub fn candidates(
                 context_restore_tokens: rehydration,
                 quota_multiplier: shadow,
                 session_tokens: session,
+                price_multiplier: rule.price(),
             };
             c.expected_cost = crate::learning::resource_cost(
                 c.expected_tokens,
@@ -234,6 +256,16 @@ pub fn candidates(
                 c.expected_cost *= PREFERENCE;
                 c.reasons
                     .push(format!("you said you want {name} for this kind of work"));
+            }
+            // What the work itself suits, read from what each model says it is for. Same shape
+            // as a preference: it reorders the capable field and opens nothing.
+            if let Some(name) = &task.suited
+                && (c.model.to_lowercase().contains(name.as_str())
+                    || c.agent.to_lowercase().contains(name.as_str()))
+            {
+                c.expected_cost *= SUITED;
+                c.reasons
+                    .push(format!("{name} is what this kind of work is for"));
             }
             if cx.busy.contains(&c.agent) {
                 // Another run holds this account; leave it room instead of racing for quota.

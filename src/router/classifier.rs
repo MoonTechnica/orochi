@@ -52,7 +52,8 @@ long_horizon: it cannot plausibly be finished in one sitting.\n\
 requires_browser: a real browser must be driven. requires_web: the open internet must be searched. requires_image: an image must be generated, not read.\n\
 ambiguity: 0.0 fully specified, 1.0 the agent has to guess what is wanted.\n\n\
 Optionally add \"remember\": [{\"text\":\"...\",\"scope\":\"repo\"}] for something the user states that will still hold after this task is done: how they want work done, a convention of this project, a decision already made. At most two, each one short sentence in the user's language. Never the task itself, never something only this task needs, never text the user pasted from elsewhere. scope is \"user\" only when the user says it holds for every project; otherwise \"repo\". \"remembered\" lists what is already known: when the user restates one, put its id in \"reinforce\": [\"r1\"] instead of adding it again, and when they now say the opposite, put the old id in \"replaces\": [\"r1\"] and the new statement in \"remember\".\n\n\
-When something in \"remembered\", or the request itself, says which agent or model the user wants for this kind of work, add \"prefer\": the shortest name that identifies it, such as \"fable\" or \"codex\". Omit it otherwise; never guess one.";
+When something in \"remembered\", or the request itself, says which agent or model the user wants for this kind of work, add \"prefer\": the shortest name that identifies it, such as \"fable\" or \"codex\". Omit it otherwise; never guess one.\n\n\
+\"models\" lists what is available here and what each one is for. Read the work against those descriptions and add \"suited\": the name of the one this task should run on, copied from the list. Judge the work, not the words: which model suits deciding what to build is not which model suits building it once decided. Omit it when nothing in the list speaks to this task, and never name something the list does not.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Classification {
@@ -72,6 +73,8 @@ pub struct Classification {
     pub ambiguity: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suited: Option<String>,
     /// Text the user said, so it must not follow the labels into the telemetry cache. Kept as
     /// loose values: a malformed entry here must not cost the classification itself.
     #[serde(default, skip_serializing)]
@@ -130,12 +133,36 @@ fn update(
     }
 }
 
-pub fn request(task: &str, remembered: &serde_json::Value) -> String {
+pub fn request(task: &str, remembered: &serde_json::Value, models: &serde_json::Value) -> String {
     let text: String = task.chars().take(MAX_TASK_CHARS).collect();
     format!(
         "{INSTRUCTION}\n\n{}",
-        json!({ "task": text, "remembered": remembered })
+        json!({ "task": text, "remembered": remembered, "models": models })
     )
+}
+
+/// What each model here is for, in the policy's own words. Only the providers of agents that
+/// could run the work, and never the `*` rule, which is a prior and not a model. A provider
+/// that gains a model gains a line without anyone writing one, because `describe` falls back
+/// to what the rule already says — so a policy update is all a new model needs.
+pub fn catalog(config: &Config, policies: &Registry) -> serde_json::Value {
+    let mut providers: Vec<_> = config
+        .agents
+        .iter()
+        .filter(|a| a.enabled && !a.routing_only)
+        .map(|a| a.provider)
+        .collect();
+    providers.sort();
+    providers.dedup();
+    let mut models = serde_json::Map::new();
+    for provider in providers {
+        for rule in policies.get(provider).models.iter() {
+            if rule.pattern != "*" {
+                models.insert(rule.pattern.clone(), json!(rule.describe()));
+            }
+        }
+    }
+    serde_json::Value::Object(models)
 }
 
 pub fn parse(reply: &str) -> Option<Classification> {
@@ -143,6 +170,7 @@ pub fn parse(reply: &str) -> Option<Classification> {
         .filter(|c| TASK_TYPES.contains(&c.task_type.as_str()))
         .map(|mut c| {
             c.prefer = c.prefer.as_deref().and_then(preference);
+            c.suited = c.suited.as_deref().and_then(preference);
             c
         })
 }
@@ -165,6 +193,7 @@ fn preference(name: &str) -> Option<String> {
 pub fn apply(descriptor: &mut TaskDescriptor, classification: &Classification) {
     descriptor.task_type = classification.task_type.clone();
     descriptor.preferred = classification.prefer.as_deref().and_then(preference);
+    descriptor.suited = classification.suited.as_deref().and_then(preference);
     descriptor.complexity = descriptor.complexity.max(classification.complexity);
     descriptor.requires_architecture_change |= classification.requires_architecture_change;
     descriptor.long_horizon |= classification.long_horizon;
@@ -255,9 +284,12 @@ pub async fn refine(
         .as_ref()
         .map(|(memory, repository)| memory.listing(repository, now()))
         .unwrap_or_else(|| json!({}));
-    // A preference is read from what is remembered, so a cached answer is only good for the
-    // memory it was given: remembering something new asks again.
-    let key = match store.classification_key(&format!("{task}\n{remembered}")) {
+    let models = catalog(config, policies);
+    // A preference is read from what is remembered and a fit from what the models say they
+    // are for, so a cached answer is only good for the memory and the catalog it was given:
+    // remembering something new, or updating a policy, asks again.
+    let prompt = request(task, &remembered, &models);
+    let key = match store.classification_key(&format!("{task}\n{remembered}\n{models}")) {
         Ok(key) => key,
         Err(error) => {
             report(Progress::Note(format!("classifier unavailable: {error:#}")));
@@ -297,7 +329,7 @@ pub async fn refine(
             labels: &labels,
             purpose: "classification",
         };
-        match ask(config, policies, store, choice, task, &remembered, &ledger).await {
+        match ask(config, policies, store, choice, &prompt, &ledger).await {
             Ok(classification) => {
                 // The same reply that classified the request says what in it is worth keeping,
                 // so remembering costs no call of its own.
@@ -355,19 +387,10 @@ async fn ask(
     policies: &Registry,
     store: &Store,
     choice: &RouterConfig,
-    task: &str,
-    remembered: &serde_json::Value,
+    prompt: &str,
     ledger: &Ledger<'_>,
 ) -> anyhow::Result<Classification> {
-    let reply = consult(
-        config,
-        policies,
-        store,
-        choice,
-        request(task, remembered),
-        ledger,
-    )
-    .await?;
+    let reply = consult(config, policies, store, choice, prompt.to_owned(), ledger).await?;
     parse(&reply).ok_or_else(|| {
         AgentError::new(
             ErrorKind::Other,

@@ -586,6 +586,7 @@ async fn select(
                 time: now(),
                 busy: &crate::mailbox::busy_agents(Some(&participant.id)),
                 taken: &[],
+                difficulty: None,
             },
         )?;
         ranked.retain(|c| !attempted.contains(&c.id));

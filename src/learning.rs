@@ -15,10 +15,12 @@ pub fn resource_cost(tokens: f64, success: f64, features: &CostFeatures, latency
     // `tokens` already includes what opening the session costs, and that part is not
     // discounted: a cache hit saves re-reading the work, not the prompt the seat opens with.
     let work = (tokens - features.session_tokens).max(0.0);
+    // Price multiplies the tokens and nothing else: waiting costs the same whoever answers.
     ((work * (1.0 - features.cache_discount)
         + features.session_tokens
         + features.context_restore_tokens)
         * features.quota_multiplier
+        * features.price_multiplier
         + latency_ms / 1000.0 * 2.0)
         / success
 }

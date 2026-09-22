@@ -90,6 +90,7 @@ fn choose(
         ambiguity: 0.0,
         long_horizon: false,
         preferred: None,
+        suited: None,
     };
     let overrides = Overrides {
         reasoning: choice.reasoning.clone(),
@@ -110,6 +111,7 @@ fn choose(
             time: now(),
             busy: &[],
             taken: &[],
+            difficulty: None,
         },
     )?;
     let models = &client.capabilities.models;

@@ -44,6 +44,16 @@ impl Complexity {
             Self::Extreme => "extreme",
         }
     }
+    /// One step less to ask of a model, for the part of a task that is not where the thinking
+    /// is. It never goes below Normal: carrying out a plan for cross-cutting work is still
+    /// not a one-line edit, and Simple has nothing left to give up.
+    pub fn eased(self) -> Self {
+        match self {
+            Self::Extreme => Self::Complex,
+            Self::Complex => Self::Normal,
+            other => other,
+        }
+    }
     pub fn index(self) -> usize {
         match self {
             Self::Simple => 0,
@@ -83,6 +93,12 @@ pub struct TaskDescriptor {
     /// to make one up. It lowers a candidate's cost; it never lets one past a gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred: Option<String>,
+    /// The model the classifier judged this kind of work suits, read from what each model
+    /// says it is for. It is the one thing the numbers cannot carry: two models of one tier,
+    /// with the same prior and the same price, still differ in what they are good at. Like
+    /// `preferred` it only reorders candidates that already passed every gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suited: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -313,6 +329,14 @@ pub struct CostFeatures {
     /// and 0.0 where nothing has been measured yet. Records written before it existed have none.
     #[serde(default)]
     pub session_tokens: f64,
+    /// What a token on this model costs relative to the provider's baseline. Price is not a
+    /// token count: it belongs to what a candidate costs and never to `Prediction::tokens`,
+    /// which calibration compares against. Records written before it existed read as 1.0.
+    #[serde(default = "unit")]
+    pub price_multiplier: f64,
+}
+fn unit() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

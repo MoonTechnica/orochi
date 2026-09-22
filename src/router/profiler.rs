@@ -271,6 +271,7 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         },
         long_horizon,
         preferred: None,
+        suited: None,
     }
 }
 

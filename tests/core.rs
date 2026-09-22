@@ -162,6 +162,7 @@ fn frontier_selected_first_for_extreme_work_and_overrides_obey_hard_constraints(
                 sessions: &[],
                 busy,
                 taken: &[],
+                difficulty: None,
                 root: dir.path(),
                 time: now(),
             },
@@ -181,6 +182,7 @@ fn frontier_selected_first_for_extreme_work_and_overrides_obey_hard_constraints(
                 sessions: &[],
                 busy: &[],
                 taken: &[],
+                difficulty: None,
                 root: dir.path(),
                 time: now(),
             },
@@ -338,7 +340,10 @@ fn classifier_discards_a_label_that_would_split_the_learning_history() {
 fn classifier_sees_the_task_but_caches_only_a_hash_of_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
-    assert!(classifier::request("PRIVATE TASK SECRET", &json!({})).contains("PRIVATE TASK SECRET"));
+    assert!(
+        classifier::request("PRIVATE TASK SECRET", &json!({}), &json!({}))
+            .contains("PRIVATE TASK SECRET")
+    );
 
     let key = store.classification_key("PRIVATE TASK SECRET").unwrap();
     assert!(!key.contains("PRIVATE"));
@@ -637,6 +642,7 @@ fn a_seat_beside_another_takes_a_model_of_its_own_while_one_is_left() {
             &[(&agent, &capabilities)],
             &ScoringContext {
                 task: &task,
+                difficulty: None,
                 overrides: &overrides,
                 config: &config,
                 policies: &registry,
@@ -797,7 +803,10 @@ mod memory {
         let task = profiler::profile("fix the parser", dir.path());
         assert!(!adviser::request(&task, &[]).contains("NOTE SECRET"));
         let listing = memory.listing(&repository, 1000);
-        assert!(classifier::request("fix the parser", &listing).contains("r1: NOTE SECRET"));
+        assert!(
+            classifier::request("fix the parser", &listing, &serde_json::json!({}))
+                .contains("r1: NOTE SECRET")
+        );
 
         let reply = classifier::parse(
             r#"{"task_type":"bug_fix","complexity":"normal",
@@ -1311,6 +1320,7 @@ mod preferences {
                     sessions: &[],
                     busy: &[],
                     taken: &[],
+                    difficulty: None,
                     root: dir.path(),
                     time: now(),
                 },
@@ -1384,6 +1394,223 @@ mod preferences {
         // Never sent to routing advisers either.
         task.preferred = Some("fable".into());
         assert!(!orochi::router::adviser::request(&task, &[]).contains("fable"));
+    }
+}
+
+/// Which model a piece of work should run on, decided by three things the task's complexity
+/// alone cannot say: what the seat is being asked to do, what a token there costs, and what
+/// the model is for.
+mod fit {
+    use super::*;
+    use orochi::router::classifier;
+
+    fn seat(models: &[&str]) -> (tempfile::TempDir, Store, AgentConfig, Capabilities) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("data")).unwrap();
+        let agent = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
+        (dir, store, agent, caps(models))
+    }
+
+    /// Carrying out a plan someone else settled asks less of the model than settling it, and
+    /// saying so is not the same as calling the task easy: the descriptor keeps the task's own
+    /// complexity, which is what seating, escalation and the learning strata read.
+    #[test]
+    fn carrying_out_a_settled_plan_is_asked_of_the_model_as_less_than_deciding_it() {
+        let (dir, store, agent, capabilities) = seat(&["claude-opus", "claude-haiku"]);
+        let (config, registry, runtime) = (
+            Config::default(),
+            Registry::bundled().unwrap(),
+            RuntimeMap::new(),
+        );
+        let mut task = profiler::profile("Implement a function", dir.path());
+        task.complexity = Complexity::Complex;
+        let route = |difficulty: Option<Complexity>| {
+            scorer::candidates(
+                &[(&agent, &capabilities)],
+                &ScoringContext {
+                    task: &task,
+                    overrides: &Overrides::default(),
+                    config: &config,
+                    policies: &registry,
+                    store: &store,
+                    runtime: &runtime,
+                    sessions: &[],
+                    busy: &[],
+                    taken: &[],
+                    difficulty,
+                    root: dir.path(),
+                    time: now(),
+                },
+            )
+            .unwrap()
+        };
+        let deciding = route(None);
+        let carrying_out = route(Some(Complexity::Complex.eased()));
+        let has =
+            |ranked: &[ExecutionCandidate], model: &str| ranked.iter().any(|c| c.model == model);
+        // At complex, haiku is below the success floor; asked for normal work it is not.
+        assert!(!has(&deciding, "claude-haiku"));
+        assert!(has(&carrying_out, "claude-haiku"));
+        let level = |ranked: &[ExecutionCandidate], model: &str| {
+            ranked
+                .iter()
+                .find(|c| c.model == model)
+                .unwrap()
+                .reasoning_level
+                .clone()
+                .unwrap()
+        };
+        assert_eq!(level(&deciding, "claude-opus"), "high");
+        assert_eq!(level(&carrying_out, "claude-opus"), "medium");
+        assert!(carrying_out.iter().all(|c| {
+            c.reasons
+                .iter()
+                .any(|r| r.contains("complex implementation task, asked of the model as normal"))
+        }));
+        // The task was never made easier, only the ask.
+        assert_eq!(task.complexity, Complexity::Complex);
+    }
+
+    /// Two models of one tier can be a factor apart in price and identical in everything a
+    /// token count can see. The premium is a cost and never a prediction: what the run is
+    /// expected to spend is what the EWMA learns from and calibration compares against.
+    #[test]
+    fn a_price_premium_separates_two_models_of_one_tier_without_moving_the_prediction() {
+        let (dir, store, agent, capabilities) = seat(&["claude-fable-5-1", "claude-opus"]);
+        let (config, registry, runtime) = (
+            Config::default(),
+            Registry::bundled().unwrap(),
+            RuntimeMap::new(),
+        );
+        let task = profiler::profile("Implement a function", dir.path());
+        let ranked = scorer::candidates(
+            &[(&agent, &capabilities)],
+            &ScoringContext {
+                task: &task,
+                overrides: &Overrides::default(),
+                config: &config,
+                policies: &registry,
+                store: &store,
+                runtime: &runtime,
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                difficulty: None,
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap();
+        let of = |model: &str| ranked.iter().find(|c| c.model == model).unwrap();
+        let (fable, opus) = (of("claude-fable-5-1"), of("claude-opus"));
+        // The same tier: the same prior and the same predicted spend.
+        assert_eq!(fable.success_probability, opus.success_probability);
+        assert!((fable.expected_tokens - opus.expected_tokens).abs() < 1e-6);
+        assert!(
+            (fable.prediction.as_ref().unwrap().tokens - opus.prediction.as_ref().unwrap().tokens)
+                .abs()
+                < 1e-6
+        );
+        // Priced apart, so the cheaper of the two leads.
+        let ratio = fable.expected_cost / opus.expected_cost;
+        assert!((1.9..=2.1).contains(&ratio), "price ratio was {ratio}");
+        assert_eq!(ranked.first().unwrap().model, "claude-opus");
+    }
+
+    /// The residual the numbers cannot carry: which of several qualifying models this kind of
+    /// work is for. It reorders the field that already passed every gate and opens none.
+    #[test]
+    fn what_the_work_suits_reorders_the_capable_field_and_opens_no_gate() {
+        let (dir, store, agent, capabilities) =
+            seat(&["claude-fable-5-1", "claude-opus", "claude-haiku"]);
+        let (config, registry, runtime) = (
+            Config::default(),
+            Registry::bundled().unwrap(),
+            RuntimeMap::new(),
+        );
+        let route = |suited: Option<&str>, complexity: Complexity| {
+            let mut task = profiler::profile("Implement a function", dir.path());
+            task.complexity = complexity;
+            task.suited = suited.map(str::to_owned);
+            scorer::candidates(
+                &[(&agent, &capabilities)],
+                &ScoringContext {
+                    task: &task,
+                    overrides: &Overrides::default(),
+                    config: &config,
+                    policies: &registry,
+                    store: &store,
+                    runtime: &runtime,
+                    sessions: &[],
+                    busy: &[],
+                    taken: &[],
+                    difficulty: None,
+                    root: dir.path(),
+                    time: now(),
+                },
+            )
+            .unwrap()
+        };
+        // Priced apart, opus leads; told the work is what fable is for, fable does.
+        assert_eq!(
+            route(None, Complexity::Complex).first().unwrap().model,
+            "claude-opus"
+        );
+        let suited = route(Some("fable"), Complexity::Complex);
+        assert_eq!(suited.first().unwrap().model, "claude-fable-5-1");
+        assert!(suited.iter().any(|c| {
+            c.reasons
+                .iter()
+                .any(|r| r.contains("fable is what this kind of work is for"))
+        }));
+        // haiku is below the floor for extreme work; naming it does not bring it back.
+        assert!(
+            !route(Some("haiku"), Complexity::Extreme)
+                .iter()
+                .any(|c| c.model == "claude-haiku")
+        );
+    }
+
+    /// New models arrive faster than anyone writes about them. A rule that says nothing about
+    /// what it is for is still described from what it does say, so a provider that gains a
+    /// model gains a line in the catalog without anyone writing one.
+    #[test]
+    fn a_model_no_policy_describes_is_still_described_to_the_classifier() {
+        let registry = Registry::bundled().unwrap();
+        let described = registry.get(Provider::Anthropic).model_rule("claude-opus");
+        assert!(described.describe().contains("settled plan"));
+        let undescribed = registry.get(Provider::Openai).model_rule("gpt-6-astra");
+        assert_eq!(undescribed.use_for, None);
+        assert!(undescribed.describe().contains("most capable"));
+        // The fallback rule is a prior, not a model, so it is never offered as a name.
+        let unmatched = registry
+            .get(Provider::Openai)
+            .model_rule("gpt-9-unheard-of");
+        assert_eq!(unmatched.pattern, "*");
+        assert!(!unmatched.describe().is_empty());
+
+        let anthropic_only = Config {
+            agents: vec![AgentConfig::preset(
+                "claude",
+                Provider::Anthropic,
+                "test",
+                &[],
+            )],
+            ..Config::default()
+        };
+        let catalog = classifier::catalog(&anthropic_only, &registry);
+        let listed = catalog.as_object().unwrap();
+        assert!(listed.contains_key("fable") && listed.contains_key("opus"));
+        assert!(!listed.contains_key("*"), "the fallback is not a model");
+        assert!(
+            !listed.contains_key("astra"),
+            "a provider with no agent here"
+        );
+        // The catalog is part of what a cached classification was answered for.
+        assert!(
+            classifier::request("t", &serde_json::json!({}), &catalog)
+                .contains("carrying out a plan")
+        );
     }
 }
 
@@ -1517,6 +1744,7 @@ fn a_small_task_goes_where_a_session_has_measured_cheaper() {
                 sessions: &[],
                 busy: &[],
                 taken: &[],
+                difficulty: None,
                 root: dir.path(),
                 time: now(),
             },
@@ -1798,6 +2026,7 @@ fn the_predicted_tokens_include_what_opening_the_session_costs() {
             sessions: &[],
             busy: &[],
             taken: &[],
+            difficulty: None,
             root: dir.path(),
             time: now(),
         },
@@ -1853,6 +2082,7 @@ fn a_record_written_before_the_newest_fields_still_reads_back() {
                 context_restore_tokens: 604.0,
                 quota_multiplier: 1.0,
                 session_tokens: 85_591.0,
+                price_multiplier: 1.0,
             }),
             prior_basis: Some(orochi::learning::PRIOR_BASIS.into()),
         }),
