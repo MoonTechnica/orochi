@@ -209,6 +209,24 @@ impl AgentAdapter for ProviderAdapter {
             .or_else(|| payload.pointer("/_meta/orochi.dev~1usage"))?;
         let mut input = number(v, &["inputTokens", "input_tokens", "prompt_tokens"]);
         let output = number(v, &["outputTokens", "output_tokens", "completion_tokens"]);
+        // Measured 2026-09-22: claude-agent-acp reports the read in camelCase, so the
+        // snake_case fold-in below never fires and the write was landing nowhere at all --
+        // the dearest tokens of the run, invisible. Read both spellings for both.
+        let created = number(
+            v,
+            &[
+                "cacheCreationTokens",
+                "cacheWriteTokens",
+                "cache_creation_input_tokens",
+                "cache_creation_tokens",
+            ],
+        )
+        .or_else(|| {
+            let breakdown = v.get("cache_creation")?;
+            let of = |k: &str| breakdown.get(k).and_then(Value::as_u64).unwrap_or(0);
+            let total = of("ephemeral_5m_input_tokens") + of("ephemeral_1h_input_tokens");
+            (total > 0).then_some(total)
+        });
         let cached = number(
             v,
             &[
@@ -232,7 +250,7 @@ impl AgentAdapter for ProviderAdapter {
         {
             input = input.map(|n| {
                 n.saturating_add(cached.unwrap_or(0))
-                    .saturating_add(number(v, &["cache_creation_input_tokens"]).unwrap_or(0))
+                    .saturating_add(created.unwrap_or(0))
             });
         }
         Some(Usage {
@@ -249,6 +267,7 @@ impl AgentAdapter for ProviderAdapter {
                         .and_then(Value::as_u64)
                 }),
             cached_tokens: cached,
+            cache_creation_tokens: created,
         })
     }
     fn get_quota(&self, payload: &Value) -> Option<QuotaObservation> {

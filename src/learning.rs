@@ -9,7 +9,10 @@ use serde::Serialize;
 /// the EWMA learns `measured / predicted`, so ratios from a differently made prior are not
 /// ratios it can use. "session" is the measured cost of opening the seat, which the prior
 /// carried nothing of before.
-pub const PRIOR_BASIS: &str = "session+scope";
+/// Names the recipe a prediction was made with, so a run predicted another way trains
+/// success and latency but not tokens. It changed when the session floor stopped counting
+/// cache reads as if they cost what fresh input costs.
+pub const PRIOR_BASIS: &str = "weighted-session+scope";
 
 pub fn resource_cost(tokens: f64, success: f64, features: &CostFeatures, latency_ms: f64) -> f64 {
     // `tokens` already includes what opening the session costs, and that part is not
@@ -102,12 +105,11 @@ fn pool(config: &LearningConfig, weight: f64, runs: &[RunRecord]) -> Pool {
         prior_mass *= decay;
         mass = mass * decay + weight;
         residual = residual * decay + weight * (f64::from(success) - prediction.prior_success);
-        if let Some(tokens) = run.usage.total()
+        if let Some(tokens) = run.usage.weighted()
             && prediction.prior_tokens.is_finite()
             && prediction.prior_tokens > 0.0
         {
-            ratio = ratio * decay
-                + weight * (tokens as f64 / prediction.prior_tokens).clamp(0.05, 20.0);
+            ratio = ratio * decay + weight * (tokens / prediction.prior_tokens).clamp(0.05, 20.0);
             token_mass = token_mass * decay + weight;
             token_prior_mass *= decay;
         }
@@ -192,15 +194,14 @@ pub fn estimate_evidence(
         positive = positive * decay + weight * f64::from(success);
         mass = mass * decay + weight;
         latency = latency * decay + weight * run.duration_ms as f64;
-        if let Some((tokens, prediction)) = run.usage.total().zip(run.prediction.as_ref())
+        if let Some((tokens, prediction)) = run.usage.weighted().zip(run.prediction.as_ref())
             && prediction.prior_basis.as_deref() == Some(PRIOR_BASIS)
             && prediction.prior_tokens.is_finite()
             && prediction.prior_tokens > 0.0
         {
             // Normalize by task size; bound the influence of single pathological turns.
             ratio_sum = ratio_sum * decay
-                + weight
-                    * (tokens as f64 / (prediction.prior_tokens * shared.ratio)).clamp(0.05, 20.0);
+                + weight * (tokens / (prediction.prior_tokens * shared.ratio)).clamp(0.05, 20.0);
             token_mass = token_mass * decay + weight;
             token_prior_mass *= decay;
         }
@@ -327,11 +328,11 @@ pub fn calibrate(runs: &[RunRecord]) -> CalibrationReport {
         bin.count += 1;
         bin.predicted = Some(bin.predicted.unwrap_or(0.0) + p.success);
         bin.observed = Some(bin.observed.unwrap_or(0.0) + y);
-        if let Some(actual) = run.usage.total() {
+        if let Some(actual) = run.usage.weighted() {
             tn += 1;
-            tokens += actual as f64;
-            error += (p.tokens - actual as f64).abs();
-            prior_error += (p.prior_tokens - actual as f64).abs();
+            tokens += actual;
+            error += (p.tokens - actual).abs();
+            prior_error += (p.prior_tokens - actual).abs();
         }
     }
     for bin in &mut bins {

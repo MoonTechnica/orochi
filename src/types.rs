@@ -108,12 +108,41 @@ pub struct Usage {
     pub output_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub cached_tokens: Option<u64>,
+    /// Tokens written to the cache this run. The dearest kind there is, and until it had a
+    /// field of its own it was only an unexplained residual inside `total_tokens`. Records
+    /// written before it existed have none.
+    #[serde(default)]
+    pub cache_creation_tokens: Option<u64>,
 }
+/// What a token of each kind costs, against one fresh input token. Cache reads are the cheap
+/// ones, a cache write costs more than the input it stores, and output is the dear one. The
+/// exact ratio is a provider's and a model's -- that is `ModelRule::price_premium`'s job --
+/// but the shape holds wherever there is a cache, and counting all four as one token does not:
+/// measured on one Anthropic run, 93% of the total was cache reads.
+const CACHE_READ: f64 = 0.1;
+const CACHE_WRITE: f64 = 1.25;
+const OUTPUT: f64 = 5.0;
 impl Usage {
     // Input includes cache reads, output includes reasoning: never double count them.
     pub fn total(&self) -> Option<u64> {
         self.total_tokens
             .or_else(|| Some(self.input_tokens?.saturating_add(self.output_tokens?)))
+    }
+    /// The same run counted by what it costs rather than by how many tokens passed. This is
+    /// what ranks one seat against another; `total()` stays what a run is *reported* as, so
+    /// `orochi runs` and the views keep showing what was actually spent.
+    pub fn weighted(&self) -> Option<f64> {
+        let total = self.total()? as f64;
+        // Without the cache breakdown there is nothing to weigh by, and guessing one would
+        // make an old record dearer than the same run recorded today: it reads as its total.
+        let Some(cached) = self.cached_tokens else {
+            return Some(total);
+        };
+        let cached = cached as f64;
+        let output = self.output_tokens.unwrap_or(0) as f64;
+        let created = self.cache_creation_tokens.unwrap_or(0) as f64;
+        let fresh = (total - output - cached - created).max(0.0);
+        Some(fresh + created * CACHE_WRITE + cached * CACHE_READ + output * OUTPUT)
     }
 }
 

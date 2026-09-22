@@ -272,6 +272,9 @@ impl Store {
             let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
                 continue;
             };
+            // Raw, unlike the seat floor: this is one side of a comparison whose other side
+            // (`roles.min_work_tokens`, `classifier.max_cost_share`) was tuned against raw
+            // totals. Weighing one side alone would silently move both thresholds.
             let Some(total) = run.usage.total_tokens else {
                 continue;
             };
@@ -313,12 +316,12 @@ impl Store {
             let Ok(run) = serde_json::from_str::<RunRecord>(&record) else {
                 continue;
             };
-            let Some(total) = run.usage.total_tokens else {
+            let Some(total) = run.usage.weighted() else {
                 continue;
             };
-            anywhere.push(total as f64);
+            anywhere.push(total);
             if ran == model {
-                own.push(total as f64);
+                own.push(total);
             }
         }
         // A model nobody has run opens the same kind of session as its agent's others, which
@@ -348,6 +351,8 @@ impl Store {
             let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
                 continue;
             };
+            // Raw, to stay comparable with `typical_tokens`, which `worth_asking` weighs it
+            // against.
             let Some(total) = run.usage.total_tokens else {
                 continue;
             };
@@ -400,8 +405,8 @@ impl Store {
             }
             history.samples += 1;
             history.successes += usize::from(run.outcome == Outcome::Success);
-            if let Some(tokens) = run.usage.total() {
-                history.total_tokens += tokens;
+            if let Some(tokens) = run.usage.weighted() {
+                history.total_tokens += tokens as u64;
                 history.token_samples += 1;
             }
             history.duration_ms += run.duration_ms;

@@ -88,6 +88,68 @@ fn usage_is_nullable_and_does_not_double_count_thoughts_or_cache() {
     assert_eq!(usage.total(), Some(150));
     let native = ProviderAdapter(Provider::Anthropic).get_usage(&json!({"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}})).unwrap();
     assert_eq!(native.total(), Some(200));
+    assert_eq!(native.cache_creation_tokens, Some(30));
+}
+
+/// The write is the dearest part of a cached run and the bridges spell it every way there is.
+/// Measured 2026-09-22: claude-agent-acp sends camelCase, so the one snake_case spelling the
+/// code read left 69,484 tokens of a 1,153,490-token run recorded nowhere but the residual.
+#[test]
+fn a_cache_write_is_read_whatever_the_bridge_calls_it() {
+    let anthropic = ProviderAdapter(Provider::Anthropic);
+    for spelling in [
+        json!({"cacheCreationTokens": 70, "cachedReadTokens": 900, "outputTokens": 30, "totalTokens": 1000}),
+        json!({"cache_creation_tokens": 70, "cachedReadTokens": 900, "outputTokens": 30, "totalTokens": 1000}),
+        json!({"cache_creation": {"ephemeral_5m_input_tokens": 50, "ephemeral_1h_input_tokens": 20},
+               "cachedReadTokens": 900, "outputTokens": 30, "totalTokens": 1000}),
+    ] {
+        let usage = anthropic
+            .get_usage(&json!({ "usage": spelling.clone() }))
+            .unwrap();
+        assert_eq!(usage.cache_creation_tokens, Some(70), "{spelling}");
+    }
+}
+
+/// What ranks one seat against another is what the run costs, not how many tokens went past.
+/// A run that is nearly all cache reads is nearly all cheap; counting it the other way made a
+/// model that happened to be measured on cache-heavy sessions look worse than one that was
+/// not. `total()` is unchanged: it is still what the run is reported as.
+#[test]
+fn a_cache_read_is_not_weighed_as_if_it_cost_what_fresh_input_costs() {
+    // The ToDo run of 2026-09-22, as the adapter reported it.
+    let measured = Usage {
+        total_tokens: Some(1_153_490),
+        input_tokens: Some(546),
+        output_tokens: Some(14_003),
+        reasoning_tokens: None,
+        cached_tokens: Some(1_069_457),
+        cache_creation_tokens: Some(69_484),
+    };
+    let weighted = measured.weighted().unwrap();
+    assert_eq!(measured.total(), Some(1_153_490));
+    assert!(
+        (weighted - 264_362.0).abs() < 1.0,
+        "weighted was {weighted}"
+    );
+    // Output is the dear part of a small run, so weighing can also cost more than it saves.
+    let chatty = Usage {
+        total_tokens: Some(1_000),
+        input_tokens: Some(200),
+        output_tokens: Some(800),
+        reasoning_tokens: None,
+        cached_tokens: Some(0),
+        cache_creation_tokens: None,
+    };
+    assert!(chatty.weighted().unwrap() > 1_000.0);
+    // A record written before the breakdown existed reads exactly as it always did, rather
+    // than being guessed into a different number than the same run recorded today.
+    let old: Usage = serde_json::from_str(
+        r#"{"total_tokens":500,"input_tokens":400,
+        "output_tokens":100,"reasoning_tokens":null,"cached_tokens":null}"#,
+    )
+    .unwrap();
+    assert_eq!(old.cache_creation_tokens, None);
+    assert_eq!(old.weighted(), Some(500.0));
 }
 
 #[test]
