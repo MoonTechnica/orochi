@@ -814,3 +814,54 @@ fn a_ratio_learned_against_an_older_prior_is_not_mixed_into_the_new_one() {
     let current = learning::estimate(&config, 0.9, 1000.0, &same);
     assert!((current.tokens - 2000.0).abs() < 1.0, "{}", current.tokens);
 }
+
+/// The opening line decides whether a request is for software or about it, and it has to do
+/// that from a sentence a person actually wrote. An allowlist of exact pairs ("create a web")
+/// read "Create a ToDo web application in this repository, which is empty apart from a
+/// README" as a documentation task and routed a whole application build to the cheapest model
+/// at the lowest reasoning level (measured 2026-09-22).
+#[test]
+fn a_request_to_build_an_application_is_not_read_as_a_request_to_write_about_one() {
+    let root = tempfile::tempdir().unwrap();
+    let kind = |task: &str| profiler::profile(task, root.path()).task_type;
+
+    for builds in [
+        "Create a ToDo web application in this repository, which is empty apart from a README.",
+        "Create a web app",
+        "Build an app that tracks invoices",
+        "Implement a feature flag service",
+        "Write a small CLI tool for tailing logs",
+        "アプリを作成してください",
+        "ウェブサイトを実装して",
+    ] {
+        assert_eq!(kind(builds), "implementation", "{builds}");
+    }
+
+    // The body of a build request mentions all sorts of things in passing. None of them is
+    // what is being asked for: "renamed inline" in a list of features is not a rename.
+    assert_eq!(
+        kind(
+            "Create a ToDo web application. A task can be added, toggled complete, renamed \
+             inline, and deleted. Review the result and investigate anything that fails."
+        ),
+        "implementation"
+    );
+
+    // Asking about software, or for one of those narrower things outright, still is.
+    for (task, expected) in [
+        ("Write a README for the web app", "documentation"),
+        ("Update the documentation for the API", "documentation"),
+        ("Write tests for the parser", "test"),
+        (
+            "Rename is_balanced to balanced across the tree",
+            "small_edit",
+        ),
+        ("Review the authentication module", "review"),
+        (
+            "Investigate why the parser drops the last token",
+            "investigation",
+        ),
+    ] {
+        assert_eq!(kind(task), expected, "{task}");
+    }
+}

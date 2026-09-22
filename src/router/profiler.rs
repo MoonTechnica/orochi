@@ -14,6 +14,85 @@ pub fn scope_floor(complexity: Complexity) -> usize {
     }
 }
 
+/// Whether the opening asks for software to be built. A verb governing a noun a few words
+/// later, rather than a list of exact phrasings: an allowlist of pairs like "create a web"
+/// read "Create a ToDo web application" as a request for documentation, because the only
+/// word of it that matched anything was the "README" further along the line (2026-09-22).
+/// Whichever kind of noun the verb reaches first decides, so "write a README for the web app"
+/// is still a request for a README.
+fn builds(opening: &str) -> bool {
+    const VERBS: &[&str] = &[
+        "build",
+        "create",
+        "implement",
+        "write",
+        "make",
+        "develop",
+        "scaffold",
+        "add",
+        "port",
+    ];
+    const SOFTWARE: &[&str] = &[
+        "app",
+        "apps",
+        "application",
+        "web",
+        "website",
+        "site",
+        "service",
+        "api",
+        "cli",
+        "tool",
+        "page",
+        "component",
+        "feature",
+        "server",
+        "dashboard",
+        "game",
+        "bot",
+        "extension",
+        "endpoint",
+        "library",
+        "script",
+    ];
+    // The deliverables a request can ask for *about* software rather than as software.
+    const ABOUT: &[&str] = &[
+        "readme",
+        "doc",
+        "docs",
+        "documentation",
+        "guide",
+        "changelog",
+        "comment",
+        "comments",
+        "test",
+        "tests",
+        "review",
+        "summary",
+        "report",
+    ];
+    const REACH: usize = 5;
+    let words: Vec<&str> = opening
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is = |set: &[&str], word: &str| set.contains(&word);
+    for (at, word) in words.iter().enumerate() {
+        if !is(VERBS, word) {
+            continue;
+        }
+        for next in words.iter().skip(at + 1).take(REACH) {
+            if is(ABOUT, next) {
+                break;
+            }
+            if is(SOFTWARE, next) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
     let lower = task.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
@@ -26,19 +105,18 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         .find(|line| !line.trim().is_empty())
         .unwrap_or("");
     let opening_has = |words: &[&str]| words.iter().any(|w| opening.contains(w));
-    let builds_software = opening.trim_start().starts_with("implement ")
-        || opening_has(&[
-            "build an app",
-            "build a web",
-            "create an app",
-            "create a web",
-            "implement an app",
-            "implement a web",
-            "implement a feature",
-            "機能を実装",
-            "機能を追加",
-        ])
-        || (opening_has(&["アプリ"]) && opening_has(&["実装", "作成", "作って", "開発"]));
+    // A verb that can only mean software, at the head of the request, settles it on its own:
+    // "Implement is_balanced in src/lib.rs. Add unit tests." is not a request for tests.
+    // "write", "create" and "make" are not in that set -- they head a request for a README
+    // just as readily -- so they go through `builds`, which looks at what they govern.
+    let leads = ["build ", "implement ", "develop ", "scaffold ", "port "]
+        .iter()
+        .any(|v| opening.trim_start().starts_with(v));
+    let builds_software = leads
+        || builds(opening)
+        || opening_has(&["機能を実装", "機能を追加"])
+        || (opening_has(&["アプリ", "ウェブ", "サイト", "ツール"])
+            && opening_has(&["実装", "作成", "作って", "つくって", "開発"]));
     // Asking for the agents themselves to work together is a request for more than one seat.
     let together = has(&[
         "会話",
@@ -93,7 +171,7 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         "architecture"
     } else if has(&["refactor", "リファクタ"]) {
         "refactor"
-    } else if has(&["review", "レビュー"]) {
+    } else if !builds_software && has(&["review", "レビュー"]) {
         "review"
     } else if has(&["bug", "fix", "不具合", "バグ", "修正"]) {
         "bug_fix"
@@ -103,9 +181,11 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         "documentation"
     } else if !builds_software && opening_has(&["test", "テスト"]) {
         "test"
-    } else if has(&["investigate", "調査", "原因"]) {
+    } else if !builds_software && has(&["investigate", "調査", "原因"]) {
         "investigation"
-    } else if has(&["typo", "rename", "誤字", "名称変更"]) {
+    } else if !builds_software && opening_has(&["typo", "rename", "誤字", "名称変更"]) {
+        // The opening, and only when nothing is being built: a request to build an app that
+        // mentions renaming a task in passing is not a rename (2026-09-22).
         "small_edit"
     } else {
         "implementation"
