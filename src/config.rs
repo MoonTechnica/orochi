@@ -427,15 +427,12 @@ pub struct ClassifierConfig {
     /// The largest share of what work like this has cost here that asking what it is may take.
     /// Asking is a whole session; where it would cost as much as the work it decides, the
     /// local profile is kept instead. Orochi asks until it has measured both sides. Both sides
-    /// are weighted costs, and they do not shrink alike: one short classification turn is not
-    /// cache-dominated the way a long agentic run is, so the same behaviour is a larger share
-    /// than the raw token counts made it look. Measured 2026-09-22 over 31 runs, the real
-    /// share is 0.29 to 0.74 against 0.09 to 0.22 read raw, so a gate that almost never fired
-    /// would now fire almost always. It is set to keep asking where it asked before, because
-    /// what made asking dear was not the question but where it was sent -- two of the three
-    /// measured classifications ran on `sonnet` with no cache reads, 46,194 weighted tokens
-    /// for a 77-token answer -- and the scoring that chose that changed the same day.
-    /// Re-measure before tightening this; until then it is close to no gate at all.
+    /// are weighted costs. Asking costs what a cold session costs and no more can be done
+    /// about it: measured on 2026-09-24, a classification on `codex` spent 24,262 weighted
+    /// tokens of which 23,982 were uncached input, against 20,441 on `haiku` -- it is the
+    /// system prompt, not the model, and an earlier guess that better routing would make the
+    /// question cheap was wrong. What the share is taken against is what was wrong: see
+    /// `classifier::worth_asking`, which weighs it against this task's own size.
     pub max_cost_share: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_overhead_tokens: Option<u64>,
@@ -450,7 +447,7 @@ impl Default for ClassifierConfig {
             // Short: this runs before every turn, and giving up only costs the heuristic.
             timeout_secs: 60,
             max_output_tokens: 512,
-            max_cost_share: 0.75,
+            max_cost_share: 0.25,
             session_overhead_tokens: None,
         }
     }

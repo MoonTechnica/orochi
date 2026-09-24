@@ -178,10 +178,8 @@ pub fn candidates(
                     floor
                 }
             };
-            let initial_tokens = session
-                + (task.estimated_context as f64 + 1500.0 * task.estimated_scope as f64)
-                    * rule.relative_tokens
-                    * reasoning_factor;
+            let initial_tokens =
+                session + task.size_prior() * rule.relative_tokens * reasoning_factor;
             let runs = cx.store.learning_runs(&c, task)?;
             let pooled = if cx.config.learning.pooling > 0.0 {
                 cx.store.pooled_runs(&c, task)?

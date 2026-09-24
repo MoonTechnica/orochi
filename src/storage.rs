@@ -257,10 +257,11 @@ impl Store {
         )?;
         Ok(())
     }
-    /// What work like this has cost here, counted by `Usage::weighted()`: the median of
-    /// recent executions carrying the same labels, or of recent executions at large when that
-    /// stratum is too thin to mean anything. `None` until there is anything to go by.
-    pub fn typical_tokens(&self, task_type: &str, complexity: Complexity) -> Result<Option<f64>> {
+    /// What work like this has cost here, counted by `Usage::weighted()`, beside how big it
+    /// looked before it ran: the medians of recent executions carrying the same labels, or of
+    /// recent executions at large when that stratum is too thin to mean anything. `None` until
+    /// there is anything to go by.
+    pub fn typical(&self, task_type: &str, complexity: Complexity) -> Result<Option<Typical>> {
         const SAMPLES: usize = 3;
         let mut statement = self.connection.prepare(
             "SELECT record FROM runs WHERE json_extract(record, '$.purpose')='execution'
@@ -275,15 +276,22 @@ impl Store {
             let Some(total) = run.usage.weighted() else {
                 continue;
             };
-            every.push(total);
+            let sample = (total, size_prior(run.context_size, run.scope));
+            every.push(sample);
             if run.task_type == task_type && run.complexity == Some(complexity) {
-                stratum.push(total);
+                stratum.push(sample);
             }
         }
-        let median = |mut values: Vec<f64>| -> Option<f64> {
+        let median = |mut values: Vec<(f64, f64)>| -> Option<Typical> {
             (values.len() >= SAMPLES).then(|| {
-                values.sort_by(f64::total_cmp);
-                values[values.len() / 2]
+                let at = values.len() / 2;
+                values.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let tokens = values[at].0;
+                values.sort_by(|a, b| a.1.total_cmp(&b.1));
+                Typical {
+                    tokens,
+                    size: values[at].1,
+                }
             })
         };
         // The stratum decides where it stands on its own: the point of stratifying is that

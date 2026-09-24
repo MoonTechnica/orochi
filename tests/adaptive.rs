@@ -865,3 +865,53 @@ fn a_request_to_build_an_application_is_not_read_as_a_request_to_write_about_one
         assert_eq!(kind(task), expected, "{task}");
     }
 }
+
+/// The stratum says what work of a kind has cost; it cannot say whether this one is a line or
+/// a library. Measured, that is the whole difference: one classification bought a decision
+/// over 246,991 tokens of work and another over 5,158, and against the stratum alone the two
+/// read as 0.346 and 0.342 — no threshold separates those. The size each task showed before
+/// anything ran does separate them.
+#[test]
+fn what_asking_is_worth_is_weighed_against_this_task_and_not_only_against_its_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let config = Config {
+        agents: vec![AgentConfig::preset("codex", Provider::Openai, "codex", &[])],
+        ..Config::default()
+    };
+    let base = profiler::profile("implement the thing", dir.path());
+    let sized = |scope: usize| TaskDescriptor {
+        estimated_context: 500,
+        estimated_scope: scope,
+        ..base.clone()
+    };
+    let spent = |at: usize, purpose: &str, tokens: u64| {
+        let mut record = run(at, true);
+        record.purpose = purpose.into();
+        record.candidate.agent = "codex".into();
+        // `run` records scope 1 and context 500, so work here typically looks like 2,000.
+        record.usage = Usage {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        };
+        record.started_at = at as i64;
+        record
+    };
+    for at in 0..3 {
+        store.record(&spent(at, "classification", 24_000)).unwrap();
+    }
+    for at in 3..7 {
+        store.record(&spent(at, "execution", 48_000)).unwrap();
+    }
+
+    // A task the size of the work already measured: asking takes half of it, and is refused.
+    assert!(!classifier::worth_asking(&config, &store, &sized(1)));
+    // A task that looks four times that size: the same question is a quarter of it, and worth
+    // asking. Nothing about the stratum changed — only what this task looks like.
+    assert!(classifier::worth_asking(&config, &store, &sized(5)));
+    // The scaling is bounded, so a task that looks enormous cannot claim an unbounded budget.
+    assert_eq!(
+        classifier::worth_asking(&config, &store, &sized(100)),
+        classifier::worth_asking(&config, &store, &sized(20)),
+    );
+}

@@ -248,6 +248,13 @@ pub fn agents(config: &Config, store: &Store) -> Vec<String> {
 /// Whether asking is worth what asking costs, both as measured here. Orochi asks while it
 /// cannot tell — there is nothing to weigh yet, and asking is how it learns — and stops where
 /// the question would take more than its share of the work it decides.
+///
+/// The share is taken against **this** task's size and not only against what work like this
+/// usually costs, because the stratum cannot tell a line from a library and that is the whole
+/// difference. Measured: 24,262 weighted tokens bought a classification that decided 246,991
+/// tokens of work on 2026-09-22 and 5,158 on 2026-09-24, and against the stratum alone those
+/// two read as 0.346 and 0.342 — indistinguishable, so no threshold could separate them.
+/// Against the size each task showed beforehand they read 0.12 and 0.35.
 pub fn worth_asking(config: &Config, store: &Store, descriptor: &TaskDescriptor) -> bool {
     let Some(first) = agents(config, store).first().cloned() else {
         return false;
@@ -260,10 +267,18 @@ pub fn worth_asking(config: &Config, store: &Store, descriptor: &TaskDescriptor)
         // Nobody has priced the agent that would answer; asking it is how that is learned.
         return true;
     };
-    let Ok(Some(work)) = store.typical_tokens(&descriptor.task_type, descriptor.complexity) else {
+    let Ok(Some(work)) = store.typical(&descriptor.task_type, descriptor.complexity) else {
         return true;
     };
-    asking <= work * config.classifier.max_cost_share
+    // A heuristic against a heuristic, so it is bounded: a task that looks four times the
+    // usual size is not assumed to cost four times as much, and one that looks tiny is not
+    // assumed to cost nothing. Where nothing has a size, the stratum stands alone as before.
+    let relative = if work.size > 0.0 {
+        (descriptor.size_prior() / work.size).clamp(0.25, 4.0)
+    } else {
+        1.0
+    };
+    asking <= work.tokens * relative * config.classifier.max_cost_share
 }
 
 pub async fn refine(

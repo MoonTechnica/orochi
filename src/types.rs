@@ -64,6 +64,19 @@ impl Complexity {
     }
 }
 
+/// How big a piece of work looks before anything has run: the context it would carry plus a
+/// constant for each place it is expected to touch. A heuristic, and the only measure of this
+/// task's own size that is in hand before an agent is asked anything about it.
+pub fn size_prior(context: u64, scope: usize) -> f64 {
+    context as f64 + 1500.0 * scope as f64
+}
+/// What work of a kind has cost here, beside how big that work looked before it ran.
+#[derive(Debug, Clone, Copy)]
+pub struct Typical {
+    pub tokens: f64,
+    pub size: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDescriptor {
     pub task_type: String,
@@ -99,6 +112,11 @@ pub struct TaskDescriptor {
     /// `preferred` it only reorders candidates that already passed every gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suited: Option<String>,
+}
+impl TaskDescriptor {
+    pub fn size_prior(&self) -> f64 {
+        size_prior(self.estimated_context, self.estimated_scope)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

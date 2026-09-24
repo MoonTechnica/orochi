@@ -82,10 +82,10 @@ pub fn worth_seating(config: &Config, store: &Store, task: &TaskDescriptor) -> b
     if task.collaborative {
         return true;
     }
-    let Ok(Some(work)) = store.typical_tokens(&task.task_type, task.complexity) else {
+    let Ok(Some(work)) = store.typical(&task.task_type, task.complexity) else {
         return true;
     };
-    work >= config.roles.min_work_tokens as f64
+    work.tokens >= config.roles.min_work_tokens as f64
 }
 
 pub fn seats(task: &TaskDescriptor) -> Vec<Role> {
