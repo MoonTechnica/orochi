@@ -1575,7 +1575,7 @@ mod fit {
         );
         // Priced apart, so the cheaper of the two leads.
         let ratio = fable.expected_cost / opus.expected_cost;
-        assert!((1.9..=2.1).contains(&ratio), "price ratio was {ratio}");
+        assert!((2.4..=2.6).contains(&ratio), "price ratio was {ratio}");
         assert_eq!(ranked.first().unwrap().model, "claude-opus");
     }
 
@@ -1640,7 +1640,7 @@ mod fit {
     fn a_model_no_policy_describes_is_still_described_to_the_classifier() {
         let registry = Registry::bundled().unwrap();
         let described = registry.get(Provider::Anthropic).model_rule("claude-opus");
-        assert!(described.describe().contains("settled plan"));
+        assert!(described.describe().contains("agentic coding"));
         let undescribed = registry.get(Provider::Openai).model_rule("gpt-6-astra");
         assert_eq!(undescribed.use_for, None);
         assert!(undescribed.describe().contains("most capable"));
@@ -1671,7 +1671,7 @@ mod fit {
         // The catalog is part of what a cached classification was answered for.
         assert!(
             classifier::request("t", &serde_json::json!({}), &catalog)
-                .contains("carrying out a plan")
+                .contains("Most workloads start here")
         );
     }
 }

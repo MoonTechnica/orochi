@@ -4,9 +4,11 @@
   "source": [
     "https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost",
     "https://platform.claude.com/docs/en/build-with-claude/effort",
-    "https://platform.claude.com/docs/en/pricing.md"
+    "https://platform.claude.com/docs/en/pricing.md",
+    "https://platform.claude.com/docs/en/about-claude/models/overview",
+    "https://platform.claude.com/docs/en/about-claude/models/choosing-a-model"
   ],
-  "updated_at": "2026-09-22",
+  "updated_at": "2026-09-24",
   "models": [
     {
       "pattern": "haiku",
@@ -18,7 +20,7 @@
         0.4,
         0.2
       ],
-      "use_for": "Small, well-specified edits, and classifying or summarising."
+      "use_for": "The lowest latency and price, with real reasoning: high-volume processing, cost-sensitive work, and sub-agent tasks."
     },
     {
       "pattern": "fable",
@@ -30,8 +32,8 @@
         0.91,
         0.85
       ],
-      "price_premium": 2.0,
-      "use_for": "Design, requirements, and ambiguous or long-horizon work whose shape is not yet settled. For carrying out a plan that is already settled it is the costliest way to get the same code."
+      "price_premium": 2.5,
+      "use_for": "The highest available capability: agent sessions that run for hours, multistep deep research, analysis carried through to a finished artefact. Where a frontier model at high effort falls short."
     },
     {
       "pattern": "opus",
@@ -43,7 +45,7 @@
         0.91,
         0.85
       ],
-      "use_for": "Implementing, refactoring and debugging against a settled plan: frontier coding at a fraction of the most capable model's price."
+      "use_for": "Complex agentic coding and enterprise work: multihour autonomous coding agents, large-scale refactoring, complex systems engineering. Most workloads start here."
     },
     {
       "pattern": "sonnet",
@@ -55,7 +57,7 @@
         0.73,
         0.55
       ],
-      "use_for": "Contained changes, tests, and routine edits where what has to happen is already clear."
+      "use_for": "Speed and capability for everyday coding, agent and enterprise workloads: code generation, data analysis, agentic tool use."
     },
     {
       "pattern": "*",

@@ -13,11 +13,12 @@ use std::{collections::BTreeMap, path::Path};
 /// Cost multiplier for a candidate the user said they want. An Orochi heuristic, not measured.
 const PREFERENCE: f64 = 0.8;
 /// Cost multiplier for the candidate the classifier read the work onto. Sized to cross the
-/// price gap between two models of one tier — 2x on Anthropic, where the most capable model
-/// costs twice the one below it and scores identically — and no further: a judgment about
-/// what suits the work may pick within the capable field, not leap out of it. An Orochi
-/// heuristic, not measured.
-const SUITED: f64 = 0.45;
+/// price gap between two models of one tier -- 2.5x on Anthropic, where Claude Fable 5.1 is
+/// $10/MTok against Claude Opus 5.5's $4 and the two score identically here -- and no
+/// further: a judgment about what suits the work may pick within the capable field, not leap
+/// out of it. The provider says the more capable model is what you reach for when the one
+/// below it falls short, so reaching has to be possible. An Orochi heuristic, not measured.
+const SUITED: f64 = 0.35;
 
 pub struct ScoringContext<'a> {
     pub task: &'a TaskDescriptor,

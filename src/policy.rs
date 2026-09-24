@@ -31,7 +31,8 @@ pub struct ModelRule {
     pub success_prior: [f64; 4],
     /// How much more a token here costs than `relative_tokens` already assumes. Two models of
     /// one tier can be a factor apart in price and identical in everything else, and no token
-    /// count says so. It is a correction and not a price list: 1.0, the default, leaves a
+    /// count says so (Anthropic 2026-09-24: Claude Fable 5.1 at $10/MTok against Claude Opus
+    /// 5.5 at $4, both frontier). It is a correction and not a price list: 1.0, the default, leaves a
     /// model priced exactly as it was before this field existed, so only a model whose price
     /// departs from its tier needs one. It multiplies the cost and never the token
     /// prediction, which the EWMA learns from and calibration compares against.
@@ -39,7 +40,8 @@ pub struct ModelRule {
     pub price_premium: Option<f64>,
     /// What this model is for, in a sentence, for the one adviser that reads the task. It
     /// carries what the numbers cannot: two frontier models with the same prior and the same
-    /// price still differ in what they are good at. Absent, `describe` generates one from the
+    /// price still differ in what they are good at. It is the provider's own account of what
+    /// the model is for, not Orochi's opinion of it. Absent, `describe` generates one from the
     /// tier and the price, so a model nobody has written about is still described.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_for: Option<String>,
