@@ -1360,7 +1360,7 @@ fn a_heavy_turn_seats_one_agent_where_work_like_it_has_measured_small() {
             session_strategy: "fresh".into(),
             context_strategy: "filesystem".into(),
             success_probability: 0.9,
-            expected_tokens: 24_000.0,
+            expected_tokens: 6_000.0,
             expected_cost: 1.0,
             confidence: 0.9,
             reasons: vec![],
@@ -1379,7 +1379,7 @@ fn a_heavy_turn_seats_one_agent_where_work_like_it_has_measured_small() {
                 prediction: None,
                 candidate,
                 usage: Usage {
-                    total_tokens: Some(24_000),
+                    total_tokens: Some(6_000),
                     ..Default::default()
                 },
                 duration_ms: 100,

@@ -426,7 +426,16 @@ pub struct ClassifierConfig {
     pub max_output_tokens: u32,
     /// The largest share of what work like this has cost here that asking what it is may take.
     /// Asking is a whole session; where it would cost as much as the work it decides, the
-    /// local profile is kept instead. Orochi asks until it has measured both sides.
+    /// local profile is kept instead. Orochi asks until it has measured both sides. Both sides
+    /// are weighted costs, and they do not shrink alike: one short classification turn is not
+    /// cache-dominated the way a long agentic run is, so the same behaviour is a larger share
+    /// than the raw token counts made it look. Measured 2026-09-22 over 31 runs, the real
+    /// share is 0.29 to 0.74 against 0.09 to 0.22 read raw, so a gate that almost never fired
+    /// would now fire almost always. It is set to keep asking where it asked before, because
+    /// what made asking dear was not the question but where it was sent -- two of the three
+    /// measured classifications ran on `sonnet` with no cache reads, 46,194 weighted tokens
+    /// for a 77-token answer -- and the scoring that chose that changed the same day.
+    /// Re-measure before tightening this; until then it is close to no gate at all.
     pub max_cost_share: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_overhead_tokens: Option<u64>,
@@ -441,7 +450,7 @@ impl Default for ClassifierConfig {
             // Short: this runs before every turn, and giving up only costs the heuristic.
             timeout_secs: 60,
             max_output_tokens: 512,
-            max_cost_share: 0.25,
+            max_cost_share: 0.75,
             session_overhead_tokens: None,
         }
     }
@@ -449,16 +458,18 @@ impl Default for ClassifierConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RolesConfig {
-    /// How much work like this must have cost here before a second seat joins it. A seat is
-    /// another session beside the first, so it roughly doubles the turn; below about twice a
-    /// bare session there is too little work for a second reading to pay for that. Orochi's
-    /// own heuristic, from sessions measured at 21,882 and 37,630 tokens on 2026-09-20.
+    /// How much work like this must have cost here before a second seat joins it, as
+    /// `Usage::weighted()` counts it. A seat is another session beside the first, so it roughly
+    /// doubles the turn; below about twice a bare session there is too little work for a second
+    /// reading to pay for that. Orochi's own heuristic, from sessions measured at 21,882 and
+    /// 37,630 tokens on 2026-09-20 and carried over to weighted costs at the measured ratio
+    /// (2026-09-22, 31 runs: raw is 3.73x weighted, so 60,000 raw is about 16,000).
     pub min_work_tokens: u64,
 }
 impl Default for RolesConfig {
     fn default() -> Self {
         Self {
-            min_work_tokens: 60_000,
+            min_work_tokens: 16_000,
         }
     }
 }

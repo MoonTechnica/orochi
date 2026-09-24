@@ -1921,16 +1921,18 @@ fn a_second_seat_is_dropped_from_work_measured_smaller_than_a_session() {
     assert!(roles::worth_seating(&config, &blank, &heavy));
 
     // Work like this has cost about what a bare session costs: too little to read twice.
+    // The figures are what `Usage::weighted()` reports, which is what the threshold is in;
+    // these records carry no cache breakdown, so they weigh as their totals.
     assert!(!roles::worth_seating(
         &config,
-        &store_with("small", 24_000),
+        &store_with("small", 6_000),
         &heavy
     ));
 
     // Work like this is large: a second reading has something to find.
     assert!(roles::worth_seating(
         &config,
-        &store_with("large", 300_000),
+        &store_with("large", 80_000),
         &heavy
     ));
 
@@ -1941,7 +1943,7 @@ fn a_second_seat_is_dropped_from_work_measured_smaller_than_a_session() {
     };
     assert!(roles::worth_seating(
         &config,
-        &store_with("also", 24_000),
+        &store_with("also", 6_000),
         &asked
     ));
 }

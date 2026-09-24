@@ -257,9 +257,9 @@ impl Store {
         )?;
         Ok(())
     }
-    /// What work like this has cost here: the median measured tokens of recent executions
-    /// carrying the same labels, or of recent executions at large when that stratum is too
-    /// thin to mean anything. `None` until there is anything to go by.
+    /// What work like this has cost here, counted by `Usage::weighted()`: the median of
+    /// recent executions carrying the same labels, or of recent executions at large when that
+    /// stratum is too thin to mean anything. `None` until there is anything to go by.
     pub fn typical_tokens(&self, task_type: &str, complexity: Complexity) -> Result<Option<f64>> {
         const SAMPLES: usize = 3;
         let mut statement = self.connection.prepare(
@@ -272,27 +272,23 @@ impl Store {
             let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
                 continue;
             };
-            // Raw, unlike the seat floor: this is one side of a comparison whose other side
-            // (`roles.min_work_tokens`, `classifier.max_cost_share`) was tuned against raw
-            // totals. Weighing one side alone would silently move both thresholds.
-            let Some(total) = run.usage.total_tokens else {
+            let Some(total) = run.usage.weighted() else {
                 continue;
             };
-            every.push(total as f64);
+            every.push(total);
             if run.task_type == task_type && run.complexity == Some(complexity) {
-                stratum.push(total as f64);
+                stratum.push(total);
             }
         }
-        let mut measured = if stratum.len() >= SAMPLES {
-            stratum
-        } else {
-            every
+        let median = |mut values: Vec<f64>| -> Option<f64> {
+            (values.len() >= SAMPLES).then(|| {
+                values.sort_by(f64::total_cmp);
+                values[values.len() / 2]
+            })
         };
-        if measured.len() < SAMPLES {
-            return Ok(None);
-        }
-        measured.sort_by(f64::total_cmp);
-        Ok(Some(measured[measured.len() / 2]))
+        // The stratum decides where it stands on its own: the point of stratifying is that
+        // small work is not classified, or seated twice, because other work here is big.
+        Ok(median(stratum).or_else(|| median(every)))
     }
 
     /// What a session of this seat costs before it does any work: the smallest tenth of the
@@ -351,13 +347,14 @@ impl Store {
             let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
                 continue;
             };
-            // Raw, to stay comparable with `typical_tokens`, which `worth_asking` weighs it
-            // against.
-            let Some(total) = run.usage.total_tokens else {
+            // Weighted, to stay in the unit `typical_tokens` reports: a classification is one
+            // short turn and is not cache-dominated the way the work is, so the two do not
+            // shrink alike (measured 2026-09-22: 1.4x against 3.7x).
+            let Some(total) = run.usage.weighted() else {
                 continue;
             };
             let entry = spent.entry(run.candidate.agent).or_default();
-            entry.0 += total as f64;
+            entry.0 += total;
             entry.1 += 1;
         }
         Ok(spent
