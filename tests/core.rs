@@ -56,7 +56,7 @@ fn quota_backoff_probe_and_recovery() {
 
 #[test]
 fn reset_time_overrides_backoff_and_agent_scope_wins() {
-    let error = ProviderAdapter(Provider::Openai).classify_error(
+    let error = ProviderAdapter(Provider::OPENAI).classify_error(
         &json!({"code":429,"message":"limited","data":{"retryAfter":7200}}),
         "",
         100,
@@ -82,13 +82,46 @@ fn unknown_quota_is_not_zero_and_shadow_price_expires() {
 
 #[test]
 fn usage_is_nullable_and_does_not_double_count_thoughts_or_cache() {
-    let adapter = ProviderAdapter(Provider::Openai);
+    let adapter = ProviderAdapter(Provider::OPENAI);
     assert!(adapter.get_usage(&json!({})).is_none());
     let usage = adapter.get_usage(&json!({"usage":{"inputTokens":100,"outputTokens":50,"thoughtTokens":20,"cachedReadTokens":30,"totalTokens":150}})).unwrap();
     assert_eq!(usage.total(), Some(150));
-    let native = ProviderAdapter(Provider::Anthropic).get_usage(&json!({"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}})).unwrap();
+    let native = ProviderAdapter(Provider::ANTHROPIC).get_usage(&json!({"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":20,"cache_creation_input_tokens":30}})).unwrap();
     assert_eq!(native.total(), Some(200));
     assert_eq!(native.cache_creation_tokens, Some(30));
+}
+
+/// Which numbers a payload is reporting is a property of the payload, not of what the agent's
+/// provider was set to in config. `cache_read_input_tokens` and `cache_creation_input_tokens`
+/// are Anthropic's own spelling and nobody else's, and where they appear `input_tokens` excludes
+/// them -- so an agent driving Claude through a bridge whose provider is set to anything else
+/// still has its input read whole. It matters more since `weighted()` became what ranks one seat
+/// against another: an undercounted input is a model that looks cheaper than it is.
+#[test]
+fn an_anthropic_shaped_payload_is_read_from_its_own_shape_and_not_from_the_configured_provider() {
+    let shaped = json!({"usage":{"input_tokens":100,"output_tokens":50,
+                                 "cache_read_input_tokens":20,"cache_creation_input_tokens":30}});
+    let native = ProviderAdapter(Provider::ANTHROPIC)
+        .get_usage(&shaped)
+        .unwrap();
+    for provider in ["openai", "google", "mistral"] {
+        let read = ProviderAdapter(Provider::new(provider).unwrap())
+            .get_usage(&shaped)
+            .unwrap();
+        assert_eq!(read.total(), native.total(), "{provider}");
+        assert_eq!(read.input_tokens, Some(150), "{provider}");
+        assert_eq!(read.weighted(), native.weighted(), "{provider}");
+    }
+    // And the other way round: an OpenAI-shaped payload has no such keys, its input already
+    // includes its cache reads, and calling the agent Anthropic must not add them twice.
+    let openai_shaped = json!({"usage":{"prompt_tokens":100,"completion_tokens":50,
+                                        "prompt_tokens_details":{"cached_tokens":40}}});
+    let misconfigured = ProviderAdapter(Provider::ANTHROPIC)
+        .get_usage(&openai_shaped)
+        .unwrap();
+    assert_eq!(misconfigured.input_tokens, Some(100));
+    assert_eq!(misconfigured.cached_tokens, Some(40));
+    assert_eq!(misconfigured.total(), Some(150));
 }
 
 /// The write is the dearest part of a cached run and the bridges spell it every way there is.
@@ -96,7 +129,7 @@ fn usage_is_nullable_and_does_not_double_count_thoughts_or_cache() {
 /// code read left 69,484 tokens of a 1,153,490-token run recorded nowhere but the residual.
 #[test]
 fn a_cache_write_is_read_whatever_the_bridge_calls_it() {
-    let anthropic = ProviderAdapter(Provider::Anthropic);
+    let anthropic = ProviderAdapter(Provider::ANTHROPIC);
     for spelling in [
         json!({"cacheCreationTokens": 70, "cachedReadTokens": 900, "outputTokens": 30, "totalTokens": 1000}),
         json!({"cache_creation_tokens": 70, "cachedReadTokens": 900, "outputTokens": 30, "totalTokens": 1000}),
@@ -124,6 +157,7 @@ fn a_cache_read_is_not_weighed_as_if_it_cost_what_fresh_input_costs() {
         reasoning_tokens: None,
         cached_tokens: Some(1_069_457),
         cache_creation_tokens: Some(69_484),
+        requests: None,
     };
     let weighted = measured.weighted().unwrap();
     assert_eq!(measured.total(), Some(1_153_490));
@@ -139,6 +173,7 @@ fn a_cache_read_is_not_weighed_as_if_it_cost_what_fresh_input_costs() {
         reasoning_tokens: None,
         cached_tokens: Some(0),
         cache_creation_tokens: None,
+        requests: None,
     };
     assert!(chatty.weighted().unwrap() > 1_000.0);
     // A record written before the breakdown existed reads exactly as it always did, rather
@@ -173,6 +208,11 @@ fn evaluation_does_not_equate_end_turn_or_clean_diff_with_success() {
 }
 
 fn caps(models: &[&str]) -> Capabilities {
+    caps_speaking(models, &["low", "medium", "high", "xhigh"], "medium")
+}
+
+/// The same, for an agent whose effort selector uses its own words.
+fn caps_speaking(models: &[&str], levels: &[&str], current: &str) -> Capabilities {
     Capabilities {
         session_id: "test".into(),
         load_session: true,
@@ -181,14 +221,15 @@ fn caps(models: &[&str]) -> Capabilities {
         model_selector: None,
         legacy_models: false,
         mcp: Default::default(),
+        declared: Default::default(),
         models: models
             .iter()
             .map(|m| ModelCapabilities {
                 model: (*m).into(),
                 reasoning: Some(Selector {
                     id: "thought_level".into(),
-                    current: "medium".into(),
-                    values: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
+                    current: current.into(),
+                    values: levels.iter().map(|l| (*l).to_string()).collect(),
                 }),
                 modes: None,
             })
@@ -206,7 +247,7 @@ fn frontier_selected_first_for_extreme_work_and_overrides_obey_hard_constraints(
     );
     assert_eq!(task.complexity, Complexity::Extreme);
     let mut registry = Registry::bundled().unwrap();
-    let agent = AgentConfig::preset("codex", Provider::Openai, "test", &[]);
+    let agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
     let capabilities = caps(&["gpt-sol", "gpt-astra"]);
     let config = Config::default();
     let runtime = RuntimeMap::new();
@@ -267,7 +308,7 @@ fn frontier_selected_first_for_extreme_work_and_overrides_obey_hard_constraints(
     registry
         .policies
         .iter_mut()
-        .find(|p| p.provider == Provider::Openai)
+        .find(|p| p.provider == Provider::OPENAI)
         .unwrap()
         .hard_constraints
         .push(orochi::policy::HardConstraint {
@@ -506,14 +547,14 @@ fn codex_usage_limit_inside_a_generic_internal_error_is_an_account_rate_limit() 
         "codexErrorInfo": "usageLimitExceeded"}});
     let time = orochi::types::now();
     let classified =
-        ProviderAdapter(orochi::types::Provider::Openai).classify_error(&error, "", time);
+        ProviderAdapter(orochi::types::Provider::OPENAI).classify_error(&error, "", time);
     assert_eq!(classified.kind, ErrorKind::RateLimit);
     assert!(!classified.model_scoped);
     let reset = classified.reset_at.expect("reset clock parsed");
     assert!(reset > time && reset <= time + 86_400);
     let generic = serde_json::json!({"code": -32603, "message": "Internal error", "data": {"message": "stream closed"}});
     assert_eq!(
-        ProviderAdapter(orochi::types::Provider::Openai)
+        ProviderAdapter(orochi::types::Provider::OPENAI)
             .classify_error(&generic, "", time)
             .kind,
         ErrorKind::Other
@@ -535,7 +576,7 @@ fn pooled_evidence_moves_only_the_starting_point_of_an_unseen_context() {
         candidate: ExecutionCandidate {
             id: "arm".into(),
             agent: "claude".into(),
-            provider: Provider::Anthropic,
+            provider: Provider::ANTHROPIC,
             model: "haiku".into(),
             reasoning_level: None,
             mode: None,
@@ -696,7 +737,7 @@ fn a_seat_beside_another_takes_a_model_of_its_own_while_one_is_left() {
     let store = Store::open(dir.path()).unwrap();
     let task = profiler::profile("add a health endpoint to the server", dir.path());
     let registry = Registry::bundled().unwrap();
-    let agent = AgentConfig::preset("codex", Provider::Openai, "test", &[]);
+    let agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
     let capabilities = caps(&["gpt-sol", "gpt-astra"]);
     let (config, runtime, overrides) = (Config::default(), RuntimeMap::new(), Overrides::default());
     let route = |taken: &[(String, String)]| {
@@ -740,7 +781,7 @@ fn a_seat_beside_another_takes_a_model_of_its_own_while_one_is_left() {
 /// cause and then reporting only the wrapper leaves the user a failure they cannot act on.
 #[test]
 fn a_wrapped_cause_reaches_the_message_and_not_only_the_classification() {
-    let adapter = ProviderAdapter(Provider::Anthropic);
+    let adapter = ProviderAdapter(Provider::ANTHROPIC);
     let wrapped = adapter.classify_error(
         &json!({"code": -32603, "message": "Internal error",
                 "data": {"details": "model `haiku` is not available for this account"}}),
@@ -1065,7 +1106,7 @@ mod tier_pooling {
             candidate: ExecutionCandidate {
                 id: model.into(),
                 agent: "claude".into(),
-                provider: Provider::Anthropic,
+                provider: Provider::ANTHROPIC,
                 model: model.into(),
                 reasoning_level: Some("high".into()),
                 mode: None,
@@ -1155,14 +1196,14 @@ mod tier_pooling {
             store.record(&record).unwrap();
         }
         let mut other_provider = run("gemini-pro", "architecture", true);
-        other_provider.candidate.provider = Provider::Google;
+        other_provider.candidate.provider = Provider::GOOGLE;
         store.record(&other_provider).unwrap();
         let mut other_reasoning = run("opus-5", "architecture", true);
         other_reasoning.candidate.reasoning_level = Some("low".into());
         store.record(&other_reasoning).unwrap();
 
         let policies = Registry::bundled().unwrap();
-        let policy = policies.get(Provider::Anthropic);
+        let policy = policies.get(Provider::ANTHROPIC);
         let candidate = run("opus-6", "architecture", true).candidate;
         let task = TaskDescriptor {
             task_type: "architecture".into(),
@@ -1197,7 +1238,7 @@ mod weak_labels {
             candidate: ExecutionCandidate {
                 id: "arm".into(),
                 agent: "claude".into(),
-                provider: Provider::Anthropic,
+                provider: Provider::ANTHROPIC,
                 model: "sonnet".into(),
                 reasoning_level: None,
                 mode: None,
@@ -1361,7 +1402,7 @@ mod preferences {
     fn a_preference_tips_the_balance_but_opens_no_gate() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("data")).unwrap();
-        let agent = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
+        let agent = AgentConfig::preset("claude", Provider::ANTHROPIC, "test", &[]);
         let capabilities = caps(&["claude-sonnet", "claude-opus", "claude-haiku"]);
         let config = Config::default();
         let registry = Registry::bundled().unwrap();
@@ -1469,7 +1510,7 @@ mod fit {
     fn seat(models: &[&str]) -> (tempfile::TempDir, Store, AgentConfig, Capabilities) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("data")).unwrap();
-        let agent = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
+        let agent = AgentConfig::preset("claude", Provider::ANTHROPIC, "test", &[]);
         (dir, store, agent, caps(models))
     }
 
@@ -1639,14 +1680,14 @@ mod fit {
     #[test]
     fn a_model_no_policy_describes_is_still_described_to_the_classifier() {
         let registry = Registry::bundled().unwrap();
-        let described = registry.get(Provider::Anthropic).model_rule("claude-opus");
+        let described = registry.get(Provider::ANTHROPIC).model_rule("claude-opus");
         assert!(described.describe().contains("agentic coding"));
-        let undescribed = registry.get(Provider::Openai).model_rule("gpt-6-astra");
+        let undescribed = registry.get(Provider::OPENAI).model_rule("gpt-6-astra");
         assert_eq!(undescribed.use_for, None);
         assert!(undescribed.describe().contains("most capable"));
         // The fallback rule is a prior, not a model, so it is never offered as a name.
         let unmatched = registry
-            .get(Provider::Openai)
+            .get(Provider::OPENAI)
             .model_rule("gpt-9-unheard-of");
         assert_eq!(unmatched.pattern, "*");
         assert!(!unmatched.describe().is_empty());
@@ -1654,7 +1695,7 @@ mod fit {
         let anthropic_only = Config {
             agents: vec![AgentConfig::preset(
                 "claude",
-                Provider::Anthropic,
+                Provider::ANTHROPIC,
                 "test",
                 &[],
             )],
@@ -1739,8 +1780,8 @@ fn several_runs_opening_one_store_at_once_migrate_it_exactly_once() {
 fn a_small_task_goes_where_a_session_has_measured_cheaper() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("data")).unwrap();
-    let dear = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
-    let cheap = AgentConfig::preset("claude-b", Provider::Anthropic, "test", &[]);
+    let dear = AgentConfig::preset("claude", Provider::ANTHROPIC, "test", &[]);
+    let cheap = AgentConfig::preset("claude-b", Provider::ANTHROPIC, "test", &[]);
     let capabilities = caps(&["claude-sonnet"]);
     let registry = Registry::bundled().unwrap();
     let config = Config::default();
@@ -1753,7 +1794,7 @@ fn a_small_task_goes_where_a_session_has_measured_cheaper() {
             id: "other".into(),
             agent: agent.into(),
             model: "claude-sonnet".into(),
-            provider: Provider::Anthropic,
+            provider: Provider::ANTHROPIC,
             reasoning_level: None,
             mode: None,
             session_strategy: "fresh".into(),
@@ -1873,7 +1914,7 @@ fn a_second_seat_is_dropped_from_work_measured_smaller_than_a_session() {
                 id: "seat".into(),
                 agent: "claude".into(),
                 model: "claude-sonnet".into(),
-                provider: Provider::Anthropic,
+                provider: Provider::ANTHROPIC,
                 reasoning_level: None,
                 mode: None,
                 session_strategy: "fresh".into(),
@@ -1971,7 +2012,7 @@ fn a_new_model_starts_from_what_its_agent_s_sessions_have_cost() {
             id: "seat".into(),
             agent: agent.into(),
             model: model.into(),
-            provider: Provider::Anthropic,
+            provider: Provider::ANTHROPIC,
             reasoning_level: None,
             mode: None,
             session_strategy: "fresh".into(),
@@ -2028,7 +2069,7 @@ fn a_new_model_starts_from_what_its_agent_s_sessions_have_cost() {
 fn the_predicted_tokens_include_what_opening_the_session_costs() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(&dir.path().join("data")).unwrap();
-    let agent = AgentConfig::preset("claude", Provider::Anthropic, "test", &[]);
+    let agent = AgentConfig::preset("claude", Provider::ANTHROPIC, "test", &[]);
     let capabilities = caps(&["claude-haiku"]);
     for (at, tokens) in [85_591u64, 145_906, 175_270, 184_422]
         .into_iter()
@@ -2049,7 +2090,7 @@ fn the_predicted_tokens_include_what_opening_the_session_costs() {
                     id: "seat".into(),
                     agent: "claude".into(),
                     model: "claude-haiku".into(),
-                    provider: Provider::Anthropic,
+                    provider: Provider::ANTHROPIC,
                     reasoning_level: None,
                     mode: None,
                     session_strategy: "fresh".into(),
@@ -2154,7 +2195,7 @@ fn a_record_written_before_the_newest_fields_still_reads_back() {
             id: "seat".into(),
             agent: "claude".into(),
             model: "claude-haiku".into(),
-            provider: Provider::Anthropic,
+            provider: Provider::ANTHROPIC,
             reasoning_level: None,
             mode: None,
             session_strategy: "fresh".into(),
@@ -2520,5 +2561,393 @@ mod mcp {
             })))
             .is_err()
         );
+    }
+}
+
+/// The effort axis, in words no policy names. An agent's `thought_level` values are its own --
+/// and often its provider's server's -- so a policy that only knows `low`/`high` must still be
+/// able to ask for more thought, and what a level costs must come from the same reading as what
+/// level was chosen. The two were separately wrong and cancelled out, which is why no test saw
+/// it: an unnamed vocabulary pinned every complexity to the level the agent opened with, and
+/// the price of every level fell to the middle rung, so the axis moved nothing and cost the same.
+mod effort {
+    use super::*;
+    use orochi::effort::Ladder;
+
+    /// Real vocabularies, read from the installed adapters on 2026-09-25: `claude-agent-acp`
+    /// prepends a `default` row to the SDK's `low|medium|high|xhigh|max`, and `codex-acp` passes
+    /// through whatever the app-server supports.
+    #[test]
+    fn every_agents_own_effort_words_are_placed_on_one_ladder() {
+        let of = |values: &[&str]| {
+            let owned: Vec<String> = values.iter().map(|v| (*v).to_string()).collect();
+            let ladder = Ladder::new(&owned);
+            values
+                .iter()
+                .map(|v| ladder.placed(v).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            of(&["default", "low", "medium", "high", "xhigh", "max"]),
+            [2, 1, 2, 3, 4, 4],
+            "claude-agent-acp"
+        );
+        assert_eq!(
+            of(&["none", "minimal", "low", "medium", "high"]),
+            [0, 0, 1, 2, 3],
+            "codex-acp"
+        );
+        assert_eq!(of(&["dynamic", "low", "high"]), [2, 1, 3], "thinking_level");
+        // Words nobody wrote down here, beside words somebody did: placed where the agent put
+        // them, between their recognised neighbours.
+        assert_eq!(of(&["low", "deliberate", "xhigh"]), [1, 2, 4]);
+        // Nothing recognised at all: the advertised order, which is the only thing left to read.
+        assert_eq!(
+            of(&["cheap-pass", "second-look", "grind-it-out"]),
+            [0, 2, 4]
+        );
+        assert_eq!(of(&["whatever-it-takes"]), [2], "a single level is no axis");
+        // A ladder prices its own words, and the price rises with the rung.
+        let owned: Vec<String> = ["fast", "balanced", "thorough"]
+            .iter()
+            .map(|v| (*v).to_string())
+            .collect();
+        let ladder = Ladder::new(&owned);
+        assert!(ladder.factor("fast") < ladder.factor("balanced"));
+        assert!(ladder.factor("balanced") < ladder.factor("thorough"));
+        // A level that is not this agent's, and no level at all, are priced at the middle rung.
+        assert_eq!(ladder.factor("nonsense"), orochi::effort::factor(None));
+    }
+
+    /// The canonical words keep the prices they had before there was a ladder, so nothing that
+    /// was already measured against a prediction moves under it.
+    #[test]
+    fn the_words_every_provider_uses_are_priced_exactly_as_they_were() {
+        let owned: Vec<String> = ["minimal", "none", "low", "medium", "high", "xhigh", "max"]
+            .iter()
+            .map(|v| (*v).to_string())
+            .collect();
+        let ladder = Ladder::new(&owned);
+        for (level, factor) in [
+            ("minimal", 1.0),
+            ("none", 1.0),
+            ("low", 1.0),
+            ("medium", 1.2),
+            ("high", 1.6),
+            ("xhigh", 2.1),
+            ("max", 2.1),
+        ] {
+            assert_eq!(ladder.factor(level), factor, "{level}");
+        }
+    }
+
+    /// The policy's list for a complexity is an ordered set of rungs, not a set of words.
+    #[test]
+    fn a_policy_asks_for_a_rung_and_gets_it_in_the_agents_own_words() {
+        let registry = Registry::bundled().unwrap();
+        let policy = registry.get(Provider::ANTHROPIC);
+        let private: Vec<String> = ["fast", "balanced", "thorough"]
+            .iter()
+            .map(|v| (*v).to_string())
+            .collect();
+        let level = |complexity: Complexity| {
+            policy
+                .reasoning(complexity, &private, Some("balanced"), "claude-opus")
+                .unwrap()
+        };
+        assert_eq!(level(Complexity::Simple), "fast");
+        assert_eq!(level(Complexity::Normal), "balanced");
+        assert_eq!(level(Complexity::Complex), "thorough");
+        assert_eq!(level(Complexity::Extreme), "thorough");
+        // The named vocabulary is still matched literally, and still first.
+        let named: Vec<String> = ["low", "medium", "high", "xhigh"]
+            .iter()
+            .map(|v| (*v).to_string())
+            .collect();
+        assert_eq!(
+            policy
+                .reasoning(Complexity::Extreme, &named, Some("medium"), "claude-opus")
+                .unwrap(),
+            "xhigh"
+        );
+        // A rung the agent does not have is asked for anyway, and the nearest one stands in: a
+        // ladder with nothing but its two ends is not a reason to think at the middle.
+        let ends: Vec<String> = ["minimal", "max"]
+            .iter()
+            .map(|v| (*v).to_string())
+            .collect();
+        assert_eq!(
+            policy
+                .reasoning(Complexity::Extreme, &ends, Some("minimal"), "claude-opus")
+                .unwrap(),
+            "max"
+        );
+    }
+
+    /// Both halves at once, through the scorer: harder work asks this agent for more of its own
+    /// kind of effort, and more effort is predicted to cost more. Either one alone reads as
+    /// "nothing changed", which is exactly how this went unnoticed.
+    #[test]
+    fn an_agent_whose_effort_words_are_its_own_still_moves_with_the_task_and_with_the_price() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("data")).unwrap();
+        let agent = AgentConfig::preset("mock", Provider::OPENAI, "test", &[]);
+        // A frontier model, so that the hardest work still clears the success floor and the
+        // comparison is about the effort axis and nothing else.
+        let capabilities =
+            caps_speaking(&["astra-test"], &["fast", "balanced", "thorough"], "fast");
+        let (config, registry, runtime) = (
+            Config::default(),
+            Registry::bundled().unwrap(),
+            RuntimeMap::new(),
+        );
+        let route = |complexity: Complexity| {
+            let mut task = profiler::profile("Implement a function", dir.path());
+            task.complexity = complexity;
+            let ranked = scorer::candidates(
+                &[(&agent, &capabilities)],
+                &ScoringContext {
+                    task: &task,
+                    overrides: &Overrides::default(),
+                    config: &config,
+                    policies: &registry,
+                    store: &store,
+                    runtime: &runtime,
+                    sessions: &[],
+                    busy: &[],
+                    taken: &[],
+                    difficulty: None,
+                    root: dir.path(),
+                    time: now(),
+                },
+            )
+            .unwrap();
+            let chosen = ranked.into_iter().next().unwrap();
+            (
+                chosen.reasoning_level.clone().unwrap(),
+                chosen.prediction.unwrap().prior_tokens,
+            )
+        };
+        let (simple, cheap) = route(Complexity::Simple);
+        let (normal, middling) = route(Complexity::Normal);
+        let (extreme, dear) = route(Complexity::Extreme);
+        assert_eq!((simple.as_str(), normal.as_str()), ("fast", "balanced"));
+        assert_eq!(extreme, "thorough");
+        assert!(
+            cheap < middling && middling < dear,
+            "the effort axis must be priced as it is asked for: {cheap} {middling} {dear}"
+        );
+    }
+}
+
+/// Who is behind the model is a name, not a closed set of three. An ACP agent may be driven by a
+/// vendor Orochi ships no policy for, and it must not have to claim to be one of the three: its
+/// runs would land in another vendor's learning strata and be priced by another vendor's tiers.
+mod providers {
+    use super::*;
+
+    #[test]
+    fn a_provider_is_a_name_and_the_names_orochi_ships_are_only_the_ones_it_measured() {
+        assert_eq!(Provider::new("mistral").unwrap().to_string(), "mistral");
+        assert_eq!(Provider::new("OpenAI").unwrap(), Provider::OPENAI);
+        assert_eq!(Provider::new("x-ai").unwrap().as_str(), "x-ai");
+        for invalid in [
+            "",
+            " ",
+            "1st",
+            "-vendor",
+            "a b",
+            "vendor/other",
+            &"v".repeat(25),
+        ] {
+            assert!(Provider::new(invalid).is_none(), "{invalid:?}");
+        }
+        // The wire form is the string it always was, so a record written before the set opened
+        // still reads, and one written now is still readable by what reads that column.
+        let stored: Provider = serde_json::from_str("\"anthropic\"").unwrap();
+        assert_eq!(stored, Provider::ANTHROPIC);
+        assert_eq!(serde_json::to_string(&stored).unwrap(), "\"anthropic\"");
+        assert_eq!(
+            serde_json::to_string(&Provider::new("deepseek").unwrap()).unwrap(),
+            "\"deepseek\""
+        );
+        assert!(serde_json::from_str::<Provider>("\"Not A Provider\"").is_err());
+    }
+
+    /// A provider nobody has written a policy for is routable, priced by what is known about it
+    /// -- which is nothing, so it is priced as an unknown model of a known provider is.
+    #[test]
+    fn a_vendor_with_no_policy_is_priced_neutrally_rather_than_being_unroutable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("data")).unwrap();
+        let vendor = Provider::new("mistral").unwrap();
+        let registry = Registry::bundled().unwrap();
+        let generic = registry.get(vendor);
+        assert_eq!(generic.version, 0, "nothing has been published here");
+        assert_eq!(generic.model_rule("magistral-medium").tier, "unknown");
+        assert_eq!(generic.cache_rules.affinity_discount, 0.0);
+        let agent = AgentConfig::preset("mistral-cli", vendor, "test", &[]);
+        let capabilities = caps(&["magistral-medium"]);
+        let task = profiler::profile("Implement a function", dir.path());
+        let ranked = scorer::candidates(
+            &[(&agent, &capabilities)],
+            &ScoringContext {
+                task: &task,
+                overrides: &Overrides::default(),
+                config: &Config::default(),
+                policies: &registry,
+                store: &store,
+                runtime: &RuntimeMap::new(),
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                difficulty: None,
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap();
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].provider, vendor);
+        assert!(ranked[0].reasoning_level.is_some(), "still an effort axis");
+    }
+
+    /// A registry is one entry per provider, and as many providers as somebody wrote policies
+    /// for -- including a fourth.
+    #[test]
+    fn a_registry_takes_a_fourth_vendors_policy_and_still_refuses_a_second_entry_for_one() {
+        let mut registry = Registry::bundled().unwrap();
+        let mut fourth = registry.get(Provider::ANTHROPIC).clone();
+        fourth.provider = Provider::new("mistral").unwrap();
+        registry.policies.push(fourth.clone());
+        registry.validate().unwrap();
+        assert_eq!(
+            registry.get(Provider::new("mistral").unwrap()).version,
+            fourth.version,
+            "its own policy, not the neutral one"
+        );
+        registry.policies.push(fourth);
+        assert!(registry.validate().is_err(), "one entry per provider");
+    }
+}
+
+/// What an agent can do that ACP says nothing about. The protocol has no field for browsing, web
+/// access or image generation, so a blank capability flag is a gap in what was written down and
+/// not evidence about the agent -- and a requirement nobody claims to meet must not empty the
+/// field in silence.
+mod capabilities {
+    use super::*;
+
+    fn route(
+        agents: &[(&AgentConfig, &Capabilities)],
+        task: &TaskDescriptor,
+        dir: &std::path::Path,
+        store: &Store,
+    ) -> Vec<ExecutionCandidate> {
+        scorer::candidates(
+            agents,
+            &ScoringContext {
+                task,
+                overrides: &Overrides::default(),
+                config: &Config::default(),
+                policies: &Registry::bundled().unwrap(),
+                store,
+                runtime: &RuntimeMap::new(),
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                difficulty: None,
+                root: dir,
+                time: now(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_capability_nobody_advertises_does_not_silently_exclude_every_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("data")).unwrap();
+        let plain = AgentConfig::preset("plain", Provider::OPENAI, "test", &[]);
+        let capabilities = caps(&["sol-test"]);
+        let mut task = profiler::profile("Implement a function", dir.path());
+        task.requires_browser = true;
+        let ranked = route(&[(&plain, &capabilities)], &task, dir.path(), &store);
+        assert_eq!(
+            ranked.len(),
+            1,
+            "nobody claims a browser; nobody is excluded"
+        );
+        assert!(
+            ranked[0]
+                .reasons
+                .iter()
+                .any(|r| r.contains("no agent here advertises browser")),
+            "and the run says so: {:?}",
+            ranked[0].reasons
+        );
+        // Once somebody does claim it, it is a real gate again.
+        let mut able = AgentConfig::preset("able", Provider::OPENAI, "test", &[]);
+        able.browser = true;
+        let ranked = route(
+            &[(&plain, &capabilities), (&able, &capabilities)],
+            &task,
+            dir.path(),
+            &store,
+        );
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].agent, "able");
+    }
+
+    /// The agent's own declaration counts as much as the user's, so an agent that says what it
+    /// can do needs nothing written down for it.
+    #[test]
+    fn what_the_agent_declares_over_acp_counts_as_a_capability() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("data")).unwrap();
+        let plain = AgentConfig::preset("plain", Provider::OPENAI, "test", &[]);
+        let silent = caps(&["sol-test"]);
+        let mut declared = caps(&["sol-test"]);
+        declared.declared = Abilities {
+            web: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::from_value::<Abilities>(json!({"web": true, "audio": true})).unwrap(),
+            declared.declared,
+            "a declaration this version does not know keeps the rest of it"
+        );
+        let mut task = profiler::profile("Implement a function", dir.path());
+        task.requires_web = true;
+        let ranked = route(
+            &[(&plain, &silent), (&plain, &declared)],
+            &task,
+            dir.path(),
+            &store,
+        );
+        assert_eq!(ranked.len(), 1, "the one that said it can reach the web");
+        assert!(
+            !ranked[0]
+                .reasons
+                .iter()
+                .any(|r| r.contains("no agent here advertises")),
+            "the gate held, so there is nothing to explain"
+        );
+    }
+
+    /// The presets claim what the CLI they drive was read to have, and nothing else.
+    #[test]
+    fn a_preset_claims_only_what_its_cli_was_read_to_do() {
+        let config = Config::default();
+        let claims = |id: &str| {
+            config
+                .agents
+                .iter()
+                .find(|a| a.id == id)
+                .unwrap()
+                .abilities()
+        };
+        assert!(claims("codex").web && claims("claude").web);
+        assert!(!claims("codex").image && !claims("claude").browser);
     }
 }

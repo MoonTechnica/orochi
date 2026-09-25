@@ -25,8 +25,8 @@ fn native(dir: &Path, provider: Provider, name: &str, adapter: &str) -> AgentCon
 fn native_clis_are_installed_even_without_adapters_or_npm() {
     let dir = tempfile::tempdir().unwrap();
     for (provider, name, adapter) in [
-        (Provider::Openai, "codex", "codex-acp"),
-        (Provider::Anthropic, "claude", "claude-agent-acp"),
+        (Provider::OPENAI, "codex", "codex-acp"),
+        (Provider::ANTHROPIC, "claude", "claude-agent-acp"),
     ] {
         let agent = native(dir.path(), provider, name, adapter);
         let state = discovery::inspect(&agent, &DiscoveryConfig::default(), dir.path());
@@ -60,7 +60,7 @@ fn discovery_distinguishes_disabled_missing_native_and_direct_acp() {
     let dir = tempfile::tempdir().unwrap();
     let mut agent = native(
         dir.path(),
-        Provider::Anthropic,
+        Provider::ANTHROPIC,
         "claude",
         "claude-agent-acp",
     );
@@ -87,7 +87,7 @@ fn discovery_distinguishes_disabled_missing_native_and_direct_acp() {
     );
     agent.command = "gemini".into();
     agent.args = vec!["--acp".into()];
-    agent.provider = Provider::Google;
+    agent.provider = Provider::GOOGLE;
     executable(&dir.path().join("gemini"), "#!/bin/sh\nexit 0\n");
     let state = discovery::inspect(&agent, &options, dir.path());
     assert_eq!(state.status, "ready");
@@ -97,7 +97,7 @@ fn discovery_distinguishes_disabled_missing_native_and_direct_acp() {
 fn setup_installer(dir: &Path, fails: bool) -> (AgentConfig, PathBuf) {
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let mut agent = native(&bin, Provider::Anthropic, "claude", "claude-agent-acp");
+    let mut agent = native(&bin, Provider::ANTHROPIC, "claude", "claude-agent-acp");
     executable(&bin.join("node"), "#!/bin/sh\nexit 0\n");
     let python = Command::new("python3")
         .args(["-c", "import sys; print(sys.executable)"])

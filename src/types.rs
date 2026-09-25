@@ -8,21 +8,135 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Provider {
-    Openai,
-    Anthropic,
-    Google,
+/// Who is behind the model. A name, and an open set: an ACP agent may be driven by a vendor
+/// nobody here has written a policy for, and making it claim to be one of three would put its
+/// runs in another vendor's learning strata and price them by another vendor's tiers. The name
+/// is held inline so the type stays `Copy` -- it is threaded through every candidate, record,
+/// closure and map key there is -- and short, because it is an identifier and nothing else. It
+/// serializes as the plain string it always was, so records written before the set opened
+/// deserialize unchanged.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Provider([u8; Provider::MAX]);
+
+impl Provider {
+    pub const MAX: usize = 24;
+    pub const OPENAI: Self = Self::literal("openai");
+    pub const ANTHROPIC: Self = Self::literal("anthropic");
+    pub const GOOGLE: Self = Self::literal("google");
+    /// A name written in this source; invalid ones fail to compile.
+    const fn literal(name: &str) -> Self {
+        let bytes = name.as_bytes();
+        assert!(
+            !bytes.is_empty() && bytes.len() <= Self::MAX,
+            "provider name"
+        );
+        let mut out = [0u8; Self::MAX];
+        let mut i = 0;
+        while i < bytes.len() {
+            assert!(valid(bytes[i], i == 0), "provider name");
+            out[i] = bytes[i];
+            i += 1;
+        }
+        Self(out)
+    }
+    /// A name from config, a stored record or an agent: lowercase ASCII, starting with a letter.
+    pub fn new(name: &str) -> Option<Self> {
+        let name = name.trim().to_ascii_lowercase();
+        let bytes = name.as_bytes();
+        if bytes.is_empty() || bytes.len() > Self::MAX {
+            return None;
+        }
+        let mut out = [0u8; Self::MAX];
+        for (index, byte) in bytes.iter().enumerate() {
+            if !valid(*byte, index == 0) {
+                return None;
+            }
+            out[index] = *byte;
+        }
+        Some(Self(out))
+    }
+    pub fn as_str(&self) -> &str {
+        let len = self.0.iter().position(|b| *b == 0).unwrap_or(Self::MAX);
+        std::str::from_utf8(&self.0[..len]).unwrap_or_default()
+    }
+}
+const fn valid(byte: u8, first: bool) -> bool {
+    byte.is_ascii_lowercase() || !first && (byte.is_ascii_digit() || byte == b'-' || byte == b'_')
 }
 
 impl std::fmt::Display for Provider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Openai => "openai",
-            Self::Anthropic => "anthropic",
-            Self::Google => "google",
+        f.write_str(self.as_str())
+    }
+}
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl Serialize for Provider {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+impl<'de> Deserialize<'de> for Provider {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::new(&name).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "invalid provider name (lowercase ASCII, at most {} characters): {name}",
+                Self::MAX
+            ))
         })
+    }
+}
+
+/// What an agent can do that ACP says nothing about: drive a browser, reach the open internet,
+/// make an image. The protocol advertises none of the three -- `promptCapabilities` says only
+/// what a *prompt* may carry, which is whether an image can be sent to the agent and not
+/// whether one can be asked of it -- so they come from what the user configured for the agent
+/// and from what the agent itself declares in `_meta["orochi.dev/capabilities"]` on
+/// `initialize`, in the shape Orochi's other extensions already use. Undeclared is not the same
+/// as absent: where nobody claims a capability the requirement is dropped rather than left to
+/// empty the field in silence (`scorer::candidates`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Abilities {
+    pub browser: bool,
+    pub web: bool,
+    pub image: bool,
+}
+impl Abilities {
+    pub fn or(self, other: Self) -> Self {
+        Self {
+            browser: self.browser || other.browser,
+            web: self.web || other.web,
+            image: self.image || other.image,
+        }
+    }
+    /// Everything this task needs is here.
+    pub fn covers(self, task: &TaskDescriptor) -> bool {
+        (!task.requires_browser || self.browser)
+            && (!task.requires_web || self.web)
+            && (!task.requires_image || self.image)
+    }
+    /// What this task needs and nothing else, for saying which requirement stood in the way.
+    pub fn needed(task: &TaskDescriptor) -> Self {
+        Self {
+            browser: task.requires_browser,
+            web: task.requires_web,
+            image: task.requires_image,
+        }
+    }
+    pub fn names(self) -> Vec<&'static str> {
+        [
+            (self.browser, "browser"),
+            (self.web, "web"),
+            (self.image, "image"),
+        ]
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect()
     }
 }
 
@@ -131,6 +245,17 @@ pub struct Usage {
     /// written before it existed have none.
     #[serde(default)]
     pub cache_creation_tokens: Option<u64>,
+    /// How many `usage_update` notifications the agent sent while the turn ran — roughly one
+    /// per model request, for both adapters measured. It is not part of any total and nothing
+    /// is estimated from it. It is here because **what a reported total covers is the
+    /// adapter's choice, and the two disagree**: `claude-agent-acp` accumulates every assistant
+    /// message into the turn's figure, while `codex-acp` reports `tokenUsage.last` — the final
+    /// model request alone — and keeps the turn's `total` for its own `/status` (read from
+    /// 1.10.0 and from the latest, 1.13.1, on 2026-09-25). A turn that made one request and a
+    /// turn that made seventeen are then not comparable, and nothing in the record said which
+    /// this was. Now it does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests: Option<u32>,
 }
 /// What a token of each kind costs, against one fresh input token. Cache reads are the cheap
 /// ones, a cache write costs more than the input it stores, and output is the dear one. The

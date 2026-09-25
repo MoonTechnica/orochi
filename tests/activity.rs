@@ -11,7 +11,7 @@ fn candidate(agent: &str, model: &str) -> ExecutionCandidate {
     ExecutionCandidate {
         id: format!("{agent}:{model}"),
         agent: agent.into(),
-        provider: Provider::Anthropic,
+        provider: Provider::ANTHROPIC,
         model: model.into(),
         reasoning_level: Some("high".into()),
         mode: None,
@@ -348,7 +348,7 @@ fn a_recorded_turn_reads_back_as_the_events_that_made_it() {
     let events = vec![
         ExecutionEvent::Progress(Progress::Route {
             agent: "claude".into(),
-            provider: Provider::Anthropic,
+            provider: Provider::ANTHROPIC,
             model: "opus".into(),
             reasoning: Some("high".into()),
             resumed: false,

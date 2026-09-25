@@ -43,6 +43,12 @@ pub struct Capabilities {
     /// MCP transports beyond stdio, which every agent must take.
     #[serde(default)]
     pub mcp: crate::mcp::Support,
+    /// What the agent says it can do beyond the protocol's own fields, from
+    /// `_meta["orochi.dev/capabilities"]` on `initialize`. ACP has nowhere else to put it:
+    /// browsing, web access and image generation are not in the schema at all, and an agent
+    /// that does not fill this in is not thereby an agent that cannot.
+    #[serde(default)]
+    pub declared: crate::types::Abilities,
 }
 
 /// Flatten ACP select groups without losing opaque IDs.
@@ -97,6 +103,8 @@ struct Observation {
     quota: Option<QuotaObservation>,
     stream: bool,
     denied: bool,
+    /// `usage_update` notifications seen since the turn began.
+    requests: u32,
 }
 
 struct Lifecycle(Option<JoinHandle<()>>);
@@ -533,6 +541,9 @@ impl Client {
                                 let _ = std::io::stdout().flush();
                             }
                         }
+                        if update["sessionUpdate"] == "usage_update" && state.stream {
+                            state.requests = state.requests.saturating_add(1);
+                        }
                         if let Some(usage) = ProviderAdapter(provider).get_usage(update) {
                             state.usage = usage;
                         }
@@ -655,6 +666,7 @@ impl Client {
                 model_selector: None,
                 legacy_models: false,
                 mcp: crate::mcp::Support::default(),
+                declared: crate::types::Abilities::default(),
             },
             timeout,
             lease,
@@ -678,6 +690,16 @@ impl Client {
         let prompt = &agent_capabilities["promptCapabilities"];
         client.capabilities.image = prompt["image"].as_bool().unwrap_or(false);
         client.capabilities.embedded = prompt["embeddedContext"].as_bool().unwrap_or(false);
+        // An agent's own word on what it can do, wherever it chose to put it: `initialize`
+        // carries `_meta`, and so does `agentCapabilities` inside it.
+        client.capabilities.declared = [
+            advertised.pointer("/_meta/orochi.dev~1capabilities"),
+            advertised.pointer("/agentCapabilities/_meta/orochi.dev~1capabilities"),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|declared| serde_json::from_value(declared.clone()).ok())
+        .unwrap_or_default();
         let advertised_mcp = &agent_capabilities["mcpCapabilities"];
         client.capabilities.mcp = crate::mcp::Support {
             http: advertised_mcp["http"].as_bool().unwrap_or(false),
@@ -732,12 +754,15 @@ impl Client {
             .quota
             .clone()
     }
+    /// What the agent reported for the turn, and how many times it reported anything: the
+    /// second is the only thing in the record that says whether the first covers the turn or
+    /// one request of it (`Usage::requests`).
     pub fn usage(&self) -> Usage {
-        self.observations
-            .lock()
-            .expect("observation mutex")
-            .usage
-            .clone()
+        let state = self.observations.lock().expect("observation mutex");
+        Usage {
+            requests: (state.requests > 0).then_some(state.requests),
+            ..state.usage.clone()
+        }
     }
     pub fn current_model(&self) -> Option<String> {
         let state = self.state();
@@ -778,6 +803,11 @@ impl Client {
         };
         servers.extend(self.mcp.iter().cloned());
         servers
+    }
+    /// What this agent can do beyond the protocol: what the user configured for it, plus what
+    /// it declared itself.
+    pub fn abilities(&self) -> crate::types::Abilities {
+        self.config.abilities().or(self.capabilities.declared)
     }
     /// MCP servers this agent did not get, as (name, reason), for whoever is reporting.
     pub fn mcp_skipped(&self) -> &[(String, String)] {
@@ -1050,6 +1080,7 @@ impl Client {
             o.stream = true;
             o.denied = false;
             o.usage = Usage::default();
+            o.requests = 0;
             o.last_error = Value::Null;
         }
         let mut blocks = vec![ContentBlock::Text(TextContent::new(prompt))];

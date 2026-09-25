@@ -274,7 +274,7 @@ fn mcp_server_exposes_the_mailbox_tools_to_one_peer() {
 
 fn fixture_config(dir: &Path, role: &str, peer: &str, shared: bool) -> std::path::PathBuf {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
-    let mut agent = AgentConfig::preset("test", Provider::Openai, "python3", &[]);
+    let mut agent = AgentConfig::preset("test", Provider::OPENAI, "python3", &[]);
     agent.args = vec![script.display().to_string()];
     for (key, value) in [
         ("MOCK_BEHAVIOR", "mailbox_chat"),
@@ -513,7 +513,7 @@ fn seats_config(dir: &Path) -> std::path::PathBuf {
 }
 fn seats_config_for(dir: &Path, seats: usize) -> std::path::PathBuf {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
-    let mut agent = AgentConfig::preset("test", Provider::Openai, "python3", &[]);
+    let mut agent = AgentConfig::preset("test", Provider::OPENAI, "python3", &[]);
     agent.args = vec![script.display().to_string()];
     for (key, value) in [
         ("MOCK_BEHAVIOR", "seats"),
@@ -722,7 +722,7 @@ fn a_chat_turn_is_seated_by_the_classifier_not_by_the_keyword_profile() {
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
-    let mut agent = AgentConfig::preset("test", Provider::Openai, "python3", &[]);
+    let mut agent = AgentConfig::preset("test", Provider::OPENAI, "python3", &[]);
     agent.args = vec![script.display().to_string()];
     for (key, value) in [
         ("MOCK_BEHAVIOR", "seats"),
@@ -870,7 +870,7 @@ fn a_session_is_looked_back_over_once_at_its_end() {
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
-    let mut agent = AgentConfig::preset("test", Provider::Openai, "python3", &[]);
+    let mut agent = AgentConfig::preset("test", Provider::OPENAI, "python3", &[]);
     agent.args = vec![script.display().to_string()];
     for (key, value) in [
         ("MOCK_MODELS", "sol-test"),
@@ -1178,7 +1178,7 @@ fn a_message_between_agents_belongs_to_the_conversation_it_was_sent_from() {
     let candidate = orochi::types::ExecutionCandidate {
         id: "c".into(),
         agent: "claude".into(),
-        provider: Provider::Anthropic,
+        provider: Provider::ANTHROPIC,
         model: "opus".into(),
         reasoning_level: None,
         mode: None,
@@ -1354,7 +1354,7 @@ fn a_heavy_turn_seats_one_agent_where_work_like_it_has_measured_small() {
             id: "seat".into(),
             agent: "test".into(),
             model: "sol-test".into(),
-            provider: Provider::Openai,
+            provider: Provider::OPENAI,
             reasoning_level: None,
             mode: None,
             session_strategy: "fresh".into(),

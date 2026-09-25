@@ -131,17 +131,19 @@ impl Registry {
             self.schema_version == 1,
             "unsupported policy schema version"
         );
-        for provider in [Provider::Openai, Provider::Anthropic, Provider::Google] {
+        // One entry per provider, and the set of providers is open: a registry may carry a
+        // vendor Orochi ships nothing for, and a provider with no entry is priced by
+        // `ProviderPolicy::generic` rather than being unroutable.
+        ensure!(!self.policies.is_empty(), "policy registry is empty");
+        ensure!(self.policies.len() <= 64, "unexpected policy count");
+        let mut providers = std::collections::BTreeSet::new();
+        for p in &self.policies {
             ensure!(
-                self.policies
-                    .iter()
-                    .filter(|p| p.provider == provider)
-                    .count()
-                    == 1,
-                "policy must contain exactly one entry for {provider}"
+                providers.insert(p.provider),
+                "policy must contain exactly one entry for {}",
+                p.provider
             );
         }
-        ensure!(self.policies.len() == 3, "unexpected policy count");
         for p in &self.policies {
             ensure!(
                 p.version > 0 && !p.source.is_empty() && !p.updated_at.is_empty(),
@@ -204,11 +206,14 @@ impl Registry {
         }
         Ok(())
     }
+    /// The policy for a provider, or the neutral one where nobody has written it a policy. An
+    /// ACP agent from a vendor Orochi ships nothing for is routable, priced by what is known
+    /// about it -- which is nothing, so it is priced as an unknown model of a known provider is.
     pub fn get(&self, provider: Provider) -> &ProviderPolicy {
         self.policies
             .iter()
             .find(|p| p.provider == provider)
-            .expect("validated registry")
+            .unwrap_or_else(|| ProviderPolicy::generic())
     }
     pub fn install(&self, data: &Path) -> Result<()> {
         self.validate()?;
@@ -219,6 +224,63 @@ impl Registry {
         file.as_file().sync_all()?;
         file.persist(data.join("policies.json"))?;
         Ok(())
+    }
+}
+
+impl ProviderPolicy {
+    /// What is assumed about a provider nobody has published anything about: the same
+    /// ignorance every policy already spells out for a model it does not recognise (its `*`
+    /// row, identical in all three bundled policies), the canonical effort rungs -- which
+    /// `effort::Ladder` translates into whatever words the agent uses -- and no cache discount,
+    /// because a discount nobody has measured is a cost that has been made up. Version 0 says
+    /// as much wherever a route is explained. It is never part of a `Registry`, so it is not
+    /// what `validate` requires provenance of; there is no provider here to cite.
+    pub fn generic() -> &'static Self {
+        static GENERIC: std::sync::LazyLock<ProviderPolicy> =
+            std::sync::LazyLock::new(|| ProviderPolicy {
+                provider: Provider::new("unknown").expect("valid name"),
+                version: 0,
+                source: vec![],
+                updated_at: String::new(),
+                models: vec![ModelRule {
+                    pattern: "*".into(),
+                    tier: "unknown".into(),
+                    relative_tokens: 1.2,
+                    success_prior: [0.86, 0.78, 0.7, 0.5],
+                    price_premium: None,
+                    use_for: None,
+                }],
+                _task_profiles: None,
+                reasoning_rules: [
+                    ("simple", ["low", "minimal", "medium"]),
+                    ("normal", ["medium", "low", "high"]),
+                    ("complex", ["high", "medium", "xhigh"]),
+                    ("extreme", ["xhigh", "high", "medium"]),
+                ]
+                .into_iter()
+                .map(|(complexity, levels)| {
+                    (
+                        complexity.to_owned(),
+                        levels.iter().map(|l| (*l).to_owned()).collect(),
+                    )
+                })
+                .collect(),
+                context_rules: ContextRules {
+                    prefer_envelope: true,
+                    thinking: "agent_default".into(),
+                },
+                cache_rules: CacheRules {
+                    affinity_discount: 0.0,
+                    stable_prefix: false,
+                },
+                hard_constraints: vec![],
+                fallback_rules: vec![
+                    "exclude_cooldown".into(),
+                    "preserve_filesystem".into(),
+                    "require_success_floor".into(),
+                ],
+            });
+        &GENERIC
     }
 }
 
@@ -241,6 +303,12 @@ impl ProviderPolicy {
                     || reasoning.is_some_and(|r| rule.forbidden_reasoning.iter().any(|v| v == r)))
         })
     }
+    /// Which effort level to ask this model for. The policy's list for a complexity is an
+    /// ordered set of rungs, not a set of words: where the agent speaks the provider's
+    /// vocabulary it is matched literally, and where it does not, the same rungs are looked for
+    /// in the agent's own words (`effort::Ladder`). Without that translation a vocabulary the
+    /// policy never named left every complexity on whatever level the agent happened to open
+    /// with, which is the effort axis doing nothing at all.
     pub fn reasoning(
         &self,
         complexity: Complexity,
@@ -248,20 +316,30 @@ impl ProviderPolicy {
         current: Option<&str>,
         model: &str,
     ) -> Option<String> {
-        self.reasoning_rules[complexity.key()]
+        let rules = &self.reasoning_rules[complexity.key()];
+        let permitted = |r: &str| self.permits(model, Some(r));
+        if let Some(named) = rules
             .iter()
-            .find(|r| available.contains(r) && self.permits(model, Some(r)))
+            .find(|r| available.contains(r) && permitted(r))
             .cloned()
-            .or_else(|| {
-                current
-                    .filter(|r| self.permits(model, Some(r)))
-                    .map(String::from)
-            })
-            .or_else(|| {
-                available
-                    .iter()
-                    .find(|r| self.permits(model, Some(r)))
-                    .cloned()
-            })
+        {
+            return Some(named);
+        }
+        let ladder = crate::effort::Ladder::new(available);
+        for rung in rules.iter().filter_map(|r| crate::effort::rank(r)) {
+            if let Some(found) = ladder.at(rung).find(|v| permitted(v)) {
+                return Some(found.to_owned());
+            }
+        }
+        // The rung the policy reaches for first is absent here; the nearest one stands in.
+        if let Some(target) = rules.iter().find_map(|r| crate::effort::rank(r))
+            && let Some(found) = ladder.nearest(target).into_iter().find(|v| permitted(v))
+        {
+            return Some(found.to_owned());
+        }
+        current
+            .filter(|r| permitted(r))
+            .map(String::from)
+            .or_else(|| available.iter().find(|r| permitted(r)).cloned())
     }
 }

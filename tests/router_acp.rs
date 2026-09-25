@@ -12,7 +12,7 @@ fn candidate() -> ExecutionCandidate {
         prediction: None,
         id: "permitted".into(),
         agent: "codex".into(),
-        provider: Provider::Openai,
+        provider: Provider::OPENAI,
         model: "test-small".into(),
         reasoning_level: None,
         mode: None,
@@ -49,7 +49,7 @@ impl Bench {
     /// A routing-only fixture adviser. `votes` are consumed per turn across its sessions.
     fn adviser(&mut self, id: &str, votes: &str) -> RouterConfig {
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
-        let mut agent = AgentConfig::preset(id, Provider::Anthropic, "python3", &[]);
+        let mut agent = AgentConfig::preset(id, Provider::ANTHROPIC, "python3", &[]);
         agent.args = vec![script.display().to_string()];
         agent.routing_only = true;
         for (key, value) in [
@@ -388,7 +388,7 @@ async fn advisers_without_a_model_get_a_policy_appropriate_model_for_their_role(
     let mut judge = b.adviser("judge", "permitted");
     judge.model = None;
     // The agent's own default (first listed) is its most expensive model.
-    b.config.agents[0].provider = Provider::Openai;
+    b.config.agents[0].provider = Provider::OPENAI;
     b.config.agents[0].env.insert(
         "MOCK_MODELS".into(),
         "gpt-test-astra,gpt-test-luna,gpt-test-sol".into(),

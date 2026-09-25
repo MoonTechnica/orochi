@@ -28,11 +28,16 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            // What a preset can do is read from the CLI it drives, never assumed: `codex`
+            // carries `web_search` and `claude` carries `WebSearch`/`WebFetch` (read from the
+            // installed binaries, 2026-09-25). The CLIs not installed here claim nothing, and a
+            // capability nobody claims is not a capability anybody is excluded over.
             agents: vec![
-                AgentConfig::preset("codex", Provider::Openai, "codex-acp", &[]),
-                AgentConfig::preset("claude", Provider::Anthropic, "claude-agent-acp", &[]),
-                AgentConfig::preset("gemini", Provider::Google, "gemini", &["--acp"]),
-                AgentConfig::preset("antigravity", Provider::Google, "agy_acp_server.par", &[]),
+                AgentConfig::preset("codex", Provider::OPENAI, "codex-acp", &[]).able(WEB),
+                AgentConfig::preset("claude", Provider::ANTHROPIC, "claude-agent-acp", &[])
+                    .able(WEB),
+                AgentConfig::preset("gemini", Provider::GOOGLE, "gemini", &["--acp"]),
+                AgentConfig::preset("antigravity", Provider::GOOGLE, "agy_acp_server.par", &[]),
             ],
             discovery: DiscoveryConfig::default(),
             scheduler: SchedulerConfig::default(),
@@ -251,7 +256,9 @@ pub struct AgentConfig {
     pub env: BTreeMap<String, String>,
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// Explicit capabilities absent from ACP's standard schema.
+    /// Explicit capabilities absent from ACP's standard schema. An agent may also declare them
+    /// itself over the wire (`types::Abilities`); the two are merged, and neither is required
+    /// for the agent to be asked (see `scorer::candidates`).
     #[serde(default)]
     pub browser: bool,
     #[serde(default)]
@@ -266,7 +273,26 @@ pub struct AgentConfig {
 fn yes() -> bool {
     true
 }
+const WEB: crate::types::Abilities = crate::types::Abilities {
+    browser: false,
+    web: true,
+    image: false,
+};
 impl AgentConfig {
+    /// What the user said this agent can do.
+    pub fn abilities(&self) -> crate::types::Abilities {
+        crate::types::Abilities {
+            browser: self.browser,
+            web: self.web,
+            image: self.image,
+        }
+    }
+    fn able(mut self, abilities: crate::types::Abilities) -> Self {
+        self.browser = abilities.browser;
+        self.web = abilities.web;
+        self.image = abilities.image;
+        self
+    }
     pub fn preset(id: &str, provider: Provider, command: &str, args: &[&str]) -> Self {
         Self {
             id: id.into(),

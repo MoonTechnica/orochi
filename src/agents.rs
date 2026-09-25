@@ -119,15 +119,20 @@ impl AgentAdapter for ProviderAdapter {
         )
         .to_lowercase();
         let code = error["code"].as_i64();
-        let provider_limit = match self.0 {
-            Provider::Openai => text.contains("usage limit") || text.contains("insufficient_quota"),
-            Provider::Anthropic => {
-                text.contains("overloaded_error") || text.contains("usage limit")
-            }
-            Provider::Google => {
-                text.contains("resource_exhausted") || text.contains("quota exceeded")
-            }
-        };
+        // Each provider's own wording for an account with nothing left. A provider nobody has
+        // written down here is read against all of them: every one of these phrases means a
+        // limit whoever says it, and the alternative -- an unknown provider's limit classified
+        // as `Other` -- is a cooldown that never happens and a retry that cannot succeed.
+        const LIMITS: [(Provider, &[&str]); 3] = [
+            (Provider::OPENAI, &["usage limit", "insufficient_quota"]),
+            (Provider::ANTHROPIC, &["overloaded_error", "usage limit"]),
+            (Provider::GOOGLE, &["resource_exhausted", "quota exceeded"]),
+        ];
+        let known = LIMITS.iter().any(|(provider, _)| *provider == self.0);
+        let provider_limit = LIMITS
+            .iter()
+            .filter(|(provider, _)| !known || *provider == self.0)
+            .any(|(_, phrases)| phrases.iter().any(|phrase| text.contains(phrase)));
         let kind = if matches!(code, Some(402 | 429))
             || text.contains("rate_limit")
             || text.contains("rate limit")
@@ -243,10 +248,15 @@ impl AgentAdapter for ProviderAdapter {
             v.pointer("/prompt_tokens_details/cached_tokens")
                 .and_then(Value::as_u64)
         });
-        // Anthropic native input_tokens excludes cache creation/read input.
-        if self.0 == Provider::Anthropic
-            && (v.get("cache_read_input_tokens").is_some()
-                || v.get("cache_creation_input_tokens").is_some())
+        // Anthropic's native `input_tokens` excludes cache creation and read input, so those
+        // have to be folded back in or the input is undercounted. What says so is the payload,
+        // not the configured provider: `cache_read_input_tokens` and
+        // `cache_creation_input_tokens` are Anthropic's own spelling and nobody else's, and an
+        // agent whose provider is set to anything else still reports what it reports. Reading
+        // the shape also keeps the reverse safe -- an OpenAI-shaped payload configured as
+        // Anthropic has neither key, and its `prompt_tokens` already includes its cache reads.
+        if v.get("cache_read_input_tokens").is_some()
+            || v.get("cache_creation_input_tokens").is_some()
         {
             input = input.map(|n| {
                 n.saturating_add(cached.unwrap_or(0))
@@ -268,6 +278,9 @@ impl AgentAdapter for ProviderAdapter {
                 }),
             cached_tokens: cached,
             cache_creation_tokens: created,
+            // Counted by the session, which is what sees the turn; a payload knows nothing
+            // about how many of it there were.
+            requests: None,
         })
     }
     fn get_quota(&self, payload: &Value) -> Option<QuotaObservation> {

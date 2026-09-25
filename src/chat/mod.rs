@@ -2068,18 +2068,27 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Whether the agent holding this conversation can do what the message needs.
+    /// Whether the agent holding this conversation can do what the message needs. A message
+    /// needing something *nobody* here claims to do stays where it is: handing it to a capable
+    /// agent is only worth a fresh session when there is one, and a blank capability field is
+    /// not evidence that the agent holding the conversation cannot (`scorer::candidates` drops
+    /// the same requirement for the same reason).
     fn capable(&self, agent: &str, text: &str) -> bool {
         let task = crate::router::profiler::profile(text, self.root);
-        self.config
+        let mine = self
+            .config
             .agents
             .iter()
             .find(|a| a.id == agent)
-            .is_some_and(|a| {
-                (!task.requires_image || a.image)
-                    && (!task.requires_browser || a.browser)
-                    && (!task.requires_web || a.web)
-            })
+            .map(crate::config::AgentConfig::abilities)
+            .unwrap_or_default();
+        mine.covers(&task)
+            || !self
+                .config
+                .agents
+                .iter()
+                .filter(|a| a.enabled && !a.routing_only && a.id != agent)
+                .any(|a| a.abilities().covers(&task))
     }
 
     /// Whether the model holding this conversation is still good enough for what was asked.
@@ -2969,9 +2978,17 @@ const BOLD: &str = "1";
 
 fn provider_color(provider: Provider) -> &'static str {
     match provider {
-        Provider::Openai => "38;5;79",
-        Provider::Anthropic => "38;5;209",
-        Provider::Google => "38;5;111",
+        Provider::OPENAI => "38;5;79",
+        Provider::ANTHROPIC => "38;5;209",
+        Provider::GOOGLE => "38;5;111",
+        // A provider Orochi ships nothing for still deserves its own colour, and the same one
+        // every time: taken from its name, kept clear of the six above and of the greys.
+        other => {
+            const OTHERS: [&str; 6] = [
+                "38;5;114", "38;5;140", "38;5;173", "38;5;38", "38;5;168", "38;5;107",
+            ];
+            OTHERS[other.as_str().bytes().map(usize::from).sum::<usize>() % OTHERS.len()]
+        }
     }
 }
 

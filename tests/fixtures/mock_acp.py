@@ -14,7 +14,11 @@ adviser_turns = 0
 adviser_ids = []
 models = os.environ.get("MOCK_MODELS", "sol-test,astra-test").split(",")
 model = models[0]
-reasoning = "medium"
+# An agent's effort vocabulary is its own (and often its server's): `codex-acp` builds the
+# selector from the app-server's supported efforts and `claude-agent-acp` from the SDK's, so a
+# fixture has to be able to speak words no policy names.
+efforts = os.environ.get("MOCK_EFFORT", "").split(",") if os.environ.get("MOCK_EFFORT") else None
+reasoning = efforts[0] if efforts else "medium"
 mode = "ask"
 session = "mock-" + uuid.uuid4().hex
 root = None
@@ -157,7 +161,7 @@ def result(request, value):
 
 
 def options():
-    levels = ["high", "xhigh"] if "astra" in model else ["low", "medium"]
+    levels = efforts or (["high", "xhigh"] if "astra" in model else ["low", "medium"])
     return [
         {"id": "engine", "category": "model", "type": "select", "name": "Model", "currentValue": model,
          "options": [{"group": "test-models", "name": "Test models", "options": [{"value": m, "name": m} for m in models]}]},
@@ -350,6 +354,11 @@ def finish(request):
     send({"method": "session/update", "params": {"sessionId": session, "update": {
         "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Fixture completed."}}}})
     time.sleep(float(os.environ.get("MOCK_FINISH_DELAY", "0")))
+    # One per model request, which is how often codex-acp reports usage and how little of the
+    # turn its final figure then covers.
+    for i in range(int(os.environ.get("MOCK_USAGE_UPDATES", "0"))):
+        send({"method": "session/update", "params": {"sessionId": session, "update": {
+            "sessionUpdate": "usage_update", "used": 1000 * (i + 1), "size": 200000}}})
     result(request, {"stopReason": "end_turn", "usage": {
         "totalTokens": 150, "inputTokens": 100, "outputTokens": 50, "thoughtTokens": 20, "cachedReadTokens": 30}})
 
@@ -367,9 +376,15 @@ for line in sys.stdin:
         elif behavior == "broken":
             sys.exit(2)
         else:
-            result(request, {"protocolVersion": 1, "agentCapabilities": {"loadSession": not os.environ.get("MOCK_NO_LOAD"),
+            capabilities = {"loadSession": not os.environ.get("MOCK_NO_LOAD"),
                 "mcpCapabilities": {"http": bool(os.environ.get("MOCK_MCP_HTTP")), "sse": False},
-                "promptCapabilities": {"image": not os.environ.get("MOCK_NO_IMAGE"), "embeddedContext": True}}, "agentInfo": {"name": "fixture", "version": "1"}, "authMethods": []})
+                "promptCapabilities": {"image": not os.environ.get("MOCK_NO_IMAGE"), "embeddedContext": True}}
+            if os.environ.get("MOCK_ABILITIES"):
+                # ACP has no field for browsing, web access or image generation; an agent that
+                # can says so in `_meta`, the way Orochi's other extensions do.
+                capabilities["_meta"] = {"orochi.dev/capabilities": json.loads(os.environ["MOCK_ABILITIES"])}
+            result(request, {"protocolVersion": 1, "agentCapabilities": capabilities,
+                "agentInfo": {"name": "fixture", "version": "1"}, "authMethods": []})
     elif method in ("session/new", "session/load"):
         root = Path(params["cwd"])
         mcp_servers = params.get("mcpServers", [])

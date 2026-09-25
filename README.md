@@ -512,7 +512,8 @@ src/gateway.rs      Exposing Orochi over ACP v1 stdio
 src/chat/           Interactive mode (screen display, queueing, approval modes, attachments, session continuation)
 src/chat/term.rs    Terminal control (input box pinned to the bottom, key input, scroll region)
 src/chat/host.rs    A conversation with no terminal: runs the turns a client queued and leaves its questions for that client
-src/policy.rs       Policy validation and updates
+src/policy.rs       Policy validation and updates, and the neutral policy for a provider nobody wrote one for
+src/effort.rs       The effort axis in whatever words the agent uses for it (rungs, translation, price)
 src/config.rs       Configuration, default Agent presets
 src/cli.rs          User-facing commands
 ```

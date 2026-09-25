@@ -362,12 +362,21 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             PolicyCommand::Update { from, url, sha256 } => {
                 let registry: Registry = if let Some(path) = from {
                     if path.is_dir() {
-                        let policies = ["openai", "anthropic", "google"]
+                        // Every policy in the directory, not three names: a provider Orochi
+                        // ships nothing for has a policy file like any other.
+                        let mut files: Vec<_> = std::fs::read_dir(path)?
+                            .filter_map(|entry| Some(entry.ok()?.path()))
+                            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                            .collect();
+                        files.sort();
+                        ensure!(!files.is_empty(), "no policy files in {}", path.display());
+                        let policies = files
                             .iter()
-                            .map(|name| {
-                                let bytes = std::fs::read(path.join(format!("{name}.json")))?;
+                            .map(|file| {
+                                let bytes = std::fs::read(file)?;
                                 ensure!(bytes.len() <= 1_048_576, "policy file too large");
-                                Ok(serde_json::from_slice(&bytes)?)
+                                serde_json::from_slice(&bytes)
+                                    .with_context(|| format!("invalid policy: {}", file.display()))
                             })
                             .collect::<Result<Vec<_>>>()?;
                         Registry {
@@ -1085,7 +1094,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             use std::io::Read;
             ensure!(
                 config.agents.iter().any(|a| a.id == agent
-                    && a.provider == crate::types::Provider::Anthropic
+                    && a.provider == crate::types::Provider::ANTHROPIC
                     && a.enabled),
                 "quota-ingest requires an enabled Anthropic agent"
             );
@@ -1425,6 +1434,6 @@ fn collaboration_code(report: &crate::collaboration::Report) -> u8 {
 fn inventory(config: &Config, data: &std::path::Path) -> Vec<serde_json::Value> {
     config.agents.iter().map(|a| {
         let availability = crate::discovery::inspect(a, &config.discovery, data);
-        json!({"agent":a.id,"provider":a.provider,"command":a.command,"enabled":a.enabled,"routing_only":a.routing_only,"installed":availability.installed,"availability":availability,"browser":a.browser,"web":a.web})
+        json!({"agent":a.id,"provider":a.provider,"command":a.command,"enabled":a.enabled,"routing_only":a.routing_only,"installed":availability.installed,"availability":availability,"browser":a.browser,"web":a.web,"image":a.image})
     }).collect()
 }

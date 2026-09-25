@@ -52,13 +52,39 @@ pub fn candidates(
     let task = cx.task;
     let difficulty = cx.difficulty.unwrap_or(task.complexity);
     let overrides = cx.overrides;
+    // ACP advertises nothing about browsing, web access or image generation, so what is known
+    // about them is what somebody wrote down. A requirement nobody here claims to meet
+    // therefore says more about the declarations than about the agents, and enforcing it would
+    // empty the field over a blank config field: it is dropped, and the run says so. Where
+    // somebody does claim it, it is a real gate and the ones who cannot are left out.
+    // Read over the agents this route may actually use: an agent the user pinned is the whole
+    // field, and what some other agent claims is then beside the point.
+    let offered = agents
+        .iter()
+        .filter(|(config, _)| overrides.agent.as_ref().is_none_or(|a| a == &config.id))
+        .fold(Abilities::default(), |all, (config, capabilities)| {
+            all.or(config.abilities().or(capabilities.declared))
+        });
+    let needed = Abilities::needed(task);
+    let gate = Abilities {
+        browser: needed.browser && offered.browser,
+        web: needed.web && offered.web,
+        image: needed.image && offered.image,
+    };
+    let ungated: Vec<&str> = Abilities {
+        browser: needed.browser && !gate.browser,
+        web: needed.web && !gate.web,
+        image: needed.image && !gate.image,
+    }
+    .names();
     for (agent, capabilities) in agents {
         if overrides.agent.as_ref().is_some_and(|a| a != &agent.id) {
             continue;
         }
-        if task.requires_browser && !agent.browser
-            || task.requires_web && !agent.web
-            || task.requires_image && !agent.image
+        let abilities = agent.abilities().or(capabilities.declared);
+        if gate.browser && !abilities.browser
+            || gate.web && !abilities.web
+            || gate.image && !abilities.image
         {
             continue;
         }
@@ -158,12 +184,14 @@ pub fn candidates(
                 c.mode.as_deref().unwrap_or("").as_bytes(),
             ])[..16]
                 .into();
-            let reasoning_factor = match c.reasoning_level.as_deref() {
-                Some("minimal" | "none" | "low") => 1.0,
-                Some("medium") => 1.2,
-                Some("high") => 1.6,
-                Some("xhigh" | "max" | "ultra") => 2.1,
-                _ => 1.2,
+            // What more thought costs, read off the same ladder that chose the level, in this
+            // agent's own words. A model with no effort axis, and a level no ladder can place,
+            // are priced at the middle rung.
+            let reasoning_factor = match (&model.reasoning, c.reasoning_level.as_deref()) {
+                (Some(selector), Some(level)) => {
+                    crate::effort::Ladder::new(&selector.values).factor(level)
+                }
+                _ => crate::effort::factor(None),
             };
             // What a session there costs before any work, measured, plus what the work looks
             // like. The size term is common to every candidate and so cannot tilt the choice;
@@ -292,6 +320,12 @@ pub fn candidates(
             if affinity {
                 c.reasons
                     .push("recent compatible session; potential cache affinity".into());
+            }
+            if !ungated.is_empty() {
+                c.reasons.push(format!(
+                    "no agent here advertises {}; asked anyway rather than excluding every agent",
+                    ungated.join(", ")
+                ));
             }
             candidates.push(c);
         }

@@ -309,7 +309,7 @@ async fn probe(probe: &QuotaProbe, config: &Config, time: i64) -> Result<Snapsho
 pub async fn refresh(config: &Config, store: &Store) -> Result<Vec<ProbeResult>> {
     let mut results = vec![];
     for agent in config.agents.iter().filter(|a| a.enabled) {
-        let auto = if agent.id == "codex" && agent.provider == Provider::Openai {
+        let auto = if agent.id == "codex" && agent.provider == Provider::OPENAI {
             crate::discovery::inspect(agent, &config.discovery, store.data_dir())
                 .native_cli
                 .map(|path| QuotaProbe {
@@ -318,7 +318,7 @@ pub async fn refresh(config: &Config, store: &Store) -> Result<Vec<ProbeResult>>
                     command: path.to_string_lossy().into_owned(),
                     args: vec![],
                 })
-        } else if agent.id == "claude" && agent.provider == Provider::Anthropic {
+        } else if agent.id == "claude" && agent.provider == Provider::ANTHROPIC {
             crate::discovery::inspect(agent, &config.discovery, store.data_dir())
                 .native_cli
                 .map(|path| QuotaProbe {
@@ -333,7 +333,7 @@ pub async fn refresh(config: &Config, store: &Store) -> Result<Vec<ProbeResult>>
                         "{\"mcpServers\":{}}".into(),
                     ],
                 })
-        } else if agent.id == "antigravity" && agent.provider == Provider::Google {
+        } else if agent.id == "antigravity" && agent.provider == Provider::GOOGLE {
             let native = crate::config::AgentConfig {
                 command: "agy".into(),
                 args: vec![],

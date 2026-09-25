@@ -43,7 +43,7 @@ fn duplicate_agent_and_model_are_valid_but_duplicate_participant_is_not() {
     let config = Config {
         agents: vec![AgentConfig::preset(
             "same",
-            Provider::Openai,
+            Provider::OPENAI,
             "python3",
             &[],
         )],
@@ -188,7 +188,7 @@ impl Scenario {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("repo")).unwrap();
         let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
-        let mut primary = AgentConfig::preset("primary", Provider::Anthropic, "python3", &[]);
+        let mut primary = AgentConfig::preset("primary", Provider::ANTHROPIC, "python3", &[]);
         primary.args = vec![fixture.clone()];
         primary
             .env
@@ -204,7 +204,7 @@ impl Scenario {
             "MOCK_LOG".into(),
             temp.path().join("primary.jsonl").display().to_string(),
         );
-        let mut backup = AgentConfig::preset("backup", Provider::Openai, "python3", &[]);
+        let mut backup = AgentConfig::preset("backup", Provider::OPENAI, "python3", &[]);
         backup.args = vec![fixture];
         backup.env.insert("MOCK_MODELS".into(), "sol-test".into());
         backup
@@ -1640,7 +1640,7 @@ fn the_parts_of_one_wave_spread_over_accounts_that_are_otherwise_equal() {
     s.config.agents = ["twin-a", "twin-b"]
         .iter()
         .map(|id| {
-            let mut twin = AgentConfig::preset(id, Provider::Openai, "python3", &[]);
+            let mut twin = AgentConfig::preset(id, Provider::OPENAI, "python3", &[]);
             twin.args = vec![fixture.clone()];
             for (key, value) in [
                 ("MOCK_BEHAVIOR", "session_collaboration"),

@@ -22,7 +22,7 @@ struct Bridge {
 }
 const BRIDGES: [(Provider, Bridge); 2] = [
     (
-        Provider::Openai,
+        Provider::OPENAI,
         Bridge {
             native: "codex",
             binary: "codex-acp",
@@ -32,7 +32,7 @@ const BRIDGES: [(Provider, Bridge); 2] = [
         },
     ),
     (
-        Provider::Anthropic,
+        Provider::ANTHROPIC,
         Bridge {
             native: "claude",
             binary: "claude-agent-acp",

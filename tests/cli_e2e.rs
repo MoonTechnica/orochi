@@ -12,7 +12,7 @@ use std::{
 
 fn fixture(agent: &str, behavior: &str, models: &str, log: &Path) -> AgentConfig {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp.py");
-    let mut config = AgentConfig::preset(agent, Provider::Openai, "python3", &[]);
+    let mut config = AgentConfig::preset(agent, Provider::OPENAI, "python3", &[]);
     config.args = vec![script.to_string_lossy().into_owned()];
     config.env.insert("MOCK_BEHAVIOR".into(), behavior.into());
     config.env.insert("MOCK_MODELS".into(), models.into());
@@ -112,6 +112,36 @@ fn completion_streams_and_stores_metadata_without_task_or_source() {
     assert!(!serialized.contains("PRIVATE_CUSTOMER_TASK_SECRET"));
     assert!(!serialized.contains("mock success"));
     assert!(!serialized.contains(w.dir.path().to_str().unwrap()));
+}
+
+/// What a reported total covers is the adapter's choice, and the adapters disagree:
+/// `claude-agent-acp` accumulates every assistant message into the turn's figure, while
+/// `codex-acp` reports `tokenUsage.last` — the final model request alone — and keeps the turn's
+/// `total` for its own `/status` (1.10.0 and 1.13.1, read 2026-09-25). Measured in this store on
+/// the same day: `codex` executions at a weighted median of 6,244 against a *classification* on
+/// the same seat at 24,262, which is one request and so reported whole — work cannot cost a
+/// quarter of the question about it. Nothing is estimated from the count; it is recorded so a
+/// figure covering one request is not silently compared with one covering seventeen.
+#[test]
+fn a_run_records_how_many_times_the_agent_reported_usage() {
+    let mut w = Workspace::new();
+    w.config.agents[0]
+        .env
+        .insert("MOCK_USAGE_UPDATES".into(), "3".into());
+    success(&w.run(&["Implement a small thing"]));
+    let records = w.store().recent_runs(10).unwrap();
+    assert_eq!(records[0].usage.requests, Some(3));
+    // And what the agent reported is untouched by the counting.
+    assert_eq!(records[0].usage.total(), Some(150));
+    assert_eq!(records[0].usage.cached_tokens, Some(30));
+    // An agent that reports usage once, or never, is not made to look like one that reports
+    // often: the field is absent rather than zero, and old records have none.
+    let quiet = Workspace::new();
+    success(&quiet.run(&["Implement a small thing"]));
+    assert_eq!(
+        quiet.store().recent_runs(10).unwrap()[0].usage.requests,
+        None
+    );
 }
 
 #[test]
@@ -522,7 +552,7 @@ fn chat_shows_tools_plans_and_real_failures_without_routing_noise() {
         .insert("MOCK_TOOL".into(), "1".into());
     w.config.agents.push(AgentConfig::preset(
         "absent",
-        Provider::Google,
+        Provider::GOOGLE,
         "orochi-test-missing-cli",
         &[],
     ));
@@ -1244,7 +1274,7 @@ fn adviser(w: &mut Workspace, id: &str, votes: &str) -> orochi::config::RouterCo
         "judge-model",
         &w.dir.path().join(format!("{id}.jsonl")),
     );
-    agent.provider = Provider::Anthropic;
+    agent.provider = Provider::ANTHROPIC;
     agent.routing_only = true;
     agent.env.insert("MOCK_VOTES".into(), votes.into());
     w.config.agents.push(agent);
@@ -1285,7 +1315,7 @@ fn acp_judge_replaces_an_exhausted_adviser_and_only_reorders_eligible_candidates
         .collect();
     assert_eq!(advice.len(), 2);
     assert_eq!(advice[0].candidate.agent, "exhausted");
-    assert_eq!(advice[0].candidate.provider, Provider::Anthropic);
+    assert_eq!(advice[0].candidate.provider, Provider::ANTHROPIC);
     assert_eq!(advice[0].error_kind.as_deref(), Some("rate_limit"));
     assert_eq!(advice[1].candidate.agent, "judge");
     assert_eq!(advice[1].error_kind, None);

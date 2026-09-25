@@ -467,7 +467,7 @@ async fn consult(
                 .agents
                 .iter()
                 .find(|a| a.id == choice.agent)
-                .map_or(crate::types::Provider::Openai, |a| a.provider),
+                .map_or(crate::types::Provider::OPENAI, |a| a.provider),
             model: model.clone(),
             reasoning_level: reasoning,
             mode: None,

@@ -12,7 +12,7 @@ fn candidate(id: &str, cost: f64) -> ExecutionCandidate {
         id: id.into(),
         agent: id.into(),
         model: "model".into(),
-        provider: Provider::Openai,
+        provider: Provider::OPENAI,
         reasoning_level: None,
         mode: None,
         session_strategy: "fresh".into(),
@@ -372,7 +372,7 @@ fn coefficient_tuning_never_uses_validation_labels_for_selection() {
 fn nested_acp_rate_limit_details_are_classified_without_exposing_them() {
     use orochi::agents::{AgentAdapter, ErrorKind, ProviderAdapter};
     let error = json!({"code":-32603,"message":"Internal error","data":{"details":"API error: 429 rate_limit_error; private provider request id"}});
-    let classified = ProviderAdapter(Provider::Anthropic).classify_error(&error, "fallback", 100);
+    let classified = ProviderAdapter(Provider::ANTHROPIC).classify_error(&error, "fallback", 100);
     assert_eq!(classified.kind, ErrorKind::RateLimit);
     assert_eq!(classified.message, "Internal error");
     assert!(!classified.model_scoped);
@@ -413,7 +413,7 @@ async fn explicit_model_does_not_probe_a_rate_limited_unrelated_model() {
     };
     let dir = tempfile::tempdir().unwrap();
     let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
-    let mut config = AgentConfig::preset("mock", Provider::Openai, "python3", &[&fixture]);
+    let mut config = AgentConfig::preset("mock", Provider::OPENAI, "python3", &[&fixture]);
     config
         .env
         .insert("MOCK_BEHAVIOR".into(), "blocked_unselected".into());
@@ -440,7 +440,7 @@ async fn model_scoped_discovery_failure_keeps_other_models_available() {
     };
     let root = tempfile::tempdir().unwrap();
     let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
-    let mut config = AgentConfig::preset("mock", Provider::Openai, "python3", &[&fixture]);
+    let mut config = AgentConfig::preset("mock", Provider::OPENAI, "python3", &[&fixture]);
     config
         .env
         .insert("MOCK_BEHAVIOR".into(), "blocked_unselected".into());
@@ -521,7 +521,7 @@ fn tier_pooling_carries_evidence_across_a_model_replacement() {
     let arm = |model: &str, prior: f64, tokens: f64| {
         let mut c = candidate(model, tokens / prior);
         c.agent = "claude".into();
-        c.provider = Provider::Anthropic;
+        c.provider = Provider::ANTHROPIC;
         c.model = model.into();
         c.success_probability = prior;
         c.expected_tokens = tokens;
@@ -579,8 +579,8 @@ fn the_classifier_asks_whichever_agent_has_answered_most_cheaply() {
     let store = Store::open(dir.path()).unwrap();
     let config = Config {
         agents: vec![
-            AgentConfig::preset("claude", Provider::Anthropic, "claude", &[]),
-            AgentConfig::preset("codex", Provider::Openai, "codex", &[]),
+            AgentConfig::preset("claude", Provider::ANTHROPIC, "claude", &[]),
+            AgentConfig::preset("codex", Provider::OPENAI, "codex", &[]),
         ],
         ..Config::default()
     };
@@ -626,7 +626,7 @@ fn a_question_that_costs_more_than_the_work_it_decides_is_not_asked() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let config = Config {
-        agents: vec![AgentConfig::preset("codex", Provider::Openai, "codex", &[])],
+        agents: vec![AgentConfig::preset("codex", Provider::OPENAI, "codex", &[])],
         ..Config::default()
     };
     let small = profiler::profile("rename the header in the readme", dir.path());
@@ -876,7 +876,7 @@ fn what_asking_is_worth_is_weighed_against_this_task_and_not_only_against_its_ki
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let config = Config {
-        agents: vec![AgentConfig::preset("codex", Provider::Openai, "codex", &[])],
+        agents: vec![AgentConfig::preset("codex", Provider::OPENAI, "codex", &[])],
         ..Config::default()
     };
     let base = profiler::profile("implement the thing", dir.path());
@@ -914,4 +914,43 @@ fn what_asking_is_worth_is_weighed_against_this_task_and_not_only_against_its_ki
         classifier::worth_asking(&config, &store, &sized(100)),
         classifier::worth_asking(&config, &store, &sized(20)),
     );
+}
+
+/// ACP has no field for browsing, web access or image generation, and `promptCapabilities` says
+/// only what a prompt may carry -- so an agent that can do one of them says so in `_meta`, the
+/// way Orochi's other extensions do, and the effort levels it advertises are its own words.
+#[tokio::test(flavor = "current_thread")]
+async fn an_agent_declares_what_acp_has_no_field_for_and_its_own_effort_words_are_discovered() {
+    use orochi::{
+        acp::Client,
+        config::{AgentConfig, PermissionMode},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
+    let mut config = AgentConfig::preset("mock", Provider::OPENAI, "python3", &[&fixture]);
+    config.env.insert(
+        "MOCK_ABILITIES".into(),
+        r#"{"web":true,"browser":true}"#.into(),
+    );
+    config
+        .env
+        .insert("MOCK_EFFORT".into(), "fast,balanced,thorough".into());
+    let mut client = Client::start(
+        config,
+        dir.path(),
+        PermissionMode::Deny,
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    .unwrap();
+    let declared = client.capabilities.declared;
+    assert!(declared.web && declared.browser && !declared.image);
+    assert!(client.abilities().web, "config and declaration are merged");
+    let levels = client.capabilities.models[0]
+        .reasoning
+        .clone()
+        .expect("an effort axis in the agent's own words")
+        .values;
+    assert_eq!(levels, ["fast", "balanced", "thorough"]);
+    client.stop().await;
 }
