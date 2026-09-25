@@ -27,6 +27,11 @@ spec.loader.exec_module(screen_module)
 
 ROWS, COLS = 24, 80
 BINARY = os.environ.get("OROCHI_BIN", str(TESTS.parent / "target/debug/orochi"))
+# Ceilings, not pacing: every wait returns the moment its condition holds, so a generous one
+# costs nothing on a fast machine and is the difference between a real failure and a loaded
+# runner on a slow one. A three-seat turn starts three agent sessions and 60s was not enough
+# for it on macOS CI (2026-09-24), which failed in a different test each time it ran.
+START, TURN = 60, 180
 
 
 def config(
@@ -95,7 +100,7 @@ def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0):
 
     try:
         done = lambda s, n: sum("Fixture completed." in row for row in s.text()) >= n
-        pump(30, until=lambda s: "What do you want to build?" in "\n".join(s.text()))
+        pump(START, until=lambda s: "What do you want to build?" in "\n".join(s.text()))
         # `wait=False` types the next message while a row is half written, which is when a
         # queued line can land on top of the agent's own text.
         open_row = lambda s: any(
@@ -108,13 +113,20 @@ def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0):
                 pump(0.05)
             # Wait until the whole message is on screen: a long one wraps the input over
             # several rows, and those rows are freed again the moment it is sent.
-            pump(10, until=lambda s: any(message[-8:] in row for row in s.text()))
+            pump(START, until=lambda s: any(message[-8:] in row for row in s.text()))
             os.write(master, b"\n")
             if wait:
-                pump(60, until=lambda s: done(s, index))
+                pump(TURN, until=lambda s: done(s, index))
             elif index < len(messages):
-                pump(60, until=open_row)
-        pump(60, until=lambda s: done(s, len(messages)))
+                pump(TURN, until=open_row)
+        pump(TURN, until=lambda s: done(s, len(messages)))
+        if not done(screen, len(messages)):
+            # Said plainly, because the assertion that follows would otherwise read as a
+            # drawing bug: a turn that never finished leaves a screen with nothing on it.
+            raise AssertionError(
+                f"only {sum('Fixture completed.' in r for r in screen.text())} of "
+                f"{len(messages)} turns finished within {TURN}s:\n" + "\n".join(screen.text())
+            )
         os.write(master, b"\x04\x04")
         pump(5)
     finally:
@@ -157,11 +169,11 @@ def typing(chunks, lines=1, during_turn=False):
 
     shots = []
     try:
-        pump(30, until=lambda s: "What do you want to build?" in "\n".join(s.text()))
+        pump(START, until=lambda s: "What do you want to build?" in "\n".join(s.text()))
         if during_turn:
             # Candidates have to survive the agent streaming into the transcript above them.
             os.write(master, b"keep talking\n")
-            pump(30, until=lambda s: any("the fixture keeps talking" in r for r in s.text()))
+            pump(START, until=lambda s: any("the fixture keeps talking" in r for r in s.text()))
         for chunk in chunks:
             os.write(master, chunk.encode())
             pump(1.5)
@@ -251,30 +263,30 @@ MOCK_LOG = "{dir / 'agent.jsonl'}"
 
     shown = lambda text: lambda s: any(text in row for row in s.text())
     try:
-        pump(30, until=shown("What do you want to build?"))
+        pump(START, until=shown("What do you want to build?"))
         os.write(master, b"rewrite the entire architecture from scratch")
-        pump(10, until=shown("from scratch"))
+        pump(START, until=shown("from scratch"))
         os.write(master, b"\n")
-        pump(60, until=shown("This divides into parts"))
+        pump(TURN, until=shown("This divides into parts"))
         os.write(master, answer)
         completed = lambda n: lambda s: sum("Fixture completed." in row for row in s.text()) >= n
         if answer == b"\n":
             if stop_at:
-                pump(60, until=shown(stop_at))
+                pump(TURN, until=shown(stop_at))
                 os.write(master, b"\x03")
             pump(120, until=lambda s: shown("team finished")(s) or shown("team stopped")(s))
         elif answer == b"\x1b":
-            pump(60, until=shown("keeping the design"))
+            pump(TURN, until=shown("keeping the design"))
         else:
             # One agent carries on: implementation, then its review.
-            pump(60, until=completed(2))
+            pump(TURN, until=completed(2))
         if follow:
             done = sum("Fixture completed." in row for row in screen.text())
             for start in range(0, len(follow), 8):
                 os.write(master, follow[start:start + 8].encode())
                 pump(0.05)
             os.write(master, b"\n")
-            pump(60, until=completed(done + 1))
+            pump(TURN, until=completed(done + 1))
         os.write(master, b"\x04\x04")
         pump(5)
     finally:
@@ -360,7 +372,7 @@ MOCK_LOG = "{self.log}"
     def shown(self, text):
         return any(text in row for row in self.screen.text())
 
-    def wait(self, text, seconds=60):
+    def wait(self, text, seconds=TURN):
         self.pump(seconds, until=lambda s: self.shown(text))
         assert self.shown(text), f"never showed {text!r}:\n" + "\n".join(self.screen.text())
 
@@ -409,6 +421,32 @@ MOCK_LOG = "{self.log}"
             self.process.terminate()
             self.process.wait(timeout=10)
         os.close(self.master)
+
+
+class ScreenModel(unittest.TestCase):
+    """The screen these tests read the console back through has to survive a pty read that
+    ends mid-escape. It did not: the ESC was dropped and the rest of the sequence drawn as
+    text, so a correct redraw read back as a stale row and the suite failed at whatever rate
+    the reads happened to split (macOS CI, 2026-09-24)."""
+
+    def test_a_sequence_split_across_reads_draws_the_same_as_an_unsplit_one(self):
+        whole = "ab\x1b[2;1Hcd\x1b[Kef\x1b[1;1Hgh"
+        one = screen_module.Screen(rows=3, cols=10)
+        one.feed(whole)
+        for at in range(1, len(whole)):
+            split = screen_module.Screen(rows=3, cols=10)
+            split.feed(whole[:at])
+            split.feed(whole[at:])
+            self.assertEqual(split.text(), one.text(), f"split after {whole[:at]!r}")
+
+    def test_an_escape_the_screen_does_not_know_is_still_skipped(self):
+        # Only a tail that could still grow into a sequence is held over. An escape this
+        # screen has no rule for is passed over exactly as it always was — the ESC alone —
+        # and is not buffered waiting for a completion that will never come.
+        one = screen_module.Screen(rows=2, cols=10)
+        one.feed("a\x1bZb")
+        self.assertEqual(one.text()[0], "aZb")
+        self.assertEqual(one.pending, "")
 
 
 class ChatTerminal(unittest.TestCase):
@@ -622,7 +660,7 @@ class ConsoleKeys(unittest.TestCase):
             c.wait("queued (1)")
             c.esc()
             c.wait("Interrupted")
-            c.pump(30, until=lambda s: len(c.prompts()) >= 2)
+            c.pump(START, until=lambda s: len(c.prompts()) >= 2)
             prompts = c.prompts()
             self.assertEqual(len(prompts), 2, prompts)
             self.assertTrue(prompts[1].rstrip().endswith("second"), prompts[1])
@@ -649,7 +687,7 @@ class ConsoleKeys(unittest.TestCase):
             # Nothing is left in the queue to send on its own.
             self.assertEqual(len(c.prompts()), 1, c.prompts())
             c.key(b"\n")
-            c.pump(30, until=lambda s: len(c.prompts()) >= 2)
+            c.pump(START, until=lambda s: len(c.prompts()) >= 2)
             self.assertIn("second\nthird", c.prompts()[1])
         finally:
             c.close()
@@ -685,7 +723,7 @@ class ConsoleKeys(unittest.TestCase):
         try:
             c.type("add a health endpoint")
             c.key(b"\n")
-            c.pump(30, until=lambda s: len(c.prompts()) >= 1)
+            c.pump(START, until=lambda s: len(c.prompts()) >= 1)
             c.esc()
             c.wait("Interrupted")
             c.pump(4)
@@ -720,9 +758,12 @@ class RepositoryMcpServers(unittest.TestCase):
         c = Console(files={".mcp.json": self.ONE})
         try:
             c.wait("New MCP server found in this project: notes")
+            # Each option is waited for, not merely looked for: they are drawn after the
+            # heading, so a read that lands between the two saw a half-drawn dialog and
+            # failed on a console that was about to be right (macOS CI, 2026-09-24).
             for option in ("Use this MCP server", "Use this and all future MCP servers in this project",
                            "Continue without using this MCP server"):
-                self.assertTrue(c.shown(option), c.rows())
+                c.wait(option)
             self.assertTrue(any("❯" in row and "Continue without using this MCP server" in row
                                 for row in c.screen.text()), "no is the default:\n" + c.rows())
             c.esc()
@@ -747,10 +788,12 @@ class RepositoryMcpServers(unittest.TestCase):
         c = Console(files={".mcp.json": self.TWO})
         try:
             c.wait("2 new MCP servers found in this project")
-            self.assertTrue(c.shown("Select any you wish to enable."), c.rows())
-            self.assertTrue(c.shown("[✔] alpha") and c.shown("[✔] beta"), c.rows())
+            # Waited for, for the same reason: the checklist is drawn after its heading.
+            c.wait("Select any you wish to enable.")
+            c.wait("[✔] alpha")
+            c.wait("[✔] beta")
             c.key(b" ")
-            self.assertTrue(c.shown("[ ] alpha"), c.rows())
+            c.wait("[ ] alpha")
             c.key(b"\n")
             c.wait("using beta from this repository's .mcp.json")
             self.assertEqual(self.given(c), ["beta"], c.rows())

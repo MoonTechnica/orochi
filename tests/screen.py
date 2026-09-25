@@ -14,6 +14,11 @@ class Screen:
         self.top, self.bot = 1, rows
         self.r = self.c = 1
         self.saved = (1, 1)
+        # A read from the pty can end in the middle of an escape sequence. Dropping the ESC
+        # and drawing the rest as text is how a correct redraw came out looking like a stale
+        # one, at whatever rate the reads happened to split (2026-09-24). `quota_terminal.py`
+        # carries the tail over for the same reason; so does this.
+        self.pending = ""
 
     def line(self, i):
         return "".join(self.buf[i]).rstrip()
@@ -46,10 +51,16 @@ class Screen:
             self.r += 1
 
     def feed(self, data):
+        data, self.pending = self.pending + data, ""
         i = 0
         while i < len(data):
             ch = data[i]
             if ch == "\x1b":
+                # Only what could still grow into a sequence is held over; anything else is an
+                # escape this screen does not know, and is skipped as before.
+                if re.fullmatch(r"\x1b(\[[0-9;?]*|\][^\x07\x1b]*|[()]?)", data[i:]):
+                    self.pending = data[i:]
+                    break
                 m = re.match(r"\x1b\[([0-9;?]*)([@-~])", data[i:])
                 if m:
                     self.csi(m.group(1), m.group(2))
