@@ -1876,6 +1876,24 @@ fn model_pins_the_route_for_the_next_messages_until_it_is_handed_back() {
     );
 }
 
+/// Helpers that finish minutes apart after the lead has answered come back together: handing
+/// the first back alone cost a real lead a whole turn saying it was still waiting (2026-09-30).
+#[test]
+fn helpers_that_finish_apart_report_back_in_one_turn_once_none_is_left() {
+    let mut w = Workspace::new();
+    w.config.mailbox.enabled = true;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert("MOCK_HELPER_DELAYS".into(), "spec:0.5,explorer:4".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Find out two things\n");
+    success(&output);
+    let completions = std::fs::read_to_string(w.dir.path().join("repo/completions.txt")).unwrap();
+    assert_eq!(completions.matches("=====").count(), 1, "{completions}");
+    assert!(completions.contains("REPORT spec") && completions.contains("REPORT explorer"));
+}
+
 /// The pinned input and the transcript share one screen: only a terminal model can tell whether
 /// a turn flowed on or was drawn over the last one. Driven in a pty by `tests/test_chat_terminal.py`.
 #[test]

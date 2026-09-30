@@ -371,6 +371,9 @@ struct Session<'a> {
     stopped: Vec<String>,
     /// Seats the user said not to ask about again, by name, for this session.
     trusted: BTreeSet<String>,
+    /// What seats other than the lead said each tool call was, by call id: an agent may ask
+    /// about a call by its id alone (codex-acp does), and the question must still say what.
+    announced: Announced,
     chord: StopChord,
     /// The background agents' list, while it is open.
     managing: Option<Manage>,
@@ -568,6 +571,7 @@ pub async fn run_with(
         asks: VecDeque::new(),
         stopped: vec![],
         trusted: BTreeSet::new(),
+        announced: Announced::default(),
         chord: StopChord::default(),
         managing: None,
         recorded: Recorded::open(config, store, root, options_thread.as_ref(), headless).map(
@@ -624,7 +628,15 @@ impl<'a> Session<'a> {
                 if !stopped.is_empty() {
                     self.stopped.push(background::completion(&stopped));
                 }
-                if !self.results.is_empty() {
+                // One report goes back alone only once nothing else is still at work, or it has
+                // waited long enough; siblings that finish close together go back together.
+                let held = self
+                    .results
+                    .iter()
+                    .map(|f| f.ended)
+                    .min()
+                    .is_some_and(|ended| ended.elapsed() >= background::HOLD);
+                if !self.results.is_empty() && (self.background.is_empty() || held) {
                     break Some(self.completion_message());
                 }
                 if !self.listening && self.background.is_empty() {
@@ -745,7 +757,14 @@ impl<'a> Session<'a> {
                 self.refresh_status(None);
             };
             let Some(message) = message else { break };
-            self.run_turn(message).await?;
+            // A turn that could not run (no agent could start, say) has said so; at a terminal
+            // or for a host the conversation goes on. Piped, it still ends the run with its error.
+            if let Err(error) = self.run_turn(message).await {
+                if !self.tty && !self.headless {
+                    return Err(error);
+                }
+                tracing::debug!(%error, "turn failed; the session continues");
+            }
         }
         Ok(0)
     }
@@ -942,6 +961,7 @@ impl<'a> Session<'a> {
             &mut self.results,
             &mut self.asks,
             &self.trusted,
+            &mut self.announced,
             &mut self.view,
         );
         for line in lines {
@@ -1573,7 +1593,10 @@ impl Session<'_> {
             }
             result.map(|(code, _)| code)
         } else {
-            self.run_team(message, steps, &task).await.map(|()| 0)
+            self.run_team(message, steps, &task)
+                .await
+                .inspect_err(|error| self.view.result(ERR, &format!("✗ {error:#}")))
+                .map(|()| 0)
         };
         self.close_turn(match &result {
             Ok(0) => crate::activity::TurnState::Completed,
@@ -2702,6 +2725,7 @@ impl Session<'_> {
         let asks = &mut self.asks;
         let trusted = &mut self.trusted;
         let chord = &mut self.chord;
+        let announced = &mut self.announced;
         let recorded = self.recorded.as_ref();
         let approval = &mut self.approval;
         let queue = &mut self.queue;
@@ -2797,11 +2821,21 @@ impl Session<'_> {
                 tokio::select! {
                     biased;
                     Some(event) = received.recv() => {
+                        // The lead has asked for what it wanted and starts to answer: the
+                        // helpers it started are announced as one block, above its words.
+                        if matches!(event, ExecutionEvent::Text(..))
+                            && let Some(started) = helpers.announcement(true)
+                        {
+                            let line = launch_line(screen.view, started);
+                            screen.interject(line);
+                        }
                         handle(event, &mut screen, &mut reply, &mut pending, &mut withhold);
                     }
                     Some((name, event)) = next_aside(&mut asides), if !asides.is_empty() => {
+                        announced.heard(&event);
                         match event {
-                            ExecutionEvent::Permission(request, answer) => {
+                            ExecutionEvent::Permission(mut request, answer) => {
+                                announced.fill(&mut request);
                                 queue_ask(asks, trusted, screen.view.term.tty, name, request, answer);
                                 if pending.is_none() {
                                     show_ask(screen.view, asks);
@@ -2925,7 +2959,7 @@ impl Session<'_> {
                         }
                     }
                     event = helpers.next(), if !helpers.is_empty() => {
-                        for line in on_helper(event, helpers, results, asks, trusted, screen.view) {
+                        for line in on_helper(event, helpers, results, asks, trusted, announced, screen.view) {
                             screen.interject(line);
                         }
                         if pending.is_none() {
@@ -3209,6 +3243,61 @@ fn show_manager(view: &mut View, background: &background::Background<'_>, manage
     view.term.render();
 }
 
+/// Tool calls as their seats announced them, by id, bounded.
+#[derive(Default)]
+struct Announced(BTreeMap<String, Announcement>);
+/// A call's title, what it acts on, and its kind.
+type Announcement = (Option<String>, Option<String>, Option<String>);
+impl Announced {
+    fn heard(&mut self, event: &ExecutionEvent) {
+        if let ExecutionEvent::Progress(Progress::Tool(update)) = event {
+            if self.0.len() > 512 {
+                self.0.clear();
+            }
+            let entry = self.0.entry(update.id.clone()).or_default();
+            if update
+                .title
+                .as_deref()
+                .is_some_and(|t| !t.trim().is_empty())
+            {
+                entry.0 = update.title.clone();
+            }
+            if update.detail.is_some() {
+                entry.1 = update.detail.clone();
+            }
+            if update.kind.is_some() {
+                entry.2 = update.kind.clone();
+            }
+        }
+    }
+    /// A question that names its call only by id, given what the call was announced as.
+    fn fill(&self, request: &mut Value) {
+        let call = &mut request["toolCall"];
+        let Some(id) = call["toolCallId"].as_str() else {
+            return;
+        };
+        let Some((title, detail, kind)) = self.0.get(id).cloned() else {
+            return;
+        };
+        if call["title"].as_str().is_none_or(|t| t.trim().is_empty())
+            && let Some(title) = title
+        {
+            call["title"] = Value::String(title);
+        }
+        if call["kind"].is_null()
+            && let Some(kind) = kind
+        {
+            call["kind"] = Value::String(kind);
+        }
+        if call["rawInput"].is_null()
+            && let Some(detail) = detail
+        {
+            let command = detail.strip_prefix("$ ").unwrap_or(&detail).to_owned();
+            call["rawInput"] = serde_json::json!({ "command": command });
+        }
+    }
+}
+
 /// A permission question from a seat that is not the lead — a helper, or a seat beside it.
 /// Such a seat reads only, so what reaches the user is a command it wants to run.
 struct Ask {
@@ -3475,20 +3564,24 @@ fn grant<'a>(
 
 /// What happened to a helper, as the transcript lines to show; its results are kept for the
 /// lead, and the pane report follows.
+#[allow(clippy::too_many_arguments)]
 fn on_helper(
     event: background::Event,
     background: &mut background::Background<'_>,
     results: &mut Vec<background::Finished>,
     asks: &mut VecDeque<Ask>,
     trusted: &BTreeSet<String>,
+    announced: &mut Announced,
     view: &mut View,
 ) -> Vec<String> {
     let mut lines = vec![];
     match event {
         background::Event::Said(name, event) => {
             background.heard(&name, &event);
+            announced.heard(&event);
             match event {
-                ExecutionEvent::Permission(request, answer) => {
+                ExecutionEvent::Permission(mut request, answer) => {
+                    announced.fill(&mut request);
                     queue_ask(asks, trusted, view.term.tty, &name, request, answer);
                 }
                 ExecutionEvent::Progress(Progress::Unavailable { agent, error }) => {
@@ -5288,6 +5381,15 @@ impl<'v> Screen<'v> {
             state.detail = update.detail;
             state.diffs = update.diffs;
             state.kind = update.kind;
+        }
+        // Asked about by id alone: the call is the one this turn already showed.
+        if let Some(known) = call["toolCallId"]
+            .as_str()
+            .and_then(|id| self.tools.get(id))
+        {
+            state.title = state.title.take().or_else(|| known.title.clone());
+            state.detail = state.detail.take().or_else(|| known.detail.clone());
+            state.kind = state.kind.take().or_else(|| known.kind.clone());
         }
         {
             let report = &mut self.view.pane.report;

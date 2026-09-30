@@ -164,10 +164,13 @@ def delegate(request):
         name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
         (root / f"helper-{name}.txt").write_text(text)
         if os.environ.get("MOCK_HELPER_ASK") == name.split("-")[0]:
-            # A helper reads only, but reading sometimes means running a command.
+            # A helper reads only, but reading sometimes means running a command. It announces
+            # the call first and then asks about it by id alone, as codex-acp does.
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call", "toolCallId": "call-curl", "title": "curl -sL https://example.com/llms.txt",
+                "kind": "execute", "status": "pending", "rawInput": {"command": ["curl", "-sL", "https://example.com/llms.txt"]}}}})
             send({"id": f"permission-{name}", "method": "session/request_permission", "params": {
-                "sessionId": session, "toolCall": {"toolCallId": "call-curl", "title": "curl -sL https://example.com/llms.txt",
-                                                  "kind": "execute", "rawInput": {"command": ["curl", "-sL", "https://example.com/llms.txt"]}},
+                "sessionId": session, "toolCall": {"toolCallId": "call-curl"},
                 "options": [{"optionId": "deny", "name": "Deny", "kind": "reject_once"},
                             {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
             answer = json.loads(sys.stdin.readline())

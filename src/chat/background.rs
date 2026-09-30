@@ -75,6 +75,8 @@ pub struct Finished {
     pub ending: Ending,
     pub result: String,
     pub descriptor: TaskDescriptor,
+    /// When it ended, for how long its report has been held.
+    pub ended: Instant,
 }
 
 pub enum Event {
@@ -84,9 +86,15 @@ pub enum Event {
 
 type Run<'a> = Pin<Box<dyn Future<Output = (String, Result<anyhow::Result<u8>, Aborted>)> + 'a>>;
 
-/// Grants this close together are one launch: a lead asks for helpers one call at a time, and
-/// they read as one block, as Claude Code shows its own.
-const BURST: Duration = Duration::from_millis(1500);
+/// How long started helpers wait to be announced when the lead says nothing. A real lead asks
+/// for them one call at a time with its own review between calls (seconds apart, measured
+/// 2026-09-30), so the block is normally printed when the lead starts to answer; this is only
+/// the fallback.
+const BURST: Duration = Duration::from_secs(20);
+/// How long a finished helper's report waits for the others still running before it goes back
+/// alone. Measured 2026-09-30: handing one back while its sibling still worked cost the lead a
+/// whole turn (30,355 tokens, 3 minutes) that said only that it was waiting.
+pub const HOLD: Duration = Duration::from_secs(300);
 
 #[derive(Default)]
 pub struct Background<'a> {
@@ -292,6 +300,7 @@ impl<'a> Background<'a> {
             route: helper.route,
             ending,
             descriptor: helper.descriptor,
+            ended: Instant::now(),
         })
     }
 
