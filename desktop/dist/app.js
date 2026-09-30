@@ -84,6 +84,7 @@ const AT = {
 const LABELS = {
   activity: "Activity",
   "new-thread": "New thread",
+  "projects-label": "Projects",
   "composer-hint": "Cmd-Enter to send · Enter for a new line",
   send: "Send",
   interrupt: "Stop",
@@ -97,6 +98,8 @@ const WORDS = {
   ja: {
     "New thread": "新しいスレッド",
     "New conversation": "新しい会話",
+    Projects: "プロジェクト",
+    "Add a project": "プロジェクトを追加",
     "Cmd-Enter to send · Enter for a new line": "⌘Enter で送信 · Enter で改行",
     Send: "送信",
     Stop: "停止",
@@ -225,6 +228,20 @@ function drawSidebar() {
     if (waiting || busy) {
       summary.append(text("span", "count", waiting ? `!${waiting}` : `${busy}`));
     }
+    // A thread is started where it will work, as Codex and Orca put it: on the project itself.
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "add";
+    add.setAttribute("title", `${t("New thread")} · ${project.name}`);
+    add.setAttribute("aria-label", `${t("New thread")} · ${project.name}`);
+    add.append(drawn("plus", "icon"));
+    add.addEventListener("click", (event) => {
+      // Inside a <summary>, a click would also fold the project it asked to add to.
+      event.preventDefault();
+      event.stopPropagation?.();
+      startIn(project.root);
+    });
+    summary.append(add);
     section.append(summary);
 
     // Where each conversation works: a card per checkout, as Orca draws a worktree, so work
@@ -1869,6 +1886,16 @@ el("new-thread").addEventListener("click", async (event) => {
     .find(([, t]) => t.id === state.thread);
   const root = open?.[0].root ?? state.folders[0]?.root;
   await (root ? startIn(root) : chooseFolder());
+});
+
+// Somewhere not yet in the list is a project to add, so it is asked for where the list is.
+el("add-project").append(drawn("plus", "icon"));
+el("add-project").setAttribute("title", t("Add a project"));
+el("add-project").setAttribute("aria-label", t("Add a project"));
+el("add-project").addEventListener("click", async (event) => {
+  event.stopPropagation();
+  closeFolders();
+  await chooseFolder();
 });
 
 // The page ships English; it says the same words in the window's language before it is read.

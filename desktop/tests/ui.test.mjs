@@ -27,7 +27,7 @@ const css = readFileSync(join(here, "../dist/app.css"), "utf8");
 async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) {
   const calls = [];
   page([
-    "sidebar", "projects", "sidebar-foot", "new-thread", "activity", "activity-count",
+    "sidebar", "projects", "projects-head", "projects-label", "add-project", "sidebar-foot", "new-thread", "activity", "activity-count",
     "status-bar", "accounts", "counts", "route-picker", "route", "route-name", "route-menu",
     "effort", "effort-name",
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
@@ -297,6 +297,39 @@ test("new thread starts one where the work already happens", async () => {
     true,
     "and no menu is left open at the other end of the window",
   );
+});
+
+test("a project's own plus starts a thread in that project", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  projects.push({ ...structuredClone(projects[0]), id: "other", name: "web-app", root: "/work/web-app" });
+  const { el, calls } = await open({ sidebar: projects });
+  const adds = el("projects").querySelectorAll(".add");
+  assert.equal(adds.length, projects.length, "one on every project");
+  let prevented = 0;
+  adds[1].dispatch("click", { preventDefault: () => (prevented += 1) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(
+    calls.find(([name]) => name === "new_thread")?.[1],
+    { root: "/work/web-app" },
+    "the project clicked, not the one in view",
+  );
+  assert.equal(prevented, 1, "and the click does not also fold the project");
+});
+
+test("adding a project asks the system's picker and starts a thread there", async () => {
+  const picked = [];
+  const { el, calls } = await open({}, {
+    pick: (options) => {
+      picked.push(options);
+      return "/work/fresh";
+    },
+  });
+  el("add-project").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(picked.length, 1, "even with a thread open: this is for somewhere new");
+  assert.deepEqual(calls.find(([name]) => name === "new_thread")?.[1], { root: "/work/fresh" });
 });
 
 test("new thread asks where, when nowhere has been worked in yet", async () => {

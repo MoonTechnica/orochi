@@ -114,8 +114,22 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
   font-weight: 500;
   color: var(--brand);
 }
-.project .add { margin-left: auto; border: 0; padding: 0 4px; color: var(--muted); }
+.project .count + .add { margin-left: 4px; }
 .project[open] .count { display: none; }
+.project[open] .count + .add { margin-left: auto; }
+/* Shown where the pointer is, so eight projects are not eight plus signs. */
+.project .add, #add-project {
+  margin-left: auto; border: 0; background: none; padding: 2px; border-radius: 4px;
+  color: var(--muted); display: inline-flex; cursor: pointer;
+}
+.project .add { opacity: 0; }
+.project > summary:hover .add, .project .add:focus-visible { opacity: 1; }
+.project .add:hover, #add-project:hover { color: var(--text); background: color-mix(in srgb, var(--line) 60%, transparent); }
+.project .add .icon, #add-project .icon { transform: none; }
+#projects-head {
+  display: flex; align-items: center; padding: 8px var(--gutter) 2px;
+  color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+}
 
 .thread {
   display: flex;
