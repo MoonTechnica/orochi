@@ -938,6 +938,9 @@ fn the_sandboxes_screen_lists_each_project_even_when_the_host_is_not_there() {
     assert!(!screen.reachable);
     assert_eq!(screen.projects.len(), 1);
     assert_eq!(screen.projects[0].status, "unreachable");
-    assert_eq!(screen.projects[0].host, "web.sbx");
+    assert_eq!(
+        screen.projects[0].url, "http://<port>-web.localhost:1355",
+        "reached through the VM's gateway, with nothing set up on this machine"
+    );
     assert!(screen.jobs.is_empty());
 }

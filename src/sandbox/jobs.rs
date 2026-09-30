@@ -16,7 +16,6 @@ pub enum Request {
     Image {
         vm: bool,
     },
-    Network,
     Create {
         root: PathBuf,
         mode: Mode,
@@ -54,7 +53,6 @@ impl Request {
                     args.push("--vm".into());
                 }
             }
-            Request::Network => args.extend(["network".into(), "--apply".into()]),
             Request::Create { root, mode, docker } => {
                 args.extend([
                     "create".into(),

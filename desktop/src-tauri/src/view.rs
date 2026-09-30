@@ -173,8 +173,9 @@ pub struct SandboxRow {
     pub docker: bool,
     pub status: String,
     pub address: Option<String>,
-    /// Where its services open by name, once the network is set up.
-    pub host: String,
+    /// Where its HTTP services open here, as a pattern with `<port>` in it: the VM's gateway,
+    /// which needs nothing configured on this machine.
+    pub url: String,
     /// Ports at this machine's 127.0.0.1 while it is focused.
     pub focused: Vec<u16>,
     /// An operation on it is still running.
@@ -225,7 +226,7 @@ pub fn sandboxes(config: &Path, data: &Path) -> Result<Sandboxes> {
                     .map(|f| f.ports.clone())
                     .unwrap_or_default(),
                 busy: busy.contains(&project.root.as_path()),
-                host: format!("{}.sbx", project.name),
+                url: ops::url(sandbox, &project.name, None),
                 name: project.name,
                 root: project.root.to_string_lossy().into_owned(),
                 mode: project.mode.key().into(),
