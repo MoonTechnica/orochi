@@ -1576,11 +1576,10 @@ async fn sandbox(
                     "VM {}: {}",
                     sandbox.lima_instance,
                     match vm.as_deref() {
-                        Some("Running") if sandbox.vm_idle_minutes > 0 => format!(
-                            "running (stops itself after {} min unused)",
-                            sandbox.vm_idle_minutes
-                        ),
-                        Some("Running") => "running".into(),
+                        Some("Running") => match ops::idle_report(sandbox) {
+                            Some(report) => format!("running · {report}"),
+                            None => "running".into(),
+                        },
                         Some(_) => "stopped (starts when needed)".into(),
                         None => "not created (`orochi sandbox up`)".into(),
                     }

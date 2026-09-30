@@ -761,3 +761,23 @@ fn a_vm_that_was_never_created_is_named_rather_than_started() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("orochi sandbox up"));
 }
+
+#[test]
+fn status_says_what_keeps_the_vm_up_or_how_long_it_has_been_unused() {
+    use orochi::sandbox::ops::describe_idle;
+    let working = serde_json::json!({"idle_minutes": 30, "idle_for": 0, "verdict": "active",
+        "why": [{"agents": {"demo": ["claude-agent-a", "node"]}, "processes": 3}, {"connected": true}]});
+    assert_eq!(
+        describe_idle(&working),
+        "in use: agent work in demo (claude-agent-a, node); a connection from this machine"
+    );
+    let unsure =
+        serde_json::json!({"idle_minutes": 30, "why": [{"unknown": "incus query failed"}]});
+    assert!(describe_idle(&unsure).contains("so kept running"));
+    let idle =
+        serde_json::json!({"idle_minutes": 30, "idle_for": 725, "verdict": "wait", "why": []});
+    assert_eq!(
+        describe_idle(&idle),
+        "unused for 12 min; stops itself at 30 min"
+    );
+}

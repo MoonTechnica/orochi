@@ -110,6 +110,65 @@ pub fn ensure_vm(config: &SandboxConfig, announce: bool) -> Result<()> {
     bail!("the sandbox VM started but Incus did not answer within 90 s")
 }
 
+/// What the VM's idle check last decided (`idle.py` writes it every minute), in words:
+/// what keeps it up, or how long it has been unused. `None` when there is nothing to read.
+pub fn idle_report(config: &SandboxConfig) -> Option<String> {
+    if config.client != SandboxClient::Lima {
+        return None;
+    }
+    let output = std::process::Command::new(limactl(config).ok()?)
+        .args([
+            "shell",
+            "--workdir",
+            "/",
+            &config.lima_instance,
+            "cat",
+            "/run/orochi-sandbox-idle.json",
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    Some(describe_idle(&report))
+}
+
+pub fn describe_idle(report: &serde_json::Value) -> String {
+    let mut used = vec![];
+    for why in report["why"].as_array().into_iter().flatten() {
+        if let Some(agents) = why["agents"].as_object() {
+            for (sandbox, names) in agents {
+                let names: Vec<&str> = names
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|n| n.as_str())
+                    .collect();
+                used.push(format!("agent work in {sandbox} ({})", names.join(", ")));
+            }
+        }
+        if let Some(busy) = why["incus"].as_array() {
+            let busy: Vec<&str> = busy.iter().filter_map(|b| b.as_str()).collect();
+            used.push(format!("Incus: {}", busy.join(", ")));
+        }
+        if why["connected"].as_bool() == Some(true) {
+            used.push("a connection from this machine".into());
+        }
+        if let Some(error) = why["unknown"].as_str() {
+            used.push(format!("could not tell ({error}), so kept running"));
+        }
+    }
+    if !used.is_empty() {
+        return format!("in use: {}", used.join("; "));
+    }
+    let limit = report["idle_minutes"].as_u64().unwrap_or(0);
+    if limit == 0 {
+        return "unused (never stops itself)".into();
+    }
+    let idle = report["idle_for"].as_u64().unwrap_or(0) / 60;
+    format!("unused for {idle} min; stops itself at {limit} min")
+}
+
 /// The Lima template for this configuration.
 pub fn lima_yaml(config: &SandboxConfig) -> String {
     let mounts = mounts(config)
@@ -333,6 +392,8 @@ pub fn build_image(config: &SandboxConfig, tier: Mode) -> Result<()> {
         format!("SBX_BRIDGES={bridges}"),
         "--env".into(),
         "SBX_DOCKER=1".into(),
+        "--env".into(),
+        format!("OROCHI_SANDBOX={builder}"),
         "--".into(),
         "bash".into(),
         "/root/orochi-image.sh".into(),

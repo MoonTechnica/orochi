@@ -332,7 +332,7 @@ orochi sandbox focus [--watch]        # this project's listening ports at 127.0.
 orochi sandbox enter | status | snapshot | restore <name> | reset | rm | gc
 ```
 
-**The VM is there only while it is used.** It powers itself off after `sandbox.vm_idle_minutes` (30; 0 keeps it running) with no command running in any sandbox and no connection from this machine through the gateway or a focused port, and Orochi starts it again (about 15 s) when a run in a sandboxed project, or any `orochi sandbox` command that needs it, finds it stopped. Looking (`status`, the desktop's screen) never starts it.
+**The VM is there only while it is used.** It powers itself off after `sandbox.vm_idle_minutes` (30; 0 keeps it running) once no agent's work is alive and nothing is connected: *use* is any process in any sandbox that Orochi started or that one of those started (an agent, its tools, a check, `enter`'s shell, and work an agent left running in the background after its turn, which it does not kill), an Incus operation in progress (an image being built), or a connection from this machine through the gateway or a focused port. A sandbox that merely runs (Supabase idling) is not use, and when the check cannot tell it counts as use. Orochi starts the VM again (about 15 s) when a run in a sandboxed project, or any `orochi sandbox` command that needs it, finds it stopped; looking (`status`, the desktop's screen) never starts it. `orochi sandbox status` says what keeps the VM up (`in use: agent work in demo (claude-agent-a, node)`) or how long it has been unused.
 
 **Reaching services needs nothing set up on this machine and never root.** Every sandbox's HTTP services open at `http://<port>-<project>.localhost:1355` (Supabase Studio in project `demo`: `http://54323-demo.localhost:1355`), all projects at once: browsers and curl resolve `*.localhost` to the loopback address themselves, Lima forwards the VM's gateway port, and the gateway (`src/sandbox/gateway.py`, inside the VM) passes each request, WebSocket upgrades included, to `<project>.sbx:<port>`. For anything that is not HTTP (a database port) or a service bound to `127.0.0.1` inside, `focus` puts one project's ports at `127.0.0.1` as its tools print them.
 
@@ -528,7 +528,7 @@ src/evaluator.rs    Local evaluation and process management
 src/sandbox.rs      Per-project sandboxes: modes, the project registry, the Incus client, wrapping an agent's launch and a check into `incus exec`
 src/sandbox/jobs.rs Sandbox operations run in the background for a caller with no terminal (the desktop window), as the same `orochi sandbox` commands
 src/sandbox/ops.rs  `orochi sandbox`: the Lima host VM, the golden image, creating / switching / focusing / snapshotting a project's instance (lima.yaml, host.sh, image.sh are embedded)
-src/sandbox/idle.py The VM's own idle check: it powers the VM off after `sandbox.vm_idle_minutes` with nothing running inside and nothing connected
+src/sandbox/idle.py The VM's own idle check: it powers the VM off after `sandbox.vm_idle_minutes` with no agent's work alive and nothing connected
 src/sandbox/gateway.py The VM's `*.localhost` HTTP gateway: `http://<port>-<project>.localhost:1355` to `<project>.sbx:<port>`, bytes passed both ways
 src/storage.rs      SQLite telemetry, schema, repository lock
 src/activity.rs     The conversation store a desktop client reads: threads, turns, seats, items, patches, prompts, controls, the room, and the views over them
