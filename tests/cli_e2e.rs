@@ -1701,6 +1701,144 @@ fn a_conversation_that_outgrows_its_model_is_routed_again() {
     );
 }
 
+/// Inside an agent host's pane every CLI session Orochi opens would run the host's hooks with
+/// the pane's key and claim to be the pane's agent. Each launch gets the hook variables emptied,
+/// which the host's scripts read as "not here"; the pane key and anything else stay.
+#[test]
+fn launched_agents_run_with_the_hosts_hook_variables_emptied() {
+    let w = Workspace::new();
+    let output = w
+        .command()
+        .env("ORCA_AGENT_HOOK_PORT", "54986")
+        .env("ORCA_AGENT_HOOK_TOKEN", "token-value")
+        .env("ORCA_AGENT_HOOK_ENDPOINT", "/tmp/endpoint.env")
+        .env("ORCA_PANE_KEY", "tab:1")
+        .args(["Implement a small thing"])
+        .output()
+        .unwrap();
+    success(&output);
+    let seen = std::fs::read_to_string(w.dir.path().join("agent.jsonl.env")).unwrap();
+    let launches: Vec<serde_json::Value> = seen
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!launches.is_empty());
+    for env in launches {
+        for name in [
+            "ORCA_AGENT_HOOK_PORT",
+            "ORCA_AGENT_HOOK_TOKEN",
+            "ORCA_AGENT_HOOK_ENDPOINT",
+        ] {
+            assert_eq!(env[name], "", "{name} reached an agent: {env}");
+        }
+        assert_eq!(env["ORCA_PANE_KEY"], "tab:1");
+    }
+}
+
+/// A lead asks for two helpers and goes on answering; the helpers work beside it, and when they
+/// finish while it is still busy their reports come back to it together, as one turn Orochi
+/// wrote rather than one the user typed. Only the lead is offered the tool, the helpers' seats
+/// are recorded with what they were for, and none of that text reaches telemetry.
+#[test]
+fn helpers_a_lead_starts_report_back_to_it_as_one_turn_of_their_own() {
+    let mut w = Workspace::new();
+    w.config.mailbox.enabled = true;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert(
+        "MOCK_HELPERS".into(),
+        "spec:Research Agents API model support,explorer:Map generation request flow".into(),
+    );
+    env.insert("MOCK_HELPER_DELAYS".into(), "spec:1,explorer:0.3".into());
+    env.insert("MOCK_LEAD_DELAY".into(), "6".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Make the model selectable from the front end\n");
+    success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let repo = w.dir.path().join("repo");
+
+    let started = std::fs::read_to_string(repo.join("started.txt")).unwrap();
+    assert!(
+        started.contains(r#""started": "spec""#) && started.contains(r#""started": "explorer""#),
+        "{started}\n{stderr}"
+    );
+    for expected in [
+        "2 background agents launched",
+        "spec (Research Agents API model support)",
+        "explorer (Map generation request flow)",
+        "⎿ spec finished",
+        "⎿ explorer finished",
+        "2 agents finished",
+        "handing back what",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected:?} in {stderr}"
+        );
+    }
+    // Only the lead was offered the tool; a helper was told nothing about it.
+    let offered = std::fs::read_to_string(repo.join("offered.txt")).unwrap();
+    assert!(
+        offered.lines().next().unwrap().contains("start_agent"),
+        "{offered}"
+    );
+    let helper = std::fs::read_to_string(repo.join("helper-spec.txt")).unwrap();
+    assert!(helper.contains("Find out: Research Agents API model support"));
+    assert!(!helper.contains("start_agent"), "{helper}");
+    // Both finished while the lead was answering, so one turn hands both reports back.
+    let completions = std::fs::read_to_string(repo.join("completions.txt")).unwrap();
+    assert_eq!(completions.matches("=====").count(), 1, "{completions}");
+    for expected in [
+        "Background agent `spec` (Research Agents API model support) finished",
+        "REPORT spec",
+        "Background agent `explorer` (Map generation request flow) finished",
+        "REPORT explorer",
+    ] {
+        assert!(
+            completions.contains(expected),
+            "missing {expected:?} in {completions}"
+        );
+    }
+
+    let activity = orochi::activity::Activity::open(&w.dir.path().join("data"), 30).unwrap();
+    let seats: Vec<(String, Option<String>, i64, Option<String>)> = activity
+        .connection()
+        .prepare(
+            "SELECT role, title, background, result FROM seats WHERE background=1 ORDER BY role",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(seats.len(), 2, "{seats:?}");
+    assert_eq!(seats[1].0, "spec");
+    assert_eq!(
+        seats[1].1.as_deref(),
+        Some("Research Agents API model support")
+    );
+    assert!(seats[1].3.as_deref().unwrap_or("").contains("REPORT spec"));
+    let origins: Vec<Option<String>> = activity
+        .connection()
+        .prepare("SELECT origin FROM turns ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(origins, vec![None, Some("background".to_owned())]);
+    let telemetry = std::fs::read(w.dir.path().join("data/telemetry.sqlite3")).unwrap();
+    for secret in ["Research Agents API model support", "REPORT spec"] {
+        assert!(
+            !telemetry
+                .windows(secret.len())
+                .any(|w| w == secret.as_bytes()),
+            "{secret} reached telemetry"
+        );
+    }
+}
+
 /// The pinned input and the transcript share one screen: only a terminal model can tell whether
 /// a turn flowed on or was drawn over the last one. Driven in a pty by `tests/test_chat_terminal.py`.
 #[test]

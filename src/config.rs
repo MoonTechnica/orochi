@@ -24,6 +24,7 @@ pub struct Config {
     pub mailbox: MailboxConfig,
     pub mcp: McpConfig,
     pub activity: ActivityConfig,
+    pub console: ConsoleConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -53,6 +54,7 @@ impl Default for Config {
             mailbox: MailboxConfig::default(),
             mcp: McpConfig::default(),
             activity: ActivityConfig::default(),
+            console: ConsoleConfig::default(),
         }
     }
 }
@@ -185,6 +187,20 @@ impl Default for ActivityConfig {
             thinking: true,
             host_idle_secs: 600,
         }
+    }
+}
+
+/// The interactive console.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ConsoleConfig {
+    /// Inside a terminal that shows what each pane is doing (Orca), report Orochi's own state
+    /// and seats to it (`pane.rs`). Nothing is written anywhere else.
+    pub host_status: bool,
+}
+impl Default for ConsoleConfig {
+    fn default() -> Self {
+        Self { host_status: true }
     }
 }
 

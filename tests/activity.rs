@@ -951,3 +951,167 @@ fn a_thread_answers_to_the_short_id_its_listing_shows() {
         assert_eq!(activity.resolve_thread(&shared).unwrap(), None, "{shared}");
     }
 }
+
+/// A store written before background seats existed gains their columns and table on open —
+/// once, even with several processes opening it at the same moment — and keeps every row it
+/// had. `USER_VERSION` does not move, so the older binary sharing the directory keeps working.
+#[test]
+fn a_store_from_before_background_seats_gains_their_columns_once_and_keeps_its_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let seat = {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        let (_, turn, _) = thread_with_a_turn(&activity);
+        let seat = activity
+            .create_seat(&turn, 0, "implementer", true, false, None, None)
+            .unwrap();
+        // Back to the shape an older Orochi wrote: its views, then its columns and tables.
+        let connection = activity.connection();
+        let views: Vec<String> = connection
+            .prepare("SELECT name FROM sqlite_master WHERE type='view'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for view in views {
+            connection
+                .execute_batch(&format!("DROP VIEW {view};"))
+                .unwrap();
+        }
+        connection
+            .execute_batch(
+                "DROP TABLE agent_requests;
+                 ALTER TABLE seats DROP COLUMN title; ALTER TABLE seats DROP COLUMN background;
+                 ALTER TABLE seats DROP COLUMN origin; ALTER TABLE seats DROP COLUMN result;
+                 ALTER TABLE turns DROP COLUMN origin;",
+            )
+            .unwrap();
+        seat
+    };
+    let opened: Vec<bool> = (0..4)
+        .map(|_| {
+            let path = dir.path().to_owned();
+            std::thread::spawn(move || Activity::open(&path, 30).is_ok())
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect();
+    assert_eq!(opened, vec![true; 4]);
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let version: i64 = activity
+        .connection()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2, "an additive change does not move the version");
+    activity
+        .seat_details(&seat, Some("Map the request flow"), true, "lead")
+        .unwrap();
+    let (title, background): (String, i64) = activity
+        .connection()
+        .query_row(
+            "SELECT title, background FROM v_roster WHERE seat_id=?1",
+            [&seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((title.as_str(), background), ("Map the request flow", 1));
+    let requests: i64 = activity
+        .connection()
+        .query_row("SELECT count(*) FROM agent_requests", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(requests, 0);
+}
+
+/// A thread whose lead has answered while its helpers still work is neither idle nor working:
+/// it reads as working in the background, lists each helper with its title, and says what the
+/// lead is doing while a turn runs.
+#[test]
+fn a_thread_whose_helpers_outlive_its_turn_reads_as_working_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    let host = activity.register_host(Some(&thread), "terminal").unwrap();
+    assert!(activity.claim_turn(&turn, &host).unwrap());
+    let lead = activity
+        .create_seat(&turn, 0, "implementer", true, false, None, None)
+        .unwrap();
+    let attempt = activity
+        .create_attempt(&lead, &candidate("claude", "opus"), false, None)
+        .unwrap();
+    activity
+        .item(
+            &thread,
+            &turn,
+            Some(&attempt),
+            ItemKind::ToolCall,
+            Some("in_progress"),
+            Some("call-1"),
+            "$ curl -sL https://example.com/llms.txt",
+            None,
+        )
+        .unwrap();
+    let helper = activity
+        .create_seat(&turn, 1, "spec", false, true, None, None)
+        .unwrap();
+    activity
+        .seat_details(
+            &helper,
+            Some("Research Agents API model support"),
+            true,
+            "lead",
+        )
+        .unwrap();
+    activity
+        .create_attempt(&helper, &candidate("codex", "gpt"), false, None)
+        .unwrap();
+    activity.seat_state(&helper, SeatState::Working).unwrap();
+
+    let row = |activity: &Activity| {
+        activity
+            .sidebar(10, false)
+            .unwrap()
+            .into_iter()
+            .flat_map(|p| p.threads)
+            .find(|t| t.id == thread)
+            .unwrap()
+    };
+    let working = row(&activity);
+    assert_eq!(working.status, "working");
+    assert_eq!(
+        working.doing.as_deref(),
+        Some("$ curl -sL https://example.com/llms.txt")
+    );
+    assert!(working.running_since.is_some());
+
+    activity.seat_state(&lead, SeatState::Done).unwrap();
+    activity
+        .turn_state(&turn, orochi::activity::TurnState::Completed)
+        .unwrap();
+    let waiting = row(&activity);
+    assert_eq!(waiting.status, "background");
+    assert_eq!(waiting.background, 1);
+    assert_eq!(
+        waiting.doing, None,
+        "nothing runs, so the lead is doing nothing"
+    );
+
+    let live = activity.live_seats().unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(
+        live[0].title.as_deref(),
+        Some("Research Agents API model support")
+    );
+    assert!(live[0].background && live[0].read_only);
+    assert_eq!(live[0].agent.as_deref(), Some("codex"));
+
+    activity
+        .seat_result(&helper, "Found three endpoints.")
+        .unwrap();
+    activity.seat_state(&helper, SeatState::Done).unwrap();
+    let seats = activity.thread(&thread).unwrap().unwrap().seats;
+    let reported = seats.iter().find(|s| s.seat_id == helper).unwrap();
+    assert!(reported.reported && reported.background);
+    assert_ne!(row(&activity).status, "background");
+    assert!(activity.live_seats().unwrap().is_empty());
+}

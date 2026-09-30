@@ -203,6 +203,7 @@ async fn probe(probe: &QuotaProbe, config: &Config, time: i64) -> Result<Snapsho
     };
     command
         .args(&probe.args)
+        .envs(crate::pane::quiet_hooks())
         .envs(&agent.env)
         .current_dir(directory.path())
         .stdin(Stdio::piped())

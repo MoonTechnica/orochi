@@ -2951,3 +2951,115 @@ mod capabilities {
         assert!(!claims("codex").image && !claims("claude").browser);
     }
 }
+
+/// What the console tells an agent host about its pane (`pane.rs`).
+mod pane {
+    use orochi::pane::{Report, Reporter, Seat, SeatState, State, encode};
+    use std::time::Duration;
+
+    fn body(sequence: &str) -> serde_json::Value {
+        let json = sequence
+            .strip_prefix("\x1b]9999;")
+            .and_then(|rest| rest.strip_suffix('\x07'))
+            .expect("an OSC 9999 sequence ending in BEL");
+        serde_json::from_str(json).expect("json")
+    }
+
+    fn seat(id: &str) -> Seat {
+        Seat {
+            id: id.to_owned(),
+            state: SeatState::Working,
+            started_at: 1,
+            agent_type: Some("codex".into()),
+            model: Some("gpt".into()),
+            description: Some("x".repeat(400)),
+        }
+    }
+
+    #[test]
+    fn a_report_stays_within_the_hosts_limits_and_never_carries_conversation() {
+        let report = Report {
+            state: State::Blocked,
+            model: Some("m".repeat(500)),
+            tool_name: Some("Bash".into()),
+            tool_input: Some(format!("curl \x1b[31m{}", "a".repeat(400))),
+            interactive_prompt: Some("Bash · curl".into()),
+            subagents: (0..40).map(|i| seat(&format!("s{i}"))).collect(),
+            ..Report::default()
+        };
+        let sent = encode(&report);
+        let value = body(&sent);
+        assert_eq!(value["state"], "blocked");
+        assert_eq!(value["agentType"], "orochi");
+        assert_eq!(value["model"].as_str().unwrap().chars().count(), 120);
+        let input = value["toolInput"].as_str().unwrap();
+        assert_eq!(input.chars().count(), 160);
+        assert!(!input.contains('\x1b'), "control characters are dropped");
+        let seats = value["subagents"].as_array().unwrap();
+        assert_eq!(seats.len(), 32);
+        assert_eq!(
+            seats[0]["description"].as_str().unwrap().chars().count(),
+            160
+        );
+        assert_eq!(seats[0]["agentType"], "codex");
+        // The request and the replies are never part of what the host is told.
+        for key in ["prompt", "lastAssistantMessage"] {
+            assert!(value.get(key).is_none(), "{key} must not be sent");
+        }
+        // Nothing in the payload may end the sequence early.
+        assert_eq!(sent.matches('\x07').count(), 1);
+    }
+
+    #[test]
+    fn a_reporter_outside_a_host_pane_says_nothing() {
+        let mut reporter = Reporter::with(false);
+        reporter.report.state = State::Working;
+        assert!(reporter.update().is_none());
+        assert!(reporter.due().is_none());
+    }
+
+    #[test]
+    fn a_reporter_says_each_change_once_and_holds_a_burst_for_the_interval() {
+        let mut reporter = Reporter::with(true);
+        reporter.report.state = State::Working;
+        assert!(reporter.update().is_some());
+        assert!(
+            reporter.update().is_none(),
+            "an unchanged report is not repeated"
+        );
+
+        reporter.report.tool_name = Some("Read".into());
+        assert!(
+            reporter.update().is_none(),
+            "a detail inside the interval is held"
+        );
+        assert!(reporter.due().is_none());
+
+        // A change of state is never held back.
+        reporter.report.state = State::Blocked;
+        let sent = reporter.update().expect("state changes go out at once");
+        assert_eq!(body(&sent)["toolName"], "Read");
+        assert!(reporter.due().is_none(), "what was held went out with it");
+
+        reporter.report.tool_name = Some("Edit".into());
+        assert!(reporter.update().is_none());
+        std::thread::sleep(Duration::from_millis(550));
+        let sent = reporter
+            .due()
+            .expect("the held report goes out after the interval");
+        assert_eq!(body(&sent)["toolName"], "Edit");
+    }
+
+    #[test]
+    fn seats_are_kept_by_name() {
+        let mut reporter = Reporter::with(true);
+        reporter.seat(seat("spec"));
+        reporter.seat(seat("explorer"));
+        reporter.seat(seat("spec"));
+        assert_eq!(reporter.report.subagents.len(), 2);
+        reporter.seat_state("spec", SeatState::Idle);
+        assert_eq!(reporter.report.subagents[0].state, SeatState::Idle);
+        reporter.drop_seat("spec");
+        assert_eq!(reporter.report.subagents.len(), 1);
+    }
+}

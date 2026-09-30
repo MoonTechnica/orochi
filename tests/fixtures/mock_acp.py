@@ -25,6 +25,7 @@ root = None
 
 
 mcp_servers = []
+offered = []
 if behavior == "permission_persist":
     # Unbuffered, so waiting on the descriptor sees a line that has already arrived.
     sys.stdin = open(0, "rb", buffering=0)
@@ -47,10 +48,13 @@ def mailbox_tools():
     rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "mock", "version": "1"}})
     proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
     names = [t["name"] for t in rpc("tools/list", {})["result"]["tools"]]
-    assert names == ["list_peers", "send_message", "read_messages", "set_status"], names
+    # `start_agent` is offered to the lead of a console turn, and to nobody else.
+    assert names[:4] == ["list_peers", "send_message", "read_messages", "set_status"], names
+    assert names[4:] in ([], ["start_agent"]), names
+    offered.extend(names)
 
-    def tool(name, **arguments):
-        reply = rpc("tools/call", {"name": name, "arguments": arguments})["result"]
+    def tool(tool_name, **arguments):
+        reply = rpc("tools/call", {"name": tool_name, "arguments": arguments})["result"]
         assert not reply["isError"], reply
         return json.loads(reply["content"][0]["text"])
     return proc, tool
@@ -150,6 +154,48 @@ def seats(request):
             time.sleep(0.8)
             tool("send_message", to=got[0]["from"], body="one more thing: the retry has no backoff")
     proc.terminate()
+
+
+def delegate(request):
+    """A lead that hands two investigations to helpers and answers at once; helpers that report
+    back after a while; and the turn that hands their reports back."""
+    text = request["params"]["prompt"][0]["text"]
+    if "working in the background for" in text:
+        name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
+        (root / f"helper-{name}.txt").write_text(text)
+        if os.environ.get("MOCK_HELPER_ASK") == name.split("-")[0]:
+            # A helper reads only, but reading sometimes means running a command.
+            send({"id": f"permission-{name}", "method": "session/request_permission", "params": {
+                "sessionId": session, "toolCall": {"toolCallId": "call-curl", "title": "curl -sL https://example.com/llms.txt",
+                                                  "kind": "execute", "rawInput": {"command": ["curl", "-sL", "https://example.com/llms.txt"]}},
+                "options": [{"optionId": "deny", "name": "Deny", "kind": "reject_once"},
+                            {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
+            answer = json.loads(sys.stdin.readline())
+            (root / f"helper-answer-{name}.txt").write_text(json.dumps(answer.get("result", {})))
+        delays = dict(pair.split(":") for pair in os.environ.get("MOCK_HELPER_DELAYS", "").split(",") if pair)
+        time.sleep(float(delays.get(name.split("-")[0], "0.5")))
+        send({"method": "session/update", "params": {"sessionId": session, "update": {
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: the flow goes through generate.ts. "}}}})
+        return
+    if "Background agent `" in text:
+        with open(root / "completions.txt", "a") as out:
+            out.write(text + "\n=====\n")
+        return
+    proc, tool = mailbox_tools()
+    with open(root / "offered.txt", "a") as out:
+        out.write(",".join(offered) + "\n")
+    if "start_agent" not in offered:
+        proc.terminate()
+        return
+    answers = []
+    for pair in os.environ.get("MOCK_HELPERS", "spec:Research the API,explorer:Map the flow").split(","):
+        name, title = pair.split(":", 1)
+        reply = tool("start_agent", name=name, title=title, task=f"Find out: {title}")
+        answers.append(reply)
+    (root / "started.txt").write_text(json.dumps(answers))
+    proc.terminate()
+    # A lead that is still answering while its helpers finish.
+    time.sleep(float(os.environ.get("MOCK_LEAD_DELAY", "0")))
 
 
 def send(value):
@@ -363,6 +409,11 @@ def finish(request):
         "totalTokens": 150, "inputTokens": 100, "outputTokens": 50, "thoughtTokens": 20, "cachedReadTokens": 30}})
 
 
+if log_path:
+    # What an agent host would see of this launch: its hook variables and its pane key.
+    with open(log_path + ".env", "a") as out:
+        out.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith("ORCA_")}) + "\n")
+
 for line in sys.stdin:
     request = json.loads(line)
     if log_path:
@@ -436,6 +487,13 @@ for line in sys.stdin:
             result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 40, "inputTokens": 30, "outputTokens": 10}})
         elif behavior == "mailbox_chat":
             mailbox_chat(request)
+            finish(request)
+        elif behavior == "delegate":
+            try:
+                delegate(request)
+            except BaseException:
+                record_failure()
+                raise
             finish(request)
         elif behavior == "seats":
             try:

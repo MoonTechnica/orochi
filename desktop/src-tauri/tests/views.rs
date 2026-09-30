@@ -11,7 +11,7 @@ fn candidate() -> ExecutionCandidate {
     ExecutionCandidate {
         id: "claude:opus".into(),
         agent: "claude".into(),
-        provider: Provider::Anthropic,
+        provider: Provider::ANTHROPIC,
         model: "opus".into(),
         reasoning_level: Some("high".into()),
         mode: None,
@@ -738,4 +738,50 @@ fn a_thread_whose_host_is_gone_is_noticed_and_picked_up() {
 
     // A second look has nothing new to report: it is said once, not every time.
     assert!(!client.watch(&thread).unwrap().lost);
+}
+
+/// The seats still working are one read across every thread, with what each was started for,
+/// so the sidebar can list them under their thread and the Activity screen can count them.
+#[test]
+fn the_seats_still_working_are_listed_across_threads_with_what_they_are_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        let seat: String = activity
+            .connection()
+            .query_row(
+                "SELECT seat_id FROM v_roster WHERE thread_id=?1 AND role='reviewer'",
+                [&thread],
+                |r| r.get(0),
+            )
+            .unwrap();
+        activity
+            .seat_details(&seat, Some("Check the placement order"), true, "lead")
+            .unwrap();
+    }
+    let client = Client::open(dir.path()).unwrap();
+    let live = client.live_seats().unwrap();
+    assert_eq!(live.len(), 2, "the lead and the seat beside it");
+    let helper = live.iter().find(|s| s.role == "reviewer").unwrap();
+    assert_eq!(helper.thread_id, thread);
+    assert_eq!(helper.title.as_deref(), Some("Check the placement order"));
+    assert!(helper.background && helper.read_only && !helper.lead);
+}
+
+/// Stopping a helper from the window is a control row naming that seat, or every background
+/// seat, which the host turns into the same stop a person gives at the terminal.
+#[test]
+fn stopping_a_helper_is_a_control_naming_the_seat_or_all_of_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+    client.stop_seat(&thread, Some("seat-1")).unwrap();
+    client.stop_seat(&thread, None).unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let first = activity.take_control(&thread).unwrap().unwrap();
+    assert_eq!(first.0, "stop");
+    assert_eq!(first.1.as_deref(), Some(r#"{"seat":"seat-1"}"#));
+    let second = activity.take_control(&thread).unwrap().unwrap();
+    assert_eq!(second.1.as_deref(), Some(r#"{"background":"all"}"#));
 }

@@ -27,7 +27,8 @@ const css = readFileSync(join(here, "../dist/app.css"), "utf8");
 async function open(answers = {}, { prompt, pick, language } = {}) {
   const calls = [];
   page([
-    "sidebar", "projects", "sidebar-foot", "new-thread",
+    "sidebar", "projects", "sidebar-foot", "new-thread", "activity", "activity-count",
+    "status-bar", "accounts", "counts",
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
@@ -178,6 +179,8 @@ test("a question is a card with the agent's own options and no invented ones", a
     detail: "cargo test",
     options: [["ok", "Allow once"], ["always", "Always allow"]],
     created_at: 0,
+    read_only: false,
+    lead: true,
   };
   const { el, calls } = await open({ open_prompts: [prompt] });
   const card = el("timeline").children.find((c) => c.className === "ask");
@@ -951,4 +954,129 @@ test("the conversation fills in as the agents talk, without being asked", async 
     /taking tests\/mailbox\.rs/,
     "what the agents say appears as they say it, not when you next click",
   );
+});
+
+test("the status bar says what each account has left and how many conversations need what", async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const agents = [
+    { agent: "claude", model: "*", status: "available", cooling: 0, reset_at: null, quota_estimate: null, failures: 0,
+      windows: [["five_hour", 0.87, now + 71 * 60], ["seven_day", 0.95, now + 86400]] },
+    { agent: "codex", model: "*", status: "cooldown", cooling: 240, reset_at: null, quota_estimate: null, failures: 1, windows: [] },
+    { agent: "gemini", model: "*", status: "available", cooling: 0, reset_at: null, quota_estimate: null, failures: 0, windows: [] },
+  ];
+  const projects = structuredClone(recorded.sidebar);
+  projects[0].threads[0].status = "needs_you";
+  projects[0].threads[1].status = "background";
+  const { el } = await open({ agents, sidebar: projects });
+  const accounts = el("accounts").render();
+  assert.match(accounts, /claude[\s\S]*13%[\s\S]*1h 1[01]m/, "the most spent window, and when it resets");
+  assert.match(accounts, /codex[\s\S]*cooling 4m/, "an account cooling down says for how long");
+  assert.doesNotMatch(accounts, /gemini/, "an account nothing is known about is left out");
+  const counts = el("counts").render();
+  assert.match(counts, /1 in the background/);
+  assert.match(counts, /1 needs you/);
+  assert.equal(el("activity-count").textContent, "1", "and the Activity entry carries what needs you");
+});
+
+test("a thread's row says what its lead is doing and lists the helpers still working under it", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const thread = projects[0].threads[0];
+  thread.status = "working";
+  thread.doing = "$ curl -sL https://example.com/llms.txt";
+  thread.running_since = Date.now() - 3 * 60 * 1000;
+  const live_seats = [
+    { seat_id: "a", thread_id: thread.id, project_id: projects[0].id, turn: "t", ordinal: 0, role: "fixer", lead: true,
+      read_only: false, title: null, background: false, state: "working", started_at: Date.now(), agent: "claude",
+      model: "opus", doing: null, usage: null },
+    { seat_id: "b", thread_id: thread.id, project_id: projects[0].id, turn: "t", ordinal: 1, role: "spec", lead: false,
+      read_only: true, title: "Research Agents API model support", background: true, state: "working",
+      started_at: Date.now(), agent: "codex", model: "gpt", doing: null, usage: null },
+  ];
+  const { el } = await open({ sidebar: projects, live_seats });
+  const drawn = el("projects").render();
+  assert.match(drawn, /curl -sL https:\/\/example\.com\/llms\.txt/, "what the lead is doing");
+  assert.match(drawn, /3m/, "and for how long");
+  assert.match(drawn, /spec[\s\S]*Research Agents API model support/, "each helper, with what it is for");
+  assert.equal(el("projects").querySelectorAll(".child").length, 1, "the lead is the row itself, not a child");
+});
+
+test("the Activity screen sorts every conversation by what it needs, and puts done ones away until they change", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const [asking, background, ...rest] = projects.flatMap((p) => p.threads);
+  asking.status = "needs_you";
+  background.status = "background";
+  for (const th of rest) th.status = "idle";
+  const { el, calls } = await open({ sidebar: projects });
+  el("activity").dispatch("click");
+  const body = () => el("panel-body");
+  const bucket = (name) => body().querySelectorAll(".bucket").find((b) => b.dataset.bucket === name);
+  assert.match(bucket("Needs you").render(), new RegExp(asking.title));
+  assert.match(bucket("In the background").render(), new RegExp(background.title));
+  assert.ok(rest.every((th) => bucket("Done").render().includes(th.title)), bucket("Done").render());
+
+  body().querySelectorAll("button").find((b) => b.textContent === "Clear done").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(rest.every((th) => !bucket("Done").render().includes(th.title)), "done ones are put away");
+  assert.match(bucket("Needs you").render(), new RegExp(asking.title), "and nothing else is");
+  el("notice").querySelectorAll("button")[0].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(rest.every((th) => bucket("Done").render().includes(th.title)), "undo brings them back");
+
+  bucket("Needs you").querySelectorAll(".row")[0].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(calls.some(([name, args]) => name === "seen" && args.thread === asking.id), "a row opens its conversation");
+});
+
+test("a finished turn says how long it took, when it ended, what it changed and how much context it left", async () => {
+  const thread = structuredClone(recorded.thread);
+  thread.thread.status = "idle";
+  const turn = thread.items[0].turn;
+  thread.items = [
+    { ...thread.items[0], kind: "user_message", text: "make the model selectable", at: 1_000_000 },
+    { ...thread.items[0], seq: 90, kind: "context", text: "", data: { used: 81000, size: 200000 }, at: 1_010_000 },
+    { ...thread.items[0], seq: 91, kind: "agent_message", text: "done", role: "fixer", at: 1_016_000 },
+    { ...thread.items[0], seq: 92, turn: "t2", turn_origin: "background", kind: "user_message",
+      text: "Background agent `spec` finished", at: 1_100_000 },
+  ];
+  thread.files = [
+    { turn, path: "a.ts", change: "modify", added: 1, removed: 1, latest_patch: 1 },
+    { turn, path: "b.ts", change: "modify", added: 2, removed: 0, latest_patch: 2 },
+  ];
+  const { el } = await open({ thread });
+  const drawn = el("timeline").render();
+  assert.match(drawn, /Worked for 16s · done \d\d:\d\d/);
+  assert.match(drawn, /2 files changed/);
+  assert.match(drawn, /context 81k \/ 200k \(41%\)/);
+  assert.match(drawn, /from the helpers[\s\S]*Background agent `spec` finished/, "a turn Orochi wrote is not the person's");
+});
+
+test("a conversation's helpers are listed where it is read, each with a way to stop it", async () => {
+  const thread = structuredClone(recorded.thread);
+  const live_seats = [
+    { seat_id: "s1", thread_id: thread.thread.id, project_id: "p", turn: "t", ordinal: 100, role: "spec", lead: false,
+      read_only: true, title: "Research Agents API model support", background: true, state: "working",
+      started_at: Date.now(), agent: "codex", model: "gpt", doing: null, usage: null },
+  ];
+  const { el, calls } = await open({ thread, live_seats });
+  const drawn = el("timeline").render();
+  assert.match(drawn, /1 background agent[\s\S]*spec[\s\S]*Research Agents API model support/);
+  const buttons = el("timeline").querySelectorAll("button");
+  buttons.find((b) => b.textContent === "Stop").dispatch("click");
+  buttons.find((b) => b.textContent === "Stop all").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const stops = calls.filter(([name]) => name === "stop_seat").map(([, args]) => args.seat);
+  assert.deepEqual(stops, ["s1", null], "one by its seat, then all of them");
+});
+
+test("a question from a seat that is not the lead names it and says why it is asking", async () => {
+  const open_prompts = [
+    { id: "p1", thread_id: recorded.thread.thread.id, thread_title: "t", project: "repo", kind: "permission",
+      agent: "codex", model: "gpt", role: "spec", title: "curl -sL https://example.com/llms.txt",
+      detail: "curl -sL https://example.com/llms.txt", options: [["allow", "Allow once"]], created_at: 1,
+      read_only: true, lead: false },
+  ];
+  const { el } = await open({ open_prompts });
+  const drawn = el("timeline").render();
+  assert.match(drawn, /from spec/);
+  assert.match(drawn, /spec is read only · this command runs in your working tree/);
 });

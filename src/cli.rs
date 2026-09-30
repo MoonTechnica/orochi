@@ -1326,6 +1326,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     place: None,
                     seat: recorded.as_ref().map(|(_, seat, _)| seat.clone()),
                     answerer: crate::activity::recorder::Answerer::Local(permission),
+                    background: false,
                 },
             )
             .await;

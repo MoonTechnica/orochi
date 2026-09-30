@@ -34,6 +34,10 @@ pub enum Key {
     KillLine,
     KillWord,
     Clear,
+    /// Ctrl-X, the first half of Claude Code's chords (Ctrl-X Ctrl-K stops background agents).
+    CtrlX,
+    /// A client asked to stop one background agent by name, or all of them.
+    Stop(Option<String>),
 }
 
 /// Reads stdin on a thread and decodes keys, so the async loop never blocks on input.
@@ -132,6 +136,7 @@ fn read_keys(keys: &mpsc::UnboundedSender<Key>) {
             0x0c => Key::Clear,
             0x15 => Key::KillWord,
             0x17 => Key::KillWord,
+            0x18 => Key::CtrlX,
             0x00..0x20 => continue,
             byte => {
                 // Collect a UTF-8 sequence before reporting a character.
@@ -341,6 +346,14 @@ impl Term {
         print!("\x1b[{};{}H{text}", self.row, self.column);
         self.advance(text);
         self.render();
+    }
+    /// A sequence the terminal consumes without drawing anything (a report to its host); it
+    /// moves no cursor, so the tracked position stays true.
+    pub fn signal(&mut self, sequence: &str) {
+        if self.tty {
+            print!("{sequence}");
+            flush();
+        }
     }
     /// Transcript text that goes to stderr when output is redirected (everything but replies).
     pub fn note(&mut self, text: &str) {
@@ -606,6 +619,10 @@ impl Prompt {
             self.history.push(text.clone());
         }
         (text, attachments)
+    }
+    /// Nothing newer to recall: ↓ here has nothing of its own to do.
+    pub fn at_newest(&self) -> bool {
+        self.index.is_none()
     }
     pub fn recall(&mut self, back: bool) {
         if self.history.is_empty() {

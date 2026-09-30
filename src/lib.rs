@@ -16,6 +16,7 @@ pub mod learning;
 pub mod mailbox;
 pub mod mcp;
 pub mod memory;
+pub mod pane;
 pub mod policy;
 #[cfg(unix)]
 pub mod process;

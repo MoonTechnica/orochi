@@ -88,6 +88,10 @@ pub struct Prompt {
     pub detail: Option<String>,
     pub options: Vec<(String, String)>,
     pub created_at: i64,
+    /// Asked by a seat that is not the lead, which reads only: the card says so, because what
+    /// it wants to run can still write.
+    pub read_only: bool,
+    pub lead: bool,
 }
 
 /// A folder a thread can be started in: one the store already knows about.
@@ -544,6 +548,12 @@ impl Client {
         self.activity.thread(id)
     }
 
+    /// Every seat still working, across threads: the sidebar's rows under a thread and the
+    /// Activity screen.
+    pub fn live_seats(&self) -> Result<Vec<orochi::activity::LiveSeat>> {
+        self.activity.live_seats()
+    }
+
     pub fn patch(&self, id: i64) -> Result<Option<String>> {
         self.activity.patch_text(id)
     }
@@ -553,7 +563,7 @@ impl Client {
         let connection = self.activity.connection();
         let mut statement = connection.prepare(
             "SELECT id, thread_id, thread_title, project, kind, request, agent, model, role,
-                    created_at
+                    created_at, read_only, lead
              FROM v_open_prompts ORDER BY created_at",
         )?;
         let rows = statement.query_map([], |r| {
@@ -587,6 +597,8 @@ impl Client {
                     })
                     .collect(),
                 created_at: r.get(9)?,
+                read_only: r.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
+                lead: r.get::<_, Option<i64>>(11)?.unwrap_or(1) != 0,
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
@@ -642,6 +654,17 @@ impl Client {
 
     pub fn stop(&self, thread: &str) -> Result<()> {
         self.activity.control(thread, "stop", None)
+    }
+
+    /// Stops one background seat, or with `None` every one the thread has. The lead's turn,
+    /// if one runs, is left alone.
+    pub fn stop_seat(&self, thread: &str, seat: Option<&str>) -> Result<()> {
+        let payload = match seat {
+            Some(seat) => serde_json::json!({"seat": seat}),
+            None => serde_json::json!({"background": "all"}),
+        };
+        self.activity
+            .control(thread, "stop", Some(&payload.to_string()))
     }
 
     /// The threads something has happened in since the last look.

@@ -168,6 +168,9 @@ struct Server {
 }
 impl Server {
     fn start(data: &Path, peer: &str) -> Self {
+        Self::start_with(data, peer, &[])
+    }
+    fn start_with(data: &Path, peer: &str, extra: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_orochi"))
             .args([
                 orochi::mailbox::SERVE_FLAG,
@@ -176,6 +179,7 @@ impl Server {
                 "86400",
                 "60",
             ])
+            .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -270,6 +274,96 @@ fn mcp_server_exposes_the_mailbox_tools_to_one_peer() {
     assert!(message.as_str().unwrap().contains("no running peer"));
     let unknown = server.rpc("resources/list", json!({}));
     assert_eq!(unknown["error"]["code"], -32601);
+}
+
+/// Only the session leading a console turn is offered `start_agent`, and one that was not
+/// cannot call it anyway. The lead's request waits for its console, and the first answer is the
+/// only one: a request that timed out stays timed out.
+#[test]
+fn only_a_lead_may_ask_for_a_helper_and_its_console_answers_it_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mailbox = Mailbox::open(dir.path(), &MailboxConfig::default()).unwrap();
+    let lead = mailbox
+        .register("repo", "implement", dir.path(), None, me())
+        .unwrap();
+    let names = |server: &mut Server| -> Vec<String> {
+        server.rpc("tools/list", json!({}))["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    let mut seat = Server::start(dir.path(), &lead.id);
+    assert!(!names(&mut seat).contains(&"start_agent".to_owned()));
+    let (error, _) = seat.tool(
+        "start_agent",
+        json!({"name": "spec", "title": "t", "task": "x"}),
+    );
+    assert!(
+        error,
+        "a session that was not offered the tool cannot use it"
+    );
+    assert!(
+        mailbox
+            .open_requests(std::slice::from_ref(&lead.id))
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut server = Server::start_with(dir.path(), &lead.id, &["delegate"]);
+    assert!(names(&mut server).contains(&"start_agent".to_owned()));
+    let (error, message) = server.tool(
+        "start_agent",
+        json!({"name": "Spec!", "title": "t", "task": "x"}),
+    );
+    assert!(error, "{message}");
+
+    let console = {
+        let data = dir.path().to_owned();
+        let lead = lead.id.clone();
+        std::thread::spawn(move || {
+            let mailbox = Mailbox::open(&data, &MailboxConfig::default()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let open = mailbox.open_requests(std::slice::from_ref(&lead)).unwrap();
+                if let Some(request) = open.first() {
+                    assert_eq!(request.requester_name, "implement");
+                    assert_eq!(
+                        (request.name.as_str(), request.title.as_str()),
+                        ("spec", "Research the API")
+                    );
+                    assert_eq!(request.task, "Which models does it take?");
+                    assert!(
+                        mailbox
+                            .answer_request(&request.id, "started", None, Some("spec-2"), None)
+                            .unwrap()
+                    );
+                    assert!(
+                        !mailbox
+                            .answer_request(&request.id, "refused", Some("late"), None, None)
+                            .unwrap(),
+                        "only the first answer counts"
+                    );
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "no request arrived");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    };
+    let (error, reply) = server.tool(
+        "start_agent",
+        json!({"name": "spec", "title": "Research the API", "task": "Which models does it take?"}),
+    );
+    console.join().unwrap();
+    assert!(!error, "{reply}");
+    assert_eq!(
+        reply,
+        json!({"started": "spec-2"}),
+        "the name it was started under"
+    );
 }
 
 fn fixture_config(dir: &Path, role: &str, peer: &str, shared: bool) -> std::path::PathBuf {
@@ -627,7 +721,8 @@ fn a_heavy_turn_seats_a_read_only_agent_beside_the_one_doing_the_work() {
         "and that an empty room means the others are still working: {aside}"
     );
     for expected in [
-        "beside implement: reviewer",
+        "● 1 agent beside implement · read only, talking over the mailbox",
+        "└ reviewer",
         "✉ implement",
         "▎ watch the error path, it is unhandled",
         "⎿ reviewer",

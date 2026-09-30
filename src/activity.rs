@@ -302,6 +302,12 @@ pub struct ThreadRow {
     pub unread: i64,
     /// The thread is being run by a terminal rather than a headless host.
     pub terminal: bool,
+    /// The lead's running tool call, while a turn runs.
+    pub doing: Option<String>,
+    /// Seats working in the background, outliving the turn that started them.
+    pub background: i64,
+    /// When the running turn started; `None` when nothing runs.
+    pub running_since: Option<i64>,
 }
 
 /// A project section of the sidebar, with the threads under it.
@@ -337,6 +343,8 @@ pub struct ItemRow {
     /// attempt said is usually the provider explaining itself, which is worth keeping and not
     /// worth reading as if the agent had said it.
     pub failed: bool,
+    /// `background` when Orochi wrote the turn to hand helpers' results back.
+    pub turn_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -356,6 +364,31 @@ pub struct SeatRow {
     pub peer: Option<String>,
     pub peer_status: Option<String>,
     pub doing: Option<String>,
+    pub title: Option<String>,
+    pub background: bool,
+    /// A background seat's result has been handed back to the lead.
+    pub reported: bool,
+}
+
+/// A seat still working, across threads: the sidebar's child rows and the Activity screen.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveSeat {
+    pub seat_id: String,
+    pub thread_id: String,
+    pub project_id: String,
+    pub turn: String,
+    pub ordinal: i64,
+    pub role: String,
+    pub lead: bool,
+    pub read_only: bool,
+    pub title: Option<String>,
+    pub background: bool,
+    pub state: String,
+    pub started_at: i64,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub doing: Option<String>,
+    pub usage: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -490,6 +523,7 @@ impl Activity {
                 ),
             )?;
         }
+        added(&connection)?;
         // Every open, because a view is a definition and not data: changing one then needs no
         // version of its own, and an older binary's copy cannot outlive the columns it was
         // written against.
@@ -597,7 +631,7 @@ impl Activity {
             "SELECT id, project, project_id, project_root, project_pinned, project_collapsed,
                     title, cwd, branch, origin, worktree, pinned, archived_at, updated_at,
                     running, queued, asking, seats, last_state, last_item, last_seen_item,
-                    host_kind, host_pid, host_start
+                    host_kind, host_pid, host_start, doing, background, running_since
              FROM v_sidebar WHERE (?1 OR archived_at IS NULL)
              ORDER BY project_pinned DESC, project_sort, pinned DESC, updated_at DESC",
         )?;
@@ -612,6 +646,7 @@ impl Activity {
             let host: Option<String> = r.get(21)?;
             let pid: Option<i64> = r.get(22)?;
             let start: Option<i64> = r.get(23)?;
+            let background: i64 = r.get(25)?;
             // The one judgement SQL cannot make: a turn still `running` under a process that
             // is gone was interrupted, not working.
             let alive = match (pid, start) {
@@ -624,6 +659,8 @@ impl Activity {
                 "working"
             } else if queued > 0 {
                 "queued"
+            } else if background > 0 && alive {
+                "background"
             } else if running > 0 || last_state.as_deref() == Some("interrupted") {
                 "interrupted"
             } else if last_state.as_deref() == Some("failed") {
@@ -657,6 +694,9 @@ impl Activity {
                     asking,
                     unread: (last_item.unwrap_or(0) - last_seen).max(0),
                     terminal: host.as_deref() == Some("terminal") && alive,
+                    doing: r.get::<_, Option<String>>(24)?.filter(|_| alive),
+                    background: if alive { background } else { 0 },
+                    running_since: r.get::<_, Option<i64>>(26)?.filter(|_| alive),
                 },
             ))
         })?;
@@ -742,7 +782,7 @@ impl Activity {
             .prepare(
                 "SELECT seq, turn_id, turn_ordinal, lane, role, agent, model, kind, status,
                         text, data, truncated, patches, created_at,
-                        (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id)
+                        (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id), turn_origin
                  FROM v_timeline WHERE thread_id=?1 ORDER BY seq",
             )?
             .query_map([id], |r| {
@@ -767,6 +807,7 @@ impl Activity {
                         r.get::<_, Option<String>>(14)?.as_deref(),
                         Some("failure" | "cancelled")
                     ),
+                    turn_origin: r.get(15)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -774,7 +815,8 @@ impl Activity {
             .connection
             .prepare(
                 "SELECT seat_id, turn_id, ordinal, role, lead, read_only, phase, state,
-                        agent, model, reasoning, outcome, peer, peer_status, doing
+                        agent, model, reasoning, outcome, peer, peer_status, doing,
+                        title, background, reported
                  FROM v_roster WHERE thread_id=?1 ORDER BY turn_id, ordinal",
             )?
             .query_map([id], |r| {
@@ -794,6 +836,9 @@ impl Activity {
                     peer: r.get(12)?,
                     peer_status: r.get(13)?,
                     doing: r.get(14)?,
+                    title: r.get(15)?,
+                    background: r.get::<_, i64>(16)? != 0,
+                    reported: r.get::<_, i64>(17)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1142,6 +1187,84 @@ impl Activity {
             params![seat, state.key(), done, millis()],
         )?;
         Ok(())
+    }
+
+    /// What a seat is for and whether it outlives its turn.
+    pub fn seat_details(
+        &self,
+        seat: &str,
+        title: Option<&str>,
+        background: bool,
+        origin: &str,
+    ) -> Result<()> {
+        self.connection.execute(
+            "UPDATE seats SET title=?2, background=?3, origin=?4 WHERE id=?1",
+            params![seat, title, i64::from(background), origin],
+        )?;
+        Ok(())
+    }
+
+    /// What a background seat handed back, bounded by the caller.
+    pub fn seat_result(&self, seat: &str, result: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE seats SET result=?2 WHERE id=?1",
+            params![seat, result],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a turn Orochi wrote rather than someone typed.
+    pub fn turn_origin(&self, turn: &str, origin: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE turns SET origin=?2 WHERE id=?1",
+            params![turn, origin],
+        )?;
+        Ok(())
+    }
+
+    /// Seats still working under a live host, oldest first.
+    pub fn live_seats(&self) -> Result<Vec<LiveSeat>> {
+        let mut statement = self.connection.prepare(
+            "SELECT seat_id, thread_id, project_id, turn_id, ordinal, role, lead, read_only,
+                    title, background, state, started_at, agent, model, doing, usage,
+                    host_pid, host_start
+             FROM v_live_seats ORDER BY started_at, ordinal",
+        )?;
+        let rows = statement.query_map([], |r| {
+            let pid: Option<i64> = r.get(16)?;
+            let start: Option<i64> = r.get(17)?;
+            Ok((
+                LiveSeat {
+                    seat_id: r.get(0)?,
+                    thread_id: r.get(1)?,
+                    project_id: r.get(2)?,
+                    turn: r.get(3)?,
+                    ordinal: r.get(4)?,
+                    role: r.get(5)?,
+                    lead: r.get::<_, i64>(6)? != 0,
+                    read_only: r.get::<_, i64>(7)? != 0,
+                    title: r.get(8)?,
+                    background: r.get::<_, i64>(9)? != 0,
+                    state: r.get(10)?,
+                    started_at: r.get(11)?,
+                    agent: r.get(12)?,
+                    model: r.get(13)?,
+                    doing: r.get(14)?,
+                    usage: r
+                        .get::<_, Option<String>>(15)?
+                        .and_then(|u| serde_json::from_str(&u).ok()),
+                },
+                pid.zip(start),
+            ))
+        })?;
+        let mut live = vec![];
+        for row in rows {
+            let (seat, host) = row?;
+            if host.is_some_and(|(pid, start)| crate::process::owner_alive(pid, start)) {
+                live.push(seat);
+            }
+        }
+        Ok(live)
     }
 
     /// One pass of the scheduler's retry loop. A failover is the next attempt in the same
@@ -1606,6 +1729,90 @@ impl Activity {
 
 /// The schema. Split from `open` so a reader (the desktop app) can be told exactly what it is
 /// reading, and so the view definitions sit next to the tables they are a contract over.
+/// Columns added since `USER_VERSION` 2. Additive, so the version does not move and an older
+/// Orochi sharing the data directory keeps working; but `SCHEMA` only runs when the version
+/// moves, so these are added on open, each at most once (`added`).
+const ADDED: &[(&str, &str, &str)] = &[
+    // What a seat was started for, in a few words (a background seat's title), whether it
+    // outlives its turn, who started it, and what it reported back. Content, so here only.
+    ("seats", "title", "TEXT"),
+    ("seats", "background", "INTEGER NOT NULL DEFAULT 0"),
+    ("seats", "origin", "TEXT"),
+    ("seats", "result", "TEXT"),
+    // `background` for a turn Orochi wrote to hand results back; NULL for one someone typed.
+    ("turns", "origin", "TEXT"),
+];
+
+/// Tables added since `USER_VERSION` 2; `IF NOT EXISTS`, so every open may run them.
+const ADDED_TABLES: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_requests (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  thread_id TEXT,
+  requester TEXT NOT NULL,
+  requester_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  task TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('open','started','refused','expired')),
+  reason TEXT,
+  seat_id TEXT,
+  created_at INTEGER NOT NULL, answered_at INTEGER);
+CREATE INDEX IF NOT EXISTS agent_requests_open ON agent_requests(project_id) WHERE state='open';
+CREATE TRIGGER IF NOT EXISTS ch_agent_requests_i AFTER INSERT ON agent_requests BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('agent_requests',new.id,new.thread_id,new.created_at); END;
+CREATE TRIGGER IF NOT EXISTS ch_agent_requests_u AFTER UPDATE ON agent_requests BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('agent_requests',new.id,new.thread_id,new.created_at); END;
+"#;
+
+/// Brings an existing store up to `ADDED` / `ADDED_TABLES`. Read first without a write lock,
+/// so an up-to-date store costs nothing; then again *inside* the write transaction, because two
+/// processes opening at once would otherwise both find a column missing and both add it, and
+/// SQLite has no `ADD COLUMN IF NOT EXISTS` (the same reasoning as `storage::minor_migrations`).
+fn added(connection: &Connection) -> Result<()> {
+    let missing = |connection: &Connection| -> Result<Vec<(&str, &str, &str)>> {
+        let mut missing = vec![];
+        for (table, column, definition) in ADDED {
+            let present: bool = connection.query_row(
+                "SELECT count(*) > 0 FROM pragma_table_xinfo(?1) WHERE name=?2",
+                params![table, column],
+                |r| r.get(0),
+            )?;
+            if !present {
+                missing.push((*table, *column, *definition));
+            }
+        }
+        let table: bool = connection.query_row(
+            "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='agent_requests'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !table {
+            missing.push(("", "", ""));
+        }
+        Ok(missing)
+    };
+    if missing(connection)?.is_empty() {
+        return Ok(());
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+    let mut sql = String::new();
+    for (table, column, definition) in missing(&transaction)? {
+        if !table.is_empty() {
+            sql.push_str(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+            ));
+        }
+    }
+    sql.push_str(ADDED_TABLES);
+    transaction.execute_batch(&sql)?;
+    transaction.commit()?;
+    Ok(())
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
@@ -1834,6 +2041,21 @@ CREATE TABLE IF NOT EXISTS peer_events (
   kind TEXT NOT NULL CHECK (kind IN ('joined','left','status','route')),
   text TEXT NOT NULL DEFAULT '',
   at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS agent_requests (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  thread_id TEXT,
+  requester TEXT NOT NULL,
+  requester_name TEXT NOT NULL,
+  name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  task TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('open','started','refused','expired')),
+  reason TEXT,
+  seat_id TEXT,
+  created_at INTEGER NOT NULL, answered_at INTEGER);
+CREATE INDEX IF NOT EXISTS agent_requests_open ON agent_requests(project_id) WHERE state='open';
 "#
 );
 
@@ -1923,7 +2145,17 @@ SELECT t.id, t.project_id, p.name AS project, p.root AS project_root, lower(p.na
        (SELECT tn.state FROM turns tn WHERE tn.thread_id=t.id
          ORDER BY tn.ordinal DESC LIMIT 1) AS last_state,
        (SELECT max(i.id) FROM items i WHERE i.thread_id=t.id) AS last_item,
-       COALESCE((SELECT u.last_seen_item FROM ui_state u WHERE u.thread_id=t.id),0) AS last_seen_item
+       COALESCE((SELECT u.last_seen_item FROM ui_state u WHERE u.thread_id=t.id),0) AS last_seen_item,
+       (SELECT i.text FROM items i
+          JOIN attempts a ON a.id=i.attempt_id JOIN seats s ON s.id=a.seat_id
+          JOIN turns tn ON tn.id=s.turn_id
+         WHERE tn.thread_id=t.id AND tn.state='running' AND s.lead=1
+           AND i.kind='tool_call' AND i.status='in_progress'
+         ORDER BY i.id DESC LIMIT 1) AS doing,
+       (SELECT count(*) FROM seats s JOIN turns tn ON tn.id=s.turn_id
+         WHERE tn.thread_id=t.id AND s.background=1 AND s.ended_at IS NULL) AS background,
+       (SELECT min(tn.started_at) FROM turns tn
+         WHERE tn.thread_id=t.id AND tn.state='running') AS running_since
 FROM threads t JOIN projects p ON p.id=t.project_id
 LEFT JOIN hosts h ON h.thread_id=t.id;
 
@@ -1934,7 +2166,8 @@ SELECT i.thread_id, i.id AS seq, i.turn_id, tn.ordinal AS turn_ordinal,
        a.agent, a.provider, a.model, a.reasoning,
        i.kind, i.status, i.key, i.text, i.data, i.truncated,
        i.created_at, i.updated_at,
-       (SELECT count(*) FROM patches pa WHERE pa.item_id=i.id) AS patches
+       (SELECT count(*) FROM patches pa WHERE pa.item_id=i.id) AS patches,
+       tn.origin AS turn_origin
 FROM items i
 JOIN turns tn ON tn.id=i.turn_id
 LEFT JOIN attempts a ON a.id=i.attempt_id
@@ -1968,12 +2201,23 @@ SELECT s.id AS seat_id, tn.thread_id, s.turn_id, s.ordinal, s.role, s.lead, s.re
        (SELECT i.text FROM items i WHERE i.attempt_id=a.id AND i.kind='tool_call'
          AND i.status='in_progress' ORDER BY i.id DESC LIMIT 1) AS doing,
        (SELECT i.data FROM items i WHERE i.attempt_id=a.id AND i.kind='context'
-         ORDER BY i.id DESC LIMIT 1) AS context
+         ORDER BY i.id DESC LIMIT 1) AS context,
+       s.title, s.background, s.origin AS seat_origin, s.result IS NOT NULL AS reported
 FROM seats s
 JOIN turns tn ON tn.id=s.turn_id
 LEFT JOIN attempts a ON a.seat_id=s.id
   AND a.n=(SELECT max(a2.n) FROM attempts a2 WHERE a2.seat_id=s.id)
 LEFT JOIN peers pe ON pe.id=a.peer_id;
+
+DROP VIEW IF EXISTS v_live_seats;
+CREATE VIEW v_live_seats AS
+SELECT r.seat_id, r.thread_id, t.project_id, r.turn_id, r.ordinal, r.role, r.lead, r.read_only,
+       r.title, r.background, r.seat_origin, r.state, r.started_at, r.agent, r.model,
+       r.reasoning, r.doing, r.usage, h.pid AS host_pid, h.start AS host_start
+FROM v_roster r
+JOIN threads t ON t.id=r.thread_id
+LEFT JOIN hosts h ON h.thread_id=r.thread_id
+WHERE r.ended_at IS NULL;
 
 DROP VIEW IF EXISTS v_turn_files;
 CREATE VIEW v_turn_files AS
@@ -1989,7 +2233,8 @@ DROP VIEW IF EXISTS v_open_prompts;
 CREATE VIEW v_open_prompts AS
 SELECT pr.id, pr.thread_id, t.title AS thread_title, p.name AS project,
        pr.turn_id, pr.attempt_id, pr.item_id, pr.kind, pr.request, pr.created_at,
-       a.agent, a.model, s.role, i.text AS tool_text, i.data AS tool_data
+       a.agent, a.model, s.role, i.text AS tool_text, i.data AS tool_data,
+       s.read_only, s.lead
 FROM prompts pr
 JOIN threads t ON t.id=pr.thread_id
 JOIN projects p ON p.id=t.project_id

@@ -46,6 +46,7 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 #app {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr) 320px;
+  grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
 }
 @media (max-width: 900px) {
@@ -680,3 +681,71 @@ details[open] > summary .icon { transform: rotate(90deg); }
 /* A turn with nothing to check is not a turn that failed a check. */
 .checks .pass { color: var(--ok); }
 .checks div.pass:first-child { color: var(--muted); }
+
+/* Supervising -------------------------------------------------------------- */
+#sidebar header { display: flex; flex-direction: column; gap: 6px; }
+#activity { display: flex; align-items: center; justify-content: space-between; }
+#activity-count:not(:empty) {
+  background: var(--brand); color: #111; border-radius: 9px; padding: 0 7px; font-size: 11px;
+}
+.thread { flex-wrap: wrap; }
+.thread .since { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+.thread .doing {
+  flex-basis: 100%; padding-left: 18px; color: var(--muted); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.thread[data-status="background"] .mark { color: var(--ok); }
+.child {
+  display: flex; gap: 6px; align-items: center; padding: 1px 12px 1px 30px;
+  color: var(--muted); font-size: 11px; white-space: nowrap;
+}
+.child .name { color: var(--text); }
+.child .title { overflow: hidden; text-overflow: ellipsis; }
+.child .since { margin-left: auto; flex: none; }
+
+#status-bar {
+  grid-column: 1 / -1;
+  display: flex; justify-content: space-between; gap: 16px;
+  padding: 4px var(--gutter);
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted); font-size: 12px;
+  min-width: 0;
+}
+#accounts, #counts { display: flex; gap: 14px; align-items: center; min-width: 0; overflow: hidden; }
+.account { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.account .meter { width: 48px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.account .meter span { display: block; height: 100%; background: var(--ok); }
+.account[data-tight="true"] .meter span { background: var(--danger); }
+.account[data-tight="true"] .used { color: var(--danger); }
+#counts button { border: none; padding: 0; color: var(--muted); }
+#counts button:hover { color: var(--text); }
+
+.turn-foot {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  color: var(--muted); font-size: 12px; margin-top: 6px;
+}
+.turn-foot button { border: none; padding: 0; color: var(--muted); text-decoration: underline; }
+
+.bucket { margin-bottom: 14px; }
+.bucket h3 { font-size: 12px; color: var(--muted); margin: 0 0 4px; font-weight: 600; }
+.bucket .row {
+  display: flex; gap: 8px; align-items: center; width: 100%; text-align: left;
+  border: none; border-radius: 6px; padding: 5px 8px;
+}
+.bucket .row:hover { background: var(--line); }
+.bucket .row .where { color: var(--muted); font-size: 11px; }
+.bucket .row .since { margin-left: auto; color: var(--muted); font-size: 11px; }
+.activity-tools { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; }
+
+.seats-block {
+  border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; margin: 10px 0;
+  background: var(--raised);
+}
+.seats-block .head { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.seats-block .row { display: flex; gap: 8px; align-items: center; font-size: 12px; padding: 2px 0; }
+.seats-block .row .title { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seats-block .row .since { margin-left: auto; color: var(--muted); }
+.seats-block .row .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }
+.ask h4 .from { color: var(--muted); font-weight: normal; }
+.ask .why { color: var(--muted); font-size: 12px; margin: 4px 0; }

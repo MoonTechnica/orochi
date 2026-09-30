@@ -236,6 +236,9 @@ pub struct RunOptions {
     pub seat: Option<crate::activity::SeatRef>,
     /// Who answers a permission request that nothing on the event stream is listening for.
     pub answerer: crate::activity::recorder::Answerer,
+    /// A seat that outlives the turn that started it: the user stops it by name, so the
+    /// process's interrupt (Esc on the lead's turn) does not reach it.
+    pub background: bool,
 }
 #[derive(Debug, Serialize)]
 pub struct RoutePlan {
@@ -343,7 +346,11 @@ async fn run_recorded(
     let loud = !options.interactive;
     // Every wait below hears an interrupt that came since this run began, including one that
     // arrived while nothing was waiting.
-    let since = crate::interrupt::mark();
+    let since = if options.background {
+        crate::interrupt::never()
+    } else {
+        crate::interrupt::mark()
+    };
     let report = |progress: Progress| {
         if let Some(events) = &events {
             let _ = events.send(ExecutionEvent::Progress(progress));

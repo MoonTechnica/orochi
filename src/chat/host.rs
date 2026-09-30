@@ -113,6 +113,33 @@ async fn feed(
             .expect("activity store")
             .take_control(&thread);
         if let Ok(Some((kind, payload))) = control {
+            // `stop` naming a seat, or every background seat, stops those and nothing else.
+            let helpers = payload
+                .as_deref()
+                .filter(|_| kind == "stop")
+                .and_then(|payload| serde_json::from_str::<serde_json::Value>(payload).ok())
+                .and_then(|payload| {
+                    if payload["background"] == "all" {
+                        return Some(None);
+                    }
+                    let seat = payload["seat"].as_str()?.to_owned();
+                    let role = activity
+                        .lock()
+                        .expect("activity store")
+                        .connection()
+                        .query_row("SELECT role FROM seats WHERE id=?1", [&seat], |r| {
+                            r.get::<_, String>(0)
+                        })
+                        .ok()?;
+                    Some(Some(role))
+                });
+            if let Some(name) = helpers {
+                if keys.send(Key::Stop(name)).is_err() {
+                    return;
+                }
+                last = Instant::now();
+                continue;
+            }
             let sent = match kind.as_str() {
                 "interrupt" | "stop" => keys.send(Key::Interrupt).is_ok(),
                 "new" => line(&keys, "/new"),
@@ -149,6 +176,16 @@ async fn feed(
                 last = Instant::now();
             }
             _ => {
+                // Helpers still working keep the host: their results are a turn it has to run.
+                let working = activity
+                    .lock()
+                    .expect("activity store")
+                    .live_seats()
+                    .map(|seats| seats.iter().any(|s| s.thread_id == thread && s.background))
+                    .unwrap_or(false);
+                if working {
+                    last = Instant::now();
+                }
                 if last.elapsed() >= idle {
                     return;
                 }

@@ -16,7 +16,10 @@
     "seats": 0,
     "asking": 0,
     "unread": 8,
-    "terminal": false
+    "terminal": false,
+    "doing": null,
+    "background": 0,
+    "running_since": null
   },
   "items": [
     {
@@ -34,7 +37,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000000000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 2,
@@ -57,7 +61,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000001000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 3,
@@ -74,7 +79,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000002000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 4,
@@ -102,7 +108,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000003000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 5,
@@ -119,7 +126,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000004000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 6,
@@ -142,7 +150,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000005000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 7,
@@ -159,7 +168,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000006000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     },
     {
       "seq": 8,
@@ -187,7 +197,8 @@
       "truncated": false,
       "patches": 0,
       "at": 1769000007000,
-      "failed": false
+      "failed": false,
+      "turn_origin": null
     }
   ],
   "seats": [
@@ -206,7 +217,10 @@
       "outcome": "partial_success",
       "peer": null,
       "peer_status": null,
-      "doing": null
+      "doing": null,
+      "title": null,
+      "background": false,
+      "reported": false
     },
     {
       "seat_id": "1a7ff9e9-dbb1-402e-97a0-bc6e2f5695a0",
@@ -223,7 +237,10 @@
       "outcome": "partial_success",
       "peer": null,
       "peer_status": null,
-      "doing": null
+      "doing": null,
+      "title": null,
+      "background": false,
+      "reported": false
     }
   ],
   "files": []

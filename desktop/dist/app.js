@@ -26,7 +26,32 @@ const state = {
   panel: null,
   scope: "turn",
   comments: [],
+  // Every seat still working, across threads, and the accounts: the status bar and the rows
+  // under each thread read these.
+  live: [],
+  agents: [],
+  agentsAt: 0,
+  // Done threads the Activity screen was told to put away, until they change again. A viewer's
+  // convenience, so it lives in this window's storage and nowhere else.
+  cleared: new Map(remembered("cleared")),
+  unreadOnly: false,
 };
+
+/// What this window remembered, if its storage can be read at all.
+function remembered(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key) || "[]");
+  } catch {
+    return [];
+  }
+}
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // A window that cannot store this still works; it only forgets.
+  }
+}
 
 function report(text) {
   el("notice").textContent = text;
@@ -50,6 +75,7 @@ const AT = {
 };
 /// The words the markup ships with, said again in the window's language once it is open.
 const LABELS = {
+  activity: "Activity",
   "new-thread": "New thread",
   "composer-hint": "Cmd-Enter to send · Enter for a new line",
   send: "Send",
@@ -90,6 +116,31 @@ const WORDS = {
     Team: "チーム",
     Changes: "変更",
     Plan: "計画",
+    Activity: "アクティビティ",
+    "Needs you": "対応が必要",
+    Working: "作業中",
+    "In the background": "バックグラウンドで作業中",
+    Done: "完了",
+    "Nothing here.": "ありません。",
+    "Unread only": "未読のみ",
+    "Mark all read": "すべて既読にする",
+    "Clear done": "完了をクリア",
+    Undo: "元に戻す",
+    now: "今",
+    "working": "作業中",
+    "needs you": "対応が必要",
+    "in the background": "バックグラウンド",
+    "Worked for": "作業時間",
+    "files changed": "ファイルを変更",
+    "file changed": "ファイルを変更",
+    context: "コンテキスト",
+    "from the helpers": "補助エージェントから",
+    "background agent": "件のバックグラウンドエージェント",
+    "background agents": "件のバックグラウンドエージェント",
+    "Stop all": "すべて停止",
+    from: "依頼元",
+    "is read only · this command runs in your working tree": "は読み取り専用です · このコマンドは作業ツリーで実行されます",
+    cooling: "待機中",
   },
 };
 
@@ -98,11 +149,35 @@ const LANG = (typeof window !== "undefined" && window.navigator?.language) || "e
 const SAID = WORDS[LANG.slice(0, 2)] || {};
 const t = (word) => SAID[word] || word;
 
+/// How long something has been so, the way a list says it: `now`, `3m`, `2h`, `4d`.
+function since(at) {
+  if (!at) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (seconds < 60) return t("now");
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+/// A duration the way the terminal's footer says it: `16s`, `1m 48s`, `2h 5m`.
+function span(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function hhmm(at) {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 const MARKS = {
   needs_you: "message",
   working: "loader",
   queued: "clock",
   interrupted: "pause",
+  background: "activity",
   failed: "x",
   unread: "dot",
   idle: "circle",
@@ -144,8 +219,22 @@ function drawSidebar() {
         row.append(text("span", "seats", `${thread.seats}`));
       }
       if (thread.terminal) row.append(drawn("terminal", "term"));
+      row.append(text("span", "since", since(thread.running_since || thread.updated_at)));
+      // What the lead is doing right now, while it is doing it.
+      if (thread.doing) row.append(text("span", "doing", thread.doing.split("\n")[0]));
       row.addEventListener("click", () => select(thread.id));
       section.append(row);
+      // Each seat still working under it, lead aside: who, for what, for how long.
+      const helpers = state.live.filter((s) => s.thread_id === thread.id && !s.lead);
+      for (const helper of helpers.slice(0, 3)) {
+        const child = text("div", "child");
+        child.append(drawn(helper.state === "asking" ? "message" : "loader", "state"));
+        child.append(text("span", "name", helper.role));
+        if (helper.title) child.append(text("span", "title", helper.title));
+        child.append(text("span", "since", since(helper.started_at)));
+        section.append(child);
+      }
+      if (helpers.length > 3) section.append(text("div", "child", `+${helpers.length - 3}`));
     }
     host.append(section);
   }
@@ -257,6 +346,7 @@ function drawTimeline(thread, said = []) {
     (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
   );
   let voice = null;
+  const turns = new Map();
   for (const item of stream) {
     if (item.kind === "said") {
       flush();
@@ -283,9 +373,18 @@ function drawTimeline(thread, said = []) {
     if (item.kind === "user_message") {
       flush();
       turn = text("div", "turn");
-      turn.append(post({ who: "you", at: item.at, text: item.text, mine: true }, false));
+      turn.dataset.turn = item.turn;
+      turns.set(item.turn, turn);
+      // A turn Orochi wrote to hand the helpers' results back is theirs, not the person's.
+      const helpers = item.turn_origin === "background";
+      turn.append(
+        post(
+          { who: helpers ? t("from the helpers") : "you", at: item.at, text: item.text, mine: !helpers },
+          false,
+        ),
+      );
       host.append(turn);
-      voice = "you";
+      voice = helpers ? null : "you";
       continue;
     }
     if (!turn) {
@@ -324,6 +423,35 @@ function drawTimeline(thread, said = []) {
 
   }
   flush();
+  // Under each finished turn: how long it took and when it ended, what it changed, and how
+  // much of the agent's context it left in use.
+  const running = thread.thread.status === "working" ? thread.items.at(-1)?.turn : null;
+  for (const [id, node] of turns) {
+    if (id === running) continue;
+    const own = thread.items.filter((i) => i.turn === id);
+    if (own.length < 2) continue;
+    const foot = text("div", "turn-foot");
+    const first = own[0].at;
+    const last = own.at(-1).at;
+    foot.append(drawn("clock"));
+    foot.append(text("span", null, `${t("Worked for")} ${span(last - first)} · done ${hhmm(last)}`));
+    const files = thread.files.filter((f) => f.turn === id).length;
+    if (files) {
+      const link = text("button", "files", `${files} ${t(files === 1 ? "file changed" : "files changed")}`);
+      link.type = "button";
+      link.addEventListener("click", () => {
+        state.scope = "turn";
+        showPane("changes");
+      });
+      foot.append(link);
+    }
+    const context = own.filter((i) => i.kind === "context").at(-1)?.data;
+    if (context?.used && context?.size) {
+      const share = Math.round((context.used / context.size) * 100);
+      foot.append(text("span", "context", `${t("context")} ${Math.round(context.used / 1000)}k / ${Math.round(context.size / 1000)}k (${share}%)`));
+    }
+    node.append(foot);
+  }
   // Sending starts a process, which has to find its agents and choose one before anything it
   // says can be written down. That is the longest a person waits with nothing to read, so the
   // window says what is happening rather than sitting still.
@@ -349,6 +477,31 @@ function drawTimeline(thread, said = []) {
       host.append(turn);
     }
     turn.append(live);
+  }
+  // Helpers still working for this conversation, each with a way to stop it.
+  const helpers = state.live.filter((live) => live.thread_id === thread.thread.id && live.background);
+  if (helpers.length) {
+    const block = text("div", "seats-block");
+    const head = text("div", "head");
+    head.append(text("span", null, `${helpers.length} ${t(helpers.length === 1 ? "background agent" : "background agents")}`));
+    const all = text("button", null, t("Stop all"));
+    all.type = "button";
+    all.addEventListener("click", () => call("stop_seat", { thread: thread.thread.id, seat: null }));
+    head.append(all);
+    block.append(head);
+    for (const helper of helpers) {
+      const row = text("div", "row");
+      row.append(drawn("loader", "state"));
+      row.append(text("span", "name", helper.role));
+      if (helper.title) row.append(text("span", "title", helper.title));
+      row.append(text("span", "since", since(helper.started_at)));
+      const stop = text("button", null, t("Stop"));
+      stop.type = "button";
+      stop.addEventListener("click", () => call("stop_seat", { thread: thread.thread.id, seat: helper.seat_id }));
+      row.append(stop);
+      block.append(row);
+    }
+    host.append(block);
   }
   for (const prompt of state.prompts.filter((p) => p.thread_id === thread.thread.id)) {
     host.append(askCard(prompt));
@@ -479,8 +632,18 @@ const named = (line) => line.role || line.who;
 
 function askCard(prompt) {
   const node = text("div", "ask");
-  node.append(text("h4", null, prompt.title));
+  const head = text("h4");
+  head.append(text("span", null, prompt.title));
+  // A seat other than the lead is named, and why it is asking said: it reads only, and what
+  // it wants to run can still write.
+  if (prompt.lead === false && prompt.role) {
+    head.append(text("span", "from", ` · ${t("from")} ${prompt.role}`));
+  }
+  node.append(head);
   if (prompt.detail) node.append(text("code", null, prompt.detail));
+  if (prompt.read_only && prompt.role) {
+    node.append(text("p", "why", `${prompt.role} ${t("is read only · this command runs in your working tree")}`));
+  }
   const row = text("div", "row");
   for (const [id, name] of prompt.options) {
     const button = document.createElement("button");
@@ -564,6 +727,164 @@ el("folder").addEventListener("click", () => {
 });
 document.addEventListener("click", (event) => {
   if (!el("folder-picker").contains?.(event.target)) closeFolders();
+});
+
+// Status bar ----------------------------------------------------------------
+// What each account has left and when it resets, and how many conversations need what —
+// always on screen, because routing turns on the first and supervising on the second.
+function drawStatus() {
+  const host = el("accounts");
+  host.replaceChildren();
+  const byAgent = new Map();
+  for (const row of state.agents) {
+    const known = byAgent.get(row.agent) || { agent: row.agent, cooling: 0, window: null };
+    if (row.model === "*" && row.cooling > known.cooling) known.cooling = row.cooling;
+    for (const [, remaining, reset] of row.windows || []) {
+      if (!known.window || remaining < known.window[0]) known.window = [remaining, reset];
+    }
+    byAgent.set(row.agent, known);
+  }
+  for (const known of byAgent.values()) {
+    if (!known.cooling && !known.window) continue;
+    const node = text("button", "account");
+    node.type = "button";
+    node.append(text("span", "name", known.agent));
+    if (known.cooling) {
+      node.append(text("span", "used", `${t("cooling")} ${span(known.cooling * 1000)}`));
+      node.dataset.tight = "true";
+    } else {
+      const used = Math.round((1 - known.window[0]) * 100);
+      const meter = text("span", "meter");
+      const fill = text("span");
+      fill.style.width = `${Math.min(100, Math.max(0, used))}%`;
+      meter.append(fill);
+      node.append(meter);
+      node.append(text("span", "used", `${used}%`));
+      if (known.window[1]) {
+        node.append(text("span", "reset", span(known.window[1] * 1000 - Date.now())));
+      }
+      node.dataset.tight = String(used >= 90);
+    }
+    node.addEventListener("click", () => openPanel("agents"));
+    host.append(node);
+  }
+  const counts = el("counts");
+  counts.replaceChildren();
+  const threads = state.projects.flatMap((p) => p.threads);
+  const count = (status) => threads.filter((th) => th.status === status).length;
+  const needs = count("needs_you");
+  for (const [status, label] of [
+    ["working", "working"],
+    ["background", "in the background"],
+    ["needs_you", "needs you"],
+  ]) {
+    const n = count(status);
+    if (!n) continue;
+    const button = text("button", null, `${n} ${t(label)}`);
+    button.type = "button";
+    button.addEventListener("click", () => openPanel("activity"));
+    counts.append(button);
+  }
+  el("activity-count").textContent = needs ? String(needs) : "";
+}
+
+// Activity ------------------------------------------------------------------
+// Every conversation, by what it needs from the person looking: the one screen that answers
+// "what needs me" without opening each thread.
+const BUCKETS = [
+  ["Needs you", (th) => th.status === "needs_you"],
+  ["Working", (th) => th.status === "working" || th.status === "queued"],
+  ["In the background", (th) => th.status === "background"],
+  ["Done", () => true],
+];
+
+function drawActivity(host) {
+  const tools = text("div", "activity-tools");
+  const unread = document.createElement("button");
+  unread.type = "button";
+  unread.textContent = t("Unread only");
+  unread.setAttribute("aria-pressed", String(state.unreadOnly));
+  unread.addEventListener("click", () => {
+    state.unreadOnly = !state.unreadOnly;
+    drawScreen();
+  });
+  const read = document.createElement("button");
+  read.type = "button";
+  read.textContent = t("Mark all read");
+  read.addEventListener("click", async () => {
+    for (const th of state.projects.flatMap((p) => p.threads)) {
+      if (th.unread > 0) await call("seen", { thread: th.id });
+    }
+    await refresh(false);
+  });
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = t("Clear done");
+  tools.append(unread, read, clear);
+  host.append(tools);
+
+  const all = state.projects.flatMap((p) => p.threads.map((th) => ({ ...th, where: p.name })));
+  const placed = new Set();
+  const done = [];
+  for (const [name, fits] of BUCKETS) {
+    const rows = all.filter((th) => !placed.has(th.id) && fits(th));
+    for (const th of rows) placed.add(th.id);
+    const shown = rows.filter(
+      (th) =>
+        (!state.unreadOnly || th.unread > 0) &&
+        !(name === "Done" && state.cleared.get(th.id) === th.updated_at),
+    );
+    if (name === "Done") done.push(...shown);
+    const bucket = text("section", "bucket");
+    bucket.dataset.bucket = name;
+    bucket.append(text("h3", null, `${t(name)} ${shown.length || ""}`.trim()));
+    if (!shown.length) bucket.append(text("p", "empty", t("Nothing here.")));
+    for (const th of shown) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "row";
+      row.append(drawn(MARKS[th.status] || "circle", "state"));
+      row.append(text("span", "name", th.title || t("New conversation")));
+      row.append(text("span", "where", th.where));
+      row.append(text("span", "since", since(th.running_since || th.updated_at)));
+      row.addEventListener("click", () => {
+        closePanel();
+        select(th.id);
+      });
+      bucket.append(row);
+      const helpers = state.live.filter((live) => live.thread_id === th.id && !live.lead);
+      for (const helper of helpers) {
+        const child = text("div", "child");
+        child.append(text("span", "name", helper.role));
+        if (helper.title) child.append(text("span", "title", helper.title));
+        child.append(text("span", "since", since(helper.started_at)));
+        bucket.append(child);
+      }
+    }
+    host.append(bucket);
+  }
+  clear.disabled = !done.length;
+  clear.addEventListener("click", () => {
+    const before = new Map(state.cleared);
+    for (const th of done) state.cleared.set(th.id, th.updated_at);
+    remember("cleared", [...state.cleared]);
+    drawScreen();
+    const undo = document.createElement("button");
+    undo.type = "button";
+    undo.textContent = t("Undo");
+    undo.addEventListener("click", () => {
+      state.cleared = before;
+      remember("cleared", [...state.cleared]);
+      el("notice").replaceChildren();
+      drawScreen();
+    });
+    el("notice").replaceChildren(undo);
+  });
+}
+
+el("activity").addEventListener("click", (event) => {
+  event.stopPropagation();
+  openPanel("activity");
 });
 
 // Side pane -----------------------------------------------------------------
@@ -816,7 +1137,8 @@ function gauge(fraction) {
 /// does; the conversation underneath is never replaced.
 async function openPanel(panel) {
   state.panel = panel;
-  el("panel-title").textContent = PANELS.find(([p]) => p === panel)?.[1] || "";
+  el("panel-title").textContent =
+    panel === "activity" ? t("Activity") : PANELS.find(([p]) => p === panel)?.[1] || "";
   el("panel").showModal();
   await drawScreen();
 }
@@ -834,6 +1156,10 @@ el("panel").addEventListener("close", () => {
 async function drawScreen() {
   const host = el("panel-body");
   host.replaceChildren();
+  if (state.panel === "activity") {
+    drawActivity(host);
+    return;
+  }
   if (state.panel === "agents") {
     const agents = (await call("agents", {})) || [];
     if (!agents.length) {
@@ -992,14 +1318,15 @@ document.addEventListener("click", (event) => {
   if (!el("sidebar-foot").contains?.(event.target)) closeAccount();
 });
 
+function showPane(pane) {
+  for (const other of document.querySelectorAll(".tab")) {
+    const on = other.dataset.pane === pane;
+    other.setAttribute("aria-selected", String(on));
+    el(`pane-${other.dataset.pane}`).hidden = !on;
+  }
+}
 for (const tab of document.querySelectorAll(".tab")) {
-  tab.addEventListener("click", () => {
-    for (const other of document.querySelectorAll(".tab")) {
-      const on = other === tab;
-      other.setAttribute("aria-selected", String(on));
-      el(`pane-${other.dataset.pane}`).hidden = !on;
-    }
-  });
+  tab.addEventListener("click", () => showPane(tab.dataset.pane));
 }
 
 // Loop ----------------------------------------------------------------------
@@ -1018,6 +1345,14 @@ async function refresh(full) {
   state.projects = projects || [];
   state.prompts = prompts || [];
   state.folders = folders || [];
+  state.live = (await call("live_seats", {})) || [];
+  // The accounts change when a probe runs, not when a key is pressed: read at most twice a
+  // minute.
+  if (Date.now() - state.agentsAt > 30000) {
+    state.agents = (await call("agents", {})) || [];
+    state.agentsAt = Date.now();
+  }
+  drawStatus();
   if (!state.thread) {
     state.thread = state.projects.flatMap((p) => p.threads)[0]?.id || null;
     // A thread chosen here was not on screen a moment ago, whatever the feed said moved:

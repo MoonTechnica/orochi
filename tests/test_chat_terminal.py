@@ -67,9 +67,10 @@ MOCK_MID_REPLY = "{"1" if seats else ""}"
     return path
 
 
-def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0):
+def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0, env=None, raw=None):
     """Sends each message and returns every row the session drew, oldest first. With
-    `wait=False` the next message is typed while the agent is still streaming, so it queues."""
+    `wait=False` the next message is typed while the agent is still streaming, so it queues.
+    `env` adds to the session's environment; `raw`, a list, receives every byte it wrote."""
     dir = Path(tempfile.mkdtemp())
     (dir / "repo").mkdir()
     master, slave = pty.openpty()
@@ -78,7 +79,8 @@ def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0):
         [BINARY, "--config", str(config(dir, lines, delay, finish, seats)), "--data-dir", str(dir / "data"),
          "-C", str(dir / "repo"), "chat"],
         stdin=slave, stdout=slave, stderr=slave, close_fds=True,
-        env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS)))
+        env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS),
+                 **(env or {})))
     os.close(slave)
     screen = screen_module.Screen(ROWS, COLS)
 
@@ -96,6 +98,8 @@ def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0):
                 return
             if not data:
                 return
+            if raw is not None:
+                raw.append(data)
             screen.feed(data.decode("utf-8", "replace"))
 
     try:
@@ -305,7 +309,7 @@ class Console:
     """One live session in a pty, driven a key at a time."""
 
     def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
-                 files=None):
+                 files=None, mailbox=False):
         self.dir = Path(tempfile.mkdtemp())
         self.repo = self.dir / "repo"
         self.repo.mkdir()
@@ -323,7 +327,7 @@ auto = false
 [classifier]
 enabled = {"true" if classifier else "false"}
 [mailbox]
-enabled = false
+enabled = {"true" if mailbox else "false"}
 [scheduler]
 discovery_timeout_secs = 20
 prompt_timeout_secs = 40
@@ -423,6 +427,67 @@ MOCK_LOG = "{self.log}"
         os.close(self.master)
 
 
+class BackgroundAgents(unittest.TestCase):
+    """Helpers a lead starts outlive its turn; the console lists them, stops them, and asks
+    the user for them."""
+
+    def test_down_lists_the_helpers_x_stops_one_and_the_chord_twice_stops_the_rest(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API,explorer:Map the flow",
+            "MOCK_HELPER_DELAYS": "spec:60,explorer:60",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("2 background agents launched")
+            c.wait("Waiting for 2 background agents to finish")
+            c.key(b"\x1b[B")
+            c.wait("Background agents")
+            self.assertTrue(c.shown("x to stop"), c.rows())
+            self.assertTrue(c.shown("spec") and c.shown("explorer"), c.rows())
+            c.key(b"x")
+            c.wait("stopped by the user")
+            c.esc()
+            c.wait("Waiting for 1 background agent to finish")
+            c.key(b"\x18\x0b")
+            c.wait("Press ctrl+x ctrl+k again to stop background agents")
+            c.key(b"\x18\x0b")
+            c.wait("2 agents finished")
+            # Stopped, they have nothing to report, and saying so is not worth a turn of its
+            # own: the lead hears it with the next message.
+            self.assertFalse(c.shown("handing back what"), c.rows())
+            self.assertEqual(len(c.prompts()), 3, "the lead and the two helpers, nothing more")
+            c.type("What did they find?")
+            c.key(b"\r")
+            c.pump(TURN, until=lambda s: len(c.prompts()) >= 4)
+            last = c.prompts()[-1]
+            self.assertIn("What did they find?", last)
+            self.assertIn("Background agent `spec` (Research the API) was stopped by the user", last)
+            self.assertIn("Background agent `explorer` (Map the flow) was stopped by the user", last)
+        finally:
+            c.close()
+
+    def test_a_helper_that_wants_to_run_a_command_is_asked_about_by_name(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API",
+            "MOCK_HELPER_ASK": "spec",
+            "MOCK_HELPER_DELAYS": "spec:0.2",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("· from the spec agent")
+            self.assertTrue(c.shown("spec is read only"), c.rows())
+            self.assertTrue(c.shown("curl -sL https://example.com/llms.txt"), c.rows())
+            c.key(b"1")
+            c.wait("allowed once")
+            answer = c.repo / "helper-answer-spec.txt"
+            c.pump(TURN, until=lambda s: answer.exists())
+            self.assertIn("allow", answer.read_text())
+        finally:
+            c.close()
+
+
 class ScreenModel(unittest.TestCase):
     """The screen these tests read the console back through has to survive a pty read that
     ends mid-escape. It did not: the ESC was dropped and the rest of the sequence drawn as
@@ -477,6 +542,39 @@ class ChatTerminal(unittest.TestCase):
             [row for row in shown if "/new" in row],
             "\n".join(row for row in shown if row.strip()),
         )
+
+    def test_inside_a_host_pane_the_console_reports_its_state_and_nothing_else(self):
+        # A pane an agent host opened carries its key; the console then says what it is doing
+        # in OSC 9999, which the host strips from the screen.
+        raw = []
+        rows = chat(["秘密の依頼 ABC-123"], lines=2, env={"ORCA_PANE_KEY": "tab:1"}, raw=raw)
+        data = b"".join(raw).decode("utf-8", "replace")
+        reports = [json.loads(m) for m in re.findall(r"\x1b\]9999;(.*?)\x07", data)]
+        states = [r["state"] for r in reports]
+        self.assertIn("working", states, data[-2000:])
+        self.assertEqual(states[-1], "done", states)
+        self.assertTrue(all(r["agentType"] == "orochi" for r in reports))
+        self.assertTrue(any(r.get("model", "").startswith("test · ") for r in reports), reports)
+        self.assertIn("turnCompletedAt", reports[-1])
+        # Never the request, never the reply.
+        for report in reports:
+            text = json.dumps(report, ensure_ascii=False)
+            self.assertNotIn("ABC-123", text)
+            self.assertNotIn("Fixture completed", text)
+        # The sequence draws nothing.
+        self.assertFalse([row for row in rows if "9999" in row], "\n".join(rows))
+
+    def test_a_turn_ends_with_how_long_it_took_and_when(self):
+        rows = chat(["hello"], lines=1)
+        footer = [row for row in rows if row.startswith("✻ Worked for ")]
+        self.assertEqual(len(footer), 1, "\n".join(rows))
+        self.assertRegex(footer[0], r"^✻ Worked for \d+s · done \d\d:\d\d · test · sol-test")
+
+    def test_outside_a_host_pane_the_console_reports_nothing(self):
+        raw = []
+        env = {k: "" for k in ("ORCA_PANE_KEY",)}
+        chat(["hello"], lines=1, env=env, raw=raw)
+        self.assertNotIn(b"\x1b]9999;", b"".join(raw))
 
     def test_messages_from_other_agents_slot_between_rows_of_the_reply(self):
         rows = chat(["3人のエージェントでディスカッションして"], lines=8, delay=0.4, seats=2)

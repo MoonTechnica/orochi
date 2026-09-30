@@ -10,6 +10,7 @@
 <div id="app">
   <aside id="sidebar">
     <header>
+      <button type="button" id="activity" title="Every conversation, by what it needs"><span class="label">Activity</span><span id="activity-count"></span></button>
       <button id="new-thread" title="Start a thread here"><span class="label">New thread</span></button>
     </header>
     <nav id="projects" aria-label="Projects"></nav>
@@ -76,6 +77,11 @@
     </section>
     <section id="pane-plan" class="pane" hidden></section>
   </aside>
+
+  <footer id="status-bar">
+    <div id="accounts"></div>
+    <div id="counts"></div>
+  </footer>
 
   <dialog id="panel">
     <header id="panel-head">

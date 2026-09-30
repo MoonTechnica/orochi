@@ -24,7 +24,10 @@
           "seats": 0,
           "asking": 0,
           "unread": 12,
-          "terminal": false
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": null
         },
         {
           "id": "ac1154c1-3298-4ada-be14-4063b923a32c",
@@ -43,7 +46,10 @@
           "seats": 0,
           "asking": 0,
           "unread": 8,
-          "terminal": false
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": null
         }
       ]
     }

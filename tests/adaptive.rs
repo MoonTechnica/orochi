@@ -954,3 +954,61 @@ async fn an_agent_declares_what_acp_has_no_field_for_and_its_own_effort_words_ar
     assert_eq!(levels, ["fast", "balanced", "thorough"]);
     client.stop().await;
 }
+
+/// The console's idle status row says what each account has left and when it resets, from the
+/// snapshots already stored — the most spent window per agent, a cooldown in its place — and
+/// says nothing about an agent nobody has measured, rather than showing it as empty.
+#[test]
+fn the_idle_status_row_shows_each_measured_accounts_most_spent_window_and_its_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let window = |bucket: &str, remaining: f64, reset: i64| Window {
+        bucket: bucket.into(),
+        remaining,
+        reset_at: Some(now + reset),
+        model: None,
+        affects_routing: true,
+    };
+    store
+        .save_quota_snapshot(&Snapshot {
+            agent: "claude".into(),
+            source: "probe".into(),
+            observed_at: now,
+            valid_until: now + 3600,
+            windows: vec![
+                window("five_hour", 0.87, 71 * 60 + 5),
+                window("seven_day", 0.95, 86_400),
+            ],
+        })
+        .unwrap();
+    store
+        .save_runtime(&RuntimeState {
+            status: RuntimeStatus::Cooldown,
+            cooldown_until: Some(now + 240),
+            ..RuntimeState::new("codex", "*")
+        })
+        .unwrap();
+    let config = Config::default();
+    let line = orochi::chat::accounts(&config, &store).expect("two agents are known");
+    let parts: Vec<&str> = line.split(" │ ").collect();
+    assert_eq!(parts.len(), 2, "{line}");
+    assert!(parts.contains(&"claude 13% · 1h 11m"), "{line}");
+    assert!(
+        parts
+            .iter()
+            .any(|p| p.starts_with("codex cooling 3m") || p.starts_with("codex cooling 4m")),
+        "{line}"
+    );
+    assert!(
+        !line.contains("gemini"),
+        "an unmeasured agent is left out: {line}"
+    );
+
+    let empty = tempfile::tempdir().unwrap();
+    let nothing = Store::open(empty.path()).unwrap();
+    assert_eq!(orochi::chat::accounts(&config, &nothing), None);
+}

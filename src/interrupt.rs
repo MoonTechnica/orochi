@@ -64,6 +64,11 @@ pub fn mark() -> Since {
     Since(*latch().count.borrow())
 }
 
+/// A point no interrupt is after: for work the user stops by name rather than with Esc.
+pub fn never() -> Since {
+    Since(u64::MAX)
+}
+
 impl Since {
     pub fn interrupted(self) -> bool {
         *latch().count.borrow() > self.0

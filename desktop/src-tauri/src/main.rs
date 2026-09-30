@@ -213,6 +213,20 @@ fn changed(open: State<'_, Open>) -> Result<Vec<String>, String> {
         .map_err(fail)
 }
 
+#[tauri::command]
+fn stop_seat(open: State<'_, Open>, thread: String, seat: Option<String>) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .stop_seat(&thread, seat.as_deref())
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn live_seats(open: State<'_, Open>) -> Result<Vec<orochi::activity::LiveSeat>, String> {
+    open.0.lock().unwrap().live_seats().map_err(fail)
+}
+
 /// Where the core keeps its data, by the same rule the CLI uses, so the window and the
 /// terminal are looking at one store.
 fn data_dir() -> anyhow::Result<std::path::PathBuf> {
@@ -256,7 +270,9 @@ fn main() {
             send,
             interrupt,
             seen,
-            changed
+            changed,
+            live_seats,
+            stop_seat
         ])
         .run(tauri::generate_context!())
         .expect("orochi desktop failed to start");

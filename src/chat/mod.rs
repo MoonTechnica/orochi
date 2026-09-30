@@ -6,6 +6,7 @@
 //! scrolls above them, messages typed during a turn queue up, tool rows are marked ✓/✗ in
 //! place, Esc interrupts, and Shift-Tab cycles the approval mode the running agent actually
 //! supports. Keys, the queue and questions behave as Claude Code documents them.
+mod background;
 mod banner;
 pub mod host;
 pub mod term;
@@ -179,6 +180,8 @@ struct Message {
     queued: Option<String>,
     /// What the user asked for explicitly; otherwise Orochi decides.
     steps: Steps,
+    /// Written by Orochi to hand background agents' results back to the lead, not typed.
+    from_helpers: bool,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -342,6 +345,28 @@ struct Session<'a> {
     recorded: Option<Recorded>,
     /// No terminal at either end: the turns come from the store and so do the answers.
     headless: bool,
+    /// The accounts line for the idle status row, and when it was read.
+    accounts: Option<(Instant, Option<String>)>,
+    /// Helpers the lead started, working past the turn that started them.
+    background: background::Background<'a>,
+    /// Helpers that have ended and whose results the lead has not been given yet.
+    results: Vec<background::Finished>,
+    /// What the current (or last) turn was classified as: a helper is routed by it.
+    descriptor: Option<TaskDescriptor>,
+    /// Input has ended (a closed pipe) but helpers are still working: wait for them and hand
+    /// their results back before leaving, rather than dropping what they were asked to do.
+    listening: bool,
+    /// What the turn that started the helpers was classified as; their results are routed by it.
+    helper_descriptor: Option<TaskDescriptor>,
+    /// Questions from seats other than the lead, first come first asked.
+    asks: VecDeque<Ask>,
+    /// Helpers the user stopped, for the lead to hear about with the next message.
+    stopped: Vec<String>,
+    /// Seats the user said not to ask about again, by name, for this session.
+    trusted: BTreeSet<String>,
+    chord: StopChord,
+    /// The background agents' list, while it is open.
+    managing: Option<Manage>,
 }
 
 /// The conversation store for one console session. The thread is opened by the first message
@@ -509,7 +534,13 @@ pub async fn run_with(
             ..Default::default()
         },
         options,
-        view: View::new(tty),
+        view: {
+            let mut view = View::new(tty);
+            if !config.console.host_status {
+                view.pane.disable();
+            }
+            view
+        },
         tty,
         keyboard,
         queue: VecDeque::new(),
@@ -521,6 +552,17 @@ pub async fn run_with(
         quit: false,
         mcp: None,
         headless,
+        accounts: None,
+        background: background::Background::default(),
+        results: vec![],
+        descriptor: None,
+        listening: true,
+        helper_descriptor: None,
+        asks: VecDeque::new(),
+        stopped: vec![],
+        trusted: BTreeSet::new(),
+        chord: StopChord::default(),
+        managing: None,
         recorded: Recorded::open(config, store, root, options_thread.as_ref(), headless).map(
             |mut recorded| {
                 recorded.host = options_host;
@@ -532,13 +574,15 @@ pub async fn run_with(
         session.view.welcome(config, data, root, &session.feed);
     }
     session.refresh_status(None);
+    // The host learns who is in the pane before the first message, not with it.
+    session.view.report();
     let code = session.serve().await;
     session.distill().await;
     session.view.term.restore();
     code
 }
 
-impl Session<'_> {
+impl<'a> Session<'a> {
     /// The idle loop: keys, queued messages and mailbox traffic until the user quits.
     async fn serve(&mut self) -> Result<u8> {
         #[cfg(unix)]
@@ -562,12 +606,86 @@ impl Session<'_> {
                         }
                     }
                 }
+                // What the helpers found goes back to the lead once nothing else is waiting:
+                // everything that ended while a turn ran, in one turn.
+                // A helper the user stopped has nothing to report, and telling the lead so is
+                // not worth a session of its own: it goes with whatever is said next.
+                let (stopped, reported): (Vec<_>, Vec<_>) = std::mem::take(&mut self.results)
+                    .into_iter()
+                    .partition(|f| matches!(f.ending, background::Ending::Stopped));
+                self.results = reported;
+                if !stopped.is_empty() {
+                    self.stopped.push(background::completion(&stopped));
+                }
+                if !self.results.is_empty() {
+                    break Some(self.completion_message());
+                }
+                if !self.listening && self.background.is_empty() {
+                    break None;
+                }
                 let key = tokio::select! {
-                    key = self.keyboard.next() => key,
-                    _ = mail.tick(), if self.feed.is_some() => { self.deliver(); continue }
+                    key = self.keyboard.next(), if self.listening => key,
+                    _ = mail.tick(), if self.feed.is_some() => {
+                        self.deliver();
+                        self.grant_idle();
+                        continue
+                    }
+                    event = self.background.next(), if !self.background.is_empty() => {
+                        self.helper_event(event);
+                        continue
+                    }
                     _ = resized.recv() => { self.view.term.resized(); continue }
                 };
+                let ended = matches!(key, None | Some(Key::Eof)) && !self.tty;
+                if ended && !self.background.is_empty() {
+                    self.listening = false;
+                    continue;
+                }
                 let Some(key) = key else { break None };
+                if !self.asks.is_empty() {
+                    self.idle_ask(key);
+                    continue;
+                }
+                if let Key::Stop(name) = &key {
+                    match name {
+                        Some(name) => {
+                            self.background.stop(name);
+                        }
+                        None => self.background.stop_all(),
+                    }
+                    continue;
+                }
+                match self.chord.feed(&key) {
+                    Chord::Held => continue,
+                    Chord::Arm => {
+                        self.view.note(if self.background.is_empty() {
+                            "No background agents running"
+                        } else {
+                            "Press ctrl+x ctrl+k again to stop background agents"
+                        });
+                        continue;
+                    }
+                    Chord::Fire => {
+                        self.background.stop_all();
+                        continue;
+                    }
+                    Chord::Pass => {}
+                }
+                if self.managing.is_some() {
+                    self.manage(key);
+                    continue;
+                }
+                // As in Claude Code: ↓ with nothing newer to recall opens the background agents.
+                if matches!(key, Key::Down)
+                    && !self.background.is_empty()
+                    && self.view.term.suggestions.is_empty()
+                    && self.view.term.prompt.at_newest()
+                {
+                    let mut manage = Manage::default();
+                    show_manager(&mut self.view, &self.background, &mut manage);
+                    self.managing = Some(manage);
+                    continue;
+                }
                 let action = press(&mut self.view.term, key, self.root);
                 // As in Claude Code: Esc never leaves; twice clears a draft into history.
                 // Ctrl-C clears the input, and a second press leaves; Ctrl-D on an empty line
@@ -606,7 +724,14 @@ impl Session<'_> {
                         if Twice::again(&mut self.twice.exit) {
                             break None;
                         }
-                        self.view.note("Press Ctrl-D again to exit");
+                        if self.background.is_empty() {
+                            self.view.note("Press Ctrl-D again to exit");
+                        } else {
+                            self.view.note(&format!(
+                                "{} running · press Ctrl-D again to stop them and exit",
+                                background_agents(self.background.len())
+                            ));
+                        }
                     }
                     Action::None => {}
                 }
@@ -653,6 +778,16 @@ impl Session<'_> {
             "new" | "clear" => {
                 // Moving on to something else says nothing about the last answer.
                 self.awaiting = None;
+                // What the helpers were doing belonged to the conversation being left.
+                let stopped = self.background.abandon();
+                self.results.clear();
+                self.stopped.clear();
+                self.asks.clear();
+                sync_pane(&mut self.view, &self.background);
+                if stopped > 0 {
+                    self.view
+                        .note(&format!("Stopped {}", background_agents(stopped)));
+                }
                 self.conversation = Conversation::default();
                 if let Some(recorded) = &mut self.recorded {
                     recorded.reset();
@@ -694,6 +829,7 @@ impl Session<'_> {
                         } else {
                             Steps::Team
                         },
+                        from_helpers: false,
                     });
                 }
             }
@@ -780,6 +916,149 @@ impl Session<'_> {
     }
 
     /// The status row: approval mode, queue depth and what the agent is doing.
+    fn env(&self) -> background::Env<'a> {
+        background::Env {
+            config: self.config,
+            store: self.store,
+            root: self.root,
+            data: self.data,
+            headless: self.headless,
+        }
+    }
+
+    /// Runs what the idle loop hears from a helper, and says it.
+    fn helper_event(&mut self, event: background::Event) {
+        let lines = on_helper(
+            event,
+            &mut self.background,
+            &mut self.results,
+            &mut self.asks,
+            &self.trusted,
+            &mut self.view,
+        );
+        for line in lines {
+            self.view.line(&line);
+        }
+        if !self.asks.is_empty() {
+            show_ask(&mut self.view, &self.asks);
+        } else if self.managing.is_some() {
+            self.redraw_manager();
+        } else {
+            self.refresh_status(None);
+        }
+    }
+
+    /// A key while the background agents' list is open.
+    fn manage(&mut self, key: Key) {
+        let Some(manage) = self.managing.as_mut() else {
+            return;
+        };
+        let count = self.background.len();
+        match key {
+            Key::Up if !manage.viewing && count > 0 => {
+                manage.selected = (manage.selected + count - 1) % count;
+            }
+            Key::Down if !manage.viewing && count > 0 => {
+                manage.selected = (manage.selected + 1) % count;
+            }
+            Key::Enter if count > 0 => manage.viewing = true,
+            Key::Char('x' | 'X') if !manage.viewing && count > 0 => {
+                let name = self.background.helpers[manage.selected].name.clone();
+                self.background.stop(&name);
+            }
+            Key::Escape | Key::Interrupt if manage.viewing => manage.viewing = false,
+            Key::Escape | Key::Interrupt | Key::CtrlD | Key::Eof => {
+                self.managing = None;
+            }
+            _ => {}
+        }
+        self.redraw_manager();
+    }
+
+    fn redraw_manager(&mut self) {
+        match self.managing.as_mut() {
+            Some(manage) if !self.background.is_empty() && self.asks.is_empty() => {
+                show_manager(&mut self.view, &self.background, manage);
+            }
+            Some(_) if self.background.is_empty() => {
+                self.managing = None;
+                self.view.term.overlay = None;
+                self.refresh_status(None);
+            }
+            Some(_) => {}
+            None => {
+                self.view.term.overlay = None;
+                self.refresh_status(None);
+            }
+        }
+    }
+
+    /// A key while a seat's question is open at an idle prompt.
+    fn idle_ask(&mut self, key: Key) {
+        if let Some(line) = answer_ask(key, &mut self.asks, &mut self.trusted, &mut self.view) {
+            self.view.line(&line);
+            self.view.pane.report.state = crate::pane::State::Done;
+            sync_pane(&mut self.view, &self.background);
+        }
+        if self.asks.is_empty() {
+            self.refresh_status(None);
+        } else {
+            show_ask(&mut self.view, &self.asks);
+        }
+    }
+
+    /// A request that arrives with no turn running has no lead to belong to: it is refused.
+    fn grant_idle(&mut self) {
+        let Some(feed) = self.feed.as_ref() else {
+            return;
+        };
+        let env = self.env();
+        grant(
+            feed,
+            &mut self.background,
+            env,
+            self.recorded.as_ref(),
+            None,
+            "",
+            0,
+            false,
+        );
+    }
+
+    /// The results the helpers left, as one message the lead gets next.
+    fn completion_message(&mut self) -> Message {
+        let finished = std::mem::take(&mut self.results);
+        let stopped = std::mem::take(&mut self.stopped);
+        self.helper_descriptor = finished.first().map(|f| f.descriptor.clone());
+        let names: Vec<&str> = finished.iter().map(|f| f.name.as_str()).collect();
+        self.view
+            .note(&format!("handing back what {} reported", names.join(", ")));
+        let mut text = background::completion(&finished);
+        for note in stopped {
+            text = format!("{text}\n\n{note}");
+        }
+        Message {
+            text,
+            attachments: vec![],
+            queued: None,
+            steps: Steps::Solo,
+            from_helpers: true,
+        }
+    }
+
+    /// The accounts line, read again at most every 30 seconds: the status row is redrawn on
+    /// every key, and a snapshot changes when a probe runs, not when a key is pressed.
+    fn accounts(&mut self) -> Option<String> {
+        let stale = self
+            .accounts
+            .as_ref()
+            .is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(30));
+        if stale {
+            self.accounts = Some((Instant::now(), accounts(self.config, self.store)));
+        }
+        self.accounts.as_ref().and_then(|(_, line)| line.clone())
+    }
+
     fn refresh_status(&mut self, phase: Option<&str>) {
         let mut parts = vec![format!("⏵⏵ {} (shift+tab)", self.approval.label())];
         if !self.queue.is_empty() {
@@ -787,7 +1066,14 @@ impl Session<'_> {
         }
         match phase {
             Some(phase) => parts.push(format!("{phase} · esc to interrupt")),
-            None => parts.push("/help for commands".into()),
+            None if !self.background.is_empty() => parts.push(format!(
+                "✻ Waiting for {} to finish",
+                background_agents(self.background.len())
+            )),
+            None => parts.push(
+                self.accounts()
+                    .unwrap_or_else(|| "/help for commands".into()),
+            ),
         }
         let status = fit(
             &parts.join(" · "),
@@ -867,6 +1153,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                 text,
                 attachments: vec![],
                 steps: Steps::Auto,
+                from_helpers: false,
             });
         }
         Key::Char(c) => term.prompt.insert(&c.to_string()),
@@ -895,6 +1182,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                     text,
                     attachments,
                     steps: Steps::Auto,
+                    from_helpers: false,
                 });
             }
         }
@@ -914,7 +1202,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
         Key::End => term.prompt.end(),
         Key::KillLine => term.prompt.kill_line(),
         Key::KillWord => term.prompt.kill_word(),
-        Key::Clear => {}
+        Key::Clear | Key::CtrlX | Key::Stop(_) => {}
         Key::Tab if picking => accept(term),
         Key::Tab => complete(term, root),
         Key::ShiftTab => return Action::Cycle,
@@ -1164,23 +1452,38 @@ impl Session<'_> {
         self.review_repository_servers().await;
         // Carrying on after reading the answer is a (small) vote for how it was routed. Carrying
         // on after stopping it is not: that is usually the user adding what they forgot to say.
-        if let Some(Awaiting {
-            run,
-            interrupted: false,
-        }) = self.awaiting.take()
-        {
-            let _ = self.store.feedback(&run, &Feedback::continued());
-        }
-        self.said.push_back(bounded(&message.text, USER_CHARS));
-        while self.said.len() > SAID_MESSAGES {
-            self.said.pop_front();
-        }
-        let Some(task) = self.profile(&message.text).await else {
-            self.view.result(WARN, "Interrupted");
-            self.refresh_status(None);
-            return Ok(());
+        // What the helpers hand back is Orochi's doing, not the user's: it says nothing about
+        // the last answer, is no part of what the user said, and is routed by the turn that
+        // started them rather than classified again.
+        let task = if message.from_helpers {
+            self.awaiting = None;
+            self.helper_descriptor
+                .take()
+                .unwrap_or_else(|| crate::router::profiler::profile(&message.text, self.root))
+        } else {
+            if let Some(Awaiting {
+                run,
+                interrupted: false,
+            }) = self.awaiting.take()
+            {
+                let _ = self.store.feedback(&run, &Feedback::continued());
+            }
+            self.said.push_back(bounded(&message.text, USER_CHARS));
+            while self.said.len() > SAID_MESSAGES {
+                self.said.pop_front();
+            }
+            let Some(task) = self.profile(&message.text).await else {
+                self.view.result(WARN, "Interrupted");
+                self.refresh_status(None);
+                return Ok(());
+            };
+            task
         };
-        let steps = self.steps(&message, &task);
+        let steps = if message.from_helpers {
+            vec![]
+        } else {
+            self.steps(&message, &task)
+        };
         // One user message is one turn, whatever it takes to answer: the phases and seats
         // below are places at that turn's table, not turns of their own.
         self.open_turn(&message, &task, &steps);
@@ -1245,6 +1548,9 @@ impl Session<'_> {
                 (!steps.is_empty()).then_some("phases"),
                 serde_json::to_string(task).ok().as_deref(),
             )?;
+            if message.from_helpers {
+                recorded.store().turn_origin(&turn, "background")?;
+            }
             recorded.turn = Some(turn);
             Ok(())
         })();
@@ -1668,6 +1974,7 @@ impl Session<'_> {
         default: usize,
     ) -> Option<usize> {
         let mut selected = default;
+        let before = self.view.asking(&heading);
         let choice = loop {
             let mut rows = vec![self.view.paint(MUTED, &"─".repeat(self.view.width()))];
             rows.extend(heading.iter().cloned());
@@ -1704,6 +2011,7 @@ impl Session<'_> {
             }
         };
         self.view.term.overlay = None;
+        self.view.asked(before);
         self.refresh_status(None);
         choice
     }
@@ -1713,6 +2021,7 @@ impl Session<'_> {
     async fn checklist(&mut self, heading: Vec<String>, items: &[String]) -> Option<Vec<bool>> {
         let mut ticked = vec![true; items.len()];
         let mut selected = 0;
+        let before = self.view.asking(&heading);
         let chosen = loop {
             let mut rows = vec![self.view.paint(MUTED, &"─".repeat(self.view.width()))];
             rows.extend(heading.iter().cloned());
@@ -1746,6 +2055,7 @@ impl Session<'_> {
             }
         };
         self.view.term.overlay = None;
+        self.view.asked(before);
         self.refresh_status(None);
         chosen
     }
@@ -1998,6 +2308,7 @@ impl Session<'_> {
                     vec![]
                 },
                 steps: Steps::Solo,
+                from_helpers: false,
             };
             let hands_over = phase.hands_over;
             let implementing = steps[index] == IMPLEMENT;
@@ -2033,6 +2344,7 @@ impl Session<'_> {
                             ),
                             attachments: vec![],
                             steps: Steps::Solo,
+                            from_helpers: false,
                         };
                         return self.collaborate(team, plan).await;
                     }
@@ -2235,6 +2547,13 @@ impl Session<'_> {
         if let Some(pending) = self.conversation.pending.take() {
             task = format!("{pending}\n\n{task}");
         }
+        if let Some(note) = self.background.running_note() {
+            task = format!("{task}\n\n{note}");
+        }
+        for note in std::mem::take(&mut self.stopped) {
+            task = format!("{task}\n\n{note}");
+        }
+        self.descriptor = Some(profile.clone());
         // Inside a plan the seat keeps the step's name; on its own it takes the task's.
         let lead = phase.map_or(seats[0].name, |p| p.name);
         // First, not last. Appending it changes what a prompt ends with, which several tests
@@ -2243,11 +2562,16 @@ impl Session<'_> {
         task = format!("{LANGUAGE}\n\n{task}");
         if !beside.is_empty() {
             task = format!("{task}\n\n{}", alongside(lead, &beside));
-            let names: Vec<&str> = beside.iter().map(|role| role.name).collect();
-            self.view.note(&format!(
-                "beside {lead}: {} · read only, talking over the mailbox",
-                names.join(", ")
-            ));
+            self.view.launched(
+                &format!(
+                    "{} beside {lead} · read only, talking over the mailbox",
+                    agents(beside.len())
+                ),
+                beside
+                    .iter()
+                    .map(|role| (role.name.to_owned(), String::new()))
+                    .collect(),
+            );
         }
         // Each seat of this turn is a row, so a client can show who is at the table, and the
         // read-only seats' work stays on their own lanes rather than in the transcript.
@@ -2289,12 +2613,29 @@ impl Session<'_> {
         let mut exiting: Option<Instant> = None;
         let mut listening = true;
         let headless = self.headless;
+        // The lead of work that writes may ask for helpers, for the length of its turn; a seat
+        // beside it, a guest turn and a discussion may not.
+        let _delegation = (seats[0].writes && !guest)
+            .then(|| {
+                crate::mailbox::delegate((!beside.is_empty() || phase.is_some()).then_some(lead))
+            })
+            .flatten();
+        let env = self.env();
+        let descriptor = profile.clone();
+        let lead_read_only = !seats[0].writes;
+        let helpers = &mut self.background;
+        let results = &mut self.results;
+        let asks = &mut self.asks;
+        let trusted = &mut self.trusted;
+        let chord = &mut self.chord;
+        let recorded = self.recorded.as_ref();
         let approval = &mut self.approval;
         let queue = &mut self.queue;
         let keyboard = &mut self.keyboard;
         let feed = &mut self.feed;
         let root = self.root;
         let mut screen = Screen::new(&mut self.view);
+        sync_pane(screen.view, helpers);
         // The lead takes its place first and each seat after the one before it, so each sees
         // what the earlier ones took and finds them in the mailbox, however long its own
         // discovery ran.
@@ -2325,6 +2666,7 @@ impl Session<'_> {
                     place: Some(order.place(0)),
                     seat: recorded_seats[0].clone(),
                     answerer: answerer(approval.confirm, headless),
+                    background: false,
                 },
                 Some(events),
                 &mut continuation,
@@ -2360,6 +2702,7 @@ impl Session<'_> {
                                 place: Some(order.place(index + 1)),
                                 seat: aside_seat,
                                 answerer: answerer(PermissionMode::Allow, headless),
+                                background: false,
                             },
                             Some(sender),
                             slot,
@@ -2383,11 +2726,23 @@ impl Session<'_> {
                         handle(event, &mut screen, &mut reply, &mut pending, &mut withhold);
                     }
                     Some((name, event)) = next_aside(&mut asides), if !asides.is_empty() => {
-                        aside(event, &mut screen, name);
+                        match event {
+                            ExecutionEvent::Permission(request, answer) => {
+                                queue_ask(asks, trusted, screen.view.term.tty, name, request, answer);
+                                if pending.is_none() {
+                                    show_ask(screen.view, asks);
+                                }
+                            }
+                            event => aside(event, &mut screen, name),
+                        }
                     }
                     Some(name) = others.next(), if !others.is_empty() => {
                         finished.insert(name);
-                        let text = screen.view.paint(MUTED, "· done");
+                        screen.view.pane.seat_state(name, crate::pane::SeatState::Idle);
+                        screen.view.report();
+                        let text = screen
+                            .view
+                            .paint(MUTED, &format!("finished · {}", span(screen.started.elapsed())));
                         screen.aside(name, &text);
                     }
                     _ = &mut interrupt, if !signalled => {
@@ -2398,6 +2753,40 @@ impl Session<'_> {
                         let Some(key) = key else { listening = false; continue };
                         if pending.is_some() {
                             answer(key, &mut pending, &mut screen);
+                            // The lead's question is answered; a seat's may be waiting behind it.
+                            if pending.is_none() {
+                                show_ask(screen.view, asks);
+                            }
+                        } else if let Key::Stop(name) = &key {
+                            match name {
+                                Some(name) => {
+                                    helpers.stop(name);
+                                }
+                                None => helpers.stop_all(),
+                            }
+                        } else if let Some(said) = match chord.feed(&key) {
+                            Chord::Pass => None,
+                            Chord::Held => Some(None),
+                            Chord::Arm => Some(Some(if helpers.is_empty() {
+                                "No background agents running"
+                            } else {
+                                "Press ctrl+x ctrl+k again to stop background agents"
+                            })),
+                            Chord::Fire => {
+                                helpers.stop_all();
+                                Some(None)
+                            }
+                        } {
+                            if let Some(said) = said {
+                                screen.result(MUTED, said);
+                            }
+                        } else if !asks.is_empty() {
+                            if let Some(line) = answer_ask(key, asks, trusted, screen.view) {
+                                screen.view.pane.report.state = crate::pane::State::Working;
+                                screen.view.report();
+                                screen.interject(line);
+                            }
+                            show_ask(screen.view, asks);
                         } else if matches!(key, Key::Up) && !queue.is_empty() {
                             // As in Claude Code, Up takes back what is queued, to edit or drop.
                             take_back(queue, &mut screen);
@@ -2442,6 +2831,32 @@ impl Session<'_> {
                     }
                     _ = mail.tick(), if feed.is_some() => {
                         screen.mail(feed.as_mut().expect("feed"));
+                        let started = grant(
+                            feed.as_ref().expect("feed"),
+                            helpers,
+                            env,
+                            recorded,
+                            Some(&descriptor),
+                            lead,
+                            beside.len(),
+                            lead_read_only,
+                        );
+                        if !started.is_empty() {
+                            helpers.launched(started);
+                            sync_pane(screen.view, helpers);
+                        }
+                        if let Some(started) = helpers.announcement(false) {
+                            let line = launch_line(screen.view, started);
+                            screen.interject(line);
+                        }
+                    }
+                    event = helpers.next(), if !helpers.is_empty() => {
+                        for line in on_helper(event, helpers, results, asks, trusted, screen.view) {
+                            screen.interject(line);
+                        }
+                        if pending.is_none() {
+                            show_ask(screen.view, asks);
+                        }
                     }
                     _ = resized.recv() => screen.view.term.resized(),
                     result = &mut run => {
@@ -2468,19 +2883,39 @@ impl Session<'_> {
                 aside(event, &mut screen, name);
             }
         }
+        // The seats beside the lead end with it; a question one of them left has nobody to
+        // answer to, and is refused rather than left on screen.
+        let before = asks.len();
+        asks.retain(|ask| !beside.iter().any(|role| role.name == ask.who));
+        if asks.len() != before {
+            screen.view.term.overlay = None;
+            show_ask(screen.view, asks);
+        }
         // The lead is done, so the seats beside it have nothing left to answer.
         for name in beside
             .iter()
             .map(|role| role.name)
             .filter(|name| !finished.contains(name))
         {
-            let text = screen.view.paint(MUTED, "· stopped, the work is done");
+            let text = screen.view.paint(
+                MUTED,
+                &format!(
+                    "stopped, the work is done · {}",
+                    span(screen.started.elapsed())
+                ),
+            );
             screen.aside(name, &text);
         }
         if let Some(feed) = feed.as_mut() {
             screen.mail(feed);
         }
+        screen.view.pane.report.interrupted = signalled;
+        if let Some(started) = helpers.announcement(true) {
+            let line = launch_line(screen.view, started);
+            screen.interject(line);
+        }
         screen.done();
+        sync_pane(screen.view, helpers);
         // Only a turn holding the conversation can be judged by what the user does next; a guest
         // or a phase is answered for elsewhere. A message queued while it ran was written before
         // the answer was seen, so it is no verdict on it.
@@ -2586,6 +3021,515 @@ fn enqueue(
     screen.interject(line);
 }
 
+/// Claude Code's Ctrl-X Ctrl-K, pressed twice, stops every background agent.
+#[derive(Default)]
+struct StopChord {
+    x: Option<Instant>,
+    armed: Option<Instant>,
+}
+enum Chord {
+    /// Not part of the chord: the key does what it always does.
+    Pass,
+    /// Ctrl-X, waiting for its second half.
+    Held,
+    /// The chord once: say what a second one would do.
+    Arm,
+    /// The chord twice.
+    Fire,
+}
+impl StopChord {
+    const WINDOW: Duration = Duration::from_secs(2);
+    fn feed(&mut self, key: &Key) -> Chord {
+        match key {
+            Key::CtrlX => {
+                self.x = Some(Instant::now());
+                Chord::Held
+            }
+            Key::KillLine if self.x.take().is_some_and(|at| at.elapsed() < Self::WINDOW) => {
+                if self
+                    .armed
+                    .take()
+                    .is_some_and(|at| at.elapsed() < Self::WINDOW)
+                {
+                    Chord::Fire
+                } else {
+                    self.armed = Some(Instant::now());
+                    Chord::Arm
+                }
+            }
+            _ => {
+                self.x = None;
+                Chord::Pass
+            }
+        }
+    }
+}
+
+/// The background agents' list, open over the input.
+#[derive(Default)]
+struct Manage {
+    selected: usize,
+    /// Showing what the selected one has said so far.
+    viewing: bool,
+}
+
+fn show_manager(view: &mut View, background: &background::Background<'_>, manage: &mut Manage) {
+    if background.is_empty() {
+        return;
+    }
+    manage.selected = manage.selected.min(background.len() - 1);
+    let width = view.width();
+    let mut rows = vec![view.paint(MUTED, &"─".repeat(width))];
+    let helper = &background.helpers[manage.selected];
+    if manage.viewing {
+        rows.push(format!(
+            " {} {}",
+            view.paint(&peer_color(&helper.name), &helper.name),
+            view.paint(MUTED, &format!("({})", helper.title))
+        ));
+        let said = background.said_so_far(&helper.name, 4000);
+        let lines: Vec<&str> = said.lines().collect();
+        if lines.is_empty() {
+            rows.push(format!("   {}", view.paint(MUTED, "Nothing said yet")));
+        }
+        for line in &lines[lines.len().saturating_sub(12)..] {
+            rows.push(format!("   {}", fit(line, width.saturating_sub(4))));
+        }
+        view.term.overlay = Some(rows);
+        view.term.status = view.paint(MUTED, " Esc to go back");
+        view.term.render();
+        return;
+    }
+    rows.push(format!(" {}", view.paint(BOLD, "Background agents")));
+    let name_width = background
+        .helpers
+        .iter()
+        .map(|h| h.name.len())
+        .max()
+        .unwrap_or(0);
+    for (index, helper) in background.helpers.iter().enumerate() {
+        let mut parts = vec![format!("working · {}", span(helper.started.elapsed()))];
+        if let Some(doing) = &helper.doing {
+            parts.push(doing.lines().next().unwrap_or("").to_owned());
+        }
+        if let Some(route) = &helper.route {
+            parts.push(route.clone());
+        }
+        let label = format!("{:name_width$}  {}", helper.name, parts.join(" · "));
+        let label = fit(&label, width.saturating_sub(4));
+        rows.push(if index == manage.selected {
+            format!(
+                " {} {}",
+                view.paint(BRAND, "❯"),
+                view.paint(&format!("1;{BRAND}"), &label)
+            )
+        } else {
+            format!("   {}", view.paint(MUTED, &label))
+        });
+    }
+    view.term.overlay = Some(rows);
+    view.term.status = view.paint(
+        MUTED,
+        " Enter to view · x to stop · ↑↓ to navigate · Esc to close",
+    );
+    view.term.render();
+}
+
+/// A permission question from a seat that is not the lead — a helper, or a seat beside it.
+/// Such a seat reads only, so what reaches the user is a command it wants to run.
+struct Ask {
+    who: String,
+    call: Value,
+    allow: String,
+    answer: tokio::sync::oneshot::Sender<Option<String>>,
+    selected: usize,
+}
+
+/// Queues a seat's question, or answers it at once where the user already has.
+fn queue_ask(
+    asks: &mut VecDeque<Ask>,
+    trusted: &BTreeSet<String>,
+    tty: bool,
+    who: &str,
+    request: Value,
+    answer: tokio::sync::oneshot::Sender<Option<String>>,
+) {
+    // Without a terminal nobody can be asked, and a seat's call is refused rather than left
+    // waiting for ever.
+    let Some(allow) = allow_once_option(&request).filter(|_| tty) else {
+        let _ = answer.send(None);
+        return;
+    };
+    if trusted.contains(who) {
+        let _ = answer.send(Some(allow));
+        return;
+    }
+    asks.push_back(Ask {
+        who: who.to_owned(),
+        call: request["toolCall"].clone(),
+        allow,
+        answer,
+        selected: 0,
+    });
+}
+
+const ASK_CHOICES: [&str; 3] = ["Yes", "Yes, and don't ask again for", "No (esc)"];
+
+/// Puts the first queued question where the input is, naming who asks and why.
+fn show_ask(view: &mut View, asks: &VecDeque<Ask>) {
+    let Some(ask) = asks.front() else {
+        return;
+    };
+    let mut state = ToolState::default();
+    if let Some(update) = crate::acp::tool_update(&ask.call) {
+        state.title = update.title;
+        state.detail = update.detail;
+        state.kind = update.kind;
+    }
+    let limit = view.width().saturating_sub(4).max(20);
+    let clean = |text: &str| text.replace('\u{1b}', "\\x1b");
+    let heading = tool_label(&state);
+    let mut rows = vec![
+        view.paint(MUTED, &"─".repeat(view.width())),
+        format!(
+            " {} {}",
+            view.paint(WARN, &fit(&clean(&heading), limit.saturating_sub(24))),
+            view.paint(MUTED, &format!("· from the {} agent", ask.who))
+        ),
+    ];
+    if let Some(detail) = state.detail.as_deref().filter(|d| *d != heading) {
+        for line in detail.lines().take(6) {
+            rows.push(format!(
+                "   {}",
+                view.paint(CODE, &fit(&clean(line), limit))
+            ));
+        }
+    }
+    rows.push(format!(
+        " {}",
+        view.paint(
+            MUTED,
+            &format!(
+                "{} is read only · this command runs in your working tree",
+                ask.who
+            )
+        )
+    ));
+    rows.push(String::new());
+    for (index, label) in ASK_CHOICES.iter().enumerate() {
+        let label = match index {
+            1 => format!("{}. {label} {}", index + 1, ask.who),
+            _ => format!("{}. {label}", index + 1),
+        };
+        rows.push(if index == ask.selected {
+            format!(
+                " {} {}",
+                view.paint(BRAND, "❯"),
+                view.paint(&format!("1;{BRAND}"), &label)
+            )
+        } else {
+            format!("   {}", view.paint(MUTED, &label))
+        });
+    }
+    view.term.overlay = Some(rows);
+    view.term.status = view.paint(MUTED, " Enter to select · ↑↓ to navigate · Esc to cancel");
+    view.term.render();
+    view.pane.report.state = crate::pane::State::Blocked;
+    view.pane.report.interactive_prompt = Some(format!("{heading} · from the {} agent", ask.who));
+    view.pane
+        .seat_state(&ask.who, crate::pane::SeatState::Blocked);
+    view.report();
+}
+
+/// Answers the first queued question with a key. `Some` is the line that records the answer;
+/// `None` means the key only moved the selection.
+fn answer_ask(
+    key: Key,
+    asks: &mut VecDeque<Ask>,
+    trusted: &mut BTreeSet<String>,
+    view: &mut View,
+) -> Option<String> {
+    let ask = asks.front_mut()?;
+    let choice = match key {
+        Key::Up => {
+            ask.selected = (ask.selected + ASK_CHOICES.len() - 1) % ASK_CHOICES.len();
+            None
+        }
+        Key::Down => {
+            ask.selected = (ask.selected + 1) % ASK_CHOICES.len();
+            None
+        }
+        Key::Enter => Some(ask.selected),
+        Key::Char('1' | 'y' | 'Y') => Some(0),
+        Key::Char('2' | 'a' | 'A') => Some(1),
+        Key::Char('3' | 'n' | 'N') => Some(2),
+        // A seat's question is the seat's: No refuses that one call and stops nothing else.
+        Key::Escape | Key::Interrupt => Some(2),
+        _ => None,
+    };
+    let Some(choice) = choice else {
+        show_ask(view, asks);
+        return None;
+    };
+    let ask = asks.pop_front()?;
+    view.term.overlay = None;
+    view.pane.report.interactive_prompt = None;
+    view.pane
+        .seat_state(&ask.who, crate::pane::SeatState::Working);
+    let (code, said) = match choice {
+        0 => (OK, "allowed once".to_owned()),
+        1 => {
+            trusted.insert(ask.who.clone());
+            (OK, format!("allowed · {} is not asked again", ask.who))
+        }
+        _ => (WARN, "denied".to_owned()),
+    };
+    let title = crate::acp::tool_update(&ask.call)
+        .and_then(|u| u.title)
+        .unwrap_or_else(|| "Tool call".into());
+    let _ = ask.answer.send((choice != 2).then_some(ask.allow));
+    let limit = view.width().saturating_sub(40);
+    Some(format!(
+        "{} {} {} {} {}",
+        view.paint(code, "⏺"),
+        view.paint(BOLD, &fit(&title, limit)),
+        view.paint(&peer_color(&ask.who), &format!("({})", ask.who)),
+        view.paint(MUTED, "→"),
+        view.paint(code, &said)
+    ))
+}
+
+/// Decides the open requests for helpers from this process's leads. Each gate refuses with a
+/// sentence the lead can repeat to the user; a granted one starts at once, beside the turn, and
+/// its seat is recorded under the turn that asked. Returns what was started, for the launch
+/// block.
+#[allow(clippy::too_many_arguments)]
+fn grant<'a>(
+    feed: &Feed,
+    background: &mut background::Background<'a>,
+    env: background::Env<'a>,
+    recorded: Option<&Recorded>,
+    descriptor: Option<&TaskDescriptor>,
+    lead: &str,
+    beside: usize,
+    read_only: bool,
+) -> Vec<(String, String)> {
+    let ours: Vec<String> = crate::mailbox::ours()
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    let Ok(requests) = feed.mailbox.open_requests(&ours) else {
+        return vec![];
+    };
+    let mut started = vec![];
+    for request in requests {
+        let refuse = |reason: &str| {
+            let _ = feed
+                .mailbox
+                .answer_request(&request.id, "refused", Some(reason), None, None);
+        };
+        let Some(descriptor) = descriptor else {
+            refuse("only the agent leading a conversation can start helpers");
+            continue;
+        };
+        if read_only {
+            refuse("this conversation changes nothing, so it has no helpers");
+            continue;
+        }
+        let live = 1 + beside + background.len();
+        if live >= crate::router::roles::MAX_SEATS {
+            refuse(&format!("already {live} agents on this conversation"));
+            continue;
+        }
+        if !crate::router::roles::worth_seating(env.config, env.store, descriptor) {
+            refuse("work like this has cost less than a helper session costs here; do it yourself");
+            continue;
+        }
+        let taken = crate::mailbox::our_names();
+        let name = background.free_name(&request.name, &|name| taken.contains(name));
+        let ordinal = 100 + started.len() + background.len();
+        let seat = recorded.and_then(|recorded| {
+            let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
+            let store = recorded.store();
+            let seat = store
+                .create_seat(&turn, ordinal, &name, false, true, None, None)
+                .ok()?;
+            let _ = store.seat_details(&seat, Some(&request.title), true, "lead");
+            Some(crate::activity::SeatRef {
+                thread,
+                turn,
+                seat,
+                store: recorded.activity.clone(),
+            })
+        });
+        let seat_id = seat.as_ref().map(|s| s.seat.clone());
+        // The lead's call may have given up waiting; then it does the work itself, and a
+        // helper started anyway would do it twice.
+        let granted = feed
+            .mailbox
+            .answer_request(
+                &request.id,
+                "started",
+                None,
+                Some(&name),
+                seat_id.as_deref(),
+            )
+            .unwrap_or(false);
+        if !granted {
+            if let Some(seat) = &seat {
+                let _ = seat
+                    .store
+                    .lock()
+                    .expect("activity store")
+                    .seat_state(&seat.seat, crate::activity::SeatState::Cancelled);
+            }
+            continue;
+        }
+        background.start(
+            env,
+            lead,
+            name.clone(),
+            request.title.clone(),
+            &request.task,
+            descriptor.clone(),
+            seat,
+        );
+        started.push((name, request.title));
+    }
+    started
+}
+
+/// What happened to a helper, as the transcript lines to show; its results are kept for the
+/// lead, and the pane report follows.
+fn on_helper(
+    event: background::Event,
+    background: &mut background::Background<'_>,
+    results: &mut Vec<background::Finished>,
+    asks: &mut VecDeque<Ask>,
+    trusted: &BTreeSet<String>,
+    view: &mut View,
+) -> Vec<String> {
+    let mut lines = vec![];
+    match event {
+        background::Event::Said(name, event) => {
+            background.heard(&name, &event);
+            match event {
+                ExecutionEvent::Permission(request, answer) => {
+                    queue_ask(asks, trusted, view.term.tty, &name, request, answer);
+                }
+                ExecutionEvent::Progress(Progress::Unavailable { agent, error }) => {
+                    lines.push(format!(
+                        "  {} {}",
+                        view.paint(&peer_color(&name), &format!("⎿ {name}")),
+                        view.paint(WARN, &format!("· {agent} unavailable: {error}"))
+                    ));
+                }
+                _ => {}
+            }
+        }
+        background::Event::Ended(name, ending) => {
+            // The block that says it started comes before the line that says it ended.
+            if let Some(started) = background.announcement(true) {
+                lines.push(launch_line(view, started));
+            }
+            asks.retain(|ask| ask.who != name);
+            if let Some(finished) = background.ended(&name, ending) {
+                let how = match &finished.ending {
+                    background::Ending::Finished => "finished".to_owned(),
+                    background::Ending::Stopped => "stopped by the user".to_owned(),
+                    background::Ending::Failed(why) => format!("failed: {why}"),
+                };
+                let mut parts = vec![how];
+                if let Some(route) = &finished.route {
+                    parts.push(route.clone());
+                }
+                parts.push(span(finished.elapsed));
+                let code = match finished.ending {
+                    background::Ending::Failed(_) => WARN,
+                    _ => MUTED,
+                };
+                lines.push(format!(
+                    "  {} {}",
+                    view.paint(&peer_color(&name), &format!("⎿ {name}")),
+                    view.paint(code, &parts.join(" · "))
+                ));
+                if matches!(finished.ending, background::Ending::Stopped) {
+                    lines.push(view.paint(
+                        MUTED,
+                        &format!("  Background agent \"{name}\" was stopped by the user."),
+                    ));
+                }
+                results.push(finished);
+                if background.is_empty() {
+                    lines.push(format!(
+                        "{} {}",
+                        view.paint(BRAND, "●"),
+                        view.paint(BOLD, &format!("{} finished", agents(background.group)))
+                    ));
+                    background.group = 0;
+                }
+            }
+        }
+    }
+    sync_pane(view, background);
+    lines
+}
+
+/// The launch block for helpers that started together, as one transcript item.
+fn launch_line(view: &View, started: Vec<(String, String)>) -> String {
+    let heading = format!("{} launched", background_agents(started.len()));
+    view.launch_block(&heading, started)
+        .trim_end_matches('\n')
+        .to_owned()
+}
+
+/// The helpers as the host's pane lists them, and whether the pane is only watching them.
+fn sync_pane(view: &mut View, background: &background::Background<'_>) {
+    view.helpers = background.len();
+    // Helpers carry a title; seats beside the lead do not, and are the turn's to keep.
+    view.pane.report.subagents.retain(|seat| {
+        seat.description.is_none() || background.helpers.iter().any(|h| h.name == seat.id)
+    });
+    for helper in &background.helpers {
+        let (agent, model) = helper
+            .route
+            .as_deref()
+            .and_then(|route| route.split_once(" · "))
+            .map(|(a, m)| (Some(a.to_owned()), Some(m.to_owned())))
+            .unwrap_or_default();
+        view.pane.seat(crate::pane::Seat {
+            id: helper.name.clone(),
+            state: crate::pane::SeatState::Working,
+            started_at: helper.started_at,
+            agent_type: agent,
+            model,
+            description: Some(helper.title.clone()),
+        });
+    }
+    let report = &mut view.pane.report;
+    match (report.state, background.is_empty()) {
+        (crate::pane::State::Done, false) => {
+            report.state = crate::pane::State::Working;
+            report.working_mode = Some("monitoring");
+        }
+        (crate::pane::State::Working, true) if report.working_mode.is_some() => {
+            report.state = crate::pane::State::Done;
+            report.working_mode = None;
+        }
+        _ => {}
+    }
+    view.report();
+}
+
+/// `1 background agent`, `2 background agents`.
+fn background_agents(count: usize) -> String {
+    if count == 1 {
+        "1 background agent".into()
+    } else {
+        format!("{count} background agents")
+    }
+}
+
 /// The next event from any seat running beside the lead.
 async fn next_aside(
     seats: &mut [(&'static str, mpsc::UnboundedReceiver<ExecutionEvent>)],
@@ -2667,7 +3611,7 @@ fn beside_seat(lead: &str, role: &Role, seats: &[Role], text: &str) -> String {
 /// chat; only where it is running, and what stopped it, belong in the transcript.
 fn aside(event: ExecutionEvent, screen: &mut Screen<'_>, name: &str) {
     match event {
-        // Refused at the source, but an agent that still asks is told no rather than the user.
+        // Only once the lead has ended: nobody is left to be asked, so the call is refused.
         ExecutionEvent::Permission(_, answer) => {
             let _ = answer.send(None);
         }
@@ -2681,6 +3625,15 @@ fn aside(event: ExecutionEvent, screen: &mut Screen<'_>, name: &str) {
             let route = screen
                 .view
                 .route(&agent, Some(provider), &model, reasoning.as_deref());
+            screen.view.pane.seat(crate::pane::Seat {
+                id: name.to_owned(),
+                state: crate::pane::SeatState::Working,
+                started_at: crate::pane::now_millis(),
+                agent_type: Some(agent.clone()),
+                model: Some(model.clone()),
+                description: None,
+            });
+            screen.view.report();
             screen.aside(name, &route);
         }
         ExecutionEvent::Progress(Progress::Unavailable { agent, error }) => {
@@ -2900,6 +3853,9 @@ fn answer(key: Key, slot: &mut Option<Pending>, screen: &mut Screen<'_>) {
     let dialog = slot.take().expect("pending permission");
     // Answered: the input area comes back and one line records the decision.
     screen.view.term.overlay = None;
+    screen.view.pane.report.state = crate::pane::State::Working;
+    screen.view.pane.report.interactive_prompt = None;
+    screen.view.report();
     let (code, answer) = match choice {
         0 => (OK, "allowed once"),
         1 => (OK, "allowed · approval is now auto"),
@@ -3025,6 +3981,10 @@ struct View {
     permission: PermissionMode,
     last_route: Option<String>,
     warned: BTreeSet<String>,
+    /// What the terminal's host is told this pane is doing (`pane.rs`).
+    pane: crate::pane::Reporter,
+    /// Helpers working in the background, for the status row.
+    helpers: usize,
 }
 impl View {
     fn new(tty: bool) -> Self {
@@ -3041,6 +4001,37 @@ impl View {
             permission: PermissionMode::Ask,
             last_route: None,
             warned: BTreeSet::new(),
+            pane: crate::pane::Reporter::new(tty),
+            helpers: 0,
+        }
+    }
+    /// Tells the host what changed, if anything did and it may be said now.
+    fn report(&mut self) {
+        if let Some(sequence) = self.pane.update() {
+            self.term.signal(&sequence);
+        }
+    }
+    /// The console asks the user something of its own: the pane is waiting on them.
+    fn asking(&mut self, heading: &[String]) -> crate::pane::State {
+        let before = self.pane.report.state;
+        self.pane.report.state = crate::pane::State::Waiting;
+        let text: Vec<String> = heading
+            .iter()
+            .map(|row| unpainted(row).trim().to_owned())
+            .filter(|row| !row.is_empty())
+            .collect();
+        self.pane.report.interactive_prompt = Some(text.join("\n"));
+        self.report();
+        before
+    }
+    fn asked(&mut self, before: crate::pane::State) {
+        self.pane.report.state = before;
+        self.pane.report.interactive_prompt = None;
+        self.report();
+    }
+    fn report_due(&mut self) {
+        if let Some(sequence) = self.pane.due() {
+            self.term.signal(&sequence);
         }
     }
     fn paint(&self, code: &str, text: &str) -> String {
@@ -3065,6 +4056,35 @@ impl View {
     }
     fn note(&mut self, text: &str) {
         self.result(MUTED, text);
+    }
+    /// A block announcing seats that start now: a heading, then one `name (title)` per seat,
+    /// in the shape Claude Code gives its background agents.
+    fn launched(&mut self, heading: &str, seats: Vec<(String, String)>) {
+        let block = self.launch_block(heading, seats);
+        self.term.note(&block);
+    }
+    fn launch_block(&self, heading: &str, seats: Vec<(String, String)>) -> String {
+        let mut rows = vec![format!(
+            "{} {}",
+            self.paint(BRAND, "●"),
+            self.paint(BOLD, heading)
+        )];
+        let count = seats.len();
+        let limit = self.width().saturating_sub(8).max(20);
+        for (index, (name, title)) in seats.into_iter().enumerate() {
+            let branch = if index + 1 == count { "└" } else { "├" };
+            let label = if title.is_empty() {
+                self.paint(&peer_color(&name), &name)
+            } else {
+                format!(
+                    "{} {}",
+                    self.paint(&peer_color(&name), &name),
+                    self.paint(MUTED, &fit(&format!("({title})"), limit))
+                )
+            };
+            rows.push(format!("   {} {label}", self.paint(MUTED, branch)));
+        }
+        rows.join("\n") + "\n"
     }
     /// `⎿ text`, wrapped rather than cut so an error stays readable.
     fn result(&mut self, code: &str, text: &str) {
@@ -3380,6 +4400,7 @@ impl View {
 #[derive(Default, Clone)]
 struct ToolState {
     title: Option<String>,
+    kind: Option<String>,
     detail: Option<String>,
     output: Option<String>,
     diffs: Vec<FileDiff>,
@@ -3432,6 +4453,18 @@ struct Screen<'v> {
 }
 impl<'v> Screen<'v> {
     fn new(view: &'v mut View) -> Self {
+        {
+            let report = &mut view.pane.report;
+            report.state = crate::pane::State::Working;
+            report.working_mode = None;
+            report.tool_name = None;
+            report.tool_input = None;
+            report.interactive_prompt = None;
+            report.interrupted = false;
+            report.turn_completed_at = None;
+            report.subagents.clear();
+        }
+        view.report();
         Self {
             view,
             started: Instant::now(),
@@ -3471,6 +4504,9 @@ impl<'v> Screen<'v> {
         if queued > 0 {
             parts.push(format!("{queued} queued"));
         }
+        if self.view.helpers > 0 {
+            parts.push(format!("{} in background", self.view.helpers));
+        }
         parts.push(format!(
             "{} ({}s) · esc to interrupt",
             self.phase,
@@ -3482,6 +4518,7 @@ impl<'v> Screen<'v> {
     }
     fn tick(&mut self) {
         self.frame += 1;
+        self.view.report_due();
     }
     fn spinner(&self) -> &'static str {
         const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -3756,6 +4793,8 @@ impl<'v> Screen<'v> {
             } => {
                 let label = format!("{agent} · {model}");
                 self.route = Some(label.clone());
+                self.view.pane.report.model = Some(label.clone());
+                self.view.report();
                 let changed = self.view.last_route.as_ref() != Some(&label);
                 if changed || self.failures > 0 {
                     let route =
@@ -3867,6 +4906,9 @@ impl<'v> Screen<'v> {
         if update.detail.is_some() {
             state.detail = update.detail;
         }
+        if update.kind.is_some() {
+            state.kind = update.kind;
+        }
         if update.output.is_some() {
             state.output = update.output;
         }
@@ -3906,6 +4948,10 @@ impl<'v> Screen<'v> {
                 state.shown = true;
                 let snapshot = state.clone();
                 self.phase = format!("Running {}", fit(&tool_label(&snapshot), 48));
+                let (name, input) = pane_tool(&snapshot);
+                self.view.pane.report.tool_name = Some(name);
+                self.view.pane.report.tool_input = input;
+                self.view.report();
                 if show {
                     self.begin();
                     let limit = self.view.width().saturating_sub(4);
@@ -3923,6 +4969,9 @@ impl<'v> Screen<'v> {
 
     /// Replaces the tool's running row in place when it is still the last one printed.
     fn finish_tool(&mut self, id: &str, state: &ToolState, failed: Option<bool>) {
+        self.view.pane.report.tool_name = None;
+        self.view.pane.report.tool_input = None;
+        self.view.report();
         let replace = self.live == Live::Tool(id.to_owned());
         if replace {
             self.live = Live::Nothing;
@@ -4076,7 +5125,18 @@ impl<'v> Screen<'v> {
             state.title = update.title;
             state.detail = update.detail;
             state.diffs = update.diffs;
+            state.kind = update.kind;
         }
+        {
+            let report = &mut self.view.pane.report;
+            report.state = crate::pane::State::Blocked;
+            let heading = tool_label(&state);
+            report.interactive_prompt = Some(match state.detail.as_deref() {
+                Some(detail) if detail != heading => format!("{heading}\n{detail}"),
+                _ => heading,
+            });
+        }
+        self.view.report();
         let limit = self.view.width().saturating_sub(4).max(20);
         let clean = |text: &str| text.replace('\u{1b}', "\\x1b");
         let mut rows = vec![
@@ -4134,6 +5194,16 @@ impl<'v> Screen<'v> {
     }
 
     fn done(&mut self) {
+        {
+            let report = &mut self.view.pane.report;
+            report.state = crate::pane::State::Done;
+            report.tool_name = None;
+            report.tool_input = None;
+            report.interactive_prompt = None;
+            report.turn_completed_at = Some(crate::pane::now_millis());
+            report.subagents.clear();
+        }
+        self.view.report();
         self.settle();
         self.end_block();
         let unfinished: Vec<_> = self
@@ -4150,7 +5220,9 @@ impl<'v> Screen<'v> {
         if !self.view.term.tty || !self.printed {
             return;
         }
-        let mut parts = vec![format!("{}s", self.started.elapsed().as_secs())];
+        let mut parts = vec![format!("Worked for {}", span(self.started.elapsed()))];
+        // When as well as how long: coming back to a terminal, the time is what says which.
+        parts.push(format!("done {}", clock(crate::activity::millis() / 1000)));
         if let Some(route) = &self.route {
             parts.push(route.clone());
         }
@@ -4222,6 +5294,30 @@ fn mailbox_activity(state: &ToolState) -> Option<&'static str> {
     .iter()
     .find(|(tool, _)| title.contains(tool))
     .map(|(_, activity)| *activity)
+}
+
+/// The tool line the host shows under the pane: a short name, then what it acts on.
+fn pane_tool(state: &ToolState) -> (String, Option<String>) {
+    let name = match state.kind.as_deref() {
+        Some("execute") => "Bash",
+        Some("read") => "Read",
+        Some("edit") => "Edit",
+        Some("delete") => "Delete",
+        Some("move") => "Move",
+        Some("search") => "Search",
+        Some("fetch") => "Fetch",
+        Some("think") => "Think",
+        _ => state
+            .title
+            .as_deref()
+            .map_or("Tool", |t| t.trim().trim_matches('`')),
+    };
+    let input = state
+        .detail
+        .as_deref()
+        .map(|d| d.strip_prefix("$ ").unwrap_or(d).to_owned())
+        .or_else(|| state.title.clone().filter(|t| t != name));
+    (name.to_owned(), input)
 }
 
 fn mail_ticker() -> tokio::time::Interval {
@@ -4315,12 +5411,88 @@ fn wrap(text: &mut String, limit: usize) -> String {
     }
 }
 
+/// `1 agent`, `2 agents`.
+fn agents(count: usize) -> String {
+    if count == 1 {
+        "1 agent".into()
+    } else {
+        format!("{count} agents")
+    }
+}
+
+/// A duration the way the footer and the seat lines say it: `16s`, `1m 48s`, `2h 5m`.
+fn span(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// What each account has left, from the freshest quota snapshot still valid and the runtime
+/// cooldowns: the most spent window per agent with its reset. Never probes; an agent nothing is
+/// known about is left out rather than shown as zero.
+pub fn accounts(config: &Config, store: &Store) -> Option<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+    let snapshots = store.quota_snapshots().ok()?;
+    let runtime = store.runtime().ok()?;
+    let until = |at: i64| span(Duration::from_secs(at.saturating_sub(now).max(0) as u64));
+    let mut parts = vec![];
+    for agent in config.agents.iter().filter(|a| a.enabled) {
+        let cooling = runtime
+            .get(&(agent.id.clone(), "*".to_owned()))
+            .and_then(|state| state.cooldown_until)
+            .filter(|at| *at > now);
+        if let Some(at) = cooling {
+            parts.push(format!("{} cooling {}", agent.id, until(at)));
+            continue;
+        }
+        let window = snapshots
+            .iter()
+            .filter(|s| s.agent == agent.id && s.valid_until > now)
+            .max_by_key(|s| s.observed_at)
+            .and_then(|s| {
+                s.windows
+                    .iter()
+                    .min_by(|a, b| a.remaining.total_cmp(&b.remaining))
+            });
+        if let Some(window) = window {
+            let used = ((1.0 - window.remaining) * 100.0).round().clamp(0.0, 100.0);
+            let mut part = format!("{} {used:.0}%", agent.id);
+            if let Some(at) = window.reset_at.filter(|at| *at > now) {
+                part.push_str(&format!(" · {}", until(at)));
+            }
+            parts.push(part);
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" │ "))
+}
+
 fn compact(n: u64) -> String {
     match n {
         0..1_000 => n.to_string(),
         1_000..1_000_000 => format!("{:.1}k", n as f64 / 1_000.0),
         _ => format!("{:.1}M", n as f64 / 1_000_000.0),
     }
+}
+
+/// Text without its SGR colouring.
+fn unpainted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut escape = false;
+    for c in text.chars() {
+        match (escape, c) {
+            (false, '\u{1b}') => escape = true,
+            (true, c) if c.is_ascii_alphabetic() => escape = false,
+            (true, _) => {}
+            (false, c) => out.push(c),
+        }
+    }
+    out
 }
 
 /// Display width ignoring ANSI color sequences.

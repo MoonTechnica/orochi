@@ -473,6 +473,7 @@ impl Client {
         let agent = AcpAgent::new(
             AcpAgentConfig::new(command)
                 .args(args)
+                .envs(crate::pane::quiet_hooks())
                 .envs(config.env.clone()),
         )
         .with_debug(move |line, direction| {
@@ -566,8 +567,30 @@ impl Client {
                             value["toolCall"]["kind"].as_str(),
                             Some("read" | "search" | "fetch" | "think") | None
                         );
+                        // A command may write, but a seat that reads often needs one to read at
+                        // all (`curl`, `rg`, `git log`): the user is asked, whatever the approval
+                        // mode, and nobody answering refuses the call rather than the seat.
+                        let runs = matches!(
+                            value["toolCall"]["kind"].as_str(),
+                            Some("execute" | "other")
+                        );
                         let decision = if active {
-                            if read_only && writes && !coordination_tool(&value) {
+                            if read_only
+                                && runs
+                                && !coordination_tool(&value)
+                                && let Some(events) = &permission_events
+                            {
+                                let (tx, rx) = oneshot::channel();
+                                let mut asked = value.clone();
+                                asked["orochi"] = serde_json::json!({"readOnly": true});
+                                let answer =
+                                    if events.send(ExecutionEvent::Permission(asked, tx)).is_ok() {
+                                        rx.await.ok().flatten()
+                                    } else {
+                                        None
+                                    };
+                                answer.or_else(|| reject_once_option(&value))
+                            } else if read_only && writes && !coordination_tool(&value) {
                                 // Said, not merely done: an agent told "no" explains itself in
                                 // its own words, and a reader is left guessing who refused it
                                 // and why. This seat cannot write, and that is Orochi's answer.
