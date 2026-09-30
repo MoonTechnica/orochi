@@ -217,8 +217,10 @@ pub struct SandboxConfig {
     pub mounts: Vec<PathBuf>,
     /// The ZFS pool (a sparse file inside the VM) every sandbox's volumes are clones in.
     pub pool_gib: u32,
-    /// The bridge sandboxes sit on, fixed so the route to it from this machine never moves.
+    /// The bridge sandboxes sit on, inside the VM.
     pub subnet: String,
+    /// The gateway's port on this machine: `http://<port>-<project>.localhost:<gateway_port>`.
+    pub gateway_port: u16,
     /// Per sandbox.
     pub limits_cpu: u32,
     pub limits_memory_gib: u32,
@@ -262,6 +264,7 @@ impl Default for SandboxConfig {
             mounts: vec![],
             pool_gib: 60,
             subnet: "10.203.0.1/24".into(),
+            gateway_port: 1355,
             limits_cpu: 4,
             limits_memory_gib: 6,
             quota_gib: 30,
@@ -890,6 +893,10 @@ impl Config {
         ensure!(
             crate::sandbox::Subnet::parse(&sandbox.subnet).is_some(),
             "sandbox.subnet must be an IPv4 gateway address with a /8-/30 prefix, such as 10.203.0.1/24"
+        );
+        ensure!(
+            sandbox.gateway_port >= 1024,
+            "sandbox.gateway_port must be 1024 or above (Lima forwards it without root)"
         );
         ensure!(
             sandbox.mounts.iter().all(|m| m.is_absolute()),

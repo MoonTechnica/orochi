@@ -129,8 +129,8 @@ const WORDS = {
       "専用の Linux コンテナで動き、中で Docker デーモンが使えます。フォルダはコピーせずマウントします。",
     "A virtual machine of its own: the strongest separation, slower to start.":
       "専用の仮想マシンで動きます。分離は最も強く、起動は遅めです。",
-    "Services started inside open at <name>.sbx, and at 127.0.0.1 while the project is focused.":
-      "中で起動したサービスは <name>.sbx で、フォーカス中は 127.0.0.1 でも開けます。",
+    "Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.":
+      "中で起動したサービスは http://<ポート>-<プロジェクト>.localhost:1355 で、フォーカス中は 127.0.0.1 でも開けます。",
     Advanced: "詳細設定",
     "Docker inside the sandbox": "サンドボックス内で Docker を使う",
     Cancel: "キャンセル",
@@ -148,7 +148,6 @@ const WORDS = {
     "Start VM": "VM を起動",
     "Stop VM": "VM を停止",
     "Build image": "イメージをビルド",
-    "Set up network": "ネットワークを設定",
     "Stop idle": "アイドルを停止",
     Focus: "フォーカス",
     Unfocus: "フォーカス解除",
@@ -1075,7 +1074,7 @@ function askPlace(root, where) {
       modes.append(option);
     }
     el("place-note").textContent =
-      mode === "host" ? "" : t("Services started inside open at <name>.sbx, and at 127.0.0.1 while the project is focused.");
+      mode === "host" ? "" : t("Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.");
     const toggle = el("place-docker");
     toggle.textContent = t("Docker inside the sandbox");
     toggle.setAttribute("aria-checked", String(docker && mode === "container"));
@@ -1211,7 +1210,6 @@ async function drawSandboxes(host) {
   }
   buttons.append(
     sandboxAction("Build image", () => job({ op: "image", vm: false }), { disabled: busy("image") || !view.reachable }),
-    sandboxAction("Set up network", () => job({ op: "network" }), { disabled: busy("network") || view.client !== "lima" || view.vm !== "Running" }),
     sandboxAction("Stop idle", () => job({ op: "gc" }), { disabled: busy("gc") || !view.reachable }),
   );
   if (view.projects.some((p) => p.focused.length)) {
@@ -1247,7 +1245,7 @@ async function drawSandboxes(host) {
 
       const reach = text("div", "sbx-reach");
       if (p.mode !== "host") {
-        reach.append(text("code", null, p.host));
+        reach.append(text("code", null, p.url));
         if (p.address) reach.append(text("span", "where", p.address));
         for (const port of p.focused) reach.append(text("code", "sbx-port", `127.0.0.1:${port}`));
       }
@@ -1295,7 +1293,7 @@ async function drawSandboxes(host) {
 }
 
 const JOB_NAMES = {
-  up: "Set up VM", down: "Stop VM", image: "Build image", network: "Set up network",
+  up: "Set up VM", down: "Stop VM", image: "Build image",
   create: "Create sandbox", mode: "Change where it runs", focus: "Focus", unfocus: "Unfocus",
   snapshot: "Snapshot", reset: "Reset", remove: "Delete", gc: "Stop idle",
 };

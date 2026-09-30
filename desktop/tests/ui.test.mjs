@@ -389,7 +389,7 @@ test("choosing a sandbox makes it before the thread starts", async () => {
   choose(el, "container");
   assert.equal(el("place-docker").disabled, false);
   assert.equal(el("place-docker").getAttribute("aria-checked"), "true", "with Docker inside by default");
-  assert.match(el("place-note").textContent, /\.sbx/, "and where its services will be");
+  assert.match(el("place-note").textContent, /localhost:1355/, "and where its services will be");
   el("place-go").dispatch("click");
   await settle();
   const names = calls.map(([name]) => name);
@@ -450,11 +450,11 @@ const SANDBOXES = {
   projects: [
     {
       name: "web-app", root: "/work/web-app", mode: "container", tier: "container", docker: true,
-      status: "running", address: "10.203.0.7", host: "web-app.sbx", focused: [54323], busy: false,
+      status: "running", address: "10.203.0.7", url: "http://<port>-web-app.localhost:1355", focused: [54323], busy: false,
     },
     {
       name: "api", root: "/work/api", mode: "host", tier: "container", docker: true,
-      status: "stopped", address: null, host: "api.sbx", focused: [], busy: false,
+      status: "stopped", address: null, url: "http://<port>-api.localhost:1355", focused: [], busy: false,
     },
   ],
   jobs: [
@@ -485,13 +485,13 @@ test("the sandboxes screen shows the host, each project, where it runs and how t
   assert.match(drawn, /Host VM: running/);
   const web = project("web-app").render();
   assert.match(web, /\/work\/web-app/);
-  assert.match(web, /web-app\.sbx/, "its services by name");
+  assert.match(web, /http:\/\/<port>-web-app\.localhost:1355/, "its services through the gateway, nothing to set up here");
   assert.match(web, /127\.0\.0\.1:54323/, "and the focused ports as its tools print them");
   const checked = (name) =>
     project(name).querySelectorAll("button").find((b) => b.getAttribute("aria-checked") === "true").dataset.mode;
   assert.equal(checked("web-app"), "container");
   assert.equal(checked("api"), "host");
-  assert.doesNotMatch(project("api").render(), /api\.sbx/, "a project running here has no sandbox address to offer");
+  assert.doesNotMatch(project("api").render(), /api\.localhost/, "a project running here has no sandbox address to offer");
   assert.match(drawn, /installing docker/, "a running operation shows what it is saying");
 });
 
@@ -505,12 +505,15 @@ test("changing where a project runs, focusing and building are operations the co
     false,
     "a project running here has no sandbox to snapshot",
   );
-  await press(el("panel-body").querySelectorAll("section")[0], "Set up network");
-  assert.deepEqual(jobs(calls).slice(0, 3), [
+  assert.deepEqual(jobs(calls).slice(0, 2), [
     { op: "mode", root: "/work/api", mode: "container" },
     { op: "unfocus" },
-    { op: "network" },
   ]);
+  assert.equal(
+    el("panel-body").querySelectorAll("button").some((b) => b.textContent === "Set up network"),
+    false,
+    "nothing here asks for an administrator: the gateway needs no setup on this machine",
+  );
   const build = el("panel-body").querySelectorAll("button").find((b) => b.textContent === "Build image");
   assert.equal(build.disabled, true, "an image already being built is not started twice");
 });

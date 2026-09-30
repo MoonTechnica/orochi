@@ -5,8 +5,9 @@ Written: 2026-09-30.
 **Status (2026-09-30): S1–S3 implemented, with focus (S2), snapshots and idle stop (S5 in part)
 and the desktop (S6). Verified on a real Lima VM the same day** for the host, the image, Docker
 and Supabase inside a project's sandbox, focus, and a full ACP run with the fixture agent
-([Real Validation 2026-09-30](real-validation-20260930-2.md)); `<name>.sbx`, real agents inside,
-the VM tier and the desktop against a live VM are **unverified**. §15 says where the build
+([Real Validation 2026-09-30](real-validation-20260930-2.md)), and the `*.localhost` gateway on
+2026-10-01 ([record](real-validation-20261001.md)); real agents inside, the VM tier and the
+desktop against a live VM are **unverified**. §15 says where the build
 departed from this design, several times because of what that run found.
 
 One sentence: **each project gets its own Linux sandbox with a Docker daemon of its own inside
@@ -201,7 +202,10 @@ and no project file ever enters the image.
 Inside the VM, Incus's bridge `incusbr0` gives every sandbox an address and its dnsmasq answers
 `<name>.incus`. Two layers put that on the Mac.
 
-### 6.1 By name: `http://ficchat.sbx:54323`
+### 6.1 By name: `http://ficchat.sbx:54323` — replaced by the gateway (§15, 2026-10-01)
+
+*As designed; not what ships. The user asked for nothing that needs root on the Mac, so this
+layer is the `*.localhost` gateway instead (§15).*
 
 One route on the Mac for the bridge subnet via the VM's vzNAT address, and one resolver file
 `/etc/resolver/sbx` pointing at the bridge's dnsmasq. Both need root once; a LaunchDaemon
@@ -484,16 +488,16 @@ executing agent's launch and the evaluator each check; the desktop asks where a 
 | A per-project Docker volume cloned from a golden one (§5.3, D4) | **None.** Docker's data stays on the instance's root disk, bounded by `sandbox.quota_gib` | Docker 29 keeps images under `/var/lib/containerd`, so the volume stayed empty (measured); the root disk is already a ZFS clone of the image, so the pre-pulled images are shared copy-on-write and a snapshot of the instance covers them |
 | `setpriv --pdeathsig` ends the agent inside (§8.1) | `sbx-run` is a supervisor: the command in its own process group, killed when it ends; checks get `SBX_HOLD=1` and the end of the stdin Orochi holds open kills them | `incus exec` leaves the process running when its client is killed (measured); `pdeathsig` did not help |
 | ZFS left at its defaults | ARC capped at 1 GiB | It took 2.85 GiB of an 8 GiB VM (measured) |
+| By name through a route and `/etc/resolver/sbx`, root once, a LaunchDaemon to keep the route (§6.1, D5) | **A gateway in the VM** (`src/sandbox/gateway.py`, 2026-10-01): `http://<port>-<project>.localhost:<sandbox.gateway_port>` reaches `<project>.sbx:<port>` | The user asked that nothing change the Mac's system configuration or ask for root. Browsers and curl resolve `*.localhost` to loopback themselves (RFC 6761), Lima forwards the VM's loopback port without root, and systemd-resolved in the VM is told `~sbx` belongs to the bridge's DNS. It reads a request's head only for `Host`, then passes bytes both ways, so WebSockets work; it is HTTP only, and `focus` covers the rest. Every project is reachable at once, where focus reaches one |
 | Agent credentials (§8.3) | `/var/lib/sbx/creds/{claude,codex}` in the VM, mounted at `~/.claude` and `~/.codex` with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` set | Claude Code keeps `.claude.json` inside `CLAUDE_CONFIG_DIR` when it is set, so one directory holds all of it |
 
 The desktop (S6, built the same day): the new-project question (`placement` / `place`), a
 Sandboxes screen over `view::sandboxes`, and every operation as `sandbox::jobs` — the CLI
 command run in the background with its output and exit code kept under
-`<data>/sandbox/jobs/`, the newest 50 kept. A window has no terminal for `sudo`, so
-`network --apply` without one asks for an administrator through `osascript` on macOS.
+`<data>/sandbox/jobs/`, the newest 50 kept. Nothing it offers needs an administrator.
 
 Answered by the real run ([2026-09-30](real-validation-20260930-2.md)): ACP is carried byte-clean
 through `limactl shell` and `incus exec`; the image builds and `supabase start` runs inside a
 nested container; Docker uses `overlayfs` on ZFS; a killed agent or check now ends inside.
-Still open: whether the bridge's dnsmasq answers queries routed from the Mac, real agents
-logged in inside, and the VM tier.
+Still open: real agents logged in inside, and the VM tier. (Whether the bridge's DNS answers
+the Mac no longer matters: nothing on the Mac asks it.)

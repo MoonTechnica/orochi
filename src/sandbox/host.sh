@@ -3,7 +3,7 @@
 # made from. Run as root by `orochi sandbox up`; safe to run again, and applies changed sizes.
 set -euo pipefail
 : "${SBX_PROJECT:?}" "${SBX_SUBNET:?}" "${SBX_POOL_GIB:?}" "${SBX_UID:?}" "${SBX_GID:?}"
-: "${SBX_CPU:?}" "${SBX_MEM_GIB:?}" "${SBX_USER:=}"
+: "${SBX_CPU:?}" "${SBX_MEM_GIB:?}" "${SBX_USER:=}" "${SBX_GATEWAY_PORT:?}"
 export DEBIAN_FRONTEND=noninteractive
 
 if ! command -v incus >/dev/null; then
@@ -89,6 +89,47 @@ config:
   security.syscalls.intercept.setxattr: "true"
 devices: {}
 PROFILE
+
+# `<project>.sbx` resolves in the VM too, from the bridge's own DNS, so the gateway can reach a
+# sandbox by name (the Incus documentation's systemd-resolved integration).
+cat > /etc/systemd/system/orochi-sandbox-dns.service <<UNIT
+[Unit]
+Description=Resolve sandboxes' names from sbxbr0's DNS
+BindsTo=sys-subsystem-net-devices-sbxbr0.device
+After=sys-subsystem-net-devices-sbxbr0.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/resolvectl dns sbxbr0 ${SBX_SUBNET%/*}
+ExecStart=/usr/bin/resolvectl domain sbxbr0 ~sbx
+ExecStopPost=/usr/bin/resolvectl revert sbxbr0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sys-subsystem-net-devices-sbxbr0.device
+UNIT
+
+# The HTTP gateway: http://<port>-<project>.localhost:<port> on the Mac, forwarded by Lima
+# from this loopback port. Copied in beside this script by `orochi sandbox up`.
+install -m 0755 /var/lib/orochi-sandbox-gateway.py /usr/local/lib/orochi-sandbox-gateway.py
+cat > /etc/systemd/system/orochi-sandbox-gateway.service <<UNIT
+[Unit]
+Description=Orochi sandboxes' HTTP gateway
+After=network-online.target orochi-sandbox-dns.service
+Wants=network-online.target
+
+[Service]
+Environment=SBX_GATEWAY_PORT=${SBX_GATEWAY_PORT}
+ExecStart=/usr/bin/python3 /usr/local/lib/orochi-sandbox-gateway.py
+DynamicUser=yes
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable orochi-sandbox-dns.service orochi-sandbox-gateway.service
+systemctl restart orochi-sandbox-dns.service orochi-sandbox-gateway.service
 
 # One login inside serves every sandbox: the CLIs' own homes live here, mounted into each.
 install -d -o "$SBX_UID" -g "$SBX_GID" -m 0700 /var/lib/sbx/creds/claude /var/lib/sbx/creds/codex

@@ -121,7 +121,12 @@ fn success(output: &Output) {
     );
 }
 fn create(w: &Workspace) {
-    success(&w.run(&["sandbox", "create", "--ports", "3000"]));
+    let output = w.run(&["sandbox", "create", "--ports", "3000"]);
+    success(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("http://<port>-repo.localhost:1355"),
+        "creating says where its services open, with nothing to set up here"
+    );
 }
 
 #[test]
@@ -583,7 +588,12 @@ fn what_a_window_may_ask_for_becomes_fixed_arguments_and_nothing_else() {
         .args(),
         ["sandbox", "mode", "host", "/work/web; rm -rf /", "--yes"]
     );
-    assert_eq!(Request::Network.args(), ["sandbox", "network", "--apply"]);
+    assert_eq!(
+        Request::Image { vm: true }.args(),
+        ["sandbox", "image", "--vm"]
+    );
+    // Nothing a window can ask for needs an administrator: there is no network setup to run.
+    assert!(serde_json::from_str::<Request>(r#"{"op":"network"}"#).is_err());
     let parsed: Request = serde_json::from_str(r#"{"op":"remove","root":"/work/web"}"#).unwrap();
     assert_eq!(parsed.args(), ["sandbox", "rm", "/work/web", "--yes"]);
     assert!(serde_json::from_str::<Request>(r#"{"op":"exec","root":"/"}"#).is_err());
@@ -596,4 +606,42 @@ fn what_a_window_may_ask_for_becomes_fixed_arguments_and_nothing_else() {
         },
     );
     assert!(relative.is_err());
+}
+
+#[test]
+fn the_gateway_routes_by_host_and_passes_upgraded_connections_through() {
+    let status = Command::new("python3")
+        .args([
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-p",
+            "test_sandbox_gateway.py",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn ports_lists_what_listens_inside_with_the_address_each_opens_at_here() {
+    let w = Workspace::new();
+    create(&w);
+    let output = w
+        .command()
+        .args(["sandbox", "ports"])
+        .env("FAKE_SS", "54323,5173")
+        .output()
+        .unwrap();
+    success(&output);
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("http://54323-repo.localhost:1355"), "{said}");
+    assert!(said.contains("http://5173-repo.localhost:1355"), "{said}");
+    assert!(
+        !w.run(&["sandbox", "network"]).status.success(),
+        "the root-only setup is gone"
+    );
 }

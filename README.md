@@ -324,15 +324,17 @@ A project can run its agents and checks in a Linux sandbox of its own instead of
 ```sh
 orochi sandbox up                     # create/start the Lima VM and prepare Incus in it
 orochi sandbox image build            # the golden image: Docker, Node, the agents' CLIs and pinned ACP bridges, Supabase's images
-orochi sandbox network --apply        # once, as root: route to the bridge so <project>.sbx resolves
 orochi sandbox create                 # this directory gets a sandbox; its runs now go inside
 orochi sandbox mode host|container|vm # switch where this project's agents run
 orochi --sandbox=host "task"          # one run here, whatever the project's mode
+orochi sandbox ports                  # what listens inside, and http://<port>-<project>.localhost:1355 for each
 orochi sandbox focus [--watch]        # this project's listening ports at 127.0.0.1, as its tools print them
 orochi sandbox enter | status | snapshot | restore <name> | reset | rm | gc
 ```
 
-The desktop window asks where a new project runs (this Mac, a sandbox container or a sandbox VM) before its first thread, and its **Sandboxes** screen (account menu) does everything above: set up and stop the VM, build the image, set up the network (macOS asks for an administrator), switch a project between here / container / VM, focus, snapshot, reset and delete, with each operation's output. An operation there is the same `orochi sandbox …` command run in the background (`src/sandbox/jobs.rs`, output under `<data>/sandbox/jobs/`). A thread in a sandboxed project says so in its header. Inside a sandbox an agent logs in once (`orochi sandbox enter`, then `claude` / `codex`), and that login serves every sandbox. Verified on a real Lima VM on 2026-09-30 for the host, the image, Docker and Supabase inside a project's sandbox, focus, and a full run with the fixture agent ([record](docs/real-validation-20260930-2.md)); `<name>.sbx`, real agents logged in inside and the VM tier are **unverified**. The mailbox and stdio MCP servers are not available inside a sandbox (they are this machine's executables; reported per agent).
+**Reaching services needs nothing set up on this machine and never root.** Every sandbox's HTTP services open at `http://<port>-<project>.localhost:1355` (Supabase Studio in project `demo`: `http://54323-demo.localhost:1355`), all projects at once: browsers and curl resolve `*.localhost` to the loopback address themselves, Lima forwards the VM's gateway port, and the gateway (`src/sandbox/gateway.py`, inside the VM) passes each request, WebSocket upgrades included, to `<project>.sbx:<port>`. For anything that is not HTTP (a database port) or a service bound to `127.0.0.1` inside, `focus` puts one project's ports at `127.0.0.1` as its tools print them.
+
+The desktop window asks where a new project runs (this Mac, a sandbox container or a sandbox VM) before its first thread, and its **Sandboxes** screen (account menu) does everything above: set up and stop the VM, build the image, switch a project between here / container / VM, focus, snapshot, reset and delete, with each operation's output. An operation there is the same `orochi sandbox …` command run in the background (`src/sandbox/jobs.rs`, output under `<data>/sandbox/jobs/`). A thread in a sandboxed project says so in its header. Inside a sandbox an agent logs in once (`orochi sandbox enter`, then `claude` / `codex`), and that login serves every sandbox. Verified on a real Lima VM on 2026-09-30 for the host, the image, Docker and Supabase inside a project's sandbox, focus, and a full run with the fixture agent ([record](docs/real-validation-20260930-2.md)); the gateway on 2026-10-01 with Supabase and a second project at once ([record](docs/real-validation-20261001.md)); real agents logged in inside and the VM tier are **unverified**. The mailbox and stdio MCP servers are not available inside a sandbox (they are this machine's executables; reported per agent).
 
 ### MCP servers
 
@@ -524,6 +526,7 @@ src/evaluator.rs    Local evaluation and process management
 src/sandbox.rs      Per-project sandboxes: modes, the project registry, the Incus client, wrapping an agent's launch and a check into `incus exec`
 src/sandbox/jobs.rs Sandbox operations run in the background for a caller with no terminal (the desktop window), as the same `orochi sandbox` commands
 src/sandbox/ops.rs  `orochi sandbox`: the Lima host VM, the golden image, creating / switching / focusing / snapshotting a project's instance (lima.yaml, host.sh, image.sh are embedded)
+src/sandbox/gateway.py The VM's `*.localhost` HTTP gateway: `http://<port>-<project>.localhost:1355` to `<project>.sbx:<port>`, bytes passed both ways
 src/storage.rs      SQLite telemetry, schema, repository lock
 src/activity.rs     The conversation store a desktop client reads: threads, turns, seats, items, patches, prompts, controls, the room, and the views over them
 src/activity/recorder.rs  Writes the one event stream down on its way to whoever asked for it

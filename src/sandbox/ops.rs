@@ -1,5 +1,5 @@
 //! What `orochi sandbox …` does: the host VM, the golden image, and each project's instance.
-use super::{Focus, Incus, Mode, Project, State, Subnet, ids, label, mounts};
+use super::{Focus, Incus, Mode, Project, State, ids, label, mounts};
 use crate::config::{SandboxClient, SandboxConfig};
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -10,6 +10,15 @@ use std::{
 pub const LIMA_TEMPLATE: &str = include_str!("lima.yaml");
 pub const HOST_SCRIPT: &str = include_str!("host.sh");
 pub const IMAGE_SCRIPT: &str = include_str!("image.sh");
+pub const GATEWAY_SCRIPT: &str = include_str!("gateway.py");
+
+/// Where a sandbox's HTTP service opens on this machine, through the VM's gateway: a
+/// `*.localhost` name, which browsers and curl resolve to the loopback address themselves, so
+/// nothing here is configured and no root is needed. `None` shows the pattern.
+pub fn url(config: &SandboxConfig, project: &str, port: Option<u16>) -> String {
+    let port = port.map_or_else(|| "<port>".to_owned(), |p| p.to_string());
+    format!("http://{port}-{project}.localhost:{}", config.gateway_port)
+}
 
 /// The image a tier's instances start from.
 pub fn image(tier: Mode) -> &'static str {
@@ -74,6 +83,7 @@ fn host_env(config: &SandboxConfig) -> Vec<String> {
         format!("SBX_CPU={}", config.limits_cpu),
         format!("SBX_MEM_GIB={}", config.limits_memory_gib),
         format!("SBX_USER={}", std::env::var("USER").unwrap_or_default()),
+        format!("SBX_GATEWAY_PORT={}", config.gateway_port),
     ]
 }
 
@@ -138,21 +148,34 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
         command.args(args);
         command
     };
-    let mut copy = shell(&["sudo", "tee", "/var/lib/orochi-sandbox-host.sh"]);
-    copy.stdin(Stdio::piped()).stdout(Stdio::null());
-    let mut child = copy.spawn()?;
-    {
-        use std::io::Write;
-        child
-            .stdin
-            .take()
-            .expect("piped")
-            .write_all(HOST_SCRIPT.as_bytes())?;
+    for (path, content, what) in [
+        (
+            "/var/lib/orochi-sandbox-host.sh",
+            HOST_SCRIPT,
+            "setup script",
+        ),
+        (
+            "/var/lib/orochi-sandbox-gateway.py",
+            GATEWAY_SCRIPT,
+            "gateway",
+        ),
+    ] {
+        let mut copy = shell(&["sudo", "tee", path]);
+        copy.stdin(Stdio::piped()).stdout(Stdio::null());
+        let mut child = copy.spawn()?;
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .expect("piped")
+                .write_all(content.as_bytes())?;
+        }
+        ensure!(
+            child.wait()?.success(),
+            "could not copy the {what} into the VM"
+        );
     }
-    ensure!(
-        child.wait()?.success(),
-        "could not copy the setup script into the VM"
-    );
     let env = host_env(config);
     let mut run: Vec<&str> = vec!["sudo", "env"];
     run.extend(env.iter().map(String::as_str));
@@ -160,7 +183,8 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
     let mut child = shell(&run).stdin(Stdio::null()).spawn()?;
     ensure!(child.wait()?.success(), "the sandbox host setup failed");
     println!(
-        "Sandbox host ready. Next: `orochi sandbox image build`, then `orochi sandbox network --apply` once."
+        "Sandbox host ready. Next: `orochi sandbox image build`. Services open at {} from this machine.",
+        url(config, "<project>", None)
     );
     Ok(())
 }
@@ -774,55 +798,6 @@ pub fn gc(config: &SandboxConfig, data: &Path) -> Result<Vec<String>> {
         }
     }
     Ok(stopped)
-}
-
-/// The commands that route this machine to the sandboxes' bridge and resolve `<name>.sbx`.
-pub fn network_plan(config: &SandboxConfig) -> Result<Vec<String>> {
-    ensure!(
-        config.client == SandboxClient::Lima,
-        "with an Incus client, route to the host's bridge the way that network is run"
-    );
-    let subnet = Subnet::parse(&config.subnet).context("sandbox.subnet")?;
-    let output = std::process::Command::new(limactl(config)?)
-        .args([
-            "shell",
-            "--workdir",
-            "/",
-            &config.lima_instance,
-            "ip",
-            "-4",
-            "-o",
-            "addr",
-            "show",
-            "lima0",
-        ])
-        .output()?;
-    let via = String::from_utf8_lossy(&output.stdout)
-        .split_whitespace()
-        .skip_while(|w| *w != "inet")
-        .nth(1)
-        .and_then(|a| a.split('/').next())
-        .map(str::to_owned)
-        .with_context(|| {
-            format!(
-                "{} has no vzNAT address yet; is it running?",
-                config.lima_instance
-            )
-        })?;
-    let cidr = subnet.cidr();
-    let plist = "/Library/LaunchDaemons/dev.orochi.sandbox-route.plist";
-    Ok(vec![
-        format!(
-            "/sbin/route -n delete -net {cidr} >/dev/null 2>&1; /sbin/route -n add -net {cidr} {via}"
-        ),
-        format!(
-            "mkdir -p /etc/resolver && printf 'nameserver {}\\n' > /etc/resolver/sbx",
-            subnet.gateway
-        ),
-        format!(
-            "cat > {plist} <<'PLIST'\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>dev.orochi.sandbox-route</string>\n<key>ProgramArguments</key><array><string>/sbin/route</string><string>-n</string><string>add</string><string>-net</string><string>{cidr}</string><string>{via}</string></array>\n<key>RunAtLoad</key><true/>\n</dict></plist>\nPLIST"
-        ),
-    ])
 }
 
 /// Every recorded project with its instance's state, for `status`.

@@ -282,12 +282,8 @@ pub enum SandboxCommand {
     },
     /// Stop sandboxes idle longer than sandbox.idle_stop_minutes.
     Gc,
-    /// Route this machine to the sandboxes' bridge so `<name>.sbx` resolves (root, once).
-    Network {
-        /// Run the commands with sudo instead of printing them.
-        #[arg(long)]
-        apply: bool,
-    },
+    /// What this project's sandbox listens on, and the address each opens at here.
+    Ports { path: Option<PathBuf> },
     /// Build the golden image every sandbox is created from.
     Image {
         /// Build the VM tier's image instead.
@@ -1596,13 +1592,13 @@ async fn sandbox(
                     })
                     .unwrap_or_default();
                 println!(
-                    "{:<20} {:<9} {:<9} {:<7} {:<15} {}.sbx  {}{focus}",
+                    "{:<20} {:<9} {:<9} {:<7} {:<15} {}  {}{focus}",
                     project.name,
                     project.mode.key(),
                     project.tier.key(),
                     status,
                     address.unwrap_or_else(|| "-".into()),
-                    project.name,
+                    ops::url(sandbox, &project.name, None),
                     project.root.display(),
                 );
             }
@@ -1626,10 +1622,11 @@ async fn sandbox(
                 },
             )?;
             println!(
-                "Sandbox {} ready: agents and checks in {} now run inside it ({}).",
+                "Sandbox {} ready: agents and checks in {} now run inside it ({}). Its services open at {}.",
                 project.name,
                 project.root.display(),
-                project.mode.key()
+                project.mode.key(),
+                ops::url(sandbox, &project.name, None)
             );
         }
         SandboxCommand::Mode { mode, path, yes } => {
@@ -1746,44 +1743,33 @@ async fn sandbox(
                 println!("stopped {name}");
             }
         }
-        SandboxCommand::Network { apply } => {
-            let plan = ops::network_plan(sandbox)?;
-            if !apply {
-                println!("# Run as root once (or pass --apply to run them with sudo):");
-                for step in &plan {
-                    println!("{step}");
-                }
-            } else if std::io::stdin().is_terminal() || !cfg!(target_os = "macos") {
-                for step in &plan {
-                    let status = std::process::Command::new("sudo")
-                        .args(["/bin/sh", "-c", step])
-                        .status()?;
-                    ensure!(status.success(), "failed: {step}");
-                }
-                println!("Sandboxes are now reachable as <name>.sbx from this machine.");
-            } else {
-                // No terminal to type a password into (the desktop window started this): macOS
-                // asks for an administrator in a dialog of its own.
-                let mut script = tempfile::Builder::new().suffix(".sh").tempfile()?;
-                script.write_all(format!("set -e\n{}\n", plan.join("\n")).as_bytes())?;
-                let path = script
-                    .path()
-                    .to_string_lossy()
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"");
-                let status = std::process::Command::new("/usr/bin/osascript")
-                    .args([
-                        "-e",
-                        &format!(
-                            "do shell script \"/bin/sh '{path}'\" with administrator privileges"
-                        ),
-                    ])
-                    .status()?;
-                ensure!(
-                    status.success(),
-                    "the administrator prompt was declined or the setup failed"
+        SandboxCommand::Ports { path } => {
+            let root = at(path)?;
+            let state = sbx::State::load(data)?;
+            let project = state
+                .project_for(&root)
+                .filter(|p| p.mode.sandboxed())
+                .with_context(|| format!("{} runs on this machine; no sandbox", root.display()))?;
+            let focused = state
+                .focus
+                .as_ref()
+                .filter(|f| f.name == project.name)
+                .map(|f| f.ports.clone())
+                .unwrap_or_default();
+            let ports = ops::listening(sandbox, &project.name)?;
+            if ports.is_empty() {
+                println!("Nothing is listening in {} yet.", project.name);
+            }
+            for port in ports {
+                let here = if focused.contains(&port) {
+                    format!("  127.0.0.1:{port}")
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{port:<6} {}{here}",
+                    ops::url(sandbox, &project.name, Some(port))
                 );
-                println!("Sandboxes are now reachable as <name>.sbx from this machine.");
             }
         }
     }
