@@ -570,9 +570,11 @@ impl Client {
                         // A command may write, but a seat that reads often needs one to read at
                         // all (`curl`, `rg`, `git log`): the user is asked, whatever the approval
                         // mode, and nobody answering refuses the call rather than the seat.
+                        // A request that does not say what it is (codex-acp names the call by
+                        // id alone) is not taken for a read either: it is asked about.
                         let runs = matches!(
                             value["toolCall"]["kind"].as_str(),
-                            Some("execute" | "other")
+                            Some("execute" | "other") | None
                         );
                         let decision = if active {
                             if read_only

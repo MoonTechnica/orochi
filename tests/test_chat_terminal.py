@@ -427,6 +427,20 @@ MOCK_LOG = "{self.log}"
         os.close(self.master)
 
 
+class FailedTurns(unittest.TestCase):
+    def test_a_turn_no_agent_could_take_leaves_the_conversation_open(self):
+        c = Console(behavior="auth")
+        try:
+            c.type("hello")
+            c.key(b"\r")
+            c.wait("no eligible execution candidate")
+            c.pump(2)
+            self.assertTrue(c.alive(), c.rows())
+            self.assertTrue(c.input(), "the prompt is back: " + c.rows())
+        finally:
+            c.close()
+
+
 class Lookups(unittest.TestCase):
     def test_reads_and_searches_in_a_row_are_one_line(self):
         c = Console(env={"MOCK_LOOKUPS": "1"})

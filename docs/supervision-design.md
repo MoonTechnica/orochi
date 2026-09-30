@@ -2,10 +2,11 @@
 
 Written: 2026-09-29.
 
-**Status (2026-09-30): S0–S6 implemented; automated tests only** (mock agents, a pty-driven
-console and the window's recorded-view tests). S7 — whether real agents delegate sensibly and
-how a running Orca draws the pane — is **unverified**, and so are the window's notifications
-and dock badge, which no test can see the system show. Decisions are in §2;
+**Status (2026-09-30): S0–S6 implemented; S7 partly verified.** A real Codex lead, inside a
+real Orca pane, delegated to two helpers, answered at once and merged their reports, and Orca
+recorded the pane's state ([real-validation-20260930.md](real-validation-20260930.md)). Not
+verified: Orca's drawing of the helpers, a Claude lead, delegation nobody asked for, and the
+window's notifications and dock badge. Decisions are in §2;
 where the implementation departed from the design, §14 says how and why.
 
 One goal, three surfaces: **a person running several agents at once can see which one needs
@@ -614,4 +615,7 @@ Nothing else: the cap is `roles::MAX_SEATS` (D5), the timeouts are constants
 | Effort pill in the agent's own words | The canonical rungs (`low` … `xhigh`), cycled | The window never discovers an agent; `effort.rs` translates a canonical rung for the agent it reaches |
 | Notifications through the page's own permission | A `notify` command in Rust (`tauri-plugin-notification`), and `set_badge_count` for the dock | The window declares no capabilities; a call from Rust needs none |
 | Search over `items.text` | An FTS5 table over the user's messages and **finished** replies, kept by triggers | A reply indexed on every streamed chunk would rewrite the index dozens of times a second |
+| D3: every report returns as its own completion turn when the lead is idle | A report is held while other helpers still run, up to `background::HOLD` (5 minutes) | Measured 2026-09-30: a real lead spent a whole turn (30,355 tokens) saying it was still waiting for the other helper ([real-validation-20260930.md](real-validation-20260930.md)) |
+| Grants within 1.5 s share a launch block | The block is printed when the lead starts to answer; 20 s is only a fallback | A real lead's calls came seconds apart, each with its own review |
+| A read-only seat's `execute`/`other` request is asked about | Also a request with no `kind` | codex-acp asks by call id alone; a missing kind was being taken for a read |
 | Closed input with helpers running | The console keeps going until they end and their results have been handed back, then leaves | A piped session would otherwise drop what the lead asked for |
