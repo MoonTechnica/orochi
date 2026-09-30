@@ -64,6 +64,7 @@
       <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
       <button class="tab" data-pane="changes" role="tab" aria-selected="false">Changes</button>
       <button class="tab" data-pane="plan" role="tab" aria-selected="false">Plan</button>
+      <button class="tab" data-pane="files" role="tab" aria-selected="false">Files</button>
     </div>
     <section id="pane-team" class="pane">
       <div id="roster"></div>
@@ -87,6 +88,19 @@
       </form>
     </section>
     <section id="pane-plan" class="pane" hidden></section>
+    <section id="pane-files" class="pane" hidden>
+      <header id="files-head">
+        <span id="files-where"></span>
+        <button type="button" id="files-refresh" aria-label="Read the folder again"></button>
+      </header>
+      <input id="tree-search" type="search" placeholder="Search files…" aria-label="Search files">
+      <div id="tree-by" role="tablist">
+        <button type="button" class="by" data-by="name" aria-selected="true">Name</button>
+        <button type="button" class="by" data-by="content" aria-selected="false">Content</button>
+      </div>
+      <div id="tree" role="tree" tabindex="0"></div>
+      <div id="viewer" hidden></div>
+    </section>
   </aside>
 
   <footer id="status-bar">

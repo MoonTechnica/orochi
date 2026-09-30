@@ -3,7 +3,8 @@
 `preview.html` is generated from `index.html` by `../tests/make-preview.mjs`, so the page that
 is looked at is the page that ships — a hand-copied one drifts, and a missing element takes the
 whole script down with it. It renders the real `app.js` and `app.css` against the recorded view
-output in `../tests/*.json`, with `window.__TAURI__` stubbed in `preview-data.js`.
+output in `../tests/*.json`, with `window.__TAURI__` stubbed in `preview-data.js`, and the Files pane's per-folder answers in
+`preview-files.js`, which the same script generates from `../tests/files.json`.
 
 ```sh
 node desktop/tests/make-preview.mjs

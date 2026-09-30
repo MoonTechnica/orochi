@@ -158,10 +158,39 @@ const WORDS = {
     "agents in this conversation": "この会話のエージェント",
     conversations: "件の会話",
     Finished: "完了",
+    Queued: "待機中",
+    Interrupted: "中断",
+    Unread: "未読",
+    Idle: "アイドル",
     Failed: "失敗",
     "any model": "任意のモデル",
     default: "既定",
     "Search conversations…": "会話を検索…",
+    Files: "ファイル",
+    "Search files…": "ファイルを検索",
+    Name: "名前",
+    Content: "内容",
+    "Open in editor": "エディタで開く",
+    Reveal: "Finder で表示",
+    "Add to message": "メッセージに追加",
+    "Copy path": "パスをコピー",
+    "Open file": "ファイルを開く",
+    "Back to the folder": "フォルダに戻る",
+    Widen: "広げる",
+    lines: "行",
+    "binary or not UTF-8": "バイナリまたは UTF-8 以外",
+    "not shown": "は表示していません",
+    "changed on disk": "ディスク上で変更されました",
+    Reload: "再読み込み",
+    Rendered: "表示",
+    Source: "ソース",
+    "Nothing found.": "見つかりません。",
+    "Nothing in this folder.": "このフォルダは空です。",
+    "Content search needs a git repository.": "内容の検索には git リポジトリが必要です。",
+    "Comment on this line": "この行にコメント",
+    "comments waiting": "件のコメントが未送信",
+    deleted: "削除済み",
+    partial: "一部のみ",
   },
 };
 
@@ -199,7 +228,8 @@ const MARKS = {
   queued: "clock",
   interrupted: "pause",
   background: "activity",
-  failed: "x",
+  // An alert, not a cross: a cross reads as a button that closes something.
+  failed: "alert",
   unread: "dot",
   idle: "circle",
 };
@@ -210,6 +240,9 @@ const MARKS = {
 function drawSidebar() {
   const host = el("projects");
   host.replaceChildren();
+  // Two projects with one name are two folders; the one above each says which.
+  const names = new Map();
+  for (const project of state.projects) names.set(project.name, (names.get(project.name) || 0) + 1);
   for (const project of state.projects) {
     const section = document.createElement("details");
     section.className = "project";
@@ -223,6 +256,10 @@ function drawSidebar() {
     const summary = document.createElement("summary");
     summary.append(drawn("folder", "icon"));
     summary.append(text("span", "name", project.name));
+    if (names.get(project.name) > 1) {
+      const parent = (project.root || "").split("/").filter(Boolean).slice(-2, -1)[0];
+      if (parent) summary.append(text("span", "hint", parent));
+    }
     const waiting = project.threads.filter((t) => t.asking > 0).length;
     const busy = project.threads.filter((t) => t.status === "working").length;
     if (waiting || busy) {
@@ -261,6 +298,18 @@ call("agent_icons", {}).then((icons) => {
   state.icons = icons || {};
   drawSidebar();
 });
+
+/// What each mark means, for the one hovered.
+const STATES = {
+  needs_you: "Needs you",
+  working: "Working",
+  background: "In the background",
+  queued: "Queued",
+  interrupted: "Interrupted",
+  failed: "Failed",
+  unread: "Unread",
+  idle: "Idle",
+};
 
 /// Who is working, drawn as the agent it is: Orochi runs several, and which one took a
 /// conversation is the first thing to tell apart. A letter on the provider's colour rather than
@@ -334,9 +383,12 @@ function place(project, cwd, threads) {
   const live = threads.some((t) => ["working", "background", "needs_you"].includes(t.status));
   head.append(text("span", live ? "dot live" : "dot", ""));
   const first = threads[0];
-  const name = cwd.split("/").filter(Boolean).pop() || project.name;
-  head.append(text("span", "name", name));
+  // A checkout is known by its branch; the original clone says so, and an extra worktree
+  // also names its folder, the one thing that tells two of them apart.
+  head.append(drawn("git-branch", "icon"));
+  head.append(text("span", "name", first.branch || t("no branch")));
   if (!first.worktree) head.append(text("span", "badge", t("primary")));
+  head.append(text("span", "tally", String(threads.length)));
   head.append(drawn(folded ? "chevron-right" : "chevron-down", "fold"));
   head.addEventListener("click", () => {
     folded ? state.open.delete(key) : state.open.add(key);
@@ -344,35 +396,44 @@ function place(project, cwd, threads) {
     drawSidebar();
   });
   card.append(head);
-  // The branch the work is on, under the checkout's name, as Orca puts it.
-  const branch = text("div", "branch");
-  branch.append(drawn("git-branch", "icon"));
-  branch.append(text("span", null, first.branch || t("no branch")));
-  card.append(branch);
+  if (first.worktree) {
+    const folder = text("div", "branch");
+    folder.append(drawn("folder", "icon"));
+    folder.append(text("span", null, cwd.split("/").filter(Boolean).pop() || ""));
+    card.append(folder);
+  }
   if (folded) {
+    // Folded, one line: who has worked here, and only what needs looking at.
     const marks = text("button", "marks");
     marks.type = "button";
-    for (const thread of threads.slice(0, 4)) {
-      const one = text("span", "mark-pair");
-      const team = members(thread);
-      const lead = team.find((m) => m.lead) || team[0];
-      one.append(face(lead?.agent, lead?.provider));
-      if (team.length > 1) one.append(text("span", "more", `${team.length}`));
-      one.append(drawn(MARKS[thread.status] || "circle", "state"));
-      marks.append(one);
+    const seen = new Map();
+    for (const thread of threads) {
+      for (const used of members(thread)) seen.set(`${used.agent}/${used.provider}`, used);
     }
-    if (threads.length > 4) marks.append(text("span", "more", `+${threads.length - 4}`));
+    const agents = text("span", "faces");
+    for (const used of [...seen.values()].slice(0, 3)) agents.append(face(used.agent, used.provider));
+    marks.append(agents);
+    marks.append(text("span", "more", `${threads.length} ${t("conversations")}`));
+    const count = (status) => threads.filter((th) => th.status === status).length;
+    for (const status of ["needs_you", "working", "background"]) {
+      if (count(status)) {
+        const flag = drawn(MARKS[status], "state");
+        flag.dataset.status = status;
+        marks.append(flag);
+      }
+    }
     marks.addEventListener("click", () => select(threads[0].id));
     card.append(marks);
     return card;
   }
-  if (threads.length > 1) card.append(text("div", "place-count", `${threads.length} ${t("conversations")}`));
   for (const thread of threads) {
     const row = document.createElement("button");
     row.className = "thread";
     row.dataset.status = thread.status;
     row.setAttribute("aria-current", String(thread.id === state.thread));
-    row.append(drawn(MARKS[thread.status] || "circle", "state"));
+    const mark = drawn(MARKS[thread.status] || "circle", "state");
+    mark.setAttribute("title", t(STATES[thread.status] || thread.status));
+    row.append(mark);
     const team = members(thread);
     // One agent is the conversation's own mark; several are listed under it instead, and the
     // row keeps its width for the title.
@@ -472,7 +533,17 @@ function work(items) {
   for (const item of items) {
     const d = item.data || {};
     const label = item.kind === "thought" ? "thinking" : `${d.title || "tool"} ${d.detail || ""}`;
-    node.append(text("div", null, label.trim()));
+    const row = text("div", null, label.trim());
+    // A file the call was about opens in Files, where it can be read as it is now.
+    const where = Array.isArray(d.locations) ? d.locations[0] : null;
+    const path = inTree(where?.path ?? d.raw_input?.file_path ?? d.raw_input?.path);
+    if (item.kind === "tool_call" && path) {
+      const open = action("", () => showFiles(path, where?.line ?? null), "open-file");
+      open.append(drawn("file"));
+      open.append(text("span", null, path));
+      row.append(open);
+    }
+    node.append(row);
     if (item.text) node.append(text("pre", null, item.text));
   }
   return node;
@@ -534,7 +605,10 @@ function drawTimeline(thread, said = []) {
           : `to ${roles.get(item.whom) || item.whom}`;
       turn.append(
         post(
-          { who, to: whom, model: item.model, at: item.at, text: item.text, mine: item.via === "user" },
+          {
+            who, to: whom, model: item.model, at: item.at, text: item.text, mine: item.via === "user",
+            agent: item.agent, provider: item.provider,
+          },
           voice === who,
         ),
       );
@@ -589,7 +663,12 @@ function drawTimeline(thread, said = []) {
     if (item.kind === "route") turn.append(chip(item));
     else if (item.kind === "agent_message") {
       const who = item.role || item.agent || "agent";
-      turn.append(post({ who, model: item.model, at: item.at, text: item.text }, voice === who));
+      turn.append(
+        post(
+          { who, model: item.model, at: item.at, text: item.text, agent: item.agent, provider: item.provider },
+          voice === who,
+        ),
+      );
       voice = who;
     }
     else if (item.kind === "checks") turn.append(checks(item, thread.seats));
@@ -699,6 +778,7 @@ const ICONS = {
   "chevron-right": ["m9 18 6-6-6-6"],
   "chevron-down": ["m6 9 6 6 6-6"],
   x: ["M18 6 6 18", "m6 6 12 12"],
+  alert: ["circle:12,12,10", "M12 8v4", "M12 16h.01"],
   check: ["M20 6 9 17l-5-5"],
   plus: ["M5 12h14", "M12 5v14"],
   clock: ["circle:12,12,10", "M12 6v6l4 2"],
@@ -710,6 +790,12 @@ const ICONS = {
   "log-in": ["M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4", "m10 17 5-5-5-5", "M15 12H3"],
   "log-out": ["M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4", "m16 17 5-5-5-5", "M21 12H9"],
   activity: ["M22 12h-4l-3 9L9 3l-3 9H2"],
+  file: ["M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z", "M14 2v4a2 2 0 0 0 2 2h4"],
+  link: ["M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"],
+  refresh: ["M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8", "M21 3v5h-5", "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16", "M8 16H3v5"],
+  "arrow-left": ["m12 19-7-7 7-7", "M19 12H5"],
+  maximize: ["M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7"],
+  ban: ["circle:12,12,10", "m4.9 4.9 14.2 14.2"],
   hexagon: ["M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"],
 };
 
@@ -788,14 +874,16 @@ function post(voice, run) {
     node.dataset.run = "true";
   } else {
     const who = text("div", "who");
-    who.append(mark(voice.who));
+    // An agent is drawn as the agent it is, as in the list; a person keeps their own mark.
+    who.append(voice.agent ? face(voice.agent, voice.provider) : mark(voice.who));
     who.append(text("span", "name", voice.who));
     if (voice.to) who.append(text("span", "to", voice.to));
     if (voice.model) who.append(text("span", "model", voice.model));
     if (voice.at) who.append(text("span", "at", clock(voice.at)));
     node.append(who);
   }
-  const body = text("div", "body", voice.text);
+  const body = text("div", "body");
+  body.append(markdown(voice.text));
   node.append(body);
   return node;
 }
@@ -1007,6 +1095,203 @@ el("effort").addEventListener("click", () => {
 document.addEventListener("click", (event) => {
   if (!el("route-picker").contains?.(event.target)) closeRoutes();
 });
+
+// Markdown ------------------------------------------------------------------
+// What agents write is Markdown. It is drawn as elements built here, never as HTML handed to
+// the page: an agent's text is data, and nothing in it can become markup. Only what agents
+// actually write: headings, paragraphs, lists, code, emphasis, links, quotes, tables, rules.
+function markdown(source) {
+  const host = text("div", "md");
+  const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
+  blocks(lines, host);
+  return host;
+}
+
+const FENCE = /^\s*(```|~~~)\s*([\w+#.-]*)\s*$/;
+const HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+const RULE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
+const ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
+const QUOTE = /^\s{0,3}>\s?(.*)$/;
+const ROW = /^\s*\|.*\|\s*$/;
+const DIVIDER = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+function blocks(lines, host) {
+  let index = 0;
+  let paragraph = [];
+  const flush = () => {
+    if (!paragraph.length) return;
+    const node = text("p");
+    paragraph.forEach((line, n) => {
+      if (n) node.append(document.createElement("br"));
+      inline(line.trim(), node);
+    });
+    host.append(node);
+    paragraph = [];
+  };
+  while (index < lines.length) {
+    const line = lines[index];
+    let match;
+    if ((match = line.match(FENCE))) {
+      flush();
+      const close = match[1];
+      const body = [];
+      index++;
+      while (index < lines.length && !lines[index].trim().startsWith(close)) body.push(lines[index++]);
+      index++;
+      const pre = text("pre", "code");
+      const code = text("code", null, body.join("\n"));
+      if (match[2]) code.dataset.lang = match[2];
+      pre.append(code);
+      host.append(pre);
+      continue;
+    }
+    if (!line.trim()) {
+      flush();
+      index++;
+      continue;
+    }
+    if ((match = line.match(HEADING))) {
+      flush();
+      const node = text(`h${Math.min(match[1].length + 2, 6)}`);
+      inline(match[2], node);
+      host.append(node);
+      index++;
+      continue;
+    }
+    if (RULE.test(line) && !paragraph.length) {
+      flush();
+      host.append(document.createElement("hr"));
+      index++;
+      continue;
+    }
+    if (ROW.test(line) && DIVIDER.test(lines[index + 1] || "")) {
+      flush();
+      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const table = text("table");
+      const head = text("tr");
+      for (const cell of cells(line)) {
+        const th = text("th");
+        inline(cell, th);
+        head.append(th);
+      }
+      table.append(head);
+      index += 2;
+      while (index < lines.length && ROW.test(lines[index])) {
+        const row = text("tr");
+        for (const cell of cells(lines[index])) {
+          const td = text("td");
+          inline(cell, td);
+          row.append(td);
+        }
+        table.append(row);
+        index++;
+      }
+      host.append(table);
+      continue;
+    }
+    if (QUOTE.test(line)) {
+      flush();
+      const quoted = [];
+      while (index < lines.length && (match = lines[index].match(QUOTE))) {
+        quoted.push(match[1]);
+        index++;
+      }
+      const node = text("blockquote");
+      blocks(quoted, node);
+      host.append(node);
+      continue;
+    }
+    if ((match = line.match(ITEM))) {
+      flush();
+      index = list(lines, index, host);
+      continue;
+    }
+    paragraph.push(line);
+    index++;
+  }
+  flush();
+}
+
+/// A list from `start`, and the index after it. An item's deeper-indented lines are its own
+/// (a nested list, or its paragraph going on).
+function list(lines, start, host) {
+  const first = lines[start].match(ITEM);
+  const indent = first[1].length;
+  const ordered = /\d/.test(first[2]);
+  const node = text(ordered ? "ol" : "ul");
+  if (ordered && parseInt(first[2], 10) !== 1) node.setAttribute("start", String(parseInt(first[2], 10)));
+  let index = start;
+  while (index < lines.length) {
+    const match = lines[index].match(ITEM);
+    if (!match || match[1].length !== indent || /\d/.test(match[2]) !== ordered) break;
+    const item = text("li");
+    const own = [match[3]];
+    index++;
+    while (index < lines.length && lines[index].trim()) {
+      const deeper = lines[index].match(/^(\s*)/)[1].length > indent;
+      if (!deeper) break;
+      own.push(lines[index].slice(Math.min(indent + 2, lines[index].length - lines[index].trimStart().length)));
+      index++;
+    }
+    const nested = own.slice(1).some((l) => ITEM.test(l));
+    if (!nested) {
+      own.forEach((line, n) => {
+        if (n) item.append(document.createElement("br"));
+        inline(line.trim(), item);
+      });
+    } else {
+      blocks(own, item);
+    }
+    node.append(item);
+    // A blank line between items of one list does not end it.
+    if (index < lines.length && !lines[index].trim() && ITEM.test(lines[index + 1] || "")) {
+      const next = lines[index + 1].match(ITEM);
+      if (next[1].length === indent && /\d/.test(next[2]) === ordered) index++;
+    }
+  }
+  host.append(node);
+  return index;
+}
+
+/// Code, links, bold, italic and strikethrough within one line, as text nodes and elements.
+const INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
+
+function inline(line, host) {
+  let at = 0;
+  for (const match of line.matchAll(INLINE)) {
+    if (match.index > at) host.append(document.createTextNode(line.slice(at, match.index)));
+    at = match.index + match[0].length;
+    if (match[1]) {
+      host.append(text("code", null, match[2].trim()));
+    } else if (match[3]) {
+      host.append(link(match[3], match[4]));
+    } else if (match[5] || match[6]) {
+      const node = text("strong");
+      inline(match[5] || match[6], node);
+      host.append(node);
+    } else if (match[7]) {
+      const node = text("s");
+      inline(match[7], node);
+      host.append(node);
+    } else if (match[8] || match[9]) {
+      const node = text("em");
+      inline(match[8] || match[9], node);
+      host.append(node);
+    } else if (match[10]) {
+      host.append(link(match[10], match[10]));
+    }
+  }
+  if (at < line.length) host.append(document.createTextNode(line.slice(at)));
+}
+
+/// A link is shown with where it goes, and never followed inside the window: the window is the
+/// conversation, not a browser, and a path an agent cites is somewhere on this machine.
+function link(label, target) {
+  const node = text("span", "link");
+  inline(label, node);
+  node.setAttribute("title", target);
+  return node;
+}
 
 // Status bar ----------------------------------------------------------------
 // What each account has left and when it resets, and how many conversations need what —
@@ -1264,12 +1549,14 @@ async function drawChanges(thread) {
   }
   for (const file of files) {
     const row = text("div", "file");
+    row.dataset.path = file.path;
     row.append(text("span", "name", file.path));
     const stat = text("span", "stat");
     stat.append(text("span", "add", `+${file.added}`));
     stat.append(document.createTextNode(" "));
     stat.append(text("span", "del", `−${file.removed}`));
     row.append(stat);
+    row.append(action(t("Open file"), () => showFiles(file.path), "open"));
     host.append(row);
 
     const diff = text("pre", "diff");
@@ -1663,15 +1950,501 @@ document.addEventListener("click", (event) => {
   if (!el("sidebar-foot").contains?.(event.target)) closeAccount();
 });
 
-function showPane(pane) {
+function showPane(pane, { draw = true } = {}) {
   for (const other of document.querySelectorAll(".tab")) {
     const on = other.dataset.pane === pane;
     other.setAttribute("aria-selected", String(on));
     el(`pane-${other.dataset.pane}`).hidden = !on;
   }
+  // The tree is read when it is looked at, not while it is out of sight.
+  if (pane === "files" && draw) drawFiles(true);
 }
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => showPane(tab.dataset.pane));
+}
+
+// Files ---------------------------------------------------------------------
+// The thread's working tree, read from the disk (docs/files-pane-design.md). Nothing here is a
+// row: the tree is the user's own, and what the pane reads it keeps only on screen.
+const TREE_MARKS = {
+  modified: "M", added: "A", deleted: "D", renamed: "R", untracked: "U", conflict: "!",
+};
+
+function freshTree(thread) {
+  return {
+    thread,
+    open: new Set(thread ? remembered(`tree:${thread}`) : []),
+    dirs: new Map(),
+    // The file the viewer shows, the line it was opened at, and a newer read of it that is
+    // offered rather than swapped in under the reader.
+    file: null,
+    line: null,
+    stale: null,
+    stat: null,
+    source: false,
+    by: "name",
+    query: "",
+    hits: undefined,
+    asked: 0,
+    timer: null,
+    repository: true,
+    partial: false,
+    cursor: null,
+    visible: [],
+    wide: false,
+    status: null,
+  };
+}
+state.tree = freshTree(null);
+
+const filesShown = () => !el("pane-files").hidden;
+const quietly = async (name, args) => {
+  try {
+    return await invoke(name, args);
+  } catch {
+    return null;
+  }
+};
+
+/// Where a path an agent named sits in this thread's tree, or null when it is not in it.
+function inTree(path) {
+  if (typeof path !== "string" || !path) return null;
+  if (!path.startsWith("/")) return path.replace(/^\.\//, "");
+  const cwd = state.cwd;
+  if (cwd && path.startsWith(`${cwd}/`)) return path.slice(cwd.length + 1);
+  return null;
+}
+
+function size(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const kib = bytes / 1024;
+  return kib < 1024 ? `${kib.toFixed(kib < 10 ? 1 : 0)} KiB` : `${(kib / 1024).toFixed(1)} MiB`;
+}
+
+function action(label, run, klass = "act") {
+  const node = text("button", klass, label);
+  node.type = "button";
+  node.addEventListener("click", (event) => {
+    event.stopPropagation();
+    run();
+  });
+  return node;
+}
+
+function badge(status) {
+  if (status === "ignored") return drawn("ban", "badge");
+  return text("span", "badge", TREE_MARKS[status] || "");
+}
+
+async function loadDir(dir) {
+  const entries = await quietly("tree_list", { thread: state.tree.thread, dir });
+  if (entries) state.tree.dirs.set(dir, entries);
+  return entries !== null;
+}
+
+/// Reads the tree again — when the pane is shown, when asked, when a turn ends — keeping what
+/// was open open, and the file that was being read.
+async function drawFiles(reread) {
+  const tree = state.tree;
+  el("files-where").textContent = state.where || "";
+  if (!tree.thread) return;
+  if (reread || !tree.dirs.has("")) {
+    const read = await call("tree_refresh", { thread: tree.thread });
+    if (state.tree !== tree) return;
+    tree.repository = read?.repository ?? false;
+    tree.partial = read?.partial ?? false;
+    tree.dirs.clear();
+    await loadDir("");
+    // Parents before children, and a folder that has gone is forgotten.
+    for (const dir of [...tree.open].sort()) {
+      const parent = dir.includes("/") ? dir.slice(0, dir.lastIndexOf("/")) : "";
+      if (!tree.dirs.has(parent) || !(await loadDir(dir))) tree.open.delete(dir);
+    }
+    if (tree.file) {
+      const fresh = await quietly("tree_read", { thread: tree.thread, path: tree.file.path });
+      if (fresh && fresh.modified_at !== tree.file.modified_at) tree.stale = fresh;
+    }
+  }
+  el("files-where").textContent =
+    (state.where || "") + (tree.partial ? ` · ${t("partial")}` : "");
+  drawBy();
+  if (tree.file) drawViewer();
+  else drawTreeRows();
+}
+
+function drawBy() {
+  for (const button of document.querySelectorAll(".by")) {
+    button.setAttribute("aria-selected", String(button.dataset.by === state.tree.by));
+    if (button.dataset.by === "content") {
+      button.disabled = !state.tree.repository;
+      button.title = state.tree.repository ? "" : t("Content search needs a git repository.");
+    }
+  }
+}
+
+function drawTreeRows() {
+  const tree = state.tree;
+  const host = el("tree");
+  el("viewer").hidden = true;
+  host.hidden = false;
+  host.replaceChildren();
+  if (tree.query.trim().length >= 2 && tree.hits !== undefined) {
+    drawHits(host);
+    return;
+  }
+  tree.visible = [];
+  const walk = (dir, depth) => {
+    for (const entry of tree.dirs.get(dir) || []) {
+      tree.visible.push(entry);
+      host.append(entryRow(entry, depth));
+      if (entry.kind === "dir" && tree.open.has(entry.path)) walk(entry.path, depth + 1);
+    }
+  };
+  walk("", 0);
+  if (!tree.visible.length) host.append(text("p", "empty", t("Nothing in this folder.")));
+}
+
+function entryRow(entry, depth) {
+  const row = text("div", "entry");
+  row.dataset.path = entry.path;
+  row.dataset.kind = entry.kind;
+  // A folder shows what is under it; an ignored one is ignored whatever is inside.
+  const status = entry.kind === "dir" && entry.status !== "ignored" ? entry.within : entry.status;
+  if (status) row.dataset.status = status;
+  if (entry.missing) row.dataset.missing = "true";
+  row.setAttribute("role", "treeitem");
+  row.style.paddingLeft = `${6 + depth * 14}px`;
+  if (state.tree.cursor === entry.path) row.setAttribute("aria-selected", "true");
+  if (entry.kind === "dir") {
+    const open = state.tree.open.has(entry.path);
+    row.setAttribute("aria-expanded", String(open));
+    row.append(drawn(open ? "chevron-down" : "chevron-right", "fold"));
+  } else {
+    row.append(text("span", "fold"));
+  }
+  row.append(drawn(entry.kind === "dir" ? "folder" : entry.kind === "symlink" ? "link" : "file"));
+  row.append(text("span", "name", entry.name));
+  row.append(badge(status));
+  row.addEventListener("click", () => choose(entry));
+  return row;
+}
+
+async function choose(entry) {
+  state.tree.cursor = entry.path;
+  if (entry.kind === "dir") return toggleDir(entry.path);
+  if (entry.missing) {
+    report(`${entry.path}: ${t("deleted")}`);
+    return drawTreeRows();
+  }
+  return openFile(entry.path);
+}
+
+async function toggleDir(path, opening = !state.tree.open.has(path)) {
+  const tree = state.tree;
+  if (opening) {
+    if (!tree.dirs.has(path) && !(await loadDir(path))) return;
+    tree.open.add(path);
+  } else {
+    tree.open.delete(path);
+  }
+  remember(`tree:${tree.thread}`, [...tree.open]);
+  drawTreeRows();
+}
+
+async function openFile(path, line = null) {
+  const tree = state.tree;
+  const file = await call("tree_read", { thread: tree.thread, path });
+  if (!file || state.tree !== tree) return;
+  // The folders it is in are opened, so going back shows where it is.
+  const parts = path.split("/");
+  for (let i = 1; i < parts.length; i += 1) {
+    const dir = parts.slice(0, i).join("/");
+    if (tree.dirs.has(dir) || (await loadDir(dir))) tree.open.add(dir);
+  }
+  remember(`tree:${tree.thread}`, [...tree.open]);
+  Object.assign(tree, { file, line, stale: null, source: false, cursor: path, stat: null });
+  // What the tree has against HEAD for this file, which opens its diff in Changes.
+  if (["modified", "added", "renamed", "conflict"].includes(file.status)) {
+    const rows = (await call("tree_files", { thread: tree.thread, scope: "unstaged" })) || [];
+    tree.stat = rows.find((row) => row.path === path) || null;
+  }
+  drawViewer();
+}
+
+/// Opens the Files pane at a path, from anywhere else in the window.
+async function showFiles(path, line = null) {
+  showPane("files", { draw: false });
+  await drawFiles(!state.tree.dirs.has(""));
+  if (path) await openFile(path, line);
+}
+
+function closeFile() {
+  state.tree.file = null;
+  state.tree.stale = null;
+  state.tree.wide = false;
+  widen();
+  drawTreeRows();
+}
+
+function mention(path) {
+  const box = el("message");
+  const gap = box.value && !/\s$/.test(box.value) ? " " : "";
+  box.value = `${box.value}${gap}@${path} `;
+  box.focus?.();
+}
+
+const isMarkdown = (path) => /\.(md|markdown|mdx)$/i.test(path);
+
+function drawViewer() {
+  const tree = state.tree;
+  const file = tree.file;
+  el("tree").hidden = true;
+  const host = el("viewer");
+  host.hidden = false;
+  host.replaceChildren();
+
+  const head = text("div", "viewer-head");
+  const back = action("", closeFile, "back");
+  back.append(drawn("arrow-left"));
+  back.setAttribute("aria-label", t("Back to the folder"));
+  head.append(back);
+  const crumbs = text("span", "crumbs");
+  const parts = file.path.split("/");
+  parts.forEach((part, index) => {
+    if (index) crumbs.append(text("span", "sep", "/"));
+    if (index === parts.length - 1) {
+      crumbs.append(text("span", "here", part));
+      return;
+    }
+    const dir = parts.slice(0, index + 1).join("/");
+    crumbs.append(
+      action(part, () => {
+        state.tree.cursor = dir;
+        closeFile();
+      }, "crumb"),
+    );
+  });
+  head.append(crumbs);
+  head.append(badge(file.status));
+  const wide = action("", () => {
+    tree.wide = !tree.wide;
+    widen();
+  }, "widen");
+  wide.append(drawn("maximize"));
+  wide.setAttribute("aria-label", t("Widen"));
+  head.append(wide);
+  host.append(head);
+
+  const meta = text("div", "viewer-meta");
+  meta.append(
+    text("span", null, file.binary || file.image ? size(file.bytes) : `${file.lines} ${t("lines")} · ${size(file.bytes)}`),
+  );
+  if (tree.stat) {
+    const stat = action("", () => openChangesAt(file.path), "stat");
+    stat.append(text("span", "add", `+${tree.stat.added}`));
+    stat.append(document.createTextNode(" "));
+    stat.append(text("span", "del", `−${tree.stat.removed}`));
+    meta.append(stat);
+  }
+  host.append(meta);
+
+  const thread = tree.thread;
+  const actions = text("div", "viewer-actions");
+  actions.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
+  actions.append(action(t("Reveal"), () => call("open_path", { thread, path: file.path, reveal: true })));
+  actions.append(action(t("Add to message"), () => mention(file.path)));
+  actions.append(action(t("Copy path"), () => window.navigator?.clipboard?.writeText?.(file.path)));
+  if (isMarkdown(file.path) && !file.binary) {
+    actions.append(action(tree.source ? t("Rendered") : t("Source"), () => {
+      tree.source = !tree.source;
+      drawViewer();
+    }));
+  }
+  host.append(actions);
+
+  if (tree.stale) {
+    const bar = text("div", "viewer-bar");
+    bar.append(text("span", null, t("changed on disk")));
+    bar.append(action(t("Reload"), () => {
+      tree.file = tree.stale;
+      tree.stale = null;
+      drawViewer();
+    }));
+    host.append(bar);
+  }
+  if (state.comments.length) {
+    const bar = text("div", "viewer-bar");
+    bar.append(text("span", null, `${state.comments.length} ${t("comments waiting")}`));
+    bar.append(action(t("Send"), () => el("review-form").requestSubmit()));
+    host.append(bar);
+  }
+
+  if (file.image) {
+    const image = document.createElement("img");
+    image.className = "image";
+    image.src = file.image;
+    image.alt = file.path;
+    host.append(image);
+    return;
+  }
+  if (file.binary) {
+    const line = text("p", "empty");
+    line.append(document.createTextNode(`${t("binary or not UTF-8")} · ${size(file.bytes)} · `));
+    line.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
+    host.append(line);
+    return;
+  }
+  if (isMarkdown(file.path) && !tree.source) {
+    const rendered = text("div", "rendered");
+    rendered.append(markdown(file.text));
+    host.append(rendered);
+  } else {
+    const code = text("div", "code");
+    const lines = file.text.split("\n");
+    if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+    let hit = null;
+    lines.forEach((source, index) => {
+      const number = index + 1;
+      const row = text("div", "line");
+      if (number === tree.line) {
+        row.dataset.hit = "true";
+        hit = row;
+      }
+      // Clicking a line number is how a comment is left, as it is on a diff: it becomes part
+      // of the next message.
+      const no = action(String(number), () => {
+        const note = window.prompt(`Comment on ${file.path}:${number}`);
+        if (!note) return;
+        state.comments.push([file.path, number, note]);
+        drawReview();
+        drawViewer();
+      }, "no");
+      no.title = t("Comment on this line");
+      row.append(no);
+      row.append(text("span", "src", source));
+      code.append(row);
+    });
+    host.append(code);
+    hit?.scrollIntoView?.({ block: "center" });
+  }
+  if (file.truncated) {
+    const line = text("p", "empty");
+    line.append(document.createTextNode(`${size(file.bytes - 512 * 1024)} ${t("not shown")} · `));
+    line.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
+    host.append(line);
+  }
+}
+
+function drawHits(host) {
+  const tree = state.tree;
+  if (tree.hits === null) {
+    host.append(text("p", "empty", t("Content search needs a git repository.")));
+    return;
+  }
+  if (!tree.hits.length) {
+    host.append(text("p", "empty", t("Nothing found.")));
+    return;
+  }
+  for (const hit of tree.hits) {
+    const row = text("div", "hit");
+    row.dataset.path = hit.path;
+    row.append(drawn("file"));
+    row.append(text("span", "name", hit.line ? `${hit.path}:${hit.line}` : hit.path));
+    if (hit.text) row.append(text("div", "text", hit.text));
+    row.addEventListener("click", () => openFile(hit.path, hit.line ?? null));
+    host.append(row);
+  }
+}
+
+async function search() {
+  const tree = state.tree;
+  const query = tree.query.trim();
+  const asked = ++tree.asked;
+  if (query.length < 2) {
+    tree.hits = undefined;
+    if (!tree.file) drawTreeRows();
+    return;
+  }
+  const hits = await quietly("tree_find", { thread: tree.thread, query, by: tree.by, limit: 200 });
+  // A newer query has been typed since: its answer is the one that counts.
+  if (asked !== tree.asked || state.tree !== tree) return;
+  tree.hits = hits;
+  // The results take the viewer's place, and with it the width it was given.
+  if (tree.file) {
+    tree.file = null;
+    tree.stale = null;
+    tree.wide = false;
+    widen();
+  }
+  drawTreeRows();
+}
+
+el("tree-search").addEventListener("input", (event) => {
+  state.tree.query = event.target.value;
+  clearTimeout(state.tree.timer);
+  state.tree.timer = setTimeout(search, 150);
+});
+for (const button of document.querySelectorAll(".by")) {
+  button.addEventListener("click", () => {
+    if (button.disabled) return;
+    state.tree.by = button.dataset.by;
+    drawBy();
+    search();
+  });
+}
+el("files-refresh").append(drawn("refresh"));
+el("files-refresh").addEventListener("click", () => drawFiles(true));
+
+// The tree answers the keys a file list does.
+el("tree").addEventListener("keydown", (event) => {
+  const tree = state.tree;
+  const rows = tree.visible;
+  if (!rows.length || tree.file) return;
+  const at = Math.max(0, rows.findIndex((entry) => entry.path === tree.cursor));
+  const entry = rows[at];
+  const move = (index) => {
+    tree.cursor = rows[Math.min(rows.length - 1, Math.max(0, index))].path;
+    drawTreeRows();
+  };
+  const open = entry.kind === "dir" && tree.open.has(entry.path);
+  if (event.key === "ArrowDown") move(at + 1);
+  else if (event.key === "ArrowUp") move(at - 1);
+  else if (event.key === "ArrowRight" && entry.kind === "dir") {
+    if (open) move(at + 1);
+    else toggleDir(entry.path, true);
+  } else if (event.key === "ArrowLeft") {
+    if (open) toggleDir(entry.path, false);
+    else if (entry.path.includes("/")) {
+      tree.cursor = entry.path.slice(0, entry.path.lastIndexOf("/"));
+      drawTreeRows();
+    }
+  } else if (event.key === "Enter") choose(entry);
+  else return;
+  event.preventDefault();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (!filesShown()) return;
+  const typing = ["INPUT", "TEXTAREA"].includes(event.target?.tagName);
+  if (event.key === "/" && !typing && !event.metaKey && !event.ctrlKey) {
+    event.preventDefault();
+    el("tree-search").focus?.();
+  } else if (event.key === "Escape" && state.tree.file && event.target !== el("message")) {
+    closeFile();
+  }
+});
+
+/// Changes, in the working tree's own scope, opened at one file.
+async function openChangesAt(path) {
+  showPane("changes");
+  state.scope = "unstaged";
+  for (const other of document.querySelectorAll(".scope")) {
+    other.setAttribute("aria-selected", String(other.dataset.scope === "unstaged"));
+  }
+  const thread = await call("thread", { id: state.thread });
+  if (!thread) return;
+  await drawChanges(thread);
+  el("files").querySelectorAll(".file").find((row) => row.dataset.path === path)?.dispatch?.("click");
 }
 
 // Layout --------------------------------------------------------------------
@@ -1760,6 +2533,17 @@ window.addEventListener?.("resize", () => {
   }
 });
 
+
+/// While a file is read wide, the pane takes half the window for as long as it is open. The
+/// width it was dragged to comes back when it closes, and a widening is never stored.
+function widen() {
+  if (!state.tree.wide) return applyWidth("right");
+  const window_ = window.innerWidth || 1440;
+  const room = window_ - widthOf("left") - CONVERSATION;
+  const px = Math.max(widthOf("right"), Math.min(Math.round(window_ / 2), room));
+  el("app").style.setProperty("--right", `${px}px`);
+}
+
 // Loop ----------------------------------------------------------------------
 async function select(id) {
   state.thread = id;
@@ -1814,6 +2598,8 @@ async function refresh(full) {
   // The first message names it; until then it is a conversation you have not started.
   el("thread-title").textContent = thread.thread.title || t("New conversation");
   el("thread-status").textContent = thread.thread.status;
+  state.cwd = thread.thread.cwd;
+  state.where = `${thread.thread.project} · ${thread.thread.branch || "—"}`;
   el("interrupt").hidden = thread.thread.status !== "working";
   // A host can stop while this window stays open — its machine sleeps, it is killed, it
   // crashes — and nothing else here would notice: the turn would claim to be running for ever
@@ -1832,6 +2618,12 @@ async function refresh(full) {
   drawChanges(thread);
   drawRoom(thread);
   drawPlan(thread);
+  // The tree is read again when a turn in this thread ends, the moment it may have moved; a
+  // streaming reply re-reads the conversation many times a second and must not re-read it.
+  if (state.tree.thread !== thread.thread.id) state.tree = freshTree(thread.thread.id);
+  const ended = state.tree.status === "working" && thread.thread.status !== "working";
+  state.tree.status = thread.thread.status;
+  if (filesShown() && (ended || !state.tree.dirs.has(""))) await drawFiles(true);
   // Looking at a conversation is what makes it read.
   await call("seen", { thread: state.thread });
 }
@@ -1907,7 +2699,14 @@ for (const [id, word] of Object.entries(LABELS)) {
 for (const tab of document.querySelectorAll(".tab")) {
   tab.textContent = t(tab.textContent);
 }
-for (const [id, word] of [["message", "Message…"], ["say", "Message the team…"]]) {
+for (const button of document.querySelectorAll(".by")) {
+  button.textContent = t(button.textContent);
+}
+for (const [id, word] of [
+  ["message", "Message…"],
+  ["say", "Message the team…"],
+  ["tree-search", "Search files…"],
+]) {
   el(id).setAttribute("placeholder", t(word));
 }
 

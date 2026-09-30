@@ -115,6 +115,8 @@ pub struct Said {
     pub at: i64,
     pub role: Option<String>,
     pub model: Option<String>,
+    pub agent: Option<String>,
+    pub provider: Option<String>,
 }
 
 /// What one look at a thread found: whether the agent running it has gone, and whether there
@@ -172,6 +174,9 @@ pub struct Client {
     /// opened on (memory lives beside the databases, as plain Markdown).
     config: std::path::PathBuf,
     data: std::path::PathBuf,
+    /// Each thread's tree state, as the Files pane last read it: one `git status` serves every
+    /// directory the user opens until something says the tree may have moved.
+    trees: std::collections::HashMap<String, crate::files::TreeState>,
 }
 
 /// What Orochi remembers, as the text it is. The window edits it as text because that is what
@@ -205,6 +210,7 @@ impl Client {
                 .map(|paths| paths.config)
                 .unwrap_or_else(|_| data.join("config.toml")),
             data: data.to_path_buf(),
+            trees: Default::default(),
         })
     }
 
@@ -334,7 +340,7 @@ impl Client {
     pub fn room(&self, thread: &str) -> Result<Vec<Said>> {
         let connection = self.activity.connection();
         let mut statement = connection.prepare(
-            "SELECT seq, kind, who, whom, via, text, at, role, model FROM v_room
+            "SELECT seq, kind, who, whom, via, text, at, role, model, agent, provider FROM v_room
              WHERE project_id = (SELECT project_id FROM threads WHERE id=?1)
                AND (thread_id IS NULL OR thread_id=?1)
              ORDER BY at, seq",
@@ -353,6 +359,8 @@ impl Client {
                 at: r.get::<_, i64>(6)? * 1000,
                 role: r.get(7)?,
                 model: r.get(8)?,
+                agent: r.get(9)?,
+                provider: r.get(10)?,
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
@@ -462,6 +470,55 @@ impl Client {
             |r| r.get(0),
         )?;
         Ok(std::path::PathBuf::from(cwd))
+    }
+
+    /// Reads the thread's tree state again: the pane was opened, the user asked, or a turn ended.
+    pub fn tree_refresh(&mut self, thread: &str) -> Result<crate::files::TreeState> {
+        let state = crate::files::read_state(&self.cwd(thread)?);
+        self.trees.insert(thread.to_owned(), state.clone());
+        Ok(state)
+    }
+
+    fn tree_state(&mut self, thread: &str) -> Result<&crate::files::TreeState> {
+        if !self.trees.contains_key(thread) {
+            self.tree_refresh(thread)?;
+        }
+        Ok(&self.trees[thread])
+    }
+
+    /// One directory of the thread's tree.
+    pub fn tree_list(&mut self, thread: &str, dir: &str) -> Result<Vec<crate::files::Entry>> {
+        let cwd = self.cwd(thread)?;
+        let state = self.tree_state(thread)?;
+        crate::files::list(&cwd, dir, state)
+    }
+
+    /// One file of it, bounded.
+    pub fn tree_read(&mut self, thread: &str, path: &str) -> Result<crate::files::FileText> {
+        let cwd = self.cwd(thread)?;
+        let state = self.tree_state(thread)?;
+        crate::files::read(&cwd, path, state)
+    }
+
+    /// Files by name or lines by content; `None` when content search has no repository.
+    pub fn tree_find(
+        &self,
+        thread: &str,
+        query: &str,
+        by: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<crate::files::Hit>>> {
+        crate::files::find(
+            &self.cwd(thread)?,
+            query,
+            crate::files::By::parse(by)?,
+            limit,
+        )
+    }
+
+    /// Opens a file of the thread's tree in the user's own program, or shows it in its folder.
+    pub fn open_path(&self, thread: &str, path: &str, reveal: bool) -> Result<()> {
+        crate::files::open(&self.cwd(thread)?, path, reveal)
     }
 
     /// What the working tree has in this scope, with its stats.
@@ -781,7 +838,7 @@ pub fn agent_icons(scratch: &std::path::Path) -> std::collections::BTreeMap<Stri
     icons
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

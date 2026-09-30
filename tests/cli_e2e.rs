@@ -2549,6 +2549,66 @@ fn a_headless_host_runs_queued_turns_and_leaves_its_questions_for_a_client() {
     assert_eq!(left, 0, "a host that ends releases its thread");
 }
 
+/// A message written in the window names a file as `@path`, as one typed in the console does,
+/// and the host attaches it the same way rather than sending the agent the bare words.
+#[test]
+fn a_queued_message_attaches_the_files_it_names() {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    std::fs::write(
+        workspace.dir.path().join("repo/notes.md"),
+        "the attached text\n",
+    )
+    .unwrap();
+    let data = workspace.dir.path().join("data");
+    let new = workspace.run(&["threads", "new", "--json"]);
+    success(&new);
+    let thread = serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    success(&workspace.run(&["threads", "send", &thread, "Summarize @notes.md please"]));
+    let mut host = workspace
+        .command()
+        .args(["host", "--thread", &thread])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(std::time::Instant::now() < deadline, "the turn never ended");
+        let state: String = orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT state FROM turns", [], |r| r.get(0))
+            .unwrap();
+        if state != "running" && state != "queued" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    success(&workspace.run(&["threads", "stop", &thread]));
+    let _ = host.wait();
+
+    let prompt = workspace
+        .log()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|request| request["method"] == "session/prompt")
+        .map(|request| request["params"]["prompt"].to_string())
+        .find(|prompt| prompt.contains("Summarize"))
+        .expect("the queued message reached the agent");
+    assert!(
+        prompt.contains("the attached text"),
+        "the file travels with the message: {prompt}"
+    );
+    assert!(
+        !prompt.contains("@notes.md"),
+        "and is not left as a bare reference: {prompt}"
+    );
+}
+
 /// A conversation outlives the process that held it. Before the store, quitting the console
 /// threw away `Conversation::turns`; now `--continue` picks the thread back up, with what was
 /// said in it, so the next message is a reply rather than a fresh start.

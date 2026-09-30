@@ -34,7 +34,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use term::{Key, Keyboard, Term, width_of};
+use term::{Key, Keyboard, Prompt, Term, width_of};
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthChar;
 
@@ -1242,10 +1242,16 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
     let navigating = picking && matches!(key, Key::Up | Key::Down);
     match key {
         Key::Queued { turn, text } => {
+            // A message written elsewhere (the window, `orochi threads send`) names files the
+            // way a typed one does, so its `@path`s are attached the way a typed one's are.
+            let mut prompt = Prompt::default();
+            prompt.insert(&text);
+            resolve_references(&mut prompt, root);
+            let (text, attachments) = prompt.take();
             return Action::Send(Message {
                 queued: Some(turn),
                 text,
-                attachments: vec![],
+                attachments,
                 steps: Steps::Auto,
                 from_helpers: false,
             });
@@ -1269,7 +1275,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                 term.prompt.backspace();
                 term.prompt.insert("\n");
             } else if !text.trim().is_empty() || !term.prompt.attachments.is_empty() {
-                resolve_references(term, root);
+                resolve_references(&mut term.prompt, root);
                 let (text, attachments) = term.prompt.take();
                 return Action::Send(Message {
                     queued: None,
@@ -1346,7 +1352,9 @@ const IMAGE_TYPES: [(&str, &str); 6] = [
 /// A dropped or pasted path becomes an attachment tag; anything else is inserted as text.
 fn paste(term: &mut Term, text: &str, root: &Path) -> Action {
     let candidate = text.trim().trim_matches(['"', '\'']);
-    if !candidate.is_empty() && !candidate.contains('\n') && attach(term, candidate, root).is_some()
+    if !candidate.is_empty()
+        && !candidate.contains('\n')
+        && attach(&mut term.prompt, candidate, root).is_some()
     {
         term.prompt.insert(" ");
         term.render();
@@ -1358,7 +1366,7 @@ fn paste(term: &mut Term, text: &str, root: &Path) -> Action {
 }
 
 /// Attaches an existing file, inserting `[Image #1]` or `[File #1]` where the cursor is.
-fn attach(term: &mut Term, path: &str, root: &Path) -> Option<()> {
+fn attach(prompt: &mut Prompt, path: &str, root: &Path) -> Option<()> {
     let expanded = match path.strip_prefix("~/") {
         Some(rest) => Path::new(&std::env::var("HOME").ok()?).join(rest),
         None => Path::new(path).to_path_buf(),
@@ -1376,14 +1384,13 @@ fn attach(term: &mut Term, path: &str, root: &Path) -> Option<()> {
         full.extension()
             .is_some_and(|e| e.eq_ignore_ascii_case(extension))
     });
-    let count = term
-        .prompt
+    let count = prompt
         .attachments
         .iter()
         .filter(|a| a.image == image)
         .count()
         + 1;
-    term.prompt.attach(Attachment {
+    prompt.attach(Attachment {
         tag: format!("[{} #{count}]", if image { "Image" } else { "File" }),
         name: full
             .file_name()
@@ -1397,26 +1404,25 @@ fn attach(term: &mut Term, path: &str, root: &Path) -> Option<()> {
 }
 
 /// Turns every `@path` that names a readable file into an attachment tag.
-fn resolve_references(term: &mut Term, root: &Path) {
-    let words: Vec<String> = term
-        .prompt
+fn resolve_references(prompt: &mut Prompt, root: &Path) {
+    let words: Vec<String> = prompt
         .text()
         .split_whitespace()
         .filter_map(|word| word.strip_prefix('@').map(str::to_owned))
         .collect();
     for word in words {
-        let Some(start) = term.prompt.text().find(&format!("@{word}")) else {
+        let Some(start) = prompt.text().find(&format!("@{word}")) else {
             continue;
         };
-        term.prompt.cursor = start;
-        term.prompt
+        prompt.cursor = start;
+        prompt
             .buffer
             .replace_range(start..start + word.len() + 1, "");
-        if attach(term, &word, root).is_none() {
-            term.prompt.insert(&format!("@{word}"));
+        if attach(prompt, &word, root).is_none() {
+            prompt.insert(&format!("@{word}"));
         }
     }
-    term.prompt.end();
+    prompt.end();
 }
 
 /// Tab: complete a `/command` at the start of the line, or an `@path` into an attachment.
@@ -1485,7 +1491,7 @@ fn complete(term: &mut Term, root: &Path) {
                 term.prompt.buffer.replace_range(start..cursor, "");
                 term.prompt.cursor = start;
                 // A directory keeps the `@` so the next Tab can go deeper.
-                if path.ends_with('/') || attach(term, &path, root).is_none() {
+                if path.ends_with('/') || attach(&mut term.prompt, &path, root).is_none() {
                     term.prompt.insert(&format!("@{path}"));
                 }
             }
