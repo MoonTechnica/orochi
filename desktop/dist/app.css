@@ -45,17 +45,46 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 
 #app {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  grid-template-columns: var(--left, 260px) minmax(0, 1fr) var(--right, 320px);
   grid-template-rows: minmax(0, 1fr) auto;
   height: 100%;
 }
 @media (max-width: 900px) {
-  #app { grid-template-columns: 200px minmax(0, 1fr); }
+  #app { grid-template-columns: var(--left, 200px) minmax(0, 1fr); }
   #side { display: none; }
 }
 
+/* A panel's inner edge is a handle: drag it to resize, double-click it to put it back. */
+.resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 4;
+  cursor: col-resize;
+  touch-action: none;
+}
+#sidebar-resizer { right: -4px; }
+#side-resizer { left: -4px; }
+.resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background 0.1s;
+}
+.resizer:hover::after, .resizer:focus-visible::after, body.resizing .resizer.active::after {
+  background: var(--brand);
+}
+.resizer:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+
 /* Sidebar ---------------------------------------------------------------- */
 #sidebar {
+  position: relative;
   background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex;
@@ -180,6 +209,7 @@ button.primary { background: var(--brand); border-color: var(--brand); color: #1
 
 /* Side pane -------------------------------------------------------------- */
 #side {
+  position: relative;
   background: var(--panel);
   border-left: 1px solid var(--line);
   display: flex;

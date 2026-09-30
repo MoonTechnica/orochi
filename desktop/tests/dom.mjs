@@ -8,7 +8,11 @@ class Node {
     this.parent = null;
     this.attributes = new Map();
     this.dataset = {};
-    this.style = {};
+    // Custom properties are set by name, the way the page sizes its panels.
+    this.style = {
+      setProperty(name, value) { this[name] = String(value); },
+      removeProperty(name) { delete this[name]; },
+    };
     this.listeners = new Map();
     this._text = "";
     this.hidden = false;
@@ -19,6 +23,14 @@ class Node {
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() {
     return this.children.length ? this.children.map((c) => c.textContent).join("") : this._text;
+  }
+  get classList() {
+    const names = () => this.className.split(/\s+/).filter(Boolean);
+    return {
+      add: (name) => { if (!names().includes(name)) this.className = [...names(), name].join(" "); },
+      remove: (name) => { this.className = names().filter((n) => n !== name).join(" "); },
+      contains: (name) => names().includes(name),
+    };
   }
   get childElementCount() { return this.children.filter((c) => c instanceof Node).length; }
   append(...nodes) {
@@ -35,6 +47,11 @@ class Node {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
     this.listeners.get(name).push(handler);
   }
+  removeEventListener(name, handler) {
+    const handlers = this.listeners.get(name) || [];
+    if (handlers.includes(handler)) handlers.splice(handlers.indexOf(handler), 1);
+  }
+  setPointerCapture() {}
   dispatch(name, event = {}) {
     // Events reach the document, as they do in a browser. Without this a handler that opens
     // something and a document handler that closes what was not clicked look independent here
@@ -47,7 +64,8 @@ class Node {
       target: this,
       ...event,
     };
-    for (const handler of this.listeners.get(name) || []) handler(carried);
+    // A copy: a handler may remove itself, as a drag's end does.
+    for (const handler of [...(this.listeners.get(name) || [])]) handler(carried);
     if (stopped) return;
     for (const handler of document.listeners.get(name) || []) handler(carried);
   }
@@ -109,6 +127,7 @@ function matches(node, selector) {
 }
 
 export const document = {
+  body: new Node("body"),
   all: new Set(),
   byId: new Map(),
   createElement(tag) {

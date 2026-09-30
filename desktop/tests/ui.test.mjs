@@ -24,7 +24,7 @@ const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
 const css = readFileSync(join(here, "../dist/app.css"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
-async function open(answers = {}, { prompt, pick, language } = {}) {
+async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) {
   const calls = [];
   page([
     "sidebar", "projects", "sidebar-foot", "new-thread", "activity", "activity-count",
@@ -38,9 +38,10 @@ async function open(answers = {}, { prompt, pick, language } = {}) {
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
+    "app", "side", "sidebar-resizer", "side-resizer",
   ], markup);
   const localStorage = {
-    store: new Map(),
+    store: new Map(Object.entries(stored)),
     getItem(key) { return this.store.get(key) ?? null; },
     setItem(key, value) { this.store.set(key, value); },
   };
@@ -48,7 +49,9 @@ async function open(answers = {}, { prompt, pick, language } = {}) {
     // The page asks for a comment the way a page does.
     prompt: prompt || (() => null),
     navigator: { language: language || "en-US" },
-    navigator: { language: language || "en-US" },
+    innerWidth: 1400,
+    listeners: new Map(),
+    addEventListener(name, handler) { this.listeners.set(name, handler); },
     __TAURI__: {
       // The system's own folder picker, which the window never replaces with a typed path.
       dialog: { open: async (options) => (pick ? pick(options) : null) },
@@ -99,7 +102,7 @@ async function open(answers = {}, { prompt, pick, language } = {}) {
     await poll();
     await new Promise((resolve) => setTimeout(resolve, 20));
   };
-  return { calls, tick, el: (id) => document.getElementById(id) };
+  return { calls, tick, window, localStorage, el: (id) => document.getElementById(id) };
 }
 
 /// Every test here builds rows by hand, and a name invented in one of them is a name the page
@@ -1215,4 +1218,48 @@ test("a conversation opens onto the agents inside it: role, agent, model, and wh
   assert.match(chip.render(), /2\/3/, "the row says how many of its agents are working");
   chip.dispatch("click");
   assert.equal(el("projects").querySelectorAll(".member").length, 0, "and closes to the row alone");
+});
+
+test("each panel's inner edge drags to a width this window remembers, and never over the conversation", async () => {
+  const { el, window, localStorage } = await open({}, { stored: { widths: JSON.stringify({ left: 300 }) } });
+  // What was dragged last time is where it opens; the other panel keeps the stylesheet's width.
+  assert.equal(el("app").style["--left"], "300px");
+  assert.equal(el("app").style["--right"], undefined);
+
+  const drag = (handle, from, to) => {
+    el(handle).dispatch("pointerdown", { button: 0, clientX: from, pointerId: 1 });
+    assert.ok(document.body.classList.contains("resizing"));
+    el(handle).dispatch("pointermove", { clientX: to });
+    el(handle).dispatch("pointerup", {});
+    assert.ok(!document.body.classList.contains("resizing"));
+  };
+  drag("sidebar-resizer", 300, 360);
+  assert.equal(el("app").style["--left"], "360px");
+  // The right pane is measured from the window's right edge.
+  drag("side-resizer", 1400 - 320, 1400 - 500);
+  assert.equal(el("app").style["--right"], "500px");
+  assert.deepEqual(JSON.parse(localStorage.getItem("widths")), { left: 360, right: 500 });
+
+  // Past its bounds a panel stops, and it stops before the conversation gets narrower than a
+  // readable column: with the pane at 640, the sidebar gets 1400 - 640 - 360, under its cap.
+  drag("sidebar-resizer", 360, 5);
+  assert.equal(el("app").style["--left"], "180px");
+  drag("side-resizer", 900, 0);
+  assert.equal(el("app").style["--right"], "640px");
+  drag("sidebar-resizer", 180, 1000);
+  assert.equal(el("app").style["--left"], `${1400 - 640 - 360}px`);
+  drag("sidebar-resizer", 400, 180);
+
+  // The keyboard moves the edge the way it looks, and a double-click puts it back.
+  el("sidebar-resizer").dispatch("keydown", { key: "ArrowRight" });
+  assert.equal(el("app").style["--left"], "196px");
+  el("side-resizer").dispatch("dblclick", {});
+  assert.equal(el("app").style["--right"], undefined);
+  assert.equal(JSON.parse(localStorage.getItem("widths")).right, null);
+
+  // A window made narrower takes the room back from the panels, not from the conversation.
+  el("sidebar-resizer").dispatch("keydown", { key: "ArrowRight", shiftKey: true });
+  window.innerWidth = 900;
+  window.listeners.get("resize")();
+  assert.equal(el("app").style["--left"], `${900 - 320 - 360}px`);
 });

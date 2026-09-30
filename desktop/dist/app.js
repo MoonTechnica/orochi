@@ -1657,6 +1657,92 @@ for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => showPane(tab.dataset.pane));
 }
 
+// Layout --------------------------------------------------------------------
+// Both panels are as wide as they were last dragged, in this window only. Neither may squeeze
+// the conversation below a readable column, whichever one is dragged.
+const WIDTHS = {
+  left: { handle: "sidebar-resizer", initial: 260, min: 180, max: 480 },
+  right: { handle: "side-resizer", initial: 320, min: 240, max: 640 },
+};
+const CONVERSATION = 360;
+const widths = (() => {
+  const stored = remembered("widths");
+  return {
+    left: Number.isFinite(stored?.left) ? stored.left : null,
+    right: Number.isFinite(stored?.right) ? stored.right : null,
+  };
+})();
+
+function widthOf(which) {
+  return widths[which] ?? WIDTHS[which].initial;
+}
+function clampWidth(which, px) {
+  const { min, max } = WIDTHS[which];
+  const other = widthOf(which === "left" ? "right" : "left");
+  const room = (window.innerWidth || Infinity) - other - CONVERSATION;
+  return Math.round(Math.max(min, Math.min(max, room, px)));
+}
+function applyWidth(which) {
+  const px = widths[which];
+  const style = el("app").style;
+  if (px === null) style.removeProperty(`--${which}`);
+  else style.setProperty(`--${which}`, `${px}px`);
+  el(WIDTHS[which].handle).setAttribute("aria-valuenow", String(widthOf(which)));
+}
+function setWidth(which, px) {
+  widths[which] = px === null ? null : clampWidth(which, px);
+  applyWidth(which);
+  remember("widths", widths);
+}
+
+for (const which of Object.keys(WIDTHS)) {
+  const handle = el(WIDTHS[which].handle);
+  handle.setAttribute("aria-valuemin", String(WIDTHS[which].min));
+  handle.setAttribute("aria-valuemax", String(WIDTHS[which].max));
+  applyWidth(which);
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    handle.setPointerCapture?.(event.pointerId);
+    handle.classList?.add("active");
+    document.body.classList?.add("resizing");
+    const move = (moved) => {
+      const px = which === "left" ? moved.clientX : window.innerWidth - moved.clientX;
+      widths[which] = clampWidth(which, px);
+      applyWidth(which);
+    };
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      handle.classList?.remove("active");
+      document.body.classList?.remove("resizing");
+      remember("widths", widths);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  });
+  handle.addEventListener("dblclick", () => setWidth(which, null));
+  // The arrow keys move the edge the way it looks: Left narrows the sidebar and widens the pane.
+  handle.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 64 : 16;
+    const toward = { ArrowLeft: -step, ArrowRight: step }[event.key];
+    if (toward === undefined) return;
+    event.preventDefault();
+    setWidth(which, widthOf(which) + (which === "left" ? toward : -toward));
+  });
+}
+// A window made narrower keeps the conversation readable, as dragging does.
+window.addEventListener?.("resize", () => {
+  for (const which of Object.keys(WIDTHS)) {
+    if (widths[which] !== null) {
+      widths[which] = clampWidth(which, widths[which]);
+      applyWidth(which);
+    }
+  }
+});
+
 // Loop ----------------------------------------------------------------------
 async function select(id) {
   state.thread = id;
