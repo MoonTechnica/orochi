@@ -27,7 +27,13 @@
           "terminal": false,
           "doing": null,
           "background": 0,
-          "running_since": null
+          "running_since": null,
+          "overrides": {
+            "agent": null,
+            "model": null,
+            "reasoning": null,
+            "mode": null
+          }
         },
         {
           "id": "ac1154c1-3298-4ada-be14-4063b923a32c",
@@ -49,7 +55,13 @@
           "terminal": false,
           "doing": null,
           "background": 0,
-          "running_since": null
+          "running_since": null,
+          "overrides": {
+            "agent": null,
+            "model": null,
+            "reasoning": null,
+            "mode": null
+          }
         }
       ]
     }

@@ -19,7 +19,13 @@
     "terminal": false,
     "doing": null,
     "background": 0,
-    "running_since": null
+    "running_since": null,
+    "overrides": {
+      "agent": null,
+      "model": null,
+      "reasoning": null,
+      "mode": null
+    }
   },
   "items": [
     {

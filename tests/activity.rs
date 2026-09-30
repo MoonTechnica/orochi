@@ -980,7 +980,8 @@ fn a_store_from_before_background_seats_gains_their_columns_once_and_keeps_its_r
         }
         connection
             .execute_batch(
-                "DROP TABLE agent_requests;
+                "DROP TABLE agent_requests; DROP TRIGGER search_user; DROP TRIGGER search_reply;
+                 DROP TRIGGER search_gone; DROP TABLE search;
                  ALTER TABLE seats DROP COLUMN title; ALTER TABLE seats DROP COLUMN background;
                  ALTER TABLE seats DROP COLUMN origin; ALTER TABLE seats DROP COLUMN result;
                  ALTER TABLE turns DROP COLUMN origin;",
@@ -1021,6 +1022,71 @@ fn a_store_from_before_background_seats_gains_their_columns_once_and_keeps_its_r
         .query_row("SELECT count(*) FROM agent_requests", [], |r| r.get(0))
         .unwrap();
     assert_eq!(requests, 0);
+    // What was said before the search existed is found once it does.
+    let found = activity.search("flaky", 10).unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+}
+
+/// A thread is found by its name and by what was said in it — the user's words, and an agent's
+/// reply once it has finished rather than while it streams — and a deleted thread is gone
+/// from the results with the rest of it.
+#[test]
+fn threads_are_found_by_name_and_by_what_was_said_until_they_are_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    let lead = activity
+        .create_seat(&turn, 0, "implementer", true, false, None, None)
+        .unwrap();
+    let attempt = activity
+        .create_attempt(&lead, &candidate("claude", "opus"), false, None)
+        .unwrap();
+    let reply = activity
+        .item(
+            &thread,
+            &turn,
+            Some(&attempt),
+            ItemKind::AgentMessage,
+            Some("streaming"),
+            None,
+            "",
+            None,
+        )
+        .unwrap();
+    activity.append(reply, "The placement race is in ").unwrap();
+    assert!(
+        activity.search("placement", 10).unwrap().is_empty(),
+        "a reply is not searchable while it streams"
+    );
+    activity.append(reply, "Order::place.").unwrap();
+    activity.item_status(reply, "completed").unwrap();
+
+    let by_title = activity.search("flaky test", 10).unwrap();
+    assert_eq!(by_title.len(), 1);
+    assert_eq!(by_title[0].thread_id, thread);
+    assert_eq!(by_title[0].snippet, None, "found by its name");
+    let by_content = activity.search("placem", 10).unwrap();
+    assert_eq!(by_content.len(), 1, "a word is matched as a prefix");
+    assert!(
+        by_content[0]
+            .snippet
+            .as_deref()
+            .unwrap()
+            .contains("[placement]")
+    );
+    assert!(
+        activity.search("\"unbalanced", 10).is_ok(),
+        "any text is a query"
+    );
+    assert!(activity.search("nothing-like-this", 10).unwrap().is_empty());
+
+    activity.delete_thread(&thread).unwrap();
+    assert!(activity.search("placement", 10).unwrap().is_empty());
+    let left: i64 = activity
+        .connection()
+        .query_row("SELECT count(*) FROM search", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "nothing of it stays in the index");
 }
 
 /// A thread whose lead has answered while its helpers still work is neither idle nor working:

@@ -28,7 +28,8 @@ async function open(answers = {}, { prompt, pick, language } = {}) {
   const calls = [];
   page([
     "sidebar", "projects", "sidebar-foot", "new-thread", "activity", "activity-count",
-    "status-bar", "accounts", "counts",
+    "status-bar", "accounts", "counts", "route-picker", "route", "route-name", "route-menu",
+    "effort", "effort-name",
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
@@ -1079,4 +1080,65 @@ test("a question from a seat that is not the lead names it and says why it is as
   const drawn = el("timeline").render();
   assert.match(drawn, /from spec/);
   assert.match(drawn, /spec is read only · this command runs in your working tree/);
+});
+
+test("cmd-K finds a conversation by what was said in it and opens it", async () => {
+  const hits = [{ thread_id: recorded.thread.thread.id, title: "Fix the flaky mailbox placement test", project: "repo", snippet: "the [placement] race" }];
+  const { el, calls } = await open({ search: hits });
+  for (const handler of document.listeners.get("keydown") || []) handler({ key: "k", metaKey: true, preventDefault() {} });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("panel-title").textContent, "Search");
+  const box = el("panel-body").querySelectorAll("input")[0];
+  box.value = "placement";
+  box.dispatch("input");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(calls.some(([name, args]) => name === "search" && args.query === "placement"));
+  const drawn = el("panel-body").render();
+  assert.match(drawn, /Fix the flaky mailbox placement test[\s\S]*the \[placement\] race/);
+  el("panel-body").querySelectorAll(".row")[0].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(calls.some(([name]) => name === "seen"), "a result opens its conversation");
+});
+
+test("the route is Auto until a person pins one, and pinning goes to the thread's host", async () => {
+  const insights = [
+    { agent: "claude", model: "opus", task_type: "implementation", reasoning: "high", verified: 1, failures: 0, weak: 0, success_rate: 1, mean_tokens: 1, mean_duration_ms: 1, last_at: 1 },
+  ];
+  const { el, calls } = await open({ insights });
+  assert.equal(el("route-name").textContent, "Auto");
+  assert.equal(el("effort").hidden, true, "effort is the pinned agent's, so it waits for one");
+  el("route").dispatch("click");
+  const choices = el("route-menu").querySelectorAll("button");
+  const labels = choices.map((b) => b.querySelectorAll(".name")[0].textContent);
+  assert.deepEqual(labels.slice(0, 2), ["Auto", "claude · opus"]);
+  choices[1].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const pinned = calls.find(([name]) => name === "set_route");
+  assert.deepEqual(pinned[1].route, "claude/opus");
+  assert.ok(calls.some(([name]) => name === "ensure_host"), "and something is there to act on it");
+});
+
+test("while the window is away, a new question and a finished conversation are notified once", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const thread = projects[0].threads[0];
+  thread.status = "working";
+  const answers = { sidebar: projects, open_prompts: [] };
+  const { calls, tick } = await open(answers);
+  document.hasFocus = () => false;
+  try {
+    const later = structuredClone(projects);
+    later[0].threads[0].status = "unread";
+    answers.sidebar = later;
+    answers.open_prompts = [{ id: "p9", thread_id: thread.id, thread_title: thread.title, project: "repo", kind: "permission",
+      agent: "test", model: "m", role: "fixer", title: "Run tests", detail: null, options: [], created_at: 1, read_only: false, lead: true }];
+    answers.changed = [thread.id];
+    await tick();
+    await tick();
+    const sent = calls.filter(([name]) => name === "notify").map(([, args]) => args.title);
+    assert.deepEqual(sent.sort(), ["Finished", "Needs you"], "each change once, not on every look");
+    const badges = calls.filter(([name]) => name === "badge").map(([, args]) => args.count);
+    assert.equal(badges.at(-1), 1, "the dock carries the open question");
+  } finally {
+    delete document.hasFocus;
+  }
 });

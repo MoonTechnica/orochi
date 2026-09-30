@@ -248,6 +248,9 @@ pub struct Term {
     columns: usize,
     rows: usize,
     pinned: usize,
+    /// How many times the transcript has been written to: a row is still the last one printed
+    /// while this has not moved since it was.
+    pub writes: u64,
     /// Where the next transcript character goes (1-based row and column).
     row: usize,
     column: usize,
@@ -272,6 +275,7 @@ impl Term {
             pinned: 2,
             row: 1,
             column: 1,
+            writes: 0,
             #[cfg(unix)]
             saved: None,
         };
@@ -338,6 +342,7 @@ impl Term {
 
     /// Adds transcript text above the pinned rows and leaves the cursor in the input.
     pub fn write(&mut self, text: &str) {
+        self.writes += 1;
         if !self.tty {
             print!("{text}");
             flush();

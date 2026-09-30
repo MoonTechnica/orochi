@@ -143,7 +143,11 @@ async fn feed(
             let sent = match kind.as_str() {
                 "interrupt" | "stop" => keys.send(Key::Interrupt).is_ok(),
                 "new" => line(&keys, "/new"),
-                "reroute" => line(&keys, "/reroute"),
+                // With a route, `reroute` pins it (`/model`); without one Orochi chooses again.
+                "reroute" => match payload.as_deref().filter(|p| !p.trim().is_empty()) {
+                    Some(route) => line(&keys, &format!("/model {route}")),
+                    None => line(&keys, "/reroute"),
+                },
                 "set_permission" => {
                     line(&keys, &format!("/confirm {}", payload.unwrap_or_default()))
                 }

@@ -308,6 +308,8 @@ pub struct ThreadRow {
     pub background: i64,
     /// When the running turn started; `None` when nothing runs.
     pub running_since: Option<i64>,
+    /// The route the user pinned (`/model`), empty when Orochi chooses.
+    pub overrides: crate::types::Overrides,
 }
 
 /// A project section of the sidebar, with the threads under it.
@@ -368,6 +370,15 @@ pub struct SeatRow {
     pub background: bool,
     /// A background seat's result has been handed back to the lead.
     pub reported: bool,
+}
+
+/// A thread a search found, with the words around the match when it was found by content.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchHit {
+    pub thread_id: String,
+    pub title: String,
+    pub project: String,
+    pub snippet: Option<String>,
 }
 
 /// A seat still working, across threads: the sidebar's child rows and the Activity screen.
@@ -631,7 +642,7 @@ impl Activity {
             "SELECT id, project, project_id, project_root, project_pinned, project_collapsed,
                     title, cwd, branch, origin, worktree, pinned, archived_at, updated_at,
                     running, queued, asking, seats, last_state, last_item, last_seen_item,
-                    host_kind, host_pid, host_start, doing, background, running_since
+                    host_kind, host_pid, host_start, doing, background, running_since, overrides
              FROM v_sidebar WHERE (?1 OR archived_at IS NULL)
              ORDER BY project_pinned DESC, project_sort, pinned DESC, updated_at DESC",
         )?;
@@ -697,6 +708,10 @@ impl Activity {
                     doing: r.get::<_, Option<String>>(24)?.filter(|_| alive),
                     background: if alive { background } else { 0 },
                     running_since: r.get::<_, Option<i64>>(26)?.filter(|_| alive),
+                    overrides: r
+                        .get::<_, Option<String>>(27)?
+                        .and_then(|o| serde_json::from_str(&o).ok())
+                        .unwrap_or_default(),
                 },
             ))
         })?;
@@ -1213,6 +1228,15 @@ impl Activity {
         Ok(())
     }
 
+    /// The route the user pinned for a thread; what its host starts from next time.
+    pub fn set_overrides(&self, thread: &str, overrides: &crate::types::Overrides) -> Result<()> {
+        self.connection.execute(
+            "UPDATE threads SET overrides=?2 WHERE id=?1",
+            params![thread, serde_json::to_string(overrides)?],
+        )?;
+        Ok(())
+    }
+
     /// Marks a turn Orochi wrote rather than someone typed.
     pub fn turn_origin(&self, turn: &str, origin: &str) -> Result<()> {
         self.connection.execute(
@@ -1265,6 +1289,60 @@ impl Activity {
             }
         }
         Ok(live)
+    }
+
+    /// Threads by what they are called, then by what was said in them: the words in `query`
+    /// each as a prefix, all of them required. A thread appears once, at its best match.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let words: Vec<String> = query
+            .split_whitespace()
+            .map(|word| word.replace('"', ""))
+            .filter(|word| !word.is_empty())
+            .collect();
+        if words.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut hits: Vec<SearchHit> = vec![];
+        let like = format!("%{}%", query.trim().replace('%', "\\%").replace('_', "\\_"));
+        let mut statement = self.connection.prepare(
+            "SELECT t.id, t.title, p.name FROM threads t JOIN projects p ON p.id=t.project_id
+             WHERE t.title LIKE ?1 ESCAPE '\\' ORDER BY t.updated_at DESC LIMIT ?2",
+        )?;
+        for row in statement.query_map(params![like, limit as i64], |r| {
+            Ok(SearchHit {
+                thread_id: r.get(0)?,
+                title: r.get(1)?,
+                project: r.get(2)?,
+                snippet: None,
+            })
+        })? {
+            hits.push(row?);
+        }
+        let fts: String = words
+            .iter()
+            .map(|word| format!("\"{word}\"*"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut statement = self.connection.prepare(
+            "SELECT s.thread_id, t.title, p.name,
+                    snippet(search, 0, '[', ']', '…', 12)
+             FROM search s JOIN threads t ON t.id=s.thread_id JOIN projects p ON p.id=t.project_id
+             WHERE search MATCH ?1 ORDER BY rank LIMIT ?2",
+        )?;
+        for row in statement.query_map(params![fts, (limit * 4) as i64], |r| {
+            Ok(SearchHit {
+                thread_id: r.get(0)?,
+                title: r.get(1)?,
+                project: r.get(2)?,
+                snippet: r.get(3)?,
+            })
+        })? {
+            let row = row?;
+            if hits.len() < limit && !hits.iter().any(|h| h.thread_id == row.thread_id) {
+                hits.push(row);
+            }
+        }
+        Ok(hits)
     }
 
     /// One pass of the scheduler's retry loop. A failover is the next attempt in the same
@@ -1743,8 +1821,12 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("turns", "origin", "TEXT"),
 ];
 
-/// Tables added since `USER_VERSION` 2; `IF NOT EXISTS`, so every open may run them.
-const ADDED_TABLES: &str = r#"
+/// Tables added since `USER_VERSION` 2, each created (and filled from what is already there)
+/// the first time an open finds it missing.
+const ADDED_TABLES: &[(&str, &str)] = &[
+    (
+        "agent_requests",
+        r#"
 CREATE TABLE IF NOT EXISTS agent_requests (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -1765,7 +1847,30 @@ CREATE TRIGGER IF NOT EXISTS ch_agent_requests_i AFTER INSERT ON agent_requests 
 CREATE TRIGGER IF NOT EXISTS ch_agent_requests_u AFTER UPDATE ON agent_requests BEGIN
   INSERT INTO changes (tbl,row,thread_id,at)
     VALUES ('agent_requests',new.id,new.thread_id,new.created_at); END;
-"#;
+"#,
+    ),
+    // What was said, searchable: the user's messages and the agents' finished replies. An
+    // agent's reply is indexed once it completes, not on every streamed chunk, and a deleted
+    // thread takes its rows with it through the items it cascades.
+    (
+        "search",
+        r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(text, item_id UNINDEXED, thread_id UNINDEXED);
+CREATE TRIGGER IF NOT EXISTS search_user AFTER INSERT ON items
+  WHEN new.kind='user_message' BEGIN
+  INSERT INTO search (text, item_id, thread_id) VALUES (new.text, new.id, new.thread_id); END;
+CREATE TRIGGER IF NOT EXISTS search_reply AFTER UPDATE OF status ON items
+  WHEN new.kind='agent_message' AND new.status='completed' AND old.status IS NOT 'completed' BEGIN
+  DELETE FROM search WHERE item_id=new.id;
+  INSERT INTO search (text, item_id, thread_id) VALUES (new.text, new.id, new.thread_id); END;
+CREATE TRIGGER IF NOT EXISTS search_gone AFTER DELETE ON items BEGIN
+  DELETE FROM search WHERE item_id=old.id; END;
+INSERT INTO search (text, item_id, thread_id)
+  SELECT text, id, thread_id FROM items
+  WHERE kind='user_message' OR (kind='agent_message' AND status='completed');
+"#,
+    ),
+];
 
 /// Brings an existing store up to `ADDED` / `ADDED_TABLES`. Read first without a write lock,
 /// so an up-to-date store costs nothing; then again *inside* the write transaction, because two
@@ -1784,13 +1889,15 @@ fn added(connection: &Connection) -> Result<()> {
                 missing.push((*table, *column, *definition));
             }
         }
-        let table: bool = connection.query_row(
-            "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name='agent_requests'",
-            [],
-            |r| r.get(0),
-        )?;
-        if !table {
-            missing.push(("", "", ""));
+        for (table, sql) in ADDED_TABLES {
+            let present: bool = connection.query_row(
+                "SELECT count(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |r| r.get(0),
+            )?;
+            if !present {
+                missing.push(("", *table, *sql));
+            }
         }
         Ok(missing)
     };
@@ -1801,13 +1908,15 @@ fn added(connection: &Connection) -> Result<()> {
         rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
     let mut sql = String::new();
     for (table, column, definition) in missing(&transaction)? {
-        if !table.is_empty() {
+        if table.is_empty() {
+            // A missing table: `definition` is its whole SQL.
+            sql.push_str(definition);
+        } else {
             sql.push_str(&format!(
                 "ALTER TABLE {table} ADD COLUMN {column} {definition};"
             ));
         }
     }
-    sql.push_str(ADDED_TABLES);
     transaction.execute_batch(&sql)?;
     transaction.commit()?;
     Ok(())
@@ -2155,7 +2264,8 @@ SELECT t.id, t.project_id, p.name AS project, p.root AS project_root, lower(p.na
        (SELECT count(*) FROM seats s JOIN turns tn ON tn.id=s.turn_id
          WHERE tn.thread_id=t.id AND s.background=1 AND s.ended_at IS NULL) AS background,
        (SELECT min(tn.started_at) FROM turns tn
-         WHERE tn.thread_id=t.id AND tn.state='running') AS running_since
+         WHERE tn.thread_id=t.id AND tn.state='running') AS running_since,
+       t.overrides
 FROM threads t JOIN projects p ON p.id=t.project_id
 LEFT JOIN hosts h ON h.thread_id=t.id;
 

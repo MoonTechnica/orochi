@@ -363,6 +363,20 @@ def finish(request):
         if '"current_status"' not in prompt or not (root / "partial.txt").exists():
             send({"id": request["id"], "error": {"code": -32603, "message": "missing handoff or partial changes"}})
             return
+    if os.environ.get("MOCK_LOOKUPS"):
+        # Lookups in a row, then an edit: the console folds the first run into one line.
+        def lookup(n, kind, title, raw):
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call", "toolCallId": f"l{n}", "title": title, "kind": kind,
+                "status": "in_progress", "rawInput": raw}}})
+            time.sleep(0.05)
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": f"l{n}", "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "ok"}}]}}})
+        lookup(1, "read", "Read src/a.rs", {"file_path": "src/a.rs"})
+        lookup(2, "search", "Search generate", {"pattern": "generate"})
+        lookup(3, "read", "Read src/b.rs", {"file_path": "src/b.rs"})
+        lookup(4, "read", "Read src/c.rs", {"file_path": "src/c.rs"})
     if os.environ.get("MOCK_TOOL"):
         def update(value):
             send({"method": "session/update", "params": {"sessionId": session, "update": value}})

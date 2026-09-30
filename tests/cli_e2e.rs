@@ -1839,6 +1839,43 @@ fn helpers_a_lead_starts_report_back_to_it_as_one_turn_of_their_own() {
     }
 }
 
+/// `/model` pins what the next messages are routed to, as Claude Code's does; `/model auto`
+/// hands the choice back, and an agent that is not configured is refused rather than tried.
+#[test]
+fn model_pins_the_route_for_the_next_messages_until_it_is_handed_back() {
+    let w = Workspace::new();
+    let output = chat(
+        &w,
+        "/model nobody\n/model test/astra-test high\nFirst\n/model\n/model auto\n",
+    );
+    success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for expected in [
+        "No enabled agent named nobody",
+        "Route: test · astra-test · high",
+        "⎿ test · astra-test · high",
+        "Route: Orochi chooses the agent and model",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected:?} in {stderr}"
+        );
+    }
+    let log = w.log();
+    assert!(log.contains("astra-test"), "{log}");
+    let activity = orochi::activity::Activity::open(&w.dir.path().join("data"), 30).unwrap();
+    let overrides: String = activity
+        .connection()
+        .query_row("SELECT overrides FROM threads", [], |r| r.get(0))
+        .unwrap();
+    let overrides: serde_json::Value = serde_json::from_str(&overrides).unwrap();
+    assert_eq!(
+        overrides["agent"],
+        serde_json::Value::Null,
+        "handed back: {overrides}"
+    );
+}
+
 /// The pinned input and the transcript share one screen: only a terminal model can tell whether
 /// a turn flowed on or was drawn over the last one. Driven in a pty by `tests/test_chat_terminal.py`.
 #[test]

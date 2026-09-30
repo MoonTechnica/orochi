@@ -148,6 +148,9 @@ export const document = {
 /// window rather than inventing them one at a time. `hidden` is read from the markup, because
 /// an element the page starts hidden behaves differently from one it does not.
 export function page(ids, markup = "") {
+  // A fresh page has no handlers: an earlier test's app would otherwise answer this one's
+  // keys and clicks from a scope nobody is looking at.
+  document.listeners.clear();
   const startsHidden = new Set(
     [...markup.matchAll(/<[^>]*\bid="([^"]+)"[^>]*>/g)]
       .filter((m) => /\shidden(\s|>)/.test(m[0]))

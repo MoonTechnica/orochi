@@ -427,6 +427,23 @@ MOCK_LOG = "{self.log}"
         os.close(self.master)
 
 
+class Lookups(unittest.TestCase):
+    def test_reads_and_searches_in_a_row_are_one_line(self):
+        c = Console(env={"MOCK_LOOKUPS": "1"})
+        try:
+            c.type("Look around")
+            c.key(b"\r")
+            c.wait("Fixture completed.")
+            rows = c.screen.text()
+            folded = [row for row in rows if "Searched for 1 pattern, read 3 files" in row]
+            self.assertEqual(len(folded), 1, c.rows())
+            # The status row names whatever is running; the transcript keeps only the fold.
+            transcript = [row for row in rows if "(shift+tab)" not in row]
+            self.assertFalse([row for row in transcript if "src/b.rs" in row], c.rows())
+        finally:
+            c.close()
+
+
 class BackgroundAgents(unittest.TestCase):
     """Helpers a lead starts outlive its turn; the console lists them, stops them, and asks
     the user for them."""

@@ -749,3 +749,16 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .seats-block .row .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }
 .ask h4 .from { color: var(--muted); font-weight: normal; }
 .ask .why { color: var(--muted); font-size: 12px; margin: 4px 0; }
+#search-box { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; margin-bottom: 10px; }
+.search-results .row { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; text-align: left; border: none; padding: 6px 8px; border-radius: 6px; }
+.search-results .row:hover { background: var(--line); }
+.search-results .where { color: var(--muted); font-size: 11px; margin-left: auto; }
+.search-results .snippet { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+#route-picker { position: relative; }
+#route-menu {
+  position: absolute; bottom: 100%; left: 0; margin-bottom: 4px; min-width: 220px; z-index: 5;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px;
+}
+#route-menu button { display: block; width: 100%; text-align: left; border: none; padding: 4px 8px; }
+#route-menu button:hover { background: var(--line); }
+#route, #effort { font-size: 12px; }

@@ -785,3 +785,29 @@ fn stopping_a_helper_is_a_control_naming_the_seat_or_all_of_them() {
     let second = activity.take_control(&thread).unwrap().unwrap();
     assert_eq!(second.1.as_deref(), Some(r#"{"background":"all"}"#));
 }
+
+/// Pinning a route from the window writes it on the thread at once, for the composer to show,
+/// and asks the host to take it; handing it back clears both.
+#[test]
+fn a_route_pinned_from_the_window_is_the_threads_and_its_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+    client.set_route(&thread, Some("claude/opus high")).unwrap();
+    let row = client
+        .sidebar(20, false)
+        .unwrap()
+        .into_iter()
+        .flat_map(|p| p.threads)
+        .find(|t| t.id == thread)
+        .unwrap();
+    assert_eq!(row.overrides.agent.as_deref(), Some("claude"));
+    assert_eq!(row.overrides.model.as_deref(), Some("opus"));
+    assert_eq!(row.overrides.reasoning.as_deref(), Some("high"));
+    client.set_route(&thread, None).unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let first = activity.take_control(&thread).unwrap().unwrap();
+    assert_eq!(first, ("reroute".to_owned(), Some("claude/opus high".to_owned())));
+    let second = activity.take_control(&thread).unwrap().unwrap();
+    assert_eq!(second.1.as_deref(), Some("auto"));
+}

@@ -55,7 +55,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 12] = [
+const COMMANDS: [Command; 13] = [
     Command {
         name: "help",
         aliases: &[],
@@ -96,6 +96,13 @@ const COMMANDS: [Command; 12] = [
         aliases: &[],
         usage: "",
         about: "Pick an agent again, keeping this conversation",
+        anytime: false,
+    },
+    Command {
+        name: "model",
+        aliases: &[],
+        usage: "[auto | agent[/model] [effort]]",
+        about: "Pin the agent, model and effort for the next messages, or let Orochi choose",
         anytime: false,
     },
     Command {
@@ -798,6 +805,7 @@ impl<'a> Session<'a> {
                 self.approval.chosen = false;
                 self.view.note("Started a new conversation");
             }
+            "model" => self.pin_route(argument),
             "reroute" => {
                 // Asking for another agent right after an answer, or right after stopping one, is
                 // a vote against it.
@@ -946,6 +954,72 @@ impl<'a> Session<'a> {
         } else {
             self.refresh_status(None);
         }
+    }
+
+    /// `/model`: what the next messages are routed to. Pinning is the user's choice, so it is
+    /// kept as the session's overrides, and the conversation is routed again from them.
+    fn pin_route(&mut self, argument: &str) {
+        let overrides = &mut self.options.overrides;
+        let said = |o: &Overrides| match (&o.agent, &o.model, &o.reasoning) {
+            (None, _, _) => "Orochi chooses the agent and model".to_owned(),
+            (Some(agent), model, reasoning) => {
+                [Some(agent.clone()), model.clone(), reasoning.clone()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            }
+        };
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {
+                let text = format!("Route: {}", said(overrides));
+                self.view.note(&text);
+                return;
+            }
+            ["auto"] => {
+                overrides.agent = None;
+                overrides.model = None;
+                overrides.reasoning = None;
+            }
+            [route, effort @ ..] if effort.len() <= 1 => {
+                let (agent, model) = match route.split_once('/') {
+                    Some((agent, model)) => (agent, Some(model)),
+                    None => (*route, None),
+                };
+                if !self
+                    .config
+                    .agents
+                    .iter()
+                    .any(|a| a.id == agent && a.enabled)
+                {
+                    let text = format!("No enabled agent named {agent}");
+                    self.view.result(WARN, &text);
+                    return;
+                }
+                overrides.agent = Some(agent.to_owned());
+                overrides.model = model.filter(|m| !m.is_empty()).map(str::to_owned);
+                overrides.reasoning = effort.first().map(|e| (*e).to_owned());
+            }
+            _ => {
+                self.view
+                    .result(WARN, "/model [auto | agent[/model] [effort]]");
+                return;
+            }
+        }
+        if let Some(recorded) = &self.recorded
+            && let Some(thread) = &recorded.thread
+        {
+            let _ = recorded
+                .store()
+                .set_overrides(thread, &self.options.overrides);
+        }
+        // The conversation's own route no longer holds; the next message is routed from this.
+        self.conversation.current = None;
+        self.conversation.resume = None;
+        self.view.last_route = None;
+        let text = format!("Route: {}", said(&self.options.overrides));
+        self.view.note(&text);
     }
 
     /// A key while the background agents' list is open.
@@ -4450,6 +4524,58 @@ struct Screen<'v> {
     postponed: Vec<String>,
     usage: Usage,
     route: Option<String>,
+    /// Reads, searches and fetches in a row, drawn as one line while it is the last printed.
+    fold: Option<Fold>,
+}
+
+/// Consecutive lookups, counted into one line: `Read 3 files, searched for 1 pattern`.
+#[derive(Default)]
+struct Fold {
+    reads: usize,
+    searches: usize,
+    fetches: usize,
+    /// The one lookup, while there is only one: its own heading says more than a count.
+    only: Option<ToolState>,
+    /// `Term::writes` right after the line was drawn.
+    at: u64,
+}
+impl Fold {
+    fn count(&mut self, state: &ToolState) {
+        match state.kind.as_deref() {
+            Some("search") => self.searches += 1,
+            Some("fetch") => self.fetches += 1,
+            _ => self.reads += 1,
+        }
+        self.only = (self.reads + self.searches + self.fetches == 1).then(|| state.clone());
+    }
+    fn summary(&self) -> String {
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut parts = vec![];
+        if self.searches > 0 {
+            parts.push(format!(
+                "searched for {}",
+                plural(self.searches, "pattern", "patterns")
+            ));
+        }
+        if self.reads > 0 {
+            parts.push(format!("read {}", plural(self.reads, "file", "files")));
+        }
+        if self.fetches > 0 {
+            parts.push(format!("fetched {}", plural(self.fetches, "page", "pages")));
+        }
+        let text = parts.join(", ");
+        let mut chars = text.chars();
+        chars
+            .next()
+            .map(|c| c.to_uppercase().chain(chars).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// A lookup that changes nothing: read, search or fetch.
+fn foldable(state: &ToolState) -> bool {
+    matches!(state.kind.as_deref(), Some("read" | "search" | "fetch")) && state.diffs.is_empty()
 }
 impl<'v> Screen<'v> {
     fn new(view: &'v mut View) -> Self {
@@ -4489,7 +4615,15 @@ impl<'v> Screen<'v> {
             plan: vec![],
             usage: Usage::default(),
             route: None,
+            fold: None,
         }
+    }
+
+    /// The fold line is still the last thing printed, so it can be redrawn with one more.
+    fn fold_open(&self) -> bool {
+        self.fold
+            .as_ref()
+            .is_some_and(|fold| fold.at == self.view.term.writes)
     }
 
     fn out(&mut self, text: &str) {
@@ -4947,6 +5081,8 @@ impl<'v> Screen<'v> {
                 let show = !state.shown && self.view.term.tty && self.live == Live::Nothing;
                 state.shown = true;
                 let snapshot = state.clone();
+                // A lookup joining the line above shows nowhere else while it runs.
+                let show = show && !(foldable(&snapshot) && self.fold_open());
                 self.phase = format!("Running {}", fit(&tool_label(&snapshot), 48));
                 let (name, input) = pane_tool(&snapshot);
                 self.view.pane.report.tool_name = Some(name);
@@ -4976,9 +5112,35 @@ impl<'v> Screen<'v> {
         if replace {
             self.live = Live::Nothing;
             self.view.term.step_back(1);
-        } else {
+        }
+        if failed == Some(false) && foldable(state) && self.view.term.tty {
+            // Its running row was shown only because no fold line was open to join; it starts
+            // one where that row was.
+            if replace {
+                self.fold = None;
+            } else if self.fold_open() {
+                self.view.term.step_back(1);
+            } else {
+                self.fold = None;
+                self.begin();
+            }
+            let mut fold = self.fold.take().unwrap_or_default();
+            fold.count(state);
+            let limit = width().saturating_sub(18).max(20);
+            let text = match &fold.only {
+                Some(only) => self.tool_heading(only, limit),
+                None => self.view.paint(BOLD, &fit(&fold.summary(), limit)),
+            };
+            let line = format!("{} {text}", self.view.paint(OK, "⏺"));
+            self.view.line(&line);
+            fold.at = self.view.term.writes;
+            self.fold = Some(fold);
+            return;
+        }
+        if !replace {
             self.begin();
         }
+        self.fold = None;
         self.tool_row(state, failed);
     }
 

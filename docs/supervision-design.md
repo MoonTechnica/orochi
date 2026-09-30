@@ -2,9 +2,10 @@
 
 Written: 2026-09-29.
 
-**Status (2026-09-30): S0–S5 implemented; automated tests only** (mock agents, a pty-driven
-console and the window's recorded-view tests). S6 is not started and S7 — whether real agents
-delegate sensibly and how a running Orca draws the pane — is **unverified**. Decisions are in §2;
+**Status (2026-09-30): S0–S6 implemented; automated tests only** (mock agents, a pty-driven
+console and the window's recorded-view tests). S7 — whether real agents delegate sensibly and
+how a running Orca draws the pane — is **unverified**, and so are the window's notifications
+and dock badge, which no test can see the system show. Decisions are in §2;
 where the implementation departed from the design, §14 says how and why.
 
 One goal, three surfaces: **a person running several agents at once can see which one needs
@@ -580,7 +581,7 @@ Nothing else: the cap is `roles::MAX_SEATS` (D5), the timeouts are constants
 | **S3 Desktop, reading** ✅ | Status bar, thread rows with `doing` and child rows, Activity, turn footer, files-changed line, context line. Receipts not built | S1 |
 | **S4 Background seats** ✅ | §4 whole: `start_agent`, session-owned seats, completion turns, waiting row, the prompt changes | S1 |
 | **S5 Control** ✅ | Manager, stop one / all (console, host controls and `stop_seat`), shared permission queue with D2, seats block with Stop in the window, the card naming the seat | S4 |
-| **S6 Desktop, rest** | Notifications, composer pills, search and ⌘K, tool folding in the console | S3 |
+| **S6 Desktop, rest** ✅ | Notifications and dock badge, composer pills (with `/model` in the console), search and ⌘K, lookup folding in the console | S3 |
 | **S7 Validation** | Real runs on both adapters: does a real lead delegate sensibly, do completion turns read well, does Orca draw the pane — recorded in `real-validation-*.md`; nothing above is claimed verified until then | S4, S0 |
 
 ## 13. Risks and what is unverified
@@ -609,4 +610,8 @@ Nothing else: the cap is `roles::MAX_SEATS` (D5), the timeouts are constants
 | Manager Enter: the seat's lane replayed from `v_timeline` | What the helper has said so far, from memory | The lane view needs the timeline reader in the console; the reply is what a person looks for there |
 | No on a helper's question hands the typed text to that seat | No refuses the one call | Typed-instead text for a non-lead seat has no path yet |
 | Footer clock follows `LC_TIME` | 24-hour always | The existing mailbox clock is 24-hour; one clock in one transcript |
+| Composer pills write `threads.overrides` directly | The window writes the overrides row **and** a `reroute` control carrying the route, which the host runs as `/model` — a console command added for it, after Claude Code's | `controls.kind` cannot grow without a table rebuild, and the running session holds its route in memory; a command is the one path both a person and a client take |
+| Effort pill in the agent's own words | The canonical rungs (`low` … `xhigh`), cycled | The window never discovers an agent; `effort.rs` translates a canonical rung for the agent it reaches |
+| Notifications through the page's own permission | A `notify` command in Rust (`tauri-plugin-notification`), and `set_badge_count` for the dock | The window declares no capabilities; a call from Rust needs none |
+| Search over `items.text` | An FTS5 table over the user's messages and **finished** replies, kept by triggers | A reply indexed on every streamed chunk would rewrite the index dozens of times a second |
 | Closed input with helpers running | The console keeps going until they end and their results have been handed back, then leaves | A piped session would otherwise drop what the lead asked for |

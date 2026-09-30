@@ -213,6 +213,43 @@ fn changed(open: State<'_, Open>) -> Result<Vec<String>, String> {
         .map_err(fail)
 }
 
+/// A notification from the system, the window's way of saying something while it is not in
+/// front. Sent from here rather than from the page, so the page needs no permission of its own.
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String, sound: bool) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let mut builder = app.notification().builder().title(title).body(body);
+    if sound {
+        builder = builder.sound("default");
+    }
+    builder.show().map_err(|error| error.to_string())
+}
+
+/// The open questions, on the dock.
+#[tauri::command]
+fn badge(app: tauri::AppHandle, count: i64) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    window
+        .set_badge_count((count > 0).then_some(count))
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_route(open: State<'_, Open>, thread: String, route: Option<String>) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .set_route(&thread, route.as_deref())
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn search(open: State<'_, Open>, query: String) -> Result<Vec<orochi::activity::SearchHit>, String> {
+    open.0.lock().unwrap().search(&query).map_err(fail)
+}
+
 #[tauri::command]
 fn stop_seat(open: State<'_, Open>, thread: String, seat: Option<String>) -> Result<(), String> {
     open.0
@@ -244,6 +281,7 @@ fn main() {
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             folders,
             new_thread,
@@ -272,7 +310,11 @@ fn main() {
             seen,
             changed,
             live_seats,
-            stop_seat
+            stop_seat,
+            search,
+            set_route,
+            notify,
+            badge
         ])
         .run(tauri::generate_context!())
         .expect("orochi desktop failed to start");

@@ -548,6 +548,31 @@ impl Client {
         self.activity.thread(id)
     }
 
+    /// Pins the route a thread's next messages take (`agent[/model] [effort]`), or with `None`
+    /// lets Orochi choose. The row says so at once; the host acts on it as `/model`.
+    pub fn set_route(&self, thread: &str, route: Option<&str>) -> Result<()> {
+        let mut overrides = orochi::types::Overrides::default();
+        if let Some(route) = route {
+            let mut words = route.split_whitespace();
+            let (agent, model) = match words.next().unwrap_or("").split_once('/') {
+                Some((agent, model)) => (agent.to_owned(), Some(model.to_owned())),
+                None => (route.split_whitespace().next().unwrap_or("").to_owned(), None),
+            };
+            anyhow::ensure!(!agent.is_empty(), "a route names an agent");
+            overrides.agent = Some(agent);
+            overrides.model = model.filter(|m| !m.is_empty());
+            overrides.reasoning = words.next().map(str::to_owned);
+        }
+        self.activity.set_overrides(thread, &overrides)?;
+        self.activity
+            .control(thread, "reroute", Some(route.unwrap_or("auto")))
+    }
+
+    /// Threads by name, then by what was said in them.
+    pub fn search(&self, query: &str) -> Result<Vec<orochi::activity::SearchHit>> {
+        self.activity.search(query, 20)
+    }
+
     /// Every seat still working, across threads: the sidebar's rows under a thread and the
     /// Activity screen.
     pub fn live_seats(&self) -> Result<Vec<orochi::activity::LiveSeat>> {

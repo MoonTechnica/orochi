@@ -35,6 +35,11 @@ const state = {
   // convenience, so it lives in this window's storage and nowhere else.
   cleared: new Map(remembered("cleared")),
   unreadOnly: false,
+  // What each conversation was at the last look, and which questions were already open: a
+  // notification is a change, and the first look sees none.
+  statuses: null,
+  asked: new Set(),
+  sound: remembered("sound") === true,
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -141,6 +146,13 @@ const WORDS = {
     from: "依頼元",
     "is read only · this command runs in your working tree": "は読み取り専用です · このコマンドは作業ツリーで実行されます",
     cooling: "待機中",
+    Search: "検索",
+    Auto: "自動",
+    Finished: "完了",
+    Failed: "失敗",
+    "any model": "任意のモデル",
+    default: "既定",
+    "Search conversations…": "会話を検索…",
   },
 };
 
@@ -729,6 +741,111 @@ document.addEventListener("click", (event) => {
   if (!el("folder-picker").contains?.(event.target)) closeFolders();
 });
 
+// Notifications -------------------------------------------------------------
+// Only while the window is not in front: a question opened, a conversation finished that
+// nobody has read, one failed. The dock carries the open questions.
+async function notify() {
+  const threads = state.projects.flatMap((p) => p.threads);
+  const first = state.statuses === null;
+  const before = state.statuses || new Map();
+  state.statuses = new Map(threads.map((th) => [th.id, th.status]));
+  const away = typeof document.hasFocus === "function" ? !document.hasFocus() : false;
+  const said = [];
+  for (const prompt of state.prompts) {
+    if (!state.asked.has(prompt.id) && !first) {
+      said.push([t("Needs you"), `${prompt.thread_title || prompt.project}: ${prompt.title}`]);
+    }
+    state.asked.add(prompt.id);
+  }
+  if (!first) {
+    for (const th of threads) {
+      const was = before.get(th.id);
+      if (was !== "working" && was !== "background") continue;
+      if (th.status === "unread") said.push([t("Finished"), th.title || t("New conversation")]);
+      if (th.status === "failed") said.push([t("Failed"), th.title || t("New conversation")]);
+    }
+  }
+  await call("badge", { count: state.prompts.length });
+  if (!away) return;
+  for (const [title, body] of said) {
+    await call("notify", { title, body, sound: state.sound });
+  }
+}
+
+// Route ---------------------------------------------------------------------
+// Auto first: Orochi chooses unless the person pins an agent, a model and how hard it thinks.
+// The effort words are the canonical rungs; an agent that says them otherwise is translated by
+// the core, as it is for a policy.
+const EFFORTS = [null, "low", "medium", "high", "xhigh"];
+
+function openThread() {
+  return state.projects.flatMap((p) => p.threads).find((th) => th.id === state.thread);
+}
+
+function drawRoute() {
+  const pinned = openThread()?.overrides || {};
+  el("route-name").textContent = pinned.agent
+    ? [pinned.agent, pinned.model].filter(Boolean).join(" · ")
+    : t("Auto");
+  el("effort-name").textContent = pinned.reasoning || t("default");
+  el("effort").hidden = !pinned.agent;
+}
+
+async function pin(route) {
+  if (!state.thread) return;
+  await call("set_route", { thread: state.thread, route });
+  await call("ensure_host", { thread: state.thread });
+  await refresh(false);
+}
+
+function closeRoutes() {
+  el("route-menu").hidden = true;
+  el("route").setAttribute("aria-expanded", "false");
+}
+
+function openRoutes() {
+  const menu = el("route-menu");
+  menu.replaceChildren();
+  const choices = [[t("Auto"), null]];
+  const seen = new Set();
+  for (const row of state.routes || []) {
+    const key = `${row.agent}/${row.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    choices.push([`${row.agent} · ${row.model}`, key]);
+  }
+  for (const agent of new Set((state.agents || []).map((a) => a.agent))) {
+    choices.push([`${agent} · ${t("any model")}`, agent]);
+  }
+  for (const [label, route] of choices) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.append(text("span", "name", label));
+    row.addEventListener("click", () => {
+      closeRoutes();
+      pin(route);
+    });
+    menu.append(row);
+  }
+  menu.hidden = false;
+  el("route").setAttribute("aria-expanded", "true");
+}
+
+el("route").addEventListener("click", (event) => {
+  event.stopPropagation();
+  el("route-menu").hidden ? openRoutes() : closeRoutes();
+});
+el("effort").addEventListener("click", () => {
+  const pinned = openThread()?.overrides || {};
+  if (!pinned.agent) return;
+  const next = EFFORTS[(EFFORTS.indexOf(pinned.reasoning || null) + 1) % EFFORTS.length];
+  const route = [pinned.agent, pinned.model].filter(Boolean).join("/");
+  pin(next ? `${route} ${next}` : route);
+});
+document.addEventListener("click", (event) => {
+  if (!el("route-picker").contains?.(event.target)) closeRoutes();
+});
+
 // Status bar ----------------------------------------------------------------
 // What each account has left and when it resets, and how many conversations need what —
 // always on screen, because routing turns on the first and supervising on the second.
@@ -881,6 +998,51 @@ function drawActivity(host) {
     el("notice").replaceChildren(undo);
   });
 }
+
+// Search --------------------------------------------------------------------
+// Cmd-K: conversations by name, then by what was said in them.
+function drawSearch(host) {
+  const box = document.createElement("input");
+  box.id = "search-box";
+  box.setAttribute("placeholder", t("Search conversations…"));
+  box.value = state.query || "";
+  const list = text("div", "search-results");
+  const show = (hits) => {
+    list.replaceChildren();
+    if (state.query && !hits.length) list.append(text("p", "empty", t("Nothing here.")));
+    for (const hit of hits) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "row";
+      row.append(text("span", "name", hit.title || t("New conversation")));
+      row.append(text("span", "where", hit.project));
+      if (hit.snippet) row.append(text("div", "snippet", hit.snippet));
+      row.addEventListener("click", () => {
+        closePanel();
+        select(hit.thread_id);
+      });
+      list.append(row);
+    }
+  };
+  box.addEventListener("input", async () => {
+    state.query = box.value;
+    const asked = box.value;
+    const hits = asked.trim() ? (await call("search", { query: asked })) || [] : [];
+    // A slower answer to an older query must not replace a newer one.
+    if (asked === state.query) show(hits);
+  });
+  host.append(box, list);
+  show([]);
+  box.focus?.();
+}
+
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "k") {
+    event.preventDefault?.();
+    state.query = "";
+    openPanel("search");
+  }
+});
 
 el("activity").addEventListener("click", (event) => {
   event.stopPropagation();
@@ -1138,7 +1300,11 @@ function gauge(fraction) {
 async function openPanel(panel) {
   state.panel = panel;
   el("panel-title").textContent =
-    panel === "activity" ? t("Activity") : PANELS.find(([p]) => p === panel)?.[1] || "";
+    panel === "activity"
+      ? t("Activity")
+      : panel === "search"
+        ? t("Search")
+        : PANELS.find(([p]) => p === panel)?.[1] || "";
   el("panel").showModal();
   await drawScreen();
 }
@@ -1155,9 +1321,15 @@ el("panel").addEventListener("close", () => {
 
 async function drawScreen() {
   const host = el("panel-body");
+  // The palette is typed into; redrawing it on every refresh would take the typing away.
+  if (state.panel === "search" && host.children?.length) return;
   host.replaceChildren();
   if (state.panel === "activity") {
     drawActivity(host);
+    return;
+  }
+  if (state.panel === "search") {
+    drawSearch(host);
     return;
   }
   if (state.panel === "agents") {
@@ -1215,6 +1387,16 @@ async function drawScreen() {
       await drawScreen();
     });
     host.append(field("Record conversations at all", on));
+
+    // A sound is this window's, not Orochi's: kept where the window keeps its own things.
+    const sound = document.createElement("input");
+    sound.type = "checkbox";
+    sound.checked = state.sound;
+    sound.addEventListener("change", () => {
+      state.sound = sound.checked;
+      remember("sound", state.sound);
+    });
+    host.append(field("Play a sound with notifications", sound));
 
     const wipe = document.createElement("button");
     wipe.textContent = "Delete every conversation";
@@ -1346,13 +1528,17 @@ async function refresh(full) {
   state.prompts = prompts || [];
   state.folders = folders || [];
   state.live = (await call("live_seats", {})) || [];
+  await notify();
   // The accounts change when a probe runs, not when a key is pressed: read at most twice a
   // minute.
   if (Date.now() - state.agentsAt > 30000) {
     state.agents = (await call("agents", {})) || [];
+    // The routes that have run here: what the route menu offers besides Auto.
+    state.routes = (await call("insights", {})) || [];
     state.agentsAt = Date.now();
   }
   drawStatus();
+  drawRoute();
   if (!state.thread) {
     state.thread = state.projects.flatMap((p) => p.threads)[0]?.id || null;
     // A thread chosen here was not on screen a moment ago, whatever the feed said moved:
