@@ -3,7 +3,7 @@
 # made from. Run as root by `orochi sandbox up`; safe to run again, and applies changed sizes.
 set -euo pipefail
 : "${SBX_PROJECT:?}" "${SBX_SUBNET:?}" "${SBX_POOL_GIB:?}" "${SBX_UID:?}" "${SBX_GID:?}"
-: "${SBX_CPU:?}" "${SBX_MEM_GIB:?}" "${SBX_USER:=}" "${SBX_GATEWAY_PORT:?}"
+: "${SBX_CPU:?}" "${SBX_MEM_GIB:?}" "${SBX_USER:=}" "${SBX_GATEWAY_PORT:?}" "${SBX_VM_IDLE_MINUTES:?}"
 export DEBIAN_FRONTEND=noninteractive
 
 if ! command -v incus >/dev/null; then
@@ -130,6 +130,33 @@ UNIT
 systemctl daemon-reload
 systemctl enable orochi-sandbox-dns.service orochi-sandbox-gateway.service
 systemctl restart orochi-sandbox-dns.service orochi-sandbox-gateway.service
+
+# The VM powers itself off once unused for SBX_VM_IDLE_MINUTES (0: never); Orochi starts it
+# again when something needs it. Copied in beside this script by `orochi sandbox up`.
+printf 'SBX_VM_IDLE_MINUTES=%s\nSBX_GATEWAY_PORT=%s\n' "$SBX_VM_IDLE_MINUTES" "$SBX_GATEWAY_PORT" \
+  > /etc/orochi-sandbox.conf
+install -m 0755 /var/lib/orochi-sandbox-idle.py /usr/local/lib/orochi-sandbox-idle.py
+cat > /etc/systemd/system/orochi-sandbox-idle.service <<UNIT
+[Unit]
+Description=Power the sandbox VM off when nothing uses it
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/orochi-sandbox-idle.py
+UNIT
+cat > /etc/systemd/system/orochi-sandbox-idle.timer <<UNIT
+[Unit]
+Description=Check every minute whether the sandbox VM is used
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now orochi-sandbox-idle.timer
 
 # One login inside serves every sandbox: the CLIs' own homes live here, mounted into each.
 install -d -o "$SBX_UID" -g "$SBX_GID" -m 0700 /var/lib/sbx/creds/claude /var/lib/sbx/creds/codex

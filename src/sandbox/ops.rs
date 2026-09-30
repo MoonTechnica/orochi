@@ -1,7 +1,7 @@
 //! What `orochi sandbox …` does: the host VM, the golden image, and each project's instance.
 use super::{Focus, Incus, Mode, Project, State, ids, label, mounts};
 use crate::config::{SandboxClient, SandboxConfig};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -11,6 +11,7 @@ pub const LIMA_TEMPLATE: &str = include_str!("lima.yaml");
 pub const HOST_SCRIPT: &str = include_str!("host.sh");
 pub const IMAGE_SCRIPT: &str = include_str!("image.sh");
 pub const GATEWAY_SCRIPT: &str = include_str!("gateway.py");
+pub const IDLE_SCRIPT: &str = include_str!("idle.py");
 
 /// Where a sandbox's HTTP service opens on this machine, through the VM's gateway: a
 /// `*.localhost` name, which browsers and curl resolve to the loopback address themselves, so
@@ -51,6 +52,64 @@ pub fn vm_status(config: &SandboxConfig) -> Result<Option<String>> {
         .and_then(|vm| vm["status"].as_str().map(str::to_owned)))
 }
 
+/// Starts the VM if it stopped itself while unused, and waits until Incus answers. A no-op for
+/// an Incus client, whose host is not this machine's to start. Runs arriving together start it
+/// once: the start is serialized by a lock beside Lima's own files.
+pub fn ensure_vm(config: &SandboxConfig, announce: bool) -> Result<()> {
+    if config.client != SandboxClient::Lima {
+        return Ok(());
+    }
+    if vm_status(config)?.as_deref() == Some("Running") {
+        return Ok(());
+    }
+    let lock_path =
+        std::env::temp_dir().join(format!("orochi-sandbox-{}.lock", config.lima_instance));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
+    }
+    match vm_status(config)?.as_deref() {
+        Some("Running") => {}
+        None => bail!(
+            "the sandbox VM {} does not exist; `orochi sandbox up` creates it",
+            config.lima_instance
+        ),
+        Some(_) => {
+            if announce {
+                eprintln!(
+                    "Starting the sandbox VM {} (it stops itself when unused)…",
+                    config.lima_instance
+                );
+            }
+            let started = std::process::Command::new(limactl(config)?)
+                .args(["start", "--tty=false", &config.lima_instance])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()?;
+            ensure!(
+                started.success(),
+                "could not start the sandbox VM; `orochi sandbox up` says why"
+            );
+        }
+    }
+    let incus = Incus::new(config);
+    for _ in 0..90 {
+        if incus.run(&["project", "show", &config.project]).is_ok() {
+            drop(lock);
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    bail!("the sandbox VM started but Incus did not answer within 90 s")
+}
+
 /// The Lima template for this configuration.
 pub fn lima_yaml(config: &SandboxConfig) -> String {
     let mounts = mounts(config)
@@ -84,6 +143,7 @@ fn host_env(config: &SandboxConfig) -> Vec<String> {
         format!("SBX_MEM_GIB={}", config.limits_memory_gib),
         format!("SBX_USER={}", std::env::var("USER").unwrap_or_default()),
         format!("SBX_GATEWAY_PORT={}", config.gateway_port),
+        format!("SBX_VM_IDLE_MINUTES={}", config.vm_idle_minutes),
     ]
 }
 
@@ -159,6 +219,7 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
             GATEWAY_SCRIPT,
             "gateway",
         ),
+        ("/var/lib/orochi-sandbox-idle.py", IDLE_SCRIPT, "idle check"),
     ] {
         let mut copy = shell(&["sudo", "tee", path]);
         copy.stdin(Stdio::piped()).stdout(Stdio::null());
@@ -217,6 +278,7 @@ fn reclaim_hint() -> String {
 /// Builds the golden image (and, for the container tier, the Docker volume every project's
 /// Docker data is cloned from).
 pub fn build_image(config: &SandboxConfig, tier: Mode) -> Result<()> {
+    ensure_vm(config, true)?;
     ensure!(tier.sandboxed(), "an image is built for container or vm");
     let incus = Incus::new(config);
     let builder = format!("sbx-build-{}", tier.key());
@@ -320,6 +382,7 @@ pub fn create(
     root: &Path,
     request: Create,
 ) -> Result<Project> {
+    ensure_vm(config, true)?;
     ensure!(
         request.mode.sandboxed(),
         "a sandbox is created as container or vm; `host` needs none"
@@ -533,6 +596,7 @@ fn destroy(config: &SandboxConfig, project: &Project) -> Result<()> {
 }
 
 pub fn remove(config: &SandboxConfig, data: &Path, root: &Path) -> Result<Project> {
+    ensure_vm(config, true)?;
     let mut state = State::load(data)?;
     let project = state
         .exact(root)
@@ -552,6 +616,7 @@ pub fn reset(
     root: &Path,
     tier: Option<Mode>,
 ) -> Result<Project> {
+    ensure_vm(config, true)?;
     let mut state = State::load(data)?;
     let mut project = state
         .exact(root)
@@ -574,6 +639,7 @@ pub fn reset(
 /// Where the project's agents run from now on. Moving to a tier the instance is not recreates
 /// it (the caller confirms); moving to `host` stops it and keeps it.
 pub fn set_mode(config: &SandboxConfig, data: &Path, root: &Path, mode: Mode) -> Result<Project> {
+    ensure_vm(config, true)?;
     let mut state = State::load(data)?;
     let project = state.exact(root).cloned().with_context(|| {
         format!(
@@ -608,6 +674,7 @@ pub fn snapshot(
     root: &Path,
     name: Option<String>,
 ) -> Result<String> {
+    ensure_vm(config, true)?;
     let project = recorded(data, root)?;
     let incus = Incus::new(config);
     let snap = name.unwrap_or_else(default_snapshot);
@@ -620,6 +687,7 @@ pub fn snapshot(
 }
 
 pub fn restore(config: &SandboxConfig, data: &Path, root: &Path, snap: &str) -> Result<()> {
+    ensure_vm(config, true)?;
     let project = recorded(data, root)?;
     let incus = Incus::new(config);
     let instance = incus.instance(&project.name);
@@ -643,6 +711,7 @@ fn recorded(data: &Path, root: &Path) -> Result<Project> {
 
 /// TCP ports something inside listens on, from `ss`, above the privileged range.
 pub fn listening(config: &SandboxConfig, name: &str) -> Result<Vec<u16>> {
+    ensure_vm(config, true)?;
     let incus = Incus::new(config);
     let output = incus.run(&["exec", &incus.instance(name), "-T", "--", "ss", "-ltnH"])?;
     Ok(parse_listening(&output))
@@ -682,6 +751,7 @@ pub struct Focused {
 
 /// Puts this project's ports at this machine's `127.0.0.1`, unfocusing any other project.
 pub fn focus(config: &SandboxConfig, data: &Path, root: &Path) -> Result<Focused> {
+    ensure_vm(config, true)?;
     let mut state = State::load(data)?;
     let project = state
         .project_for(root)
@@ -755,6 +825,7 @@ pub fn unfocus(config: &SandboxConfig, data: &Path) -> Result<Option<String>> {
     let Some(current) = state.focus.clone() else {
         return Ok(None);
     };
+    ensure_vm(config, true)?;
     unfocus_if(config, &mut state, &current.name)?;
     state.save(data)?;
     Ok(Some(current.name))
@@ -782,6 +853,9 @@ fn unfocus_if(config: &SandboxConfig, state: &mut State, name: &str) -> Result<(
 
 /// Stops sandboxes nobody used for `idle_stop_minutes`, never the focused one.
 pub fn gc(config: &SandboxConfig, data: &Path) -> Result<Vec<String>> {
+    if config.client == SandboxClient::Lima && vm_status(config)?.as_deref() != Some("Running") {
+        return Ok(vec![]);
+    }
     let state = State::load(data)?;
     let incus = Incus::new(config);
     let cutoff = crate::types::now() - (config.idle_stop_minutes as i64) * 60;
@@ -807,6 +881,15 @@ pub fn statuses(
 ) -> Result<Vec<(Project, String, Option<String>)>> {
     let state = State::load(data)?;
     let incus = Incus::new(config);
+    // A VM that stopped itself while unused is not asked (asking would start nothing, and
+    // looking should not start it): every sandbox in it is stopped.
+    if config.client == SandboxClient::Lima && vm_status(config)?.as_deref() != Some("Running") {
+        return Ok(state
+            .projects
+            .iter()
+            .map(|p| (p.clone(), "stopped".to_owned(), None))
+            .collect());
+    }
     // A host that cannot be reached says so, rather than every sandbox reading as gone.
     let (listed, missing) = match incus.run(&["list", "--format", "json"]) {
         Ok(listed) => (listed, "missing"),
