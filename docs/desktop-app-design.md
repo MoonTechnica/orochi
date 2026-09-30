@@ -503,6 +503,8 @@ Read from the vendors' own documentation unless marked. Nothing here was checked
 | Codex persistence (source: `codex-rs/state/migrations`; rollout details secondhand) | JSONL rollouts are the truth and a SQLite index is derived from them, with scan-and-repair on list | The opposite choice: **one** store. A derived index that can drift from its source is the failure mode §4.8 keeps small by declaring `report.json` the authority for the one place two copies exist |
 | Zed ([docs](https://zed.dev/docs/ai/parallel-agents)), Conductor ([docs](https://www.conductor.build/docs/core/parallel-agents)), Cursor agents window (secondary source), Vibe Kanban ([repo](https://github.com/BloopAI/vibe-kanban)) | One list for every agent regardless of where it runs; a workspace is a worktree; several agents may share one workspace (one implements, one reviews); Rust + SQLite backend (Vibe Kanban) | A terminal thread and an app thread in one list; mission control (§6.7) |
 
+Orca (an ADE hosting CLI agents in worktrees) was surveyed later, on 2026-09-29, as the benchmark for supervising many sessions at once: see [Desktop App Benchmark: Orca](desktop-benchmark-orca.md), and for what the window takes from it, [Supervising Background Agents](supervision-design.md) §7.
+
 None of the surveyed tools shows agent-to-agent messages as a conversation of its own; the nearest are Claude Desktop's cross-session messaging and Codex's `collabToolCall` items inside the parent timeline. The Team tab (§6.4) is where this app is not following anyone.
 
 ### 6.1 Layout
