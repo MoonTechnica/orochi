@@ -33,7 +33,22 @@
             "model": null,
             "reasoning": null,
             "mode": null
-          }
+          },
+          "agent": "test",
+          "provider": "openai",
+          "agents": [
+            {
+              "role": "fixer",
+              "agent": "test",
+              "provider": "openai",
+              "model": "sol-test",
+              "seats": 1,
+              "live": 0,
+              "lead": true,
+              "background": false,
+              "last_at": 1
+            }
+          ]
         },
         {
           "id": "ac1154c1-3298-4ada-be14-4063b923a32c",
@@ -61,7 +76,22 @@
             "model": null,
             "reasoning": null,
             "mode": null
-          }
+          },
+          "agent": "test",
+          "provider": "openai",
+          "agents": [
+            {
+              "role": "fixer",
+              "agent": "test",
+              "provider": "openai",
+              "model": "sol-test",
+              "seats": 1,
+              "live": 0,
+              "lead": true,
+              "background": false,
+              "last_at": 1
+            }
+          ]
         }
       ]
     }

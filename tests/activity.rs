@@ -1161,6 +1161,19 @@ fn a_thread_whose_helpers_outlive_its_turn_reads_as_working_in_the_background() 
         waiting.doing, None,
         "nothing runs, so the lead is doing nothing"
     );
+    // The conversation is its members: the lead that answered, and the helper still at it.
+    let members: Vec<(String, String, i64, bool)> = waiting
+        .agents
+        .iter()
+        .map(|m| (m.role.clone(), m.agent.clone(), m.live, m.lead))
+        .collect();
+    assert_eq!(
+        members,
+        vec![
+            ("implementer".to_owned(), "claude".to_owned(), 0, true),
+            ("spec".to_owned(), "codex".to_owned(), 1, false),
+        ]
+    );
 
     let live = activity.live_seats().unwrap();
     assert_eq!(live.len(), 1);

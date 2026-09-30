@@ -993,12 +993,16 @@ test("a thread's row says what its lead is doing and lists the helpers still wor
       read_only: true, title: "Research Agents API model support", background: true, state: "working",
       started_at: Date.now(), agent: "codex", model: "gpt", doing: null, usage: null },
   ];
+  thread.agents = [
+    { role: "fixer", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 1, lead: true, background: false, last_at: 1 },
+    { role: "spec", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: false, background: true, last_at: 1 },
+  ];
   const { el } = await open({ sidebar: projects, live_seats });
   const drawn = el("projects").render();
   assert.match(drawn, /curl -sL https:\/\/example\.com\/llms\.txt/, "what the lead is doing");
   assert.match(drawn, /3m/, "and for how long");
   assert.match(drawn, /spec[\s\S]*Research Agents API model support/, "each helper, with what it is for");
-  assert.equal(el("projects").querySelectorAll(".child").length, 1, "the lead is the row itself, not a child");
+  assert.equal(el("projects").querySelectorAll(".member").length, 2, "the lead and the helper, each a member");
 });
 
 test("the Activity screen sorts every conversation by what it needs, and puts done ones away until they change", async () => {
@@ -1141,4 +1145,74 @@ test("while the window is away, a new question and a finished conversation are n
   } finally {
     delete document.hasFocus;
   }
+});
+
+test("a project's conversations sit on the card of the checkout they work in, and fold to one mark each", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const threads = projects[0].threads;
+  for (const th of threads) {
+    th.cwd = "/work/orochi";
+    th.branch = "main";
+    th.worktree = false;
+  }
+  threads[0].status = "working";
+  threads[0].doing = "$ cargo test";
+  const { el } = await open({ sidebar: projects });
+  const cards = () => el("projects").querySelectorAll(".place");
+  assert.equal(cards().length, 1, "one checkout, one card");
+  const drawn = cards()[0].render();
+  assert.match(drawn, /orochi[\s\S]*primary[\s\S]*main/, "named by its checkout, marked as the original, with its branch");
+  assert.equal(cards()[0].querySelectorAll(".face")[0].dataset.provider, "openai", "and who is working in it");
+  assert.match(drawn, /- \$ cargo test/, "a row says what its lead is doing, on its own line");
+  assert.equal(el("projects").querySelectorAll(".thread").length, threads.length);
+  cards()[0].querySelectorAll(".place-head")[0].dispatch("click");
+  assert.equal(el("projects").querySelectorAll(".thread").length, 0, "folded, the rows go");
+  assert.equal(
+    cards()[0].querySelectorAll(".marks")[0].querySelectorAll(".state").length,
+    Math.min(threads.length, 4),
+    "and each conversation is one mark",
+  );
+});
+
+test("an agent is drawn with its vendor's own icon where that app is installed, and a letter where not", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  projects[0].threads[0].agents = [{ role: "fixer", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 0, lead: true, background: false, last_at: 1 }];
+  projects[0].threads[1].agents = [{ role: "fixer", agent: "gemini", provider: "google", model: "pro", seats: 1, live: 0, lead: true, background: false, last_at: 1 }];
+  const { el } = await open({ sidebar: projects, agent_icons: { anthropic: "data:image/png;base64,AAAA" } });
+  const faces = el("projects").querySelectorAll(".face");
+  const claude = faces.find((f) => f.dataset.provider === "anthropic");
+  assert.equal(claude.querySelectorAll("img")[0].getAttribute("src"), "data:image/png;base64,AAAA");
+  const gemini = faces.find((f) => f.dataset.provider === "google");
+  assert.equal(gemini.textContent, "G", "no icon installed: its letter");
+});
+
+test("a conversation opens onto the agents inside it: role, agent, model, and who is working now", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const thread = projects[0].threads[0];
+  thread.status = "working";
+  thread.agents = [
+    { role: "facilitator", agent: "claude", provider: "anthropic", model: "haiku", seats: 3, live: 1, lead: true, background: false, last_at: 1 },
+    { role: "partner", agent: "claude", provider: "anthropic", model: "opus", seats: 3, live: 1, lead: false, background: false, last_at: 1 },
+    { role: "spec", agent: "codex", provider: "openai", model: "gpt-6", seats: 1, live: 0, lead: false, background: true, last_at: 1 },
+  ];
+  const live_seats = [
+    { seat_id: "s", thread_id: thread.id, project_id: "p", turn: "t", ordinal: 1, role: "partner", lead: false, read_only: true,
+      title: null, background: false, state: "working", started_at: Date.now(), agent: "claude", model: "opus",
+      doing: "Reading src/router", usage: null, provider: "anthropic" },
+  ];
+  const { el } = await open({ sidebar: projects, live_seats });
+  const members = el("projects").querySelectorAll(".member");
+  assert.equal(members.length, 3, "one row per member, two of them the same vendor on different models");
+  const row = el("projects").querySelectorAll(".thread")[0];
+  const own = row.children.filter((c) => c.className === "face");
+  assert.equal(own.length, 0, "several agents are listed under the row, not stamped on it");
+  const drawn = members.map((m) => m.render()).join("\n");
+  assert.match(drawn, /facilitator[\s\S]*claude · haiku/);
+  assert.match(drawn, /partner[\s\S]*claude · opus[\s\S]*Reading src\/router/, "what a working member is doing");
+  assert.match(drawn, /spec[\s\S]*codex · gpt-6/);
+  assert.deepEqual(members.map((m) => m.dataset.live), ["true", "true", "false"]);
+  const chip = el("projects").querySelectorAll(".members")[0];
+  assert.match(chip.render(), /2\/3/, "the row says how many of its agents are working");
+  chip.dispatch("click");
+  assert.equal(el("projects").querySelectorAll(".member").length, 0, "and closes to the row alone");
 });

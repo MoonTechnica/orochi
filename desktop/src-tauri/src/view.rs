@@ -376,8 +376,11 @@ impl Client {
         let connection = self.store.connection();
         let mut windows: std::collections::BTreeMap<String, Vec<(String, f64, Option<i64>)>> =
             Default::default();
-        let mut statement =
-            connection.prepare("SELECT agent, bucket, remaining, reset_at FROM v_quota")?;
+        // A snapshot past its validity says what an account had, not what it has: the core
+        // stops routing by it, and the window stops showing it.
+        let mut statement = connection.prepare(
+            "SELECT agent, bucket, remaining, reset_at FROM v_quota WHERE valid_until > unixepoch()",
+        )?;
         for row in statement.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -726,4 +729,72 @@ impl Client {
         )?;
         Ok(())
     }
+}
+
+/// Where each vendor's own app keeps its icon, newest layout first. The icons are theirs: the
+/// window shows the ones installed on this machine and ships none of its own.
+const ICONS: &[(&str, &[&str])] = &[
+    (
+        "anthropic",
+        &["/Applications/Claude.app/Contents/Resources/ion-dist/images/claude_app_icon.png"],
+    ),
+    (
+        "openai",
+        &[
+            "/Applications/ChatGPT.app/Contents/Resources/icon-codex-dark-color.png",
+            "/Applications/Codex.app/Contents/Resources/icon-codex-dark-color.png",
+        ],
+    ),
+];
+
+/// Each provider's icon as a small PNG data URL, for the providers whose app is installed.
+/// Scaled down with the system's `sips`, so a 1024-pixel app icon does not travel to a
+/// 16-pixel mark.
+pub fn agent_icons(scratch: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    let mut icons = std::collections::BTreeMap::new();
+    for (provider, paths) in ICONS {
+        let Some(source) = paths.iter().map(std::path::Path::new).find(|p| p.is_file()) else {
+            continue;
+        };
+        let small = scratch.join(format!("icon-{provider}.png"));
+        let scaled = std::process::Command::new("/usr/bin/sips")
+            .args(["-Z", "64"])
+            .arg(source)
+            .arg("--out")
+            .arg(&small)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        let bytes = if scaled {
+            std::fs::read(&small).ok()
+        } else {
+            std::fs::read(source).ok()
+        };
+        if let Some(bytes) = bytes {
+            icons.insert(
+                (*provider).to_owned(),
+                format!("data:image/png;base64,{}", base64(&bytes)),
+            );
+        }
+    }
+    icons
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = u32::from(chunk[0]) << 16
+            | u32::from(*chunk.get(1).unwrap_or(&0)) << 8
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if index <= chunk.len() {
+                TABLE[(n >> shift) as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }

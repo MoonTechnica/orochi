@@ -236,6 +236,14 @@ fn badge(app: tauri::AppHandle, count: i64) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// The installed vendors' own icons, read once per window.
+#[tauri::command]
+fn agent_icons() -> std::collections::BTreeMap<String, String> {
+    let scratch = std::env::temp_dir().join("orochi-desktop");
+    let _ = std::fs::create_dir_all(&scratch);
+    orochi_desktop::view::agent_icons(&scratch)
+}
+
 #[tauri::command]
 fn set_route(open: State<'_, Open>, thread: String, route: Option<String>) -> Result<(), String> {
     open.0
@@ -314,7 +322,8 @@ fn main() {
             search,
             set_route,
             notify,
-            badge
+            badge,
+            agent_icons
         ])
         .run(tauri::generate_context!())
         .expect("orochi desktop failed to start");

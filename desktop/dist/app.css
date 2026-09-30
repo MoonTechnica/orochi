@@ -688,15 +688,41 @@ details[open] > summary .icon { transform: rotate(90deg); }
 #activity-count:not(:empty) {
   background: var(--brand); color: #111; border-radius: 9px; padding: 0 7px; font-size: 11px;
 }
-.thread { flex-wrap: wrap; }
-.thread .since { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
-.thread .doing {
-  flex-basis: 100%; padding-left: 18px; color: var(--muted); font-size: 11px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* A checkout's card, conversations inside it: Orca's worktree cards. */
+.project > summary .icon svg { width: 14px; height: 14px; }
+.project > summary .name { color: var(--text); }
+.place {
+  margin: 2px 10px 6px; border: 1px solid transparent; border-radius: var(--radius);
+  padding: 4px 0;
 }
+.place[data-current="true"] { border-color: var(--line); background: color-mix(in srgb, var(--line) 35%, transparent); }
+.place-head {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: 0; padding: 4px 10px;
+  text-align: left;
+}
+.place-head .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
+.place-head .dot.live { background: var(--ok); }
+.place-head .badge {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px;
+}
+.place-head .fold { margin-left: auto; color: var(--muted); }
+.place-head .fold svg, .marks svg { width: 13px; height: 13px; }
+.place-count { color: var(--muted); font-size: 11px; padding: 0 10px 2px 25px; }
+.marks {
+  display: flex; align-items: center; gap: 6px; margin: 2px 10px 2px 22px; padding: 3px 8px;
+  border: 1px solid var(--line); border-radius: 6px; width: calc(100% - 32px);
+}
+.marks .more { color: var(--muted); font-size: 11px; }
+.place .thread { padding: 3px 10px 3px 22px; border-radius: 6px; align-items: center; }
+.thread .line {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.thread .line .doing { color: var(--muted); }
+.thread .since { color: var(--muted); font-size: 11px; flex: none; }
 .thread[data-status="background"] .mark { color: var(--ok); }
 .child {
-  display: flex; gap: 6px; align-items: center; padding: 1px 12px 1px 30px;
+  display: flex; gap: 6px; align-items: center; padding: 1px 12px 1px 40px;
   color: var(--muted); font-size: 11px; white-space: nowrap;
 }
 .child .name { color: var(--text); }
@@ -762,3 +788,53 @@ details[open] > summary .icon { transform: rotate(90deg); }
 #route-menu button { display: block; width: 100%; text-align: left; border: none; padding: 4px 8px; }
 #route-menu button:hover { background: var(--line); }
 #route, #effort { font-size: 12px; }
+
+/* Agent faces: the provider's colour and a letter. */
+:root {
+  --anthropic: #d97757;
+  --openai: #10a37f;
+  --google: #4285f4;
+}
+.face {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 16px; height: 16px; border-radius: 4px; font-size: 10px; font-weight: 700;
+  color: #fff; background: var(--muted); line-height: 1;
+}
+.face[data-provider="anthropic"] { background: var(--anthropic); }
+.face[data-provider="openai"] { background: var(--openai); }
+.face[data-provider="google"] { background: var(--google); }
+.face[data-provider="none"] { background: transparent; border: 1px dashed var(--line); }
+.place .branch {
+  display: flex; align-items: center; gap: 5px; padding: 0 10px 3px 25px;
+  color: var(--muted); font-size: 11px; overflow: hidden; white-space: nowrap;
+}
+.place .branch svg { width: 11px; height: 11px; }
+.mark-pair { display: inline-flex; align-items: center; gap: 2px; }
+.face[data-icon="vendor"] { background: transparent; overflow: hidden; }
+.face[data-icon="vendor"] img { width: 16px; height: 16px; object-fit: contain; display: block; }
+
+/* Several agents in one conversation, overlapped; the ones working now ringed. */
+.stack { display: inline-flex; align-items: center; flex: none; }
+.stack .face { box-shadow: 0 0 0 1.5px var(--panel); }
+.stack .face + .face { margin-left: -5px; }
+.stack .face[data-live="true"] { box-shadow: 0 0 0 1.5px var(--panel), 0 0 0 3px var(--ok); }
+.stack .more { color: var(--muted); font-size: 10px; margin-left: 3px; }
+
+/* A conversation's members, nested under it. */
+.thread .members {
+  display: inline-flex; align-items: center; gap: 2px; flex: none;
+  font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 9px; padding: 0 5px;
+}
+.thread .members svg { width: 11px; height: 11px; }
+.team { margin: 0 0 4px 30px; border-left: 1px solid var(--line); padding-left: 6px; }
+.member {
+  display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 2px; font-size: 12px;
+  white-space: nowrap; overflow: hidden;
+}
+.member .state svg { width: 11px; height: 11px; }
+.member[data-live="true"] .state { color: var(--ok); }
+.member[data-live="false"] .state { color: var(--muted); }
+.member .role { font-weight: 600; }
+.member .model, .member .times, .member .doing { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.member .since { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
+.member .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }

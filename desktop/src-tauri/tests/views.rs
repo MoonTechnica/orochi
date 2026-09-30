@@ -811,3 +811,16 @@ fn a_route_pinned_from_the_window_is_the_threads_and_its_hosts() {
     let second = activity.take_control(&thread).unwrap().unwrap();
     assert_eq!(second.1.as_deref(), Some("auto"));
 }
+
+/// The vendors' icons are read from their installed apps and handed over small, as data URLs;
+/// nothing is shipped with the window.
+#[test]
+#[cfg(target_os = "macos")]
+fn installed_vendor_icons_come_back_as_small_data_urls() {
+    let dir = tempfile::tempdir().unwrap();
+    let icons = view::agent_icons(dir.path());
+    for (provider, url) in &icons {
+        assert!(url.starts_with("data:image/png;base64,"), "{provider}");
+        assert!(url.len() < 60_000, "{provider}: {} bytes is not a small icon", url.len());
+    }
+}

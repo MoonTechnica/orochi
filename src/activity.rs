@@ -310,6 +310,35 @@ pub struct ThreadRow {
     pub running_since: Option<i64>,
     /// The route the user pinned (`/model`), empty when Orochi chooses.
     pub overrides: crate::types::Overrides,
+    /// The agent the conversation's lead last ran on, and its provider: what the list draws
+    /// the conversation as.
+    pub agent: Option<String>,
+    pub provider: Option<String>,
+    /// Every agent that has taken a seat in this conversation, in the order they first did:
+    /// one conversation is routinely several agents at once (a lead, a seat beside it,
+    /// helpers) and different ones turn by turn.
+    pub agents: Vec<AgentUse>,
+}
+
+/// One member of a conversation: a role, and the agent and model that filled it. The same role
+/// on another model is another member, since that is who said what.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentUse {
+    /// `implement`, `reviewer`, `facilitator`, a helper's name.
+    pub role: String,
+    pub agent: String,
+    pub provider: String,
+    pub model: String,
+    /// Seats it has filled, over every turn.
+    pub seats: i64,
+    /// Seats it is filling right now.
+    pub live: i64,
+    /// It led a turn rather than sitting beside one.
+    pub lead: bool,
+    /// A helper started in the background.
+    pub background: bool,
+    /// When it last took a seat.
+    pub last_at: i64,
 }
 
 /// A project section of the sidebar, with the threads under it.
@@ -400,6 +429,7 @@ pub struct LiveSeat {
     pub model: Option<String>,
     pub doing: Option<String>,
     pub usage: Option<serde_json::Value>,
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -642,7 +672,8 @@ impl Activity {
             "SELECT id, project, project_id, project_root, project_pinned, project_collapsed,
                     title, cwd, branch, origin, worktree, pinned, archived_at, updated_at,
                     running, queued, asking, seats, last_state, last_item, last_seen_item,
-                    host_kind, host_pid, host_start, doing, background, running_since, overrides
+                    host_kind, host_pid, host_start, doing, background, running_since, overrides,
+                    lead_route
              FROM v_sidebar WHERE (?1 OR archived_at IS NULL)
              ORDER BY project_pinned DESC, project_sort, pinned DESC, updated_at DESC",
         )?;
@@ -658,6 +689,11 @@ impl Activity {
             let pid: Option<i64> = r.get(22)?;
             let start: Option<i64> = r.get(23)?;
             let background: i64 = r.get(25)?;
+            let route = r.get::<_, Option<String>>(28)?.and_then(|route| {
+                route
+                    .split_once('\u{1f}')
+                    .map(|(a, p)| (a.to_owned(), p.to_owned()))
+            });
             // The one judgement SQL cannot make: a turn still `running` under a process that
             // is gone was interrupted, not working.
             let alive = match (pid, start) {
@@ -712,11 +748,22 @@ impl Activity {
                         .get::<_, Option<String>>(27)?
                         .and_then(|o| serde_json::from_str(&o).ok())
                         .unwrap_or_default(),
+                    agent: route.as_ref().map(|(agent, _)| agent.clone()),
+                    provider: route.map(|(_, provider)| provider),
+                    agents: vec![],
                 },
             ))
         })?;
+        let mut agents = self.agents_by_thread()?;
         for row in rows {
-            let (id, name, root, pinned, collapsed, thread) = row?;
+            let (id, name, root, pinned, collapsed, mut thread) = row?;
+            thread.agents = agents.remove(&thread.id).unwrap_or_default();
+            // A seat under a host that is gone is not working, whatever its row says.
+            if thread.running_since.is_none() && thread.background == 0 {
+                for agent in &mut thread.agents {
+                    agent.live = 0;
+                }
+            }
             let project = match projects.iter_mut().find(|p| p.id == id) {
                 Some(project) => project,
                 None => {
@@ -762,6 +809,41 @@ impl Activity {
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         Ok(projects)
+    }
+
+    /// Which agents each conversation has had, from the latest attempt of every seat.
+    fn agents_by_thread(&self) -> Result<std::collections::BTreeMap<String, Vec<AgentUse>>> {
+        let mut statement = self.connection.prepare(
+            "SELECT tn.thread_id, s.role, a.agent, a.provider, a.model, count(*),
+                    sum(s.ended_at IS NULL), max(s.lead), max(s.background), max(s.started_at)
+             FROM seats s
+             JOIN turns tn ON tn.id=s.turn_id
+             JOIN attempts a ON a.seat_id=s.id
+               AND a.n=(SELECT max(a2.n) FROM attempts a2 WHERE a2.seat_id=s.id)
+             GROUP BY tn.thread_id, s.role, a.agent, a.provider, a.model
+             ORDER BY tn.thread_id, max(s.lead) DESC, min(s.started_at)",
+        )?;
+        let mut by_thread: std::collections::BTreeMap<String, Vec<AgentUse>> = Default::default();
+        for row in statement.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                AgentUse {
+                    role: r.get(1)?,
+                    agent: r.get(2)?,
+                    provider: r.get(3)?,
+                    model: r.get(4)?,
+                    seats: r.get(5)?,
+                    live: r.get(6)?,
+                    lead: r.get::<_, i64>(7)? != 0,
+                    background: r.get::<_, i64>(8)? != 0,
+                    last_at: r.get(9)?,
+                },
+            ))
+        })? {
+            let (thread, used) = row?;
+            by_thread.entry(thread).or_default().push(used);
+        }
+        Ok(by_thread)
     }
 
     /// The thread an id names, whole or as much of it as `orochi threads` prints. A prefix
@@ -1251,7 +1333,7 @@ impl Activity {
         let mut statement = self.connection.prepare(
             "SELECT seat_id, thread_id, project_id, turn_id, ordinal, role, lead, read_only,
                     title, background, state, started_at, agent, model, doing, usage,
-                    host_pid, host_start
+                    host_pid, host_start, provider
              FROM v_live_seats ORDER BY started_at, ordinal",
         )?;
         let rows = statement.query_map([], |r| {
@@ -1277,6 +1359,7 @@ impl Activity {
                     usage: r
                         .get::<_, Option<String>>(15)?
                         .and_then(|u| serde_json::from_str(&u).ok()),
+                    provider: r.get(18)?,
                 },
                 pid.zip(start),
             ))
@@ -2265,7 +2348,11 @@ SELECT t.id, t.project_id, p.name AS project, p.root AS project_root, lower(p.na
          WHERE tn.thread_id=t.id AND s.background=1 AND s.ended_at IS NULL) AS background,
        (SELECT min(tn.started_at) FROM turns tn
          WHERE tn.thread_id=t.id AND tn.state='running') AS running_since,
-       t.overrides
+       t.overrides,
+       (SELECT a.agent || char(31) || a.provider FROM attempts a
+          JOIN seats s ON s.id=a.seat_id JOIN turns tn ON tn.id=s.turn_id
+         WHERE tn.thread_id=t.id AND s.lead=1
+         ORDER BY a.started_at DESC LIMIT 1) AS lead_route
 FROM threads t JOIN projects p ON p.id=t.project_id
 LEFT JOIN hosts h ON h.thread_id=t.id;
 
@@ -2323,7 +2410,7 @@ DROP VIEW IF EXISTS v_live_seats;
 CREATE VIEW v_live_seats AS
 SELECT r.seat_id, r.thread_id, t.project_id, r.turn_id, r.ordinal, r.role, r.lead, r.read_only,
        r.title, r.background, r.seat_origin, r.state, r.started_at, r.agent, r.model,
-       r.reasoning, r.doing, r.usage, h.pid AS host_pid, h.start AS host_start
+       r.reasoning, r.doing, r.usage, h.pid AS host_pid, h.start AS host_start, r.provider
 FROM v_roster r
 JOIN threads t ON t.id=r.thread_id
 LEFT JOIN hosts h ON h.thread_id=r.thread_id

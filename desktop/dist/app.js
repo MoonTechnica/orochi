@@ -37,6 +37,8 @@ const state = {
   unreadOnly: false,
   // What each conversation was at the last look, and which questions were already open: a
   // notification is a change, and the first look sees none.
+  // Conversations opened or closed by hand in the list, to show the agents inside them.
+  expanded: new Map(),
   statuses: null,
   asked: new Set(),
   sound: remembered("sound") === true,
@@ -148,6 +150,10 @@ const WORDS = {
     cooling: "待機中",
     Search: "検索",
     Auto: "自動",
+    primary: "プライマリ",
+    "no branch": "ブランチなし",
+    "agents in this conversation": "この会話のエージェント",
+    conversations: "件の会話",
     Finished: "完了",
     Failed: "失敗",
     "any model": "任意のモデル",
@@ -208,10 +214,11 @@ function drawSidebar() {
     section.addEventListener("toggle", () => {
       const key = `closed:${project.id}`;
       section.open ? state.open.delete(key) : state.open.add(key);
-      localStorage.setItem("open", JSON.stringify([...state.open]));
+      remember("open", [...state.open]);
     });
 
     const summary = document.createElement("summary");
+    summary.append(drawn("folder", "icon"));
     summary.append(text("span", "name", project.name));
     const waiting = project.threads.filter((t) => t.asking > 0).length;
     const busy = project.threads.filter((t) => t.status === "working").length;
@@ -220,36 +227,173 @@ function drawSidebar() {
     }
     section.append(summary);
 
+    // Where each conversation works: a card per checkout, as Orca draws a worktree, so work
+    // running side by side in one project reads as one place with several conversations.
+    const places = new Map();
     for (const thread of project.threads) {
-      const row = document.createElement("button");
-      row.className = "thread";
-      row.dataset.status = thread.status;
-      row.setAttribute("aria-current", String(thread.id === state.thread));
-      row.append(drawn(MARKS[thread.status] || "circle", "state"));
-      row.append(text("span", "name", thread.title || t("New conversation")));
-      if (thread.status === "working" && thread.seats > 1) {
-        row.append(text("span", "seats", `${thread.seats}`));
-      }
-      if (thread.terminal) row.append(drawn("terminal", "term"));
-      row.append(text("span", "since", since(thread.running_since || thread.updated_at)));
-      // What the lead is doing right now, while it is doing it.
-      if (thread.doing) row.append(text("span", "doing", thread.doing.split("\n")[0]));
-      row.addEventListener("click", () => select(thread.id));
-      section.append(row);
-      // Each seat still working under it, lead aside: who, for what, for how long.
-      const helpers = state.live.filter((s) => s.thread_id === thread.id && !s.lead);
-      for (const helper of helpers.slice(0, 3)) {
-        const child = text("div", "child");
-        child.append(drawn(helper.state === "asking" ? "message" : "loader", "state"));
-        child.append(text("span", "name", helper.role));
-        if (helper.title) child.append(text("span", "title", helper.title));
-        child.append(text("span", "since", since(helper.started_at)));
-        section.append(child);
-      }
-      if (helpers.length > 3) section.append(text("div", "child", `+${helpers.length - 3}`));
+      const key = thread.cwd || project.root;
+      if (!places.has(key)) places.set(key, []);
+      places.get(key).push(thread);
     }
+    for (const [cwd, threads] of places) section.append(place(project, cwd, threads));
     host.append(section);
   }
+}
+
+call("agent_icons", {}).then((icons) => {
+  state.icons = icons || {};
+  drawSidebar();
+});
+
+/// Who is working, drawn as the agent it is: Orochi runs several, and which one took a
+/// conversation is the first thing to tell apart. A letter on the provider's colour rather than
+/// a vendor's logo, which is theirs to draw.
+const FACES = { anthropic: "C", openai: "O", google: "G" };
+function face(agent, provider) {
+  const node = text("span", "face", "");
+  if (!agent) {
+    node.dataset.provider = "none";
+    return node;
+  }
+  node.dataset.provider = provider || "other";
+  node.setAttribute("title", agent);
+  // The vendor's own icon where its app is installed here; a letter on its colour otherwise.
+  const icon = state.icons?.[provider];
+  if (icon) {
+    const image = document.createElement("img");
+    image.setAttribute("src", icon);
+    image.setAttribute("alt", agent);
+    node.dataset.icon = "vendor";
+    node.append(image);
+  } else {
+    node.textContent = FACES[provider] || agent.slice(0, 1).toUpperCase();
+  }
+  return node;
+}
+
+/// The agents inside one conversation. Orochi routinely runs several in one — a lead, a seat
+/// beside it, helpers, a design step on one model and its implementation on another — so a
+/// conversation is a place with members, not a row with an owner.
+function members(thread) {
+  if (thread.agents?.length) return thread.agents;
+  return thread.agent
+    ? [{ role: "", agent: thread.agent, provider: thread.provider, model: "", seats: 1, live: 0, lead: true, background: false, last_at: 0 }]
+    : [];
+}
+
+/// Open by default where there is something to watch: the conversation in view, or one with
+/// agents working now. A person's own choice, either way, sticks.
+function expanded(thread) {
+  if (state.expanded.has(thread.id)) return state.expanded.get(thread.id);
+  return thread.id === state.thread || members(thread).some((m) => m.live > 0);
+}
+
+/// One member: what it is doing if it is working, else when it last took a seat.
+function member(thread, used) {
+  const row = text("div", "member");
+  row.dataset.live = String(used.live > 0);
+  row.append(drawn(used.live > 0 ? "loader" : "dot", "state"));
+  row.append(face(used.agent, used.provider));
+  row.append(text("span", "role", used.role || used.agent));
+  row.append(text("span", "model", [used.agent, used.model].filter(Boolean).join(" · ")));
+  const seat = state.live.find((s) => s.thread_id === thread.id && s.role === used.role);
+  const what = seat?.doing?.split("\n")[0] || seat?.title;
+  if (used.live > 0 && what) row.append(text("span", "doing", what));
+  if (used.seats > 1) row.append(text("span", "times", `×${used.seats}`));
+  row.append(text("span", "since", since(used.live > 0 ? seat?.started_at : used.last_at)));
+  return row;
+}
+
+/// One checkout's card: its branch, and the conversations working in it — or, folded, one
+/// mark each.
+function place(project, cwd, threads) {
+  const key = `fold:${project.id}:${cwd}`;
+  const folded = state.open.has(key);
+  const card = text("div", "place");
+  card.dataset.current = String(threads.some((t) => t.id === state.thread));
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "place-head";
+  const live = threads.some((t) => ["working", "background", "needs_you"].includes(t.status));
+  head.append(text("span", live ? "dot live" : "dot", ""));
+  const first = threads[0];
+  const name = cwd.split("/").filter(Boolean).pop() || project.name;
+  head.append(text("span", "name", name));
+  if (!first.worktree) head.append(text("span", "badge", t("primary")));
+  head.append(drawn(folded ? "chevron-right" : "chevron-down", "fold"));
+  head.addEventListener("click", () => {
+    folded ? state.open.delete(key) : state.open.add(key);
+    remember("open", [...state.open]);
+    drawSidebar();
+  });
+  card.append(head);
+  // The branch the work is on, under the checkout's name, as Orca puts it.
+  const branch = text("div", "branch");
+  branch.append(drawn("git-branch", "icon"));
+  branch.append(text("span", null, first.branch || t("no branch")));
+  card.append(branch);
+  if (folded) {
+    const marks = text("button", "marks");
+    marks.type = "button";
+    for (const thread of threads.slice(0, 4)) {
+      const one = text("span", "mark-pair");
+      const team = members(thread);
+      const lead = team.find((m) => m.lead) || team[0];
+      one.append(face(lead?.agent, lead?.provider));
+      if (team.length > 1) one.append(text("span", "more", `${team.length}`));
+      one.append(drawn(MARKS[thread.status] || "circle", "state"));
+      marks.append(one);
+    }
+    if (threads.length > 4) marks.append(text("span", "more", `+${threads.length - 4}`));
+    marks.addEventListener("click", () => select(threads[0].id));
+    card.append(marks);
+    return card;
+  }
+  if (threads.length > 1) card.append(text("div", "place-count", `${threads.length} ${t("conversations")}`));
+  for (const thread of threads) {
+    const row = document.createElement("button");
+    row.className = "thread";
+    row.dataset.status = thread.status;
+    row.setAttribute("aria-current", String(thread.id === state.thread));
+    row.append(drawn(MARKS[thread.status] || "circle", "state"));
+    const team = members(thread);
+    // One agent is the conversation's own mark; several are listed under it instead, and the
+    // row keeps its width for the title.
+    if (team.length <= 1) row.append(face(team[0]?.agent, team[0]?.provider));
+    const line = text("span", "line");
+    line.append(text("span", "name", thread.title || t("New conversation")));
+    // What the lead is doing right now, while it is doing it: `title - Bash: curl …`.
+    if (thread.doing) line.append(text("span", "doing", ` - ${thread.doing.split("\n")[0]}`));
+    row.append(line);
+    if (thread.status === "working" && thread.seats > 1) {
+      row.append(text("span", "seats", `${thread.seats}`));
+    }
+    if (thread.terminal) row.append(drawn("terminal", "term"));
+    const open = team.length > 1 && expanded(thread);
+    if (team.length > 1) {
+      const working = team.filter((m) => m.live > 0).length;
+      const chip = text("span", "members");
+      chip.dataset.open = String(open);
+      chip.append(text("span", null, working ? `${working}/${team.length}` : `${team.length}`));
+      chip.append(drawn(open ? "chevron-down" : "chevron-right", "fold"));
+      chip.setAttribute("title", t("agents in this conversation"));
+      chip.addEventListener("click", (event) => {
+        event.stopPropagation?.();
+        state.expanded.set(thread.id, !open);
+        drawSidebar();
+      });
+      row.append(chip);
+    }
+    row.append(text("span", "since", since(thread.running_since || thread.updated_at)));
+    row.addEventListener("click", () => select(thread.id));
+    card.append(row);
+    if (open) {
+      const list = text("div", "team");
+      for (const used of team) list.append(member(thread, used));
+      card.append(list);
+    }
+  }
+  return card;
 }
 
 // Thread --------------------------------------------------------------------
@@ -536,6 +680,7 @@ const ICONS = {
   folder: ["M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"],
   "chevron-up": ["m18 15-6-6-6 6"],
   "chevron-right": ["m9 18 6-6-6-6"],
+  "chevron-down": ["m6 9 6 6 6-6"],
   x: ["M18 6 6 18", "m6 6 12 12"],
   check: ["M20 6 9 17l-5-5"],
   plus: ["M5 12h14", "M12 5v14"],
@@ -877,7 +1022,8 @@ function drawStatus() {
       meter.append(fill);
       node.append(meter);
       node.append(text("span", "used", `${used}%`));
-      if (known.window[1]) {
+      // A reset already past says nothing about when this one comes back.
+      if (known.window[1] && known.window[1] * 1000 > Date.now()) {
         node.append(text("span", "reset", span(known.window[1] * 1000 - Date.now())));
       }
       node.dataset.tight = String(used >= 90);
