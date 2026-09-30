@@ -627,6 +627,24 @@ fn the_gateway_routes_by_host_and_passes_upgraded_connections_through() {
 }
 
 #[test]
+fn the_vm_powers_itself_off_only_when_nothing_inside_or_from_here_uses_it() {
+    let status = Command::new("python3")
+        .args([
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "tests",
+            "-p",
+            "test_sandbox_idle.py",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
 fn ports_lists_what_listens_inside_with_the_address_each_opens_at_here() {
     let w = Workspace::new();
     create(&w);
@@ -643,5 +661,123 @@ fn ports_lists_what_listens_inside_with_the_address_each_opens_at_here() {
     assert!(
         !w.run(&["sandbox", "network"]).status.success(),
         "the root-only setup is gone"
+    );
+}
+
+impl Workspace {
+    /// Reaches Incus through a fake `limactl` whose one VM starts stopped, as the real VM is
+    /// after it powered itself off while unused.
+    fn behind_a_vm(mut self, running: bool) -> Self {
+        let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_limactl.py");
+        let limactl = self.dir.path().join("limactl");
+        std::fs::write(
+            &limactl,
+            format!(
+                "#!/bin/sh\nFAKE_LIMA_STATE='{}' FAKE_LIMA_LOG='{}' FAKE_INCUS='{}' exec python3 '{}' \"$@\"\n",
+                self.dir.path().join("vm.state").display(),
+                self.dir.path().join("limactl.jsonl").display(),
+                self.dir.path().join("incus").display(),
+                fake.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&limactl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(
+            self.dir.path().join("vm.state"),
+            if running { "Running" } else { "Stopped" },
+        )
+        .unwrap();
+        self.config.sandbox.client = SandboxClient::Lima;
+        self.config.sandbox.limactl = limactl.to_string_lossy().into_owned();
+        self.config.sandbox.mounts = vec![self.dir.path().canonicalize().unwrap()];
+        self.config.sandbox.min_free_gib = 0;
+        self
+    }
+    fn vm(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("vm.state")).unwrap()
+    }
+    fn set_vm(&self, state: &str) {
+        std::fs::write(self.dir.path().join("vm.state"), state).unwrap();
+    }
+    fn starts(&self) -> usize {
+        std::fs::read_to_string(self.dir.path().join("limactl.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("[\"start\""))
+            .count()
+    }
+}
+
+#[test]
+fn a_run_in_a_sandboxed_project_starts_the_vm_that_stopped_itself_and_then_works() {
+    let w = Workspace::new().behind_a_vm(true);
+    create(&w);
+    // The VM powered itself off while nothing used it.
+    w.set_vm("Stopped");
+    success(&w.run(&["Implement a small endpoint"]));
+    assert_eq!(w.vm(), "Running");
+    assert_eq!(w.starts(), 1, "started once, for the run that needed it");
+    assert!(w.execs().iter().any(|c| c.contains(&"sbx-run".to_owned())));
+    assert!(w.agent_log().contains("session/prompt"));
+}
+
+#[test]
+fn looking_at_sandboxes_never_starts_the_vm() {
+    let w = Workspace::new().behind_a_vm(true);
+    create(&w);
+    w.set_vm("Stopped");
+    let output = w.run(&["sandbox", "status"]);
+    success(&output);
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("stopped (starts when needed)"), "{said}");
+    assert!(said.contains("repo") && said.contains("stopped"), "{said}");
+    success(&w.run(&["sandbox", "gc"]));
+    assert_eq!(w.vm(), "Stopped");
+    assert_eq!(w.starts(), 0);
+}
+
+#[test]
+fn an_operation_that_needs_the_vm_starts_it_and_says_so() {
+    let w = Workspace::new().behind_a_vm(false);
+    let output = w.run(&["sandbox", "create"]);
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Starting the sandbox VM"));
+    assert_eq!(w.vm(), "Running");
+    assert_eq!(w.starts(), 1);
+}
+
+#[test]
+fn a_vm_that_was_never_created_is_named_rather_than_started() {
+    let w = Workspace::new().behind_a_vm(false);
+    std::fs::write(w.dir.path().join("vm.state"), "").unwrap();
+    // The fake lists no VM when its state is empty: mimic `limactl list` knowing none.
+    let fake = w.dir.path().join("limactl");
+    std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+    let output = w.run(&["sandbox", "create"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("orochi sandbox up"));
+}
+
+#[test]
+fn status_says_what_keeps_the_vm_up_or_how_long_it_has_been_unused() {
+    use orochi::sandbox::ops::describe_idle;
+    let working = serde_json::json!({"idle_minutes": 30, "idle_for": 0, "verdict": "active",
+        "why": [{"agents": {"demo": ["claude-agent-a", "node"]}, "processes": 3}, {"connected": true}]});
+    assert_eq!(
+        describe_idle(&working),
+        "in use: agent work in demo (claude-agent-a, node); a connection from this machine"
+    );
+    let unsure =
+        serde_json::json!({"idle_minutes": 30, "why": [{"unknown": "incus query failed"}]});
+    assert!(describe_idle(&unsure).contains("so kept running"));
+    let idle =
+        serde_json::json!({"idle_minutes": 30, "idle_for": 725, "verdict": "wait", "why": []});
+    assert_eq!(
+        describe_idle(&idle),
+        "unused for 12 min; stops itself at 30 min"
     );
 }

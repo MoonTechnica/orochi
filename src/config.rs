@@ -235,6 +235,9 @@ pub struct SandboxConfig {
     pub min_free_gib: u64,
     /// `orochi sandbox gc` stops a sandbox nobody has used for this long.
     pub idle_stop_minutes: u64,
+    /// The VM powers itself off after this long with nothing running inside and nothing
+    /// connected from here; Orochi starts it again when it is needed. 0 keeps it running.
+    pub vm_idle_minutes: u64,
     /// This run's `--sandbox`, overriding the project's mode; never read from a file.
     #[serde(skip)]
     pub force: Option<crate::sandbox::Mode>,
@@ -275,6 +278,7 @@ impl Default for SandboxConfig {
                 .to_vec(),
             min_free_gib: 10,
             idle_stop_minutes: 30,
+            vm_idle_minutes: 30,
             force: None,
         }
     }

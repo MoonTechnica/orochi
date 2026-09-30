@@ -46,11 +46,13 @@ cat > /etc/profile.d/sbx-path.sh <<'PROFILE'
 export PATH="$HOME/.bun/bin:$HOME/.deno/bin:$HOME/.local/bin:$PATH"
 PROFILE
 
-# Every agent and check starts through this. `incus exec` leaves a process running when the
-# client on the other machine is killed (measured 2026-09-30), so the end of the connection
-# has to be seen from here: the command runs in a group of its own, and whatever it leaves in
-# that group dies with it. An agent reads its stdin (ACP) and sees the end of it; a check does
-# not read stdin, so with SBX_HOLD=1 this process watches the stdin Orochi holds open instead.
+# Every agent and check starts through this. The command runs in a process group of its own.
+# What an agent leaves running when its session ends (a build, a server it started) is its
+# work and is left alone: it keeps OROCHI_SANDBOX, so the VM stays up while it runs and
+# `orochi sandbox status` names it. A check is Orochi's own and ends with the run: with
+# SBX_HOLD=1 this watches the stdin Orochi holds open (a check does not read stdin, and
+# `incus exec` leaves a process running when its client is killed), and its end, or a signal,
+# kills the check's whole group.
 cat > /usr/local/bin/sbx-run <<'RUN'
 #!/usr/bin/python3
 import os, signal, sys, threading
@@ -83,7 +85,8 @@ if hold:
         end()
     threading.Thread(target=watch, daemon=True).start()
 _, status = os.waitpid(pid, 0)
-end()
+if hold:
+    end()
 sys.exit(os.waitstatus_to_exitcode(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
 RUN
 chmod 0755 /usr/local/bin/sbx-run

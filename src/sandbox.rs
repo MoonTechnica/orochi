@@ -394,6 +394,8 @@ const LOCAL_ONLY: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPD
 impl Placement {
     /// Starts the instance if it is stopped and marks the project used now.
     pub fn ready(&self, config: &SandboxConfig, data: &Path) -> Result<()> {
+        // The VM stops itself when unused; a run is a use. Quiet: a console owns the screen.
+        ops::ensure_vm(config, false)?;
         let incus = Incus::new(config);
         match incus.status(&self.name)?.as_deref() {
             Some("RUNNING") => {}

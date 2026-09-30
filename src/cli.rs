@@ -1570,6 +1570,21 @@ async fn sandbox(
             ops::build_image(sandbox, if vm { Mode::Vm } else { Mode::Container })?
         }
         SandboxCommand::Status => {
+            if sandbox.client == crate::config::SandboxClient::Lima {
+                let vm = ops::vm_status(sandbox).ok().flatten();
+                println!(
+                    "VM {}: {}",
+                    sandbox.lima_instance,
+                    match vm.as_deref() {
+                        Some("Running") => match ops::idle_report(sandbox) {
+                            Some(report) => format!("running · {report}"),
+                            None => "running".into(),
+                        },
+                        Some(_) => "stopped (starts when needed)".into(),
+                        None => "not created (`orochi sandbox up`)".into(),
+                    }
+                );
+            }
             let rows = ops::statuses(sandbox, data)?;
             let state = sbx::State::load(data)?;
             if rows.is_empty() {
