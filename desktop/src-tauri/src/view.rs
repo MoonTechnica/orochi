@@ -103,6 +103,152 @@ pub struct Folder {
     pub updated_at: Option<i64>,
 }
 
+/// Where a folder's agents run (`host`, `container` or `vm`), for the new-thread dialog.
+#[derive(Debug, Clone, Serialize)]
+pub struct Placement {
+    pub ask: bool,
+    pub mode: String,
+    /// What the folder's sandbox was made as, where it has one.
+    pub tier: Option<String>,
+    pub docker: bool,
+    pub name: Option<String>,
+}
+
+/// Records where a folder's agents run, creating or recreating its sandbox where the choice
+/// needs one. Slow (an instance is made) and needs no window state, so the shell runs it off
+/// the window's connection.
+pub fn place(config: &Path, data: &Path, root: &Path, mode: &str, docker: bool) -> Result<()> {
+    use orochi::sandbox::{Mode, State, ops};
+    let mode = match mode {
+        "host" => Mode::Host,
+        "container" => Mode::Container,
+        "vm" => Mode::Vm,
+        other => bail!("no such place to run: {other}"),
+    };
+    let root = root.canonicalize()?;
+    let config = orochi::config::Config::load(config)?;
+    let sandbox = &config.sandbox;
+    let existing = State::load(data)?.exact(&root).cloned();
+    match existing {
+        Some(_) => {
+            ops::set_mode(sandbox, data, &root, mode)?;
+        }
+        None if mode.sandboxed() => {
+            ops::create(
+                sandbox,
+                data,
+                &root,
+                ops::Create {
+                    mode,
+                    docker,
+                    shadow: sandbox.shadow.clone(),
+                    ports: vec![],
+                },
+            )?;
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// The Sandboxes screen: the host, every project's sandbox, and what was last asked of them.
+#[derive(Debug, Clone, Serialize)]
+pub struct Sandboxes {
+    /// `lima` (a VM on this machine) or `incus` (a client for an Incus host elsewhere).
+    pub client: String,
+    /// The Lima VM's state (`Running`, `Stopped`), `None` where it was never created or the
+    /// client is `incus`.
+    pub vm: Option<String>,
+    /// Whether Incus answered; nothing below is current without it.
+    pub reachable: bool,
+    pub projects: Vec<SandboxRow>,
+    pub jobs: Vec<orochi::sandbox::jobs::Job>,
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxRow {
+    pub name: String,
+    pub root: String,
+    pub mode: String,
+    pub tier: String,
+    pub docker: bool,
+    pub status: String,
+    pub address: Option<String>,
+    /// Where its services open by name, once the network is set up.
+    pub host: String,
+    /// Ports at this machine's 127.0.0.1 while it is focused.
+    pub focused: Vec<u16>,
+    /// An operation on it is still running.
+    pub busy: bool,
+}
+
+/// Reads the Sandboxes screen. It asks Incus (through the VM), so it is slow enough to run off
+/// the window's connection.
+pub fn sandboxes(config: &Path, data: &Path) -> Result<Sandboxes> {
+    use orochi::sandbox::{State, jobs, ops};
+    let config = orochi::config::Config::load(config).unwrap_or_default();
+    let sandbox = &config.sandbox;
+    let lima = sandbox.client == orochi::config::SandboxClient::Lima;
+    let vm = if lima {
+        ops::vm_status(sandbox).ok().flatten()
+    } else {
+        None
+    };
+    let jobs = jobs::list(data, 8)?;
+    let busy: Vec<&Path> = jobs
+        .iter()
+        .filter(|j| j.exit.is_none())
+        .filter_map(|j| j.request.root())
+        .collect();
+    let state = State::load(data)?;
+    let asked = !lima || vm.as_deref() == Some("Running");
+    let rows = if asked {
+        ops::statuses(sandbox, data)?
+    } else {
+        state
+            .projects
+            .iter()
+            .map(|p| (p.clone(), "stopped".to_owned(), None))
+            .collect()
+    };
+    let reachable = asked && rows.iter().all(|(_, status, _)| status != "unreachable");
+    Ok(Sandboxes {
+        client: if lima { "lima" } else { "incus" }.into(),
+        vm,
+        reachable,
+        projects: rows
+            .into_iter()
+            .map(|(project, status, address)| SandboxRow {
+                focused: state
+                    .focus
+                    .as_ref()
+                    .filter(|f| f.name == project.name)
+                    .map(|f| f.ports.clone())
+                    .unwrap_or_default(),
+                busy: busy.contains(&project.root.as_path()),
+                host: format!("{}.sbx", project.name),
+                name: project.name,
+                root: project.root.to_string_lossy().into_owned(),
+                mode: project.mode.key().into(),
+                tier: project.tier.key().into(),
+                docker: project.docker,
+                status,
+                address,
+            })
+            .collect(),
+        jobs,
+    })
+}
+
+/// Starts one sandbox operation in the background, as `orochi sandbox …`.
+pub fn sandbox_job(
+    binary: &Path,
+    config: &Path,
+    data: &Path,
+    request: orochi::sandbox::jobs::Request,
+) -> Result<String> {
+    orochi::sandbox::jobs::start(binary, config, data, request)
+}
+
 /// One line in the room: an agent's message, a person's note, or someone arriving or leaving.
 #[derive(Debug, Clone, Serialize)]
 pub struct Said {
@@ -306,6 +452,40 @@ impl Client {
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// Where a folder's agents run, and whether to ask: a folder nobody has worked in and no
+    /// sandbox was made for is a new project, and where it runs is decided before its first
+    /// thread (as Orca asks where a new worktree runs).
+    /// The configuration file and data directory, for work done off this connection.
+    pub fn paths(&self) -> (std::path::PathBuf, std::path::PathBuf) {
+        (self.config.clone(), self.data.clone())
+    }
+
+    pub fn placement(&self, root: &Path) -> Result<Placement> {
+        let root = root.canonicalize()?;
+        let state = orochi::sandbox::State::load(&self.data)?;
+        let config = orochi::config::Config::load(&self.config).unwrap_or_default();
+        let known = self
+            .folders()?
+            .iter()
+            .any(|f| Path::new(&f.root) == root.as_path());
+        Ok(match state.project_for(&root) {
+            Some(project) => Placement {
+                ask: false,
+                mode: project.mode.key().into(),
+                tier: Some(project.tier.key().into()),
+                docker: project.docker,
+                name: Some(project.name.clone()),
+            },
+            None => Placement {
+                ask: !known,
+                mode: config.sandbox.default_mode.key().into(),
+                tier: None,
+                docker: config.sandbox.default_docker,
+                name: None,
+            },
+        })
     }
 
     /// Starts a thread in a folder the user chose. The project is identified the way the
@@ -616,7 +796,10 @@ impl Client {
             let mut words = route.split_whitespace();
             let (agent, model) = match words.next().unwrap_or("").split_once('/') {
                 Some((agent, model)) => (agent.to_owned(), Some(model.to_owned())),
-                None => (route.split_whitespace().next().unwrap_or("").to_owned(), None),
+                None => (
+                    route.split_whitespace().next().unwrap_or("").to_owned(),
+                    None,
+                ),
             };
             anyhow::ensure!(!agent.is_empty(), "a route names an agent");
             overrides.agent = Some(agent);
@@ -697,7 +880,8 @@ impl Client {
 
     /// Sends a message: a queued turn, which the thread's host takes next.
     pub fn send(&self, thread: &str, text: &str) -> Result<String> {
-        self.activity.queue_turn(thread, text, &[], "auto", "desktop")
+        self.activity
+            .queue_turn(thread, text, &[], "auto", "desktop")
     }
 
     /// Whether this thread has no living owner. A message to a thread a terminal is holding
@@ -759,8 +943,8 @@ impl Client {
     /// 100 ms without reading a megabyte to learn that nothing changed.
     pub fn changed(&mut self) -> Result<BTreeSet<String>> {
         let connection = self.activity.connection();
-        let mut statement = connection
-            .prepare("SELECT id, thread_id FROM changes WHERE id > ?1 ORDER BY id")?;
+        let mut statement =
+            connection.prepare("SELECT id, thread_id FROM changes WHERE id > ?1 ORDER BY id")?;
         let mut threads = BTreeSet::new();
         let mut last = self.cursor;
         for row in statement.query_map([self.cursor], |r| {

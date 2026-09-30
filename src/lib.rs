@@ -22,6 +22,7 @@ pub mod policy;
 pub mod process;
 pub mod quota_sources;
 pub mod router;
+pub mod sandbox;
 pub mod scheduler;
 pub mod storage;
 pub mod types;

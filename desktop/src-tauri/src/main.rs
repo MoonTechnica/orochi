@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 //! The shell. It owns a window and a connection, and does nothing else: every command below
 //! is one call into `view`, which is where the app's behavior lives and where it is tested.
-use orochi_desktop::view::{AgentRow, Client, Folder, Prompt, Remembered, RouteStats, Said};
 use orochi::activity::{ProjectRow, Thread};
+use orochi_desktop::view::{AgentRow, Client, Folder, Prompt, Remembered, RouteStats, Said};
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
@@ -30,6 +30,71 @@ fn new_thread(open: State<'_, Open>, root: String) -> Result<String, String> {
         .map_err(fail)
 }
 
+/// The `orochi` this window starts: `OROCHI_BIN`, then the one shipped beside this window,
+/// then the one the user would run. A window opened from Finder has no shell `PATH`, so a
+/// sibling is what makes a packaged app work at all.
+fn orochi() -> std::path::PathBuf {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("orochi")))
+        .filter(|path| path.is_file());
+    std::env::var_os("OROCHI_BIN")
+        .map(std::path::PathBuf::from)
+        .or(beside)
+        .unwrap_or_else(|| "orochi".into())
+}
+
+/// The Sandboxes screen. It asks Incus through the VM, so it is read off the connection.
+#[tauri::command]
+async fn sandboxes(open: State<'_, Open>) -> Result<orochi_desktop::view::Sandboxes, String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    tauri::async_runtime::spawn_blocking(move || orochi_desktop::view::sandboxes(&config, &data))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(fail)
+}
+
+/// One sandbox operation, started in the background; the screen follows its output.
+#[tauri::command]
+fn sandbox_job(
+    open: State<'_, Open>,
+    request: orochi::sandbox::jobs::Request,
+) -> Result<String, String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::sandbox_job(&orochi(), &config, &data, request).map_err(fail)
+}
+
+/// Where a folder's agents run, and whether a new project should be asked.
+#[tauri::command]
+fn placement(
+    open: State<'_, Open>,
+    root: String,
+) -> Result<orochi_desktop::view::Placement, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .placement(std::path::Path::new(&root))
+        .map_err(fail)
+}
+
+/// Decides where a folder's agents run. Making a sandbox takes a while, so it runs off the
+/// window's connection and the window stays responsive.
+#[tauri::command]
+async fn place(
+    open: State<'_, Open>,
+    root: String,
+    mode: String,
+    docker: bool,
+) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    tauri::async_runtime::spawn_blocking(move || {
+        orochi_desktop::view::place(&config, &data, std::path::Path::new(&root), &mode, docker)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(fail)
+}
+
 /// One look at a thread: has the agent running it gone, and is anything waiting to be run.
 #[tauri::command]
 fn watch(open: State<'_, Open>, thread: String) -> Result<orochi_desktop::view::Watch, String> {
@@ -44,18 +109,7 @@ fn ensure_host(open: State<'_, Open>, thread: String) -> Result<bool, String> {
     if !needed {
         return Ok(false);
     }
-    // `OROCHI_BIN`, then the one shipped beside this window, then the one the user would run.
-    // A window opened from Finder has no shell `PATH`, so a sibling is what makes a packaged
-    // app work at all.
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("orochi")))
-        .filter(|path| path.is_file());
-    let orochi = std::env::var_os("OROCHI_BIN")
-        .map(std::path::PathBuf::from)
-        .or(beside)
-        .unwrap_or_else(|| "orochi".into());
-    orochi_desktop::view::start_host(&orochi, &thread).map_err(fail)?;
+    orochi_desktop::view::start_host(&orochi(), &thread).map_err(fail)?;
     Ok(true)
 }
 
@@ -191,7 +245,11 @@ fn comment(
     thread: String,
     comments: Vec<(String, u64, String)>,
 ) -> Result<String, String> {
-    open.0.lock().unwrap().comment(&thread, &comments).map_err(fail)
+    open.0
+        .lock()
+        .unwrap()
+        .comment(&thread, &comments)
+        .map_err(fail)
 }
 
 #[tauri::command]
@@ -201,7 +259,11 @@ fn settings(open: State<'_, Open>) -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 fn save_settings(open: State<'_, Open>, settings: serde_json::Value) -> Result<(), String> {
-    open.0.lock().unwrap().save_settings(&settings).map_err(fail)
+    open.0
+        .lock()
+        .unwrap()
+        .save_settings(&settings)
+        .map_err(fail)
 }
 
 #[tauri::command]
@@ -222,7 +284,11 @@ fn forget_all(open: State<'_, Open>) -> Result<usize, String> {
 
 #[tauri::command]
 fn sidebar(open: State<'_, Open>, limit: usize, archived: bool) -> Result<Vec<ProjectRow>, String> {
-    open.0.lock().unwrap().sidebar(limit, archived).map_err(fail)
+    open.0
+        .lock()
+        .unwrap()
+        .sidebar(limit, archived)
+        .map_err(fail)
 }
 
 #[tauri::command]
@@ -317,7 +383,10 @@ fn set_route(open: State<'_, Open>, thread: String, route: Option<String>) -> Re
 }
 
 #[tauri::command]
-fn search(open: State<'_, Open>, query: String) -> Result<Vec<orochi::activity::SearchHit>, String> {
+fn search(
+    open: State<'_, Open>,
+    query: String,
+) -> Result<Vec<orochi::activity::SearchHit>, String> {
     open.0.lock().unwrap().search(&query).map_err(fail)
 }
 
@@ -356,6 +425,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             folders,
             new_thread,
+            placement,
+            place,
+            sandboxes,
+            sandbox_job,
             ensure_host,
             watch,
             room,

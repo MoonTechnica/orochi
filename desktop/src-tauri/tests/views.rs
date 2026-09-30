@@ -30,7 +30,8 @@ fn candidate() -> ExecutionCandidate {
 fn fixture(dir: &std::path::Path) -> (String, String) {
     let store = share(Activity::open(dir, 30).unwrap());
     let db = store.lock().unwrap();
-    db.project("proj", std::path::Path::new("/tmp/orochi")).unwrap();
+    db.project("proj", std::path::Path::new("/tmp/orochi"))
+        .unwrap();
     let thread = db
         .create_thread(
             "proj",
@@ -43,7 +44,13 @@ fn fixture(dir: &std::path::Path) -> (String, String) {
         )
         .unwrap();
     let turn = db
-        .queue_turn(&thread, "Fix the flaky mailbox test", &[], "auto", "terminal")
+        .queue_turn(
+            &thread,
+            "Fix the flaky mailbox test",
+            &[],
+            "auto",
+            "terminal",
+        )
         .unwrap();
     let host = db.register_host(Some(&thread), "terminal").unwrap();
     db.claim_turn(&turn, &host).unwrap();
@@ -140,7 +147,10 @@ fn a_thread_renders_from_the_views_alone() {
     let (thread, _) = fixture(dir.path());
     let client = Client::open(dir.path()).unwrap();
 
-    let thread = client.thread(&thread).unwrap().expect("the thread is there");
+    let thread = client
+        .thread(&thread)
+        .unwrap()
+        .expect("the thread is there");
     let kinds: Vec<&str> = thread.items.iter().map(|i| i.kind.as_str()).collect();
     assert_eq!(
         kinds,
@@ -148,7 +158,8 @@ fn a_thread_renders_from_the_views_alone() {
         "the timeline is what happened, in order"
     );
     assert_eq!(
-        thread.items[1].data.as_ref().unwrap()["model"], "opus",
+        thread.items[1].data.as_ref().unwrap()["model"],
+        "opus",
         "the route chip has what it needs without a second query"
     );
     assert_eq!(
@@ -339,8 +350,13 @@ fn the_room_carries_what_agents_and_the_person_said() {
     let (thread, _) = fixture(dir.path());
     let client = Client::open(dir.path()).unwrap();
 
-    assert!(client.room(&thread).unwrap().is_empty(), "nobody has spoken yet");
-    client.say(&thread, None, "prefer the simpler shape").unwrap();
+    assert!(
+        client.room(&thread).unwrap().is_empty(),
+        "nobody has spoken yet"
+    );
+    client
+        .say(&thread, None, "prefer the simpler shape")
+        .unwrap();
 
     let room = client.room(&thread).unwrap();
     assert_eq!(room.len(), 1);
@@ -412,7 +428,9 @@ ANTHROPIC_API_KEY = "sk-secret-value"
     client.save_settings(&changed).unwrap();
     assert_eq!(client.settings().unwrap()["activity"]["retention_days"], 7);
     assert!(
-        std::fs::read_to_string(&config).unwrap().contains("sk-secret-value"),
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("sk-secret-value"),
         "and writing settings back does not overwrite the secret with its redaction",
     );
 
@@ -437,7 +455,11 @@ fn memory_is_readable_and_editable_as_the_text_it_is() {
     fixture(dir.path());
     let client = Client::open(dir.path()).unwrap();
 
-    assert_eq!(client.memory().unwrap().user, "", "nothing is remembered yet");
+    assert_eq!(
+        client.memory().unwrap().user,
+        "",
+        "nothing is remembered yet"
+    );
     client.save_memory("Prefers small commits.\n").unwrap();
     assert_eq!(client.memory().unwrap().user, "Prefers small commits.\n");
     assert!(
@@ -487,7 +509,16 @@ fn the_changes_pane_reads_the_working_tree_as_well_as_what_was_recorded() {
     git(&["init", "-q"]);
     std::fs::write(repo.join("kept.txt"), "one\ntwo\n").unwrap();
     git(&["add", "."]);
-    git(&["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "-m", "base"]);
+    git(&[
+        "-c",
+        "user.email=t@e",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-q",
+        "-m",
+        "base",
+    ]);
     std::fs::write(repo.join("kept.txt"), "one\nchanged\n").unwrap();
 
     let client = Client::open(dir.path()).unwrap();
@@ -543,8 +574,7 @@ fn review_comments_become_the_next_message() {
         )
         .unwrap();
     assert_eq!(
-        text,
-        "src/lib.rs:12 — this allocates in a loop\nsrc/lib.rs:40 — and this can be `?`",
+        text, "src/lib.rs:12 — this allocates in a loop\nsrc/lib.rs:40 — and this can be `?`",
         "one message carrying every comment, in the order they were left"
     );
     assert!(
@@ -655,7 +685,10 @@ fn the_room_is_timed_on_the_same_clock_as_the_conversation() {
     assert!(!said.is_empty(), "the message is in the room");
     let items = client.thread(&thread).unwrap().unwrap().items;
     let newest = items.iter().map(|i| i.at).max().unwrap_or(0);
-    assert!(newest > 1_600_000_000_000, "the store counts milliseconds: {newest}");
+    assert!(
+        newest > 1_600_000_000_000,
+        "the store counts milliseconds: {newest}"
+    );
     for line in &said {
         assert!(
             line.at > 1_600_000_000_000,
@@ -730,11 +763,16 @@ fn a_thread_whose_host_is_gone_is_noticed_and_picked_up() {
 
     let state: String = rusqlite::Connection::open(dir.path().join("activity.sqlite3"))
         .unwrap()
-        .query_row("SELECT state FROM turns WHERE thread_id=?1", [&thread], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT state FROM turns WHERE thread_id=?1",
+            [&thread],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(state, "interrupted", "the turn stops claiming to be running");
+    assert_eq!(
+        state, "interrupted",
+        "the turn stops claiming to be running"
+    );
 
     // A second look has nothing new to report: it is said once, not every time.
     assert!(!client.watch(&thread).unwrap().lost);
@@ -807,7 +845,10 @@ fn a_route_pinned_from_the_window_is_the_threads_and_its_hosts() {
     client.set_route(&thread, None).unwrap();
     let activity = Activity::open(dir.path(), 30).unwrap();
     let first = activity.take_control(&thread).unwrap().unwrap();
-    assert_eq!(first, ("reroute".to_owned(), Some("claude/opus high".to_owned())));
+    assert_eq!(
+        first,
+        ("reroute".to_owned(), Some("claude/opus high".to_owned()))
+    );
     let second = activity.take_control(&thread).unwrap().unwrap();
     assert_eq!(second.1.as_deref(), Some("auto"));
 }
@@ -821,6 +862,82 @@ fn installed_vendor_icons_come_back_as_small_data_urls() {
     let icons = view::agent_icons(dir.path());
     for (provider, url) in &icons {
         assert!(url.starts_with("data:image/png;base64,"), "{provider}");
-        assert!(url.len() < 60_000, "{provider}: {} bytes is not a small icon", url.len());
+        assert!(
+            url.len() < 60_000,
+            "{provider}: {} bytes is not a small icon",
+            url.len()
+        );
     }
+}
+
+#[test]
+fn a_folder_nobody_worked_in_is_asked_where_it_runs_and_a_known_or_sandboxed_one_is_not() {
+    use orochi::sandbox::{Mode, Project, State};
+    let dir = tempfile::tempdir().unwrap();
+    let client = Client::open(dir.path()).unwrap();
+    let fresh = tempfile::tempdir().unwrap();
+    let asked = client.placement(fresh.path()).unwrap();
+    assert!(asked.ask);
+    assert_eq!(
+        asked.mode, "host",
+        "nothing moves into a sandbox unless chosen"
+    );
+    client.new_thread(fresh.path()).unwrap();
+    assert!(
+        !client.placement(fresh.path()).unwrap().ask,
+        "once worked in, it is known"
+    );
+
+    let sandboxed = tempfile::tempdir().unwrap();
+    let root = sandboxed.path().canonicalize().unwrap();
+    let mut state = State::default();
+    state.projects.push(Project {
+        name: "web".into(),
+        root: root.clone(),
+        mode: Mode::Container,
+        tier: Mode::Container,
+        docker: false,
+        ..Project::default()
+    });
+    state.save(dir.path()).unwrap();
+    let placed = client.placement(&root.join(".")).unwrap();
+    assert!(!placed.ask);
+    assert_eq!(placed.mode, "container");
+    assert_eq!(placed.name.as_deref(), Some("web"));
+    assert!(!placed.docker);
+
+    // Choosing this Mac for a new folder records nothing and makes nothing.
+    let plain = tempfile::tempdir().unwrap();
+    let (config, _) = client.paths();
+    view::place(&config, dir.path(), plain.path(), "host", true).unwrap();
+    assert_eq!(State::load(dir.path()).unwrap().projects.len(), 1);
+    assert!(view::place(&config, dir.path(), plain.path(), "cloud", true).is_err());
+}
+
+#[test]
+fn the_sandboxes_screen_lists_each_project_even_when_the_host_is_not_there() {
+    use orochi::sandbox::{Mode, Project, State};
+    let dir = tempfile::tempdir().unwrap();
+    // A client whose Incus cannot be run: the host is unreachable, not the projects gone.
+    let config = dir.path().join("config.toml");
+    let mut settings = orochi::config::Config::default();
+    settings.sandbox.client = orochi::config::SandboxClient::Incus;
+    settings.sandbox.incus = "/nonexistent/incus".into();
+    std::fs::write(&config, toml::to_string(&settings).unwrap()).unwrap();
+    let mut state = State::default();
+    state.projects.push(Project {
+        name: "web".into(),
+        root: "/work/web".into(),
+        mode: Mode::Container,
+        tier: Mode::Container,
+        ..Project::default()
+    });
+    state.save(dir.path()).unwrap();
+    let screen = view::sandboxes(&config, dir.path()).unwrap();
+    assert_eq!(screen.client, "incus");
+    assert!(!screen.reachable);
+    assert_eq!(screen.projects.len(), 1);
+    assert_eq!(screen.projects[0].status, "unreachable");
+    assert_eq!(screen.projects[0].host, "web.sbx");
+    assert!(screen.jobs.is_empty());
 }

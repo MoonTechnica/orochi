@@ -1,0 +1,38 @@
+# The host VM for Orochi's per-project sandboxes, written by `orochi sandbox up`.
+# Placeholders in {{…}} are Orochi's, filled in before Lima reads this file.
+vmType: vz
+nestedVirtualization: {{NESTED}}
+cpus: {{CPUS}}
+memory: "{{MEMORY}}GiB"
+disk: "{{DISK}}GiB"
+images:
+- location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  arch: "aarch64"
+- location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  arch: "x86_64"
+# Docker runs inside each sandbox, not in the VM: Lima's own containerd would only take memory.
+containerd:
+  system: false
+  user: false
+mountType: virtiofs
+mounts:
+{{MOUNTS}}
+networks:
+- vzNAT: true
+# Only what a sandbox is focused on reaches this machine, and only on 127.0.0.1 (Lima's
+# default). Nothing is published to the LAN.
+portForwards:
+- guestIP: "0.0.0.0"
+  guestPortRange: [1, 1023]
+  ignore: true
+provision:
+# vzNAT's address comes from macOS bootpd and is sometimes late at boot (lima#3100);
+# without it the route to the sandboxes' bridge has nowhere to go.
+- mode: boot
+  script: |
+    #!/bin/sh
+    for i in $(seq 1 30); do
+      ip -4 addr show lima0 2>/dev/null | grep -q inet && exit 0
+      sleep 1
+    done
+    networkctl reconfigure lima0 || true

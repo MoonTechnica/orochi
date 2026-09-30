@@ -38,6 +38,9 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
+    "place", "place-head", "place-title", "place-close", "place-body", "place-root-label",
+    "place-root", "place-modes-label", "place-modes", "place-note", "place-more",
+    "place-advanced", "place-docker", "place-error", "place-foot", "place-cancel", "place-go",
     "app", "side", "sidebar-resizer", "side-resizer",
     "pane-files", "files-head", "files-where", "files-refresh",
     "tree-search", "tree-by", "tree", "viewer",
@@ -62,6 +65,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
           calls.push([name, args]);
           if (name in answers) {
             const answer = answers[name];
+            if (answer instanceof Error) return Promise.reject(answer.message);
             return Promise.resolve(typeof answer === "function" ? answer(args) : answer);
           }
           const fallback = {
@@ -354,6 +358,191 @@ test("new thread asks where, when nowhere has been worked in yet", async () => {
     { root: "/work/fresh" },
     "and the thread starts in what was chosen",
   );
+});
+
+const NEW = { ask: true, mode: "host", tier: null, docker: true, name: null };
+async function freshFolder(answers = {}) {
+  const opened = await open(
+    { sidebar: [], thread: null, folders: [], placement: NEW, ...answers },
+    { pick: () => "/work/fresh" },
+  );
+  opened.el("new-thread").dispatch("click");
+  await settle();
+  return opened;
+}
+const choose = (el, mode) =>
+  el("place-modes").querySelectorAll("button").find((b) => b.dataset.mode === mode).dispatch("click");
+
+test("a new project is asked where it runs before its first thread, this Mac first", async () => {
+  const { el, calls } = await freshFolder();
+  assert.equal(el("place").open, true, "the question is open");
+  assert.match(el("place-root").textContent, /\/work\/fresh/);
+  const modes = el("place-modes").querySelectorAll("button");
+  assert.deepEqual(modes.map((b) => b.dataset.mode), ["host", "container", "vm"]);
+  assert.equal(modes[0].getAttribute("aria-checked"), "true", "running here stays the default");
+  assert.equal(el("place-docker").disabled, true, "Docker is a sandbox's to have");
+  assert.equal(calls.some(([name]) => name === "new_thread"), false, "nothing starts before the answer");
+});
+
+test("choosing a sandbox makes it before the thread starts", async () => {
+  const { el, calls } = await freshFolder();
+  choose(el, "container");
+  assert.equal(el("place-docker").disabled, false);
+  assert.equal(el("place-docker").getAttribute("aria-checked"), "true", "with Docker inside by default");
+  assert.match(el("place-note").textContent, /\.sbx/, "and where its services will be");
+  el("place-go").dispatch("click");
+  await settle();
+  const names = calls.map(([name]) => name);
+  assert.deepEqual(calls.find(([name]) => name === "place")[1], {
+    root: "/work/fresh",
+    mode: "container",
+    docker: true,
+  });
+  assert.ok(names.indexOf("place") < names.indexOf("new_thread"), "the sandbox exists before the thread");
+  assert.equal(el("place").open, false);
+});
+
+test("a sandbox without Docker is asked for under advanced", async () => {
+  const { el, calls } = await freshFolder();
+  choose(el, "container");
+  el("place-more").dispatch("click");
+  assert.equal(el("place-advanced").hidden, false);
+  el("place-docker").dispatch("click");
+  el("place-go").dispatch("click");
+  await settle();
+  assert.equal(calls.find(([name]) => name === "place")[1].docker, false);
+});
+
+test("dismissing the question starts nothing", async () => {
+  const { el, calls } = await freshFolder();
+  el("place-cancel").dispatch("click");
+  await settle();
+  assert.equal(el("place").open, false);
+  assert.equal(calls.some(([name]) => name === "place" || name === "new_thread"), false);
+});
+
+test("a sandbox that cannot be made says why and keeps the question open", async () => {
+  const { el, calls } = await freshFolder({
+    place: new Error("no sbx-golden image; run `orochi sandbox up` and `orochi sandbox image build` first"),
+  });
+  choose(el, "container");
+  el("place-go").dispatch("click");
+  await settle();
+  assert.equal(el("place").open, true);
+  assert.equal(el("place-error").hidden, false);
+  assert.match(el("place-error").textContent, /image build/);
+  assert.equal(el("place-go").disabled, false, "and it can be tried again or changed");
+  assert.equal(calls.some(([name]) => name === "new_thread"), false);
+});
+
+test("a folder already worked in is not asked again", async () => {
+  const { el, calls } = await open({ placement: { ...NEW, ask: false } });
+  el("new-thread").dispatch("click");
+  await settle();
+  assert.equal(el("place").open ?? false, false);
+  assert.ok(calls.some(([name]) => name === "new_thread"));
+});
+
+const SANDBOXES = {
+  client: "lima",
+  vm: "Running",
+  reachable: true,
+  projects: [
+    {
+      name: "web-app", root: "/work/web-app", mode: "container", tier: "container", docker: true,
+      status: "running", address: "10.203.0.7", host: "web-app.sbx", focused: [54323], busy: false,
+    },
+    {
+      name: "api", root: "/work/api", mode: "host", tier: "container", docker: true,
+      status: "stopped", address: null, host: "api.sbx", focused: [], busy: false,
+    },
+  ],
+  jobs: [
+    { id: "2", request: { op: "image", vm: false }, started_at: 2, exit: null, tail: "image: installing docker" },
+    { id: "1", request: { op: "focus", root: "/work/web-app" }, started_at: 1, exit: 0, tail: "http://127.0.0.1:54323" },
+  ],
+};
+async function sandboxScreen(answers = {}) {
+  const opened = await open({ sandboxes: SANDBOXES, sandbox_job: "3", ...answers });
+  opened.el("account").dispatch("click");
+  opened.el("account-menu").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "sandboxes")
+    .dispatch("click");
+  await settle();
+  const project = (name) =>
+    opened.el("panel-body").querySelectorAll("div").find((d) => d.dataset.name === name);
+  const press = async (node, label) => {
+    node.querySelectorAll("button").find((b) => b.textContent === label).dispatch("click");
+    await settle();
+  };
+  return { ...opened, project, press };
+}
+const jobs = (calls) => calls.filter(([name]) => name === "sandbox_job").map(([, a]) => a.request);
+
+test("the sandboxes screen shows the host, each project, where it runs and how to reach it", async () => {
+  const { el, project } = await sandboxScreen();
+  const drawn = el("panel-body").render();
+  assert.match(drawn, /Host VM: running/);
+  const web = project("web-app").render();
+  assert.match(web, /\/work\/web-app/);
+  assert.match(web, /web-app\.sbx/, "its services by name");
+  assert.match(web, /127\.0\.0\.1:54323/, "and the focused ports as its tools print them");
+  const checked = (name) =>
+    project(name).querySelectorAll("button").find((b) => b.getAttribute("aria-checked") === "true").dataset.mode;
+  assert.equal(checked("web-app"), "container");
+  assert.equal(checked("api"), "host");
+  assert.doesNotMatch(project("api").render(), /api\.sbx/, "a project running here has no sandbox address to offer");
+  assert.match(drawn, /installing docker/, "a running operation shows what it is saying");
+});
+
+test("changing where a project runs, focusing and building are operations the core runs", async () => {
+  const { el, calls, project, press } = await sandboxScreen();
+  project("api").querySelectorAll("button").find((b) => b.dataset.mode === "container").dispatch("click");
+  await settle();
+  await press(project("web-app"), "Unfocus");
+  assert.equal(
+    project("api").querySelectorAll("button").some((b) => b.textContent === "Snapshot"),
+    false,
+    "a project running here has no sandbox to snapshot",
+  );
+  await press(el("panel-body").querySelectorAll("section")[0], "Set up network");
+  assert.deepEqual(jobs(calls).slice(0, 3), [
+    { op: "mode", root: "/work/api", mode: "container" },
+    { op: "unfocus" },
+    { op: "network" },
+  ]);
+  const build = el("panel-body").querySelectorAll("button").find((b) => b.textContent === "Build image");
+  assert.equal(build.disabled, true, "an image already being built is not started twice");
+});
+
+test("deleting a sandbox asks by being pressed twice", async () => {
+  const { calls, project, press } = await sandboxScreen();
+  await press(project("web-app"), "Delete");
+  assert.deepEqual(jobs(calls), [], "the first press only asks");
+  assert.match(project("web-app").render(), /Delete\? The folder is kept/);
+  await press(project("web-app"), "Delete? The folder is kept");
+  assert.deepEqual(jobs(calls), [{ op: "remove", root: "/work/web-app" }]);
+});
+
+test("a host VM that is not there is offered to be set up, and nothing that needs it is", async () => {
+  const { el, calls } = await sandboxScreen({
+    sandboxes: { ...SANDBOXES, vm: null, reachable: false, projects: [], jobs: [] },
+  });
+  const drawn = el("panel-body").render();
+  assert.match(drawn, /not created/);
+  assert.match(drawn, /asked where it runs/);
+  const buttons = el("panel-body").querySelectorAll("button");
+  assert.equal(buttons.find((b) => b.textContent === "Build image").disabled, true);
+  buttons.find((b) => b.textContent === "Set up VM").dispatch("click");
+  await settle();
+  assert.deepEqual(jobs(calls), [{ op: "up" }]);
+});
+
+test("a thread in a sandboxed project says so in its header", async () => {
+  const { el } = await open({
+    placement: { ask: false, mode: "container", tier: "container", docker: true, name: "repo" },
+  });
+  assert.match(el("thread-where").render(), /Sandbox · container · repo/);
 });
 
 test("the composer sends on cmd-enter and breaks the line on enter", async () => {
@@ -938,7 +1127,7 @@ test("everything that is not a conversation lives behind the row at the foot", a
     .map((b) => b.textContent.replace("✓", ""));
   assert.deepEqual(
     items,
-    ["Agents", "Insights", "Settings"],
+    ["Agents", "Insights", "Sandboxes", "Settings"],
     "with settings kept apart from the two above it",
   );
 

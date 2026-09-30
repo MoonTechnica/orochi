@@ -79,6 +79,10 @@ pub struct Cli {
     /// Name other agents see for this run in the repository mailbox.
     #[arg(long, global = true, env = "OROCHI_PEER_NAME")]
     pub peer_name: Option<String>,
+    /// Run this time on this machine (`--sandbox=host`) or in the project's sandbox, whatever
+    /// its mode. Written with `=`: `host` alone would be read as the `host` command.
+    #[arg(long, value_enum, require_equals = true)]
+    pub sandbox: Option<crate::sandbox::Mode>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -208,10 +212,90 @@ pub enum Command {
         #[arg(long, default_value_t = 100000.0)]
         failure_penalty: f64,
     },
+    /// Per-project Linux sandboxes with Docker inside, where agents and checks run.
+    #[command(subcommand)]
+    Sandbox(SandboxCommand),
     #[command(subcommand)]
     Config(ConfigCommand),
     #[command(subcommand)]
     Policy(PolicyCommand),
+}
+#[derive(Debug, Subcommand)]
+pub enum SandboxCommand {
+    /// Create or start the sandbox host VM and prepare Incus in it.
+    Up,
+    /// Stop the sandbox host VM (every sandbox stops with it).
+    Down,
+    /// Every project's sandbox, its mode, state and address.
+    Status,
+    /// Create this directory's sandbox from the golden image. The tree is mounted, not copied.
+    Create {
+        path: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "container")]
+        mode: crate::sandbox::Mode,
+        /// No Docker daemon inside: no nesting, a tighter sandbox.
+        #[arg(long)]
+        no_docker: bool,
+        /// Ports focus always puts at 127.0.0.1, beside the ones found listening.
+        #[arg(long, value_delimiter = ',')]
+        ports: Vec<u16>,
+    },
+    /// Where this project's agents run from now on: host, container or vm.
+    Mode {
+        #[arg(value_enum)]
+        mode: crate::sandbox::Mode,
+        path: Option<PathBuf>,
+        /// Recreate without asking when the tier changes.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// A shell inside this project's sandbox, in its tree.
+    Enter { path: Option<PathBuf> },
+    /// Put this project's listening ports at this machine's 127.0.0.1 (one project at a time).
+    Focus {
+        path: Option<PathBuf>,
+        /// Keep following ports as they open and close, until interrupted.
+        #[arg(long)]
+        watch: bool,
+    },
+    /// Take the focused project's ports off 127.0.0.1.
+    Unfocus,
+    /// Snapshot this project's sandbox and its Docker data (the tree is not in it).
+    Snapshot {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Put this project's sandbox back to a snapshot; the tree is not touched.
+    Restore { name: String, path: Option<PathBuf> },
+    /// Recreate this project's sandbox from the current image; the tree is kept.
+    Reset {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete this project's sandbox and its Docker data; the tree is kept.
+    Rm {
+        path: Option<PathBuf>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Stop sandboxes idle longer than sandbox.idle_stop_minutes.
+    Gc,
+    /// Route this machine to the sandboxes' bridge so `<name>.sbx` resolves (root, once).
+    Network {
+        /// Run the commands with sudo instead of printing them.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Build the golden image every sandbox is created from.
+    Image {
+        /// Build the VM tier's image instead.
+        #[arg(long)]
+        vm: bool,
+    },
+    /// Print the script that prepares a Linux machine as an Incus sandbox host.
+    HostScript,
 }
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -449,6 +533,10 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     }
     if let Some(permission) = cli.permission {
         config.scheduler.permission = permission;
+    }
+    config.sandbox.force = cli.sandbox;
+    if let Some(Command::Sandbox(command)) = cli.command {
+        return sandbox(&config, &paths.data, &root, command).await;
     }
     let store = Store::open(&paths.data)?;
     #[cfg(unix)]
@@ -1248,7 +1336,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 serde_json::to_string_pretty(&store.recent_runs(limit as usize)?)?
             );
         }
-        Some(Command::Config(_) | Command::Policy(_)) => unreachable!(),
+        Some(Command::Config(_) | Command::Policy(_) | Command::Sandbox(_)) => unreachable!(),
         None => {
             let Some(task) = cli.task else {
                 use clap::CommandFactory;
@@ -1437,4 +1525,267 @@ fn inventory(config: &Config, data: &std::path::Path) -> Vec<serde_json::Value> 
         let availability = crate::discovery::inspect(a, &config.discovery, data);
         json!({"agent":a.id,"provider":a.provider,"command":a.command,"enabled":a.enabled,"routing_only":a.routing_only,"installed":availability.installed,"availability":availability,"browser":a.browser,"web":a.web,"image":a.image})
     }).collect()
+}
+
+/// A yes from the terminal, or `--yes`; without a terminal, no.
+fn confirmed(question: &str, yes: bool) -> Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!("{question} Pass --yes to confirm without a terminal.");
+    }
+    eprint!("{question} [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+}
+
+async fn sandbox(
+    config: &Config,
+    data: &std::path::Path,
+    here: &std::path::Path,
+    command: SandboxCommand,
+) -> Result<u8> {
+    use crate::sandbox::{self as sbx, Mode, ops};
+    let sandbox = &config.sandbox;
+    let at = |path: Option<PathBuf>| -> Result<PathBuf> {
+        match path {
+            Some(path) => path
+                .canonicalize()
+                .with_context(|| format!("{} does not exist", path.display())),
+            None => Ok(here.to_path_buf()),
+        }
+    };
+    // The project a path lies in, so a subdirectory names its project.
+    let project_root = |path: Option<PathBuf>| -> Result<PathBuf> {
+        let path = at(path)?;
+        Ok(sbx::State::load(data)?
+            .project_for(&path)
+            .map(|p| p.root.clone())
+            .unwrap_or(path))
+    };
+    match command {
+        SandboxCommand::Up => ops::up(sandbox, data)?,
+        SandboxCommand::Down => ops::down(sandbox)?,
+        SandboxCommand::HostScript => print!("{}", ops::HOST_SCRIPT),
+        SandboxCommand::Image { vm } => {
+            ops::build_image(sandbox, if vm { Mode::Vm } else { Mode::Container })?
+        }
+        SandboxCommand::Status => {
+            let rows = ops::statuses(sandbox, data)?;
+            let state = sbx::State::load(data)?;
+            if rows.is_empty() {
+                println!("No sandboxes. `orochi sandbox create` makes one for this directory.");
+            }
+            for (project, status, address) in rows {
+                let focus = state
+                    .focus
+                    .as_ref()
+                    .filter(|f| f.name == project.name)
+                    .map(|f| {
+                        format!(
+                            "  focus {}",
+                            f.ports
+                                .iter()
+                                .map(u16::to_string)
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "{:<20} {:<9} {:<9} {:<7} {:<15} {}.sbx  {}{focus}",
+                    project.name,
+                    project.mode.key(),
+                    project.tier.key(),
+                    status,
+                    address.unwrap_or_else(|| "-".into()),
+                    project.name,
+                    project.root.display(),
+                );
+            }
+        }
+        SandboxCommand::Create {
+            path,
+            mode,
+            no_docker,
+            ports,
+        } => {
+            let root = at(path)?;
+            let project = ops::create(
+                sandbox,
+                data,
+                &root,
+                ops::Create {
+                    mode,
+                    docker: !no_docker && sandbox.default_docker,
+                    shadow: sandbox.shadow.clone(),
+                    ports,
+                },
+            )?;
+            println!(
+                "Sandbox {} ready: agents and checks in {} now run inside it ({}).",
+                project.name,
+                project.root.display(),
+                project.mode.key()
+            );
+        }
+        SandboxCommand::Mode { mode, path, yes } => {
+            let root = project_root(path)?;
+            let state = sbx::State::load(data)?;
+            if let Some(current) = state.exact(&root)
+                && mode.sandboxed()
+                && mode != current.tier
+                && !confirmed(
+                    &format!(
+                        "{} is a {}; making it a {} recreates it and drops its Docker data.",
+                        current.name,
+                        current.tier.key(),
+                        mode.key()
+                    ),
+                    yes,
+                )?
+            {
+                return Ok(1);
+            }
+            let project = ops::set_mode(sandbox, data, &root, mode)?;
+            println!(
+                "{}: agents now run {}",
+                project.root.display(),
+                match mode {
+                    Mode::Host => "on this machine".to_owned(),
+                    _ => format!("in sandbox {} ({})", project.name, mode.key()),
+                }
+            );
+        }
+        SandboxCommand::Enter { path } => {
+            let root = at(path)?;
+            let placement = sbx::placement(data, &root, None)?.with_context(|| {
+                format!(
+                    "{} runs on this machine; no sandbox to enter",
+                    root.display()
+                )
+            })?;
+            placement.ready(sandbox, data)?;
+            let args = placement.exec_args(sandbox, &root, &[], "bash", &["-l".into()], true);
+            let incus = sbx::Incus::new(sandbox);
+            return Ok(if incus.attached(&args)? { 0 } else { 1 });
+        }
+        SandboxCommand::Focus { path, watch } => {
+            let root = at(path)?;
+            loop {
+                let focused = ops::focus(sandbox, data, &root)?;
+                for port in &focused.added {
+                    println!("http://127.0.0.1:{port}");
+                }
+                for port in &focused.taken {
+                    eprintln!("127.0.0.1:{port} is already in use on this machine; left alone");
+                }
+                if !watch {
+                    if focused.added.is_empty() && focused.kept.is_empty() {
+                        println!(
+                            "Nothing is listening inside yet; `--watch` follows ports as they open."
+                        );
+                    }
+                    break;
+                }
+                let since = crate::interrupt::mark();
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                    _ = since.wait() => break,
+                }
+            }
+        }
+        SandboxCommand::Unfocus => match ops::unfocus(sandbox, data)? {
+            Some(name) => println!("{name}: ports removed from 127.0.0.1"),
+            None => println!("No project is focused."),
+        },
+        SandboxCommand::Snapshot { path, name } => {
+            let root = project_root(path)?;
+            println!("{}", ops::snapshot(sandbox, data, &root, name)?);
+        }
+        SandboxCommand::Restore { name, path } => {
+            let root = project_root(path)?;
+            ops::restore(sandbox, data, &root, &name)?;
+            println!("Restored {name}; the project's files were not touched.");
+        }
+        SandboxCommand::Reset { path, yes } => {
+            let root = project_root(path)?;
+            if !confirmed(
+                "Recreate this sandbox from the current image? Its Docker data is dropped; the project's files are kept.",
+                yes,
+            )? {
+                return Ok(1);
+            }
+            let project = ops::reset(sandbox, data, &root, None)?;
+            println!("Sandbox {} recreated.", project.name);
+        }
+        SandboxCommand::Rm { path, yes } => {
+            let root = project_root(path)?;
+            if !confirmed(
+                "Delete this sandbox and its Docker data? The project's files are kept.",
+                yes,
+            )? {
+                return Ok(1);
+            }
+            let project = ops::remove(sandbox, data, &root)?;
+            println!(
+                "Sandbox {} deleted; {} now runs on this machine.",
+                project.name,
+                root.display()
+            );
+        }
+        SandboxCommand::Gc => {
+            let stopped = ops::gc(sandbox, data)?;
+            if stopped.is_empty() {
+                println!("Nothing idle to stop.");
+            }
+            for name in stopped {
+                println!("stopped {name}");
+            }
+        }
+        SandboxCommand::Network { apply } => {
+            let plan = ops::network_plan(sandbox)?;
+            if !apply {
+                println!("# Run as root once (or pass --apply to run them with sudo):");
+                for step in &plan {
+                    println!("{step}");
+                }
+            } else if std::io::stdin().is_terminal() || !cfg!(target_os = "macos") {
+                for step in &plan {
+                    let status = std::process::Command::new("sudo")
+                        .args(["/bin/sh", "-c", step])
+                        .status()?;
+                    ensure!(status.success(), "failed: {step}");
+                }
+                println!("Sandboxes are now reachable as <name>.sbx from this machine.");
+            } else {
+                // No terminal to type a password into (the desktop window started this): macOS
+                // asks for an administrator in a dialog of its own.
+                let mut script = tempfile::Builder::new().suffix(".sh").tempfile()?;
+                script.write_all(format!("set -e\n{}\n", plan.join("\n")).as_bytes())?;
+                let path = script
+                    .path()
+                    .to_string_lossy()
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"");
+                let status = std::process::Command::new("/usr/bin/osascript")
+                    .args([
+                        "-e",
+                        &format!(
+                            "do shell script \"/bin/sh '{path}'\" with administrator privileges"
+                        ),
+                    ])
+                    .status()?;
+                ensure!(
+                    status.success(),
+                    "the administrator prompt was declined or the setup failed"
+                );
+                println!("Sandboxes are now reachable as <name>.sbx from this machine.");
+            }
+        }
+    }
+    Ok(0)
 }

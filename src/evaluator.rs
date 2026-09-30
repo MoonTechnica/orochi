@@ -94,6 +94,17 @@ pub async fn detailed(
     root: &Path,
     announce: bool,
 ) -> (Vec<CheckResult>, Output) {
+    detailed_in(config, root, announce, None).await
+}
+
+/// The same, with the checks run inside the project's sandbox where it has one: the agent
+/// built there, so passing means passing there.
+pub async fn detailed_in(
+    config: &EvaluatorConfig,
+    root: &Path,
+    announce: bool,
+    sandbox: Option<(&crate::config::SandboxConfig, &crate::sandbox::Placement)>,
+) -> (Vec<CheckResult>, Output) {
     let mut results = Vec::new();
     let mut output = Output::default();
     for check in checks(config, root) {
@@ -101,12 +112,42 @@ pub async fn detailed(
         if announce {
             eprintln!("  check: {}", check.name);
         }
-        let mut command = tokio::process::Command::new(&check.command);
+        let mut command = match sandbox {
+            Some((sandbox, placement)) => match placement.command(
+                sandbox,
+                root,
+                &[("CI".into(), "true".into())],
+                &check.command,
+                &check.args,
+            ) {
+                Ok(command) => command,
+                Err(_) => {
+                    results.push(CheckResult {
+                        name: check.name,
+                        passed: false,
+                        exit_code: None,
+                        duration_ms: 0,
+                        timed_out: false,
+                    });
+                    continue;
+                }
+            },
+            None => {
+                let mut command = tokio::process::Command::new(&check.command);
+                command.args(&check.args);
+                command
+            }
+        };
         command
-            .args(&check.args)
             .current_dir(root)
             .env("CI", "true")
-            .stdin(Stdio::null())
+            // Inside a sandbox the stdin is held open for as long as the check runs: its end is
+            // how the far side learns this one was killed.
+            .stdin(if sandbox.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             // Captured rather than discarded, and echoed line by line below, so a terminal
             // still watches a long check run while its tail is kept for a failure.
             .stdout(Stdio::piped())
@@ -118,6 +159,7 @@ pub async fn detailed(
         let (passed, exit_code, timed_out) = match command.spawn() {
             Ok(mut child) => {
                 let _guard = ProcessGuard(child.id());
+                let _held = child.stdin.take();
                 let mut out = child.stdout.take().map(|o| BufReader::new(o).lines());
                 let mut err = child.stderr.take().map(|e| BufReader::new(e).lines());
                 let wait = async {
