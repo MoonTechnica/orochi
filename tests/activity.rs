@@ -1194,3 +1194,52 @@ fn a_thread_whose_helpers_outlive_its_turn_reads_as_working_in_the_background() 
     assert_ne!(row(&activity).status, "background");
     assert!(activity.live_seats().unwrap().is_empty());
 }
+
+/// An agent names its session after the prompt it was sent, and Orochi opens that prompt with
+/// its own instructions: that title names the preamble, so it never replaces the one taken from
+/// the person's message — and a thread already named that way is named again on open.
+#[test]
+fn an_agent_title_that_is_orochis_own_preamble_never_names_the_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let thread = {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        let (thread, _, _) = thread_with_a_turn(&activity);
+        activity
+            .title(
+                &thread,
+                "Coordination: you are peer \"orochi-6de1\". Other agents…",
+                false,
+            )
+            .unwrap();
+        let title: String = activity
+            .connection()
+            .query_row("SELECT title FROM threads WHERE id=?1", [&thread], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(title, "Fix the flaky test");
+        activity
+            .title(&thread, "Flaky mailbox test", false)
+            .unwrap();
+        // As an older Orochi left it.
+        activity
+            .connection()
+            .execute(
+                "UPDATE threads SET title='Coordination: you are peer \"x\"' WHERE id=?1",
+                [&thread],
+            )
+            .unwrap();
+        thread
+    };
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let title: String = activity
+        .connection()
+        .query_row("SELECT title FROM threads WHERE id=?1", [&thread], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        title, "Fix the flaky test",
+        "named again from the message that opened it"
+    );
+}

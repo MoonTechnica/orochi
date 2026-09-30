@@ -62,6 +62,17 @@ fn bounded_tail(text: &str, max: usize) -> (String, bool) {
 /// markup goes and the wrapping is undone. Nothing is asked of an agent to get this (R6).
 const TITLE_CHARS: usize = 60;
 
+/// How the text Orochi puts ahead of a task begins (`mailbox::prompt_note_for`,
+/// `chat::LANGUAGE`, a memory note, a helper's brief). An agent title starting with one of these
+/// is the preamble echoed back.
+const ORCHESTRATION: [&str; 5] = [
+    "Coordination: you are peer",
+    "Language: write your answer",
+    "What you have told Orochi",
+    "You are `",
+    "Previous conversation (context):",
+];
+
 fn derive_title(text: &str) -> String {
     // The first paragraph, unwrapped: a pasted message is one thought across several lines,
     // and the first of them alone ("## Fix the") names nothing.
@@ -376,6 +387,8 @@ pub struct ItemRow {
     pub failed: bool,
     /// `background` when Orochi wrote the turn to hand helpers' results back.
     pub turn_origin: Option<String>,
+    /// Whose it is, for drawing the speaker as the agent it is.
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -565,6 +578,9 @@ impl Activity {
             )?;
         }
         added(&connection)?;
+        // Threads an agent named after Orochi's own preamble before that was refused: named
+        // again from the message that opened them.
+        repair_titles(&connection)?;
         // Every open, because a view is a definition and not data: changing one then needs no
         // version of its own, and an older binary's copy cannot outlive the columns it was
         // written against.
@@ -879,7 +895,8 @@ impl Activity {
             .prepare(
                 "SELECT seq, turn_id, turn_ordinal, lane, role, agent, model, kind, status,
                         text, data, truncated, patches, created_at,
-                        (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id), turn_origin
+                        (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id), turn_origin,
+                        provider
                  FROM v_timeline WHERE thread_id=?1 ORDER BY seq",
             )?
             .query_map([id], |r| {
@@ -905,6 +922,7 @@ impl Activity {
                         Some("failure" | "cancelled")
                     ),
                     turn_origin: r.get(15)?,
+                    provider: r.get(16)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1102,6 +1120,15 @@ impl Activity {
     /// offer one through ACP `session_info_update`, which replaces only a name Orochi derived.
     /// No call of Orochi's own is ever made to write one (R6).
     pub fn title(&self, thread: &str, title: &str, from_user: bool) -> Result<()> {
+        // An agent names its session after the prompt it was sent, and Orochi opens that prompt
+        // with its own instructions: such a title names Orochi's preamble, not the work.
+        if !from_user
+            && ORCHESTRATION
+                .iter()
+                .any(|lead| title.trim_start().starts_with(lead))
+        {
+            return Ok(());
+        }
         let title = if from_user {
             crate::context::bounded(title.trim(), 120)
         } else {
@@ -1955,6 +1982,26 @@ INSERT INTO search (text, item_id, thread_id)
     ),
 ];
 
+fn repair_titles(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare(
+        "SELECT t.id, (SELECT i.text FROM items i WHERE i.thread_id=t.id AND i.kind='user_message'
+                       ORDER BY i.id LIMIT 1)
+         FROM threads t WHERE t.titled=0 AND (t.title LIKE 'Coordination: you are peer%'
+                                              OR t.title LIKE 'Language: write your answer%')",
+    )?;
+    let named: Vec<(String, Option<String>)> = statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (thread, first) in named {
+        let title = first.map(|text| derive_title(&text)).unwrap_or_default();
+        connection.execute(
+            "UPDATE threads SET title=?2 WHERE id=?1",
+            params![thread, title],
+        )?;
+    }
+    Ok(())
+}
+
 /// Brings an existing store up to `ADDED` / `ADDED_TABLES`. Read first without a write lock,
 /// so an up-to-date store costs nothing; then again *inside* the write transaction, because two
 /// processes opening at once would otherwise both find a column missing and both add it, and
@@ -2374,7 +2421,7 @@ DROP VIEW IF EXISTS v_room;
 CREATE VIEW v_room AS
 SELECT m.project_id, m.thread_id, m.id AS seq, 'message' AS kind,
        m.sender_name AS who, m.recipient_name AS whom, m.via, m.body AS text, m.sent_at AS at,
-       a.agent, a.model, s.role
+       a.agent, a.model, s.role, a.provider
 FROM messages m
 LEFT JOIN peers pe ON pe.id=m.sender
 LEFT JOIN attempts a ON a.peer_id=pe.id
@@ -2382,7 +2429,7 @@ LEFT JOIN seats s ON s.id=a.seat_id
 UNION ALL
 SELECT pe.project_id, NULL AS thread_id, e.id AS seq, e.kind,
        pe.name AS who, NULL AS whom, 'mailbox' AS via, e.text, e.at,
-       a.agent, a.model, s.role
+       a.agent, a.model, s.role, a.provider
 FROM peer_events e
 JOIN peers pe ON pe.id=e.peer_id
 LEFT JOIN attempts a ON a.peer_id=pe.id

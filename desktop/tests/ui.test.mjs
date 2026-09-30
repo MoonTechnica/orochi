@@ -39,6 +39,8 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
     "app", "side", "sidebar-resizer", "side-resizer",
+    "pane-files", "files-head", "files-where", "files-refresh",
+    "tree-search", "tree-by", "tree", "viewer",
   ], markup);
   const localStorage = {
     store: new Map(Object.entries(stored)),
@@ -58,7 +60,10 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
       core: {
         invoke(name, args) {
           calls.push([name, args]);
-          if (name in answers) return Promise.resolve(answers[name]);
+          if (name in answers) {
+            const answer = answers[name];
+            return Promise.resolve(typeof answer === "function" ? answer(args) : answer);
+          }
           const fallback = {
             sidebar: recorded.sidebar,
             tree_files: [
@@ -650,8 +655,8 @@ test("every voice is drawn the same way, and named by what it is doing", async (
     { seq: 2, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "sonnet", kind: "agent_message", status: null, text: "done, one function per rule", data: null, truncated: false, patches: 0, at: 4000 },
   ];
   const said = [
-    { seq: 1, kind: "message", who: "src-tauri-5e6a", whom: "all", via: "mailbox", text: "anything to know?", at: 2000, role: "implementer", model: "sonnet" },
-    { seq: 2, kind: "message", who: "orochi-8a60", whom: "src-tauri-5e6a", via: "mailbox", text: "the retry never fires", at: 3000, role: "reviewer", model: "opus" },
+    { seq: 1, kind: "message", who: "src-tauri-5e6a", whom: "all", via: "mailbox", text: "anything to know?", at: 2000, role: "implementer", model: "sonnet", agent: "claude", provider: "anthropic" },
+    { seq: 2, kind: "message", who: "orochi-8a60", whom: "src-tauri-5e6a", via: "mailbox", text: "the retry never fires", at: 3000, role: "reviewer", model: "opus", agent: "claude", provider: "anthropic" },
   ];
   const { el } = await open({ thread, room: said });
   const timeline = el("timeline");
@@ -672,14 +677,15 @@ test("every voice is drawn the same way, and named by what it is doing", async (
     ["you", "implementer", "reviewer", "implementer"],
     "in the order they spoke",
   );
-  for (const post of posts) {
-    const mark = post.querySelectorAll(".mark");
-    assert.equal(mark.length, 1, `everyone is marked, including you: ${post.render()}`);
-    assert.equal(mark[0].children[0].tagName.toLowerCase(), "svg", "with a drawing, not a letter");
+  // Everyone is marked, including you; an agent as the agent it is, as the list draws it.
+  const person = posts[0].querySelectorAll(".mark");
+  assert.equal(person.length, 1, `you are marked: ${posts[0].render()}`);
+  assert.equal(person[0].dataset.icon, "user");
+  for (const post of posts.slice(1)) {
+    const faces = post.querySelectorAll(".face");
+    assert.equal(faces.length, 1, `an agent speaks as its own icon: ${post.render()}`);
+    assert.equal(faces[0].getAttribute("title"), "claude");
   }
-  // A role is a job, and the drawing says which: nobody in this app has a face.
-  const marks = posts.map((p) => p.querySelectorAll(".mark")[0].dataset.icon);
-  assert.deepEqual(marks, ["user", "terminal", "eye", "terminal"]);
   assert.equal(
     timeline.querySelectorAll(".you").length,
     0,
@@ -1088,7 +1094,7 @@ test("a finished turn says how long it took, when it ended, what it changed and 
   assert.match(drawn, /Worked for 16s · done \d\d:\d\d/);
   assert.match(drawn, /2 files changed/);
   assert.match(drawn, /context 81k \/ 200k \(41%\)/);
-  assert.match(drawn, /from the helpers[\s\S]*Background agent `spec` finished/, "a turn Orochi wrote is not the person's");
+  assert.match(drawn, /from the helpers[\s\S]*Background agent[\s\S]*code spec[\s\S]*finished/, "a turn Orochi wrote is not the person's");
 });
 
 test("a conversation's helpers are listed where it is read, each with a way to stop it", async () => {
@@ -1197,17 +1203,16 @@ test("a project's conversations sit on the card of the checkout they work in, an
   const cards = () => el("projects").querySelectorAll(".place");
   assert.equal(cards().length, 1, "one checkout, one card");
   const drawn = cards()[0].render();
-  assert.match(drawn, /orochi[\s\S]*primary[\s\S]*main/, "named by its checkout, marked as the original, with its branch");
+  assert.match(drawn, /main[\s\S]*primary/, "known by its branch, marked as the original");
+  assert.doesNotMatch(drawn, /span\.name orochi/, "the project's name is not said again under it");
   assert.equal(cards()[0].querySelectorAll(".face")[0].dataset.provider, "openai", "and who is working in it");
   assert.match(drawn, /- \$ cargo test/, "a row says what its lead is doing, on its own line");
   assert.equal(el("projects").querySelectorAll(".thread").length, threads.length);
   cards()[0].querySelectorAll(".place-head")[0].dispatch("click");
   assert.equal(el("projects").querySelectorAll(".thread").length, 0, "folded, the rows go");
-  assert.equal(
-    cards()[0].querySelectorAll(".marks")[0].querySelectorAll(".state").length,
-    Math.min(threads.length, 4),
-    "and each conversation is one mark",
-  );
+  const folded = cards()[0].querySelectorAll(".marks")[0];
+  assert.match(folded.render(), new RegExp(`${threads.length} conversations`), "and one line says how many");
+  assert.equal(folded.querySelectorAll(".state").length, 1, "with a mark only for what is working");
 });
 
 test("an agent is drawn with its vendor's own icon where that app is installed, and a letter where not", async () => {
@@ -1253,6 +1258,345 @@ test("a conversation opens onto the agents inside it: role, agent, model, and wh
   assert.equal(el("projects").querySelectorAll(".member").length, 0, "and closes to the row alone");
 });
 
+test("in the conversation an agent speaks as its own icon, and the person as theirs", async () => {
+  const { el } = await open({ agent_icons: { openai: "data:image/png;base64,AAAA" } });
+  const posts = el("timeline").querySelectorAll(".post");
+  const agent = posts.find((p) => p.dataset.who !== "you");
+  assert.equal(agent.querySelectorAll(".face")[0].dataset.provider, "openai");
+  assert.equal(agent.querySelectorAll("img")[0].getAttribute("src"), "data:image/png;base64,AAAA");
+  const person = posts.find((p) => p.dataset.who === "you");
+  assert.equal(person.querySelectorAll(".face").length, 0);
+});
+
+test("two projects with one name say which folder each is", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  projects[1] = { ...structuredClone(projects[0]), id: "other", name: projects[0].name, root: "/tmp/s7/" + projects[0].name };
+  projects[0].root = "/Users/me/Development/" + projects[0].name;
+  for (const th of projects[1].threads) th.id += "-2";
+  const { el } = await open({ sidebar: projects });
+  const heads = el("projects").querySelectorAll(".hint").map((h) => h.textContent);
+  assert.deepEqual(heads, ["Development", "s7"]);
+});
+
+test("what an agent writes is drawn as Markdown, and none of it becomes markup", async () => {
+  const thread = structuredClone(recorded.thread);
+  const reply = [
+    "## Summary",
+    "The **race** is in `Order::place`, see [scheduler](/src/scheduler/mod.rs:519).",
+    "",
+    "- first",
+    "  - nested",
+    "- second",
+    "",
+    "1. one",
+    "2. two",
+    "",
+    "| file | change |",
+    "|---|---|",
+    "| a.rs | +1 |",
+    "",
+    "```rust",
+    "fn main() {}",
+    "```",
+    "> quoted",
+    "<script>alert(1)</script>",
+  ].join("\n");
+  thread.items = thread.items.map((item) => (item.kind === "agent_message" ? { ...item, text: reply } : item));
+  const { el } = await open({ thread });
+  const body = el("timeline").querySelectorAll(".md").find((m) => m.render().includes("Summary"));
+  const has = (tag) => body.querySelectorAll(tag).length;
+  assert.equal(has("h4"), 1, "a heading");
+  assert.equal(body.querySelectorAll("strong")[0].render().trim().split("\n").pop().trim(), "race");
+  assert.ok(body.querySelectorAll("code").some((c) => c.textContent === "Order::place"), "inline code");
+  const link = body.querySelectorAll(".link")[0];
+  assert.equal(link.getAttribute("title"), "/src/scheduler/mod.rs:519", "a link says where it goes");
+  assert.equal(has("ul"), 2, "a list and the list nested in it");
+  assert.equal(has("ol"), 1);
+  assert.equal(has("td"), 2, "a table");
+  assert.equal(body.querySelectorAll("pre")[0].querySelectorAll("code")[0].textContent, "fn main() {}");
+  assert.equal(has("blockquote"), 1);
+  assert.equal(has("script"), 0, "text that looks like markup stays text");
+  assert.match(body.render(), /<script>alert\(1\)<\/script>/);
+});
+
+// Files ---------------------------------------------------------------------
+// The thread's working tree. Its answers are recorded in `files.json`, whose shapes a Rust test
+// compares with what the commands serialize.
+const files = JSON.parse(readFileSync(join(here, "files.json"), "utf8"));
+const settle = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
+const tree = (more = {}) => ({
+  tree_refresh: files.refresh,
+  tree_list: ({ dir }) => files[dir === "" ? "root" : dir] ?? [],
+  tree_read: ({ path }) =>
+    path === "README.md" ? files.markdown : path === "blob.bin" ? files.binary : files.text,
+  tree_find: ({ by }) => files[by],
+  tree_files: [
+    { turn: "", path: "src/chat/term.rs", change: "modify", added: 1, removed: 1, latest_patch: 0 },
+  ],
+  ...more,
+});
+async function filesTab(el) {
+  el("tabs").querySelectorAll("button").find((b) => b.dataset.pane === "files").dispatch("click");
+  await settle();
+}
+const rows = (el) => el("tree").querySelectorAll(".entry");
+const row = (el, path) => rows(el).find((r) => r.dataset.path === path);
+
+test("the Files tab draws the thread's folder, folders first, each row with its git state", async () => {
+  const { el, calls } = await open(tree());
+  assert.equal(el("pane-files").hidden, true, "the tree is not read while nobody looks at it");
+  assert.ok(!calls.some(([name]) => name === "tree_list"));
+  await filesTab(el);
+  assert.equal(el("pane-files").hidden, false);
+  assert.deepEqual(
+    rows(el).map((r) => r.dataset.path),
+    ["docs", "src", "target", ".gitignore", "blob.bin", "Cargo.toml", "new.txt", "README.md"],
+  );
+  assert.equal(row(el, "src").dataset.status, "modified", "a folder shows what is under it");
+  assert.match(row(el, "src").render(), /span\.badge M/);
+  assert.equal(row(el, "target").dataset.status, "ignored");
+  assert.equal(row(el, "new.txt").dataset.status, "untracked");
+  assert.equal(row(el, "README.md").dataset.status, undefined);
+  assert.match(el("files-where").textContent, /repo · —/, "and says which folder and branch it is");
+});
+
+test("opening a folder asks for that folder alone, and a deleted file is still where it was", async () => {
+  const { el, calls } = await open(tree());
+  await filesTab(el);
+  row(el, "src").dispatch("click");
+  await settle();
+  assert.deepEqual(
+    calls.filter(([name]) => name === "tree_list").map(([, args]) => args.dir),
+    ["", "src"],
+  );
+  assert.equal(row(el, "src/gone.rs").dataset.missing, "true");
+  assert.equal(row(el, "src/chat").getAttribute("aria-expanded"), "false");
+  row(el, "src").dispatch("click");
+  await settle();
+  assert.equal(row(el, "src/chat"), undefined, "and closing it folds it away");
+});
+
+test("a file opens in the tree's place with numbered lines, and back returns to the tree as it was", async () => {
+  const { el, calls } = await open(tree());
+  await filesTab(el);
+  row(el, "src").dispatch("click");
+  await settle();
+  row(el, "src/chat").dispatch("click");
+  await settle();
+  row(el, "src/chat/term.rs").dispatch("click");
+  await settle();
+  assert.equal(el("tree").hidden, true);
+  assert.equal(el("viewer").hidden, false);
+  const lines = el("viewer").querySelectorAll(".line");
+  assert.equal(lines.length, 3);
+  assert.match(lines[1].render(), /button\.no 2\n\s*span\.src\s+changed\(\)/);
+  const crumbs = el("viewer").querySelectorAll(".crumbs")[0].render();
+  assert.match(crumbs, /button\.crumb src[\s\S]*button\.crumb chat[\s\S]*span\.here term\.rs/);
+  assert.match(el("viewer").render(), /3 lines · 44 B/);
+  assert.deepEqual(
+    calls.find(([name]) => name === "tree_files")[1],
+    { thread: recorded.thread.thread.id, scope: "unstaged" },
+    "a modified file asks what it has against HEAD",
+  );
+  assert.match(el("viewer").querySelectorAll(".stat")[0].render(), /\+1[\s\S]*−1/);
+
+  el("viewer").querySelectorAll(".back")[0].dispatch("click");
+  assert.equal(el("viewer").hidden, true);
+  assert.ok(row(el, "src/chat/term.rs"), "the folders it was in stay open");
+  assert.equal(row(el, "src/chat/term.rs").getAttribute("aria-selected"), "true");
+});
+
+test("a modified file's diff opens in Changes, and a file in Changes opens in Files", async () => {
+  const { el, calls } = await open(tree({ tree_patch: "@@ -1,1 +1,1 @@\n-a\n+b\n" }));
+  await filesTab(el);
+  row(el, "src").dispatch("click");
+  await settle();
+  row(el, "src/chat").dispatch("click");
+  await settle();
+  row(el, "src/chat/term.rs").dispatch("click");
+  await settle();
+  el("viewer").querySelectorAll(".stat")[0].dispatch("click");
+  await settle(40);
+  assert.equal(el("pane-changes").hidden, false);
+  assert.equal(el("pane-files").hidden, true);
+  assert.deepEqual(calls.findLast(([name]) => name === "tree_patch")[1], {
+    thread: recorded.thread.thread.id,
+    scope: "unstaged",
+    path: "src/chat/term.rs",
+  });
+
+  const reads = calls.filter(([name]) => name === "tree_read").length;
+  el("files").querySelectorAll(".file")[0].querySelectorAll(".open")[0].dispatch("click");
+  await settle(40);
+  assert.equal(el("pane-files").hidden, false);
+  assert.equal(calls.filter(([name]) => name === "tree_read").length, reads + 1);
+  assert.equal(calls.findLast(([name]) => name === "tree_read")[1].path, "src/chat/term.rs");
+});
+
+test("a Markdown file reads rendered or as its source, and none of it becomes markup", async () => {
+  const { el } = await open(tree());
+  await filesTab(el);
+  row(el, "README.md").dispatch("click");
+  await settle();
+  const viewer = el("viewer");
+  assert.equal(viewer.querySelectorAll(".rendered").length, 1);
+  assert.equal(viewer.querySelectorAll("b").length, 0, "the file's own tags stay text");
+  assert.match(viewer.render(), /<b>body<\/b>/);
+  viewer.querySelectorAll(".act").find((b) => b.textContent === "Source").dispatch("click");
+  assert.equal(el("viewer").querySelectorAll(".code").length, 1);
+});
+
+test("a binary file is said to be one, and is not drawn as text", async () => {
+  const { el } = await open(tree());
+  await filesTab(el);
+  row(el, "blob.bin").dispatch("click");
+  await settle();
+  assert.equal(el("viewer").querySelectorAll(".code").length, 0);
+  assert.match(el("viewer").render(), /binary or not UTF-8 · 5 B/);
+});
+
+test("the search box finds files by name and lines by content, and a line opens where it is", async () => {
+  const { el, calls } = await open(tree());
+  await filesTab(el);
+  const box = el("tree-search");
+  box.value = "term";
+  box.dispatch("input", { target: box });
+  await settle(200);
+  assert.deepEqual(calls.findLast(([name]) => name === "tree_find")[1], {
+    thread: recorded.thread.thread.id,
+    query: "term",
+    by: "name",
+    limit: 200,
+  });
+  assert.match(el("tree").render(), /div\.hit[\s\S]*src\/chat\/term\.rs/);
+
+  el("tree-by").querySelectorAll("button").find((b) => b.dataset.by === "content").dispatch("click");
+  await settle();
+  assert.equal(calls.findLast(([name]) => name === "tree_find")[1].by, "content");
+  const hit = el("tree").querySelectorAll(".hit")[0];
+  assert.match(hit.render(), /src\/chat\/term\.rs:2[\s\S]*changed\(\)/);
+  hit.dispatch("click");
+  await settle();
+  const lines = el("viewer").querySelectorAll(".line");
+  assert.equal(lines[1].dataset.hit, "true", "the line that matched is marked");
+
+  box.value = "";
+  box.dispatch("input", { target: box });
+  await settle(200);
+  el("viewer").querySelectorAll(".back")[0].dispatch("click");
+  assert.ok(row(el, "src"), "clearing the search brings the tree back");
+});
+
+test("outside a repository, content search says why it cannot", async () => {
+  const { el } = await open(tree({ tree_refresh: { repository: false, partial: false, read_at: 1 } }));
+  await filesTab(el);
+  const content = el("tree-by").querySelectorAll("button").find((b) => b.dataset.by === "content");
+  assert.equal(content.disabled, true);
+  assert.match(content.title, /needs a git repository/);
+});
+
+test("a file goes into the next message as @path, and a line comment joins the review", async () => {
+  const { el } = await open(tree(), { prompt: () => "why this call?" });
+  await filesTab(el);
+  row(el, "src").dispatch("click");
+  await settle();
+  row(el, "src/chat").dispatch("click");
+  await settle();
+  row(el, "src/chat/term.rs").dispatch("click");
+  await settle();
+  el("message").value = "look at";
+  el("viewer").querySelectorAll(".act").find((b) => b.textContent === "Add to message").dispatch("click");
+  assert.equal(el("message").value, "look at @src/chat/term.rs ");
+
+  el("viewer").querySelectorAll(".no")[1].dispatch("click");
+  assert.match(el("review-list").render(), /src\/chat\/term\.rs:2[\s\S]*why this call\?/);
+  assert.match(el("viewer").render(), /1 comments waiting/);
+});
+
+test("a file a tool call was about opens in Files at its line; one outside the folder does not", async () => {
+  const thread = structuredClone(recorded.thread);
+  const base = thread.items.find((i) => i.kind === "agent_message");
+  thread.items.splice(2, 0,
+    { ...base, seq: 90, kind: "tool_call", text: "", status: "completed",
+      data: { title: "Read", locations: [{ path: `${thread.thread.cwd}/src/chat/term.rs`, line: 2 }] } },
+    { ...base, seq: 91, kind: "tool_call", text: "", status: "completed",
+      data: { title: "Read", locations: [{ path: "/etc/hosts", line: null }] } },
+  );
+  const { el, calls } = await open(tree({ thread }));
+  const links = el("timeline").querySelectorAll(".open-file");
+  assert.equal(links.length, 1, "only a path inside the thread's folder is offered");
+  assert.match(links[0].render(), /src\/chat\/term\.rs/);
+  links[0].dispatch("click");
+  await settle(40);
+  assert.equal(el("pane-files").hidden, false);
+  assert.equal(calls.findLast(([name]) => name === "tree_read")[1].path, "src/chat/term.rs");
+  assert.equal(el("viewer").querySelectorAll(".line")[1].dataset.hit, "true");
+});
+
+test("the tree answers the keys a file list does, and Esc closes a file", async () => {
+  const { el, calls } = await open(tree());
+  await filesTab(el);
+  const key = (name) => el("tree").dispatch("keydown", { key: name, target: el("tree") });
+  key("ArrowDown");
+  assert.equal(row(el, "src").getAttribute("aria-selected"), "true");
+  key("ArrowRight");
+  await settle();
+  assert.equal(calls.findLast(([name]) => name === "tree_list")[1].dir, "src");
+  key("ArrowLeft");
+  await settle();
+  assert.equal(row(el, "src/chat"), undefined);
+  for (let i = 0; i < 6; i += 1) key("ArrowDown");
+  key("Enter");
+  await settle();
+  assert.equal(el("viewer").hidden, false, "Enter opens the file under the cursor");
+  el("viewer").dispatch("keydown", { key: "Escape", target: el("viewer") });
+  assert.equal(el("viewer").hidden, true);
+});
+
+test("the tree is read again when a turn ends, and a file that moved offers itself rather than swapping", async () => {
+  let current = structuredClone(recorded.thread);
+  current.thread.status = "working";
+  let modified = files.text.modified_at;
+  const { el, calls, tick } = await open(
+    tree({
+      thread: () => current,
+      // Whichever thread the window has open: the feed names the one that moved.
+      changed: () => recorded.sidebar.flatMap((p) => p.threads.map((t) => t.id)),
+      tree_read: () => ({ ...files.text, modified_at: modified }),
+    }),
+  );
+  await filesTab(el);
+  row(el, "src").dispatch("click");
+  await settle();
+  row(el, "src/chat").dispatch("click");
+  await settle();
+  row(el, "src/chat/term.rs").dispatch("click");
+  await settle();
+  const refreshes = () => calls.filter(([name]) => name === "tree_refresh").length;
+  const before = refreshes();
+  await tick();
+  assert.equal(refreshes(), before, "a turn still working does not re-read the tree");
+
+  current = structuredClone(current);
+  current.thread.status = "unread";
+  modified += 1000;
+  await tick();
+  assert.equal(refreshes(), before + 1, "a turn that ended does");
+  assert.match(el("viewer").render(), /changed on disk/);
+  assert.match(el("viewer").querySelectorAll(".line")[1].render(), /changed\(\)/);
+  el("viewer").querySelectorAll(".act").find((b) => b.textContent === "Reload").dispatch("click");
+  assert.doesNotMatch(el("viewer").render(), /changed on disk/);
+});
+
+test("the Files pane speaks the machine's language", async () => {
+  const { el } = await open(tree(), { language: "ja-JP" });
+  assert.equal(el("tree-search").getAttribute("placeholder"), "ファイルを検索");
+  await filesTab(el);
+  row(el, "README.md").dispatch("click");
+  await settle();
+  assert.ok(el("viewer").querySelectorAll(".act").some((b) => b.textContent === "エディタで開く"));
+});
+
 test("each panel's inner edge drags to a width this window remembers, and never over the conversation", async () => {
   const { el, window, localStorage } = await open({}, { stored: { widths: JSON.stringify({ left: 300 }) } });
   // What was dragged last time is where it opens; the other panel keeps the stylesheet's width.
@@ -1295,4 +1639,16 @@ test("each panel's inner edge drags to a width this window remembers, and never 
   window.innerWidth = 900;
   window.listeners.get("resize")();
   assert.equal(el("app").style["--left"], `${900 - 320 - 360}px`);
+});
+
+test("a file read wide takes half the window for as long as it is open, and is never stored", async () => {
+  const { el, localStorage } = await open(tree());
+  await filesTab(el);
+  row(el, "README.md").dispatch("click");
+  await settle();
+  el("viewer").querySelectorAll(".widen")[0].dispatch("click");
+  assert.equal(el("app").style["--right"], "700px", "half of a 1400-pixel window");
+  el("viewer").querySelectorAll(".back")[0].dispatch("click");
+  assert.equal(el("app").style["--right"], undefined, "and the width it was dragged to comes back");
+  assert.equal(localStorage.getItem("widths"), null);
 });

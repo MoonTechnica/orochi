@@ -59,7 +59,8 @@
       "patches": 0,
       "at": 1769000000000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": null
     },
     {
       "seq": 2,
@@ -83,7 +84,8 @@
       "patches": 0,
       "at": 1769000001000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": "openai"
     },
     {
       "seq": 3,
@@ -101,7 +103,8 @@
       "patches": 0,
       "at": 1769000002000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": "openai"
     },
     {
       "seq": 4,
@@ -130,7 +133,8 @@
       "patches": 0,
       "at": 1769000003000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": "openai"
     },
     {
       "seq": 5,
@@ -148,7 +152,8 @@
       "patches": 0,
       "at": 1769000004000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": null
     },
     {
       "seq": 6,
@@ -172,7 +177,8 @@
       "patches": 0,
       "at": 1769000005000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": "openai"
     },
     {
       "seq": 7,
@@ -190,7 +196,8 @@
       "patches": 0,
       "at": 1769000006000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": "openai"
     },
     {
       "seq": 8,
@@ -219,7 +226,8 @@
       "patches": 0,
       "at": 1769000007000,
       "failed": false,
-      "turn_origin": null
+      "turn_origin": null,
+      "provider": "openai"
     }
   ],
   "seats": [

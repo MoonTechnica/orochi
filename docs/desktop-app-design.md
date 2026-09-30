@@ -581,6 +581,8 @@ File list with `+n −m`, unified or split diff beside it. Scopes follow Codex's
 
 **Comments become the next message.** Hovering a line offers a comment; comments collect, and *Send* turns them into one queued turn whose text lists `path:line — comment` (the batch submission both surveyed apps use). No new mechanism: it is a user message, routed like any other, and it continues the thread's agent.
 
+A fourth tab, **Files** — a tree of the thread's working tree with git state, a read-only viewer and search — is designed and built in [`files-pane-design.md`](files-pane-design.md) (2026-10-01, automated tests only); it reads the tree by the same road as the git scopes here and stores nothing.
+
 Stage, revert, commit and PR are out of the first release; the app surfaces the user's git, it does not drive it. For a collaboration thread the tab shows the final workspace against the user's tree and an **Apply** button that is exactly `--apply`: it appears only when real checks passed, inserts an `apply` prompt, and the host performs the staged, re-verified write the invariant describes.
 
 ### 6.6 Composer

@@ -121,6 +121,69 @@ fn tree_patch(
         .map_err(fail)
 }
 
+#[tauri::command]
+fn tree_refresh(
+    open: State<'_, Open>,
+    thread: String,
+) -> Result<orochi_desktop::files::TreeState, String> {
+    open.0.lock().unwrap().tree_refresh(&thread).map_err(fail)
+}
+
+#[tauri::command]
+fn tree_list(
+    open: State<'_, Open>,
+    thread: String,
+    dir: String,
+) -> Result<Vec<orochi_desktop::files::Entry>, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .tree_list(&thread, &dir)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn tree_read(
+    open: State<'_, Open>,
+    thread: String,
+    path: String,
+) -> Result<orochi_desktop::files::FileText, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .tree_read(&thread, &path)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn tree_find(
+    open: State<'_, Open>,
+    thread: String,
+    query: String,
+    by: String,
+    limit: usize,
+) -> Result<Option<Vec<orochi_desktop::files::Hit>>, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .tree_find(&thread, &query, &by, limit)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn open_path(
+    open: State<'_, Open>,
+    thread: String,
+    path: String,
+    reveal: bool,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .open_path(&thread, &path, reveal)
+        .map_err(fail)
+}
+
 /// Comments left on a diff, sent as the next message.
 #[tauri::command]
 fn comment(
@@ -302,6 +365,11 @@ fn main() {
             board,
             tree_files,
             tree_patch,
+            tree_refresh,
+            tree_list,
+            tree_read,
+            tree_find,
+            open_path,
             comment,
             settings,
             save_settings,
