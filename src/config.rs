@@ -25,6 +25,7 @@ pub struct Config {
     pub mcp: McpConfig,
     pub activity: ActivityConfig,
     pub console: ConsoleConfig,
+    pub sandbox: SandboxConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -55,6 +56,7 @@ impl Default for Config {
             mcp: McpConfig::default(),
             activity: ActivityConfig::default(),
             console: ConsoleConfig::default(),
+            sandbox: SandboxConfig::default(),
         }
     }
 }
@@ -190,6 +192,91 @@ impl Default for ActivityConfig {
     }
 }
 
+/// Per-project Linux sandboxes (`sandbox.rs`, `docs/sandbox-design.md`): one Incus instance per
+/// project, reached through a Lima VM on macOS or through an `incus` client anywhere else.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxConfig {
+    /// How Orochi reaches Incus: `lima` runs `incus` inside the Lima instance below over
+    /// `limactl shell`; `incus` runs an `incus` client on this machine (Linux, or a remote).
+    pub client: SandboxClient,
+    /// The `incus` executable for `client = "incus"`, absolute or a bare name on PATH.
+    pub incus: String,
+    /// An Incus remote to prefix instance names with (`client = "incus"`); empty is local.
+    pub remote: String,
+    pub limactl: String,
+    pub lima_instance: String,
+    /// The Incus project every sandbox lives in, so `incus list` elsewhere is not cluttered.
+    pub project: String,
+    /// The host VM (Lima), applied when `orochi sandbox up` creates it.
+    pub cpus: u32,
+    pub memory_gib: u32,
+    pub disk_gib: u32,
+    /// Directories of this machine the VM mounts at the same path. Empty: the home directory.
+    /// A project must live under one of them.
+    pub mounts: Vec<PathBuf>,
+    /// The ZFS pool (a sparse file inside the VM) every sandbox's volumes are clones in.
+    pub pool_gib: u32,
+    /// The bridge sandboxes sit on, fixed so the route to it from this machine never moves.
+    pub subnet: String,
+    /// Per sandbox.
+    pub limits_cpu: u32,
+    pub limits_memory_gib: u32,
+    /// Each sandbox's disk, Docker's data included.
+    pub quota_gib: u32,
+    /// The mode `orochi sandbox create` gives a project unless told otherwise.
+    pub default_mode: crate::sandbox::Mode,
+    pub default_docker: bool,
+    /// Directories kept inside the sandbox rather than written through to this machine.
+    pub shadow: Vec<String>,
+    /// `create` refuses with less than this much free on the disk the VM lives on.
+    pub min_free_gib: u64,
+    /// `orochi sandbox gc` stops a sandbox nobody has used for this long.
+    pub idle_stop_minutes: u64,
+    /// This run's `--sandbox`, overriding the project's mode; never read from a file.
+    #[serde(skip)]
+    pub force: Option<crate::sandbox::Mode>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SandboxClient {
+    Lima,
+    Incus,
+}
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            client: if cfg!(target_os = "macos") {
+                SandboxClient::Lima
+            } else {
+                SandboxClient::Incus
+            },
+            incus: "incus".into(),
+            remote: String::new(),
+            limactl: "limactl".into(),
+            lima_instance: "sbx-host".into(),
+            project: "sbx".into(),
+            cpus: 6,
+            memory_gib: 8,
+            disk_gib: 100,
+            mounts: vec![],
+            pool_gib: 60,
+            subnet: "10.203.0.1/24".into(),
+            limits_cpu: 4,
+            limits_memory_gib: 6,
+            quota_gib: 30,
+            default_mode: crate::sandbox::Mode::Host,
+            default_docker: true,
+            shadow: ["node_modules", ".next", ".turbo", "target", ".venv", "dist"]
+                .map(String::from)
+                .to_vec(),
+            min_free_gib: 10,
+            idle_stop_minutes: 30,
+            force: None,
+        }
+    }
+}
+
 /// The interactive console.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -285,6 +372,11 @@ pub struct AgentConfig {
     /// Only consulted as a routing adviser; never discovered or selected to execute tasks.
     #[serde(default)]
     pub routing_only: bool,
+    /// Set on a launch Orochi wrapped into a project's sandbox (`sandbox::Placement::launch`),
+    /// never read from configuration: stdio servers that name this machine's executables
+    /// cannot start inside it.
+    #[serde(skip)]
+    pub sandboxed: bool,
 }
 fn yes() -> bool {
     true
@@ -321,6 +413,7 @@ impl AgentConfig {
             web: false,
             image: false,
             routing_only: false,
+            sandboxed: false,
         }
     }
 }
@@ -766,6 +859,46 @@ impl Config {
                 );
             }
         }
+        let sandbox = &self.sandbox;
+        ensure!(
+            crate::sandbox::label(&sandbox.project).as_deref() == Some(sandbox.project.as_str())
+                && crate::sandbox::label(&sandbox.lima_instance).as_deref()
+                    == Some(sandbox.lima_instance.as_str()),
+            "sandbox.project and sandbox.lima_instance must be lowercase DNS labels"
+        );
+        ensure!(
+            !sandbox.incus.trim().is_empty() && !sandbox.limactl.trim().is_empty(),
+            "sandbox.incus and sandbox.limactl must name executables"
+        );
+        ensure!(
+            sandbox.remote.is_empty()
+                || sandbox
+                    .remote
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "sandbox.remote must be an Incus remote name"
+        );
+        ensure!(
+            sandbox.cpus > 0
+                && sandbox.memory_gib > 0
+                && sandbox.limits_cpu > 0
+                && sandbox.limits_memory_gib > 0
+                && sandbox.pool_gib >= 10
+                && sandbox.quota_gib > 0,
+            "sandbox sizes must be positive (pool_gib at least 10)"
+        );
+        ensure!(
+            crate::sandbox::Subnet::parse(&sandbox.subnet).is_some(),
+            "sandbox.subnet must be an IPv4 gateway address with a /8-/30 prefix, such as 10.203.0.1/24"
+        );
+        ensure!(
+            sandbox.mounts.iter().all(|m| m.is_absolute()),
+            "sandbox.mounts must be absolute paths"
+        );
+        ensure!(
+            sandbox.shadow.iter().all(|s| crate::sandbox::shadow_ok(s)),
+            "sandbox.shadow entries must be relative paths inside the project"
+        );
         Ok(())
     }
 }

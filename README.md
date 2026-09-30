@@ -317,6 +317,23 @@ repo_chars = 2500     # budget for this repository's notes
 
 Specifying `agents` replaces the default 4 entries. Multiple custom IDs can be registered. If an Agent can use a browser or web search, declare `browser` / `web` explicitly. These two items are not inferred from ACP's standard capabilities alone.
 
+### Sandboxes
+
+A project can run its agents and checks in a Linux sandbox of its own instead of on this machine, with a Docker daemon inside it (so `supabase start` runs there). One Lima VM holds Incus; each project is an Incus system container (or VM) made from a golden image. The project's directory is mounted into its sandbox **at the same path**, not copied, so switching a project between the sandbox and this machine moves no file. Orochi itself stays on this machine: only the agent process (over `incus exec`, whose stdio carries ACP) and the evaluator's checks start inside. Designed in [Per-Project Sandboxes](docs/sandbox-design.md).
+
+```sh
+orochi sandbox up                     # create/start the Lima VM and prepare Incus in it
+orochi sandbox image build            # the golden image: Docker, Node, the agents' CLIs and pinned ACP bridges, Supabase's images
+orochi sandbox network --apply        # once, as root: route to the bridge so <project>.sbx resolves
+orochi sandbox create                 # this directory gets a sandbox; its runs now go inside
+orochi sandbox mode host|container|vm # switch where this project's agents run
+orochi --sandbox=host "task"          # one run here, whatever the project's mode
+orochi sandbox focus [--watch]        # this project's listening ports at 127.0.0.1, as its tools print them
+orochi sandbox enter | status | snapshot | restore <name> | reset | rm | gc
+```
+
+The desktop window asks where a new project runs (this Mac, a sandbox container or a sandbox VM) before its first thread, and its **Sandboxes** screen (account menu) does everything above: set up and stop the VM, build the image, set up the network (macOS asks for an administrator), switch a project between here / container / VM, focus, snapshot, reset and delete, with each operation's output. An operation there is the same `orochi sandbox …` command run in the background (`src/sandbox/jobs.rs`, output under `<data>/sandbox/jobs/`). A thread in a sandboxed project says so in its header. Inside a sandbox an agent logs in once (`orochi sandbox enter`, then `claude` / `codex`), and that login serves every sandbox. Verified on a real Lima VM on 2026-09-30 for the host, the image, Docker and Supabase inside a project's sandbox, focus, and a full run with the fixture agent ([record](docs/real-validation-20260930-2.md)); `<name>.sbx`, real agents logged in inside and the VM tier are **unverified**. The mailbox and stdio MCP servers are not available inside a sandbox (they are this machine's executables; reported per agent).
+
 ### MCP servers
 
 The MCP servers declared here are attached to every agent session Orochi starts, whichever agent it picks, beside Orochi's own `orochi-mailbox` server. Routing advisers and the classifier get none: they run in an empty temporary directory with permissions denied and have nothing to call.
@@ -504,6 +521,9 @@ src/interrupt.rs    One process-wide count of interrupts, so work between two wa
 src/memory.rs       Memory across sessions (user preferences, repository notes; stored separately from telemetry)
 src/context.rs      TaskEnvelope, Git information, cache key
 src/evaluator.rs    Local evaluation and process management
+src/sandbox.rs      Per-project sandboxes: modes, the project registry, the Incus client, wrapping an agent's launch and a check into `incus exec`
+src/sandbox/jobs.rs Sandbox operations run in the background for a caller with no terminal (the desktop window), as the same `orochi sandbox` commands
+src/sandbox/ops.rs  `orochi sandbox`: the Lima host VM, the golden image, creating / switching / focusing / snapshotting a project's instance (lima.yaml, host.sh, image.sh are embedded)
 src/storage.rs      SQLite telemetry, schema, repository lock
 src/activity.rs     The conversation store a desktop client reads: threads, turns, seats, items, patches, prompts, controls, the room, and the views over them
 src/activity/recorder.rs  Writes the one event stream down on its way to whoever asked for it

@@ -731,8 +731,20 @@ impl Client {
             sse: advertised_mcp["sse"].as_bool().unwrap_or(false),
         };
         // Routing advisers get no tools beyond the agent's own, so they are given no servers.
-        let (attached, skipped) =
+        let (mcp, mut inside): (Vec<_>, Vec<_>) = if client.config.sandboxed {
+            mcp.into_iter()
+                .partition(|server| server.transport != crate::config::McpTransport::Stdio)
+        } else {
+            (mcp, vec![])
+        };
+        let (attached, mut skipped) =
             crate::mcp::attach(if isolated { &[] } else { &mcp }, client.capabilities.mcp);
+        skipped.extend(inside.drain(..).map(|server| {
+            (
+                server.name,
+                "a stdio server runs on this machine, not inside the sandbox".to_owned(),
+            )
+        }));
         client.mcp = attached;
         client.mcp_skipped = skipped;
         client.new_session(root).await?;
@@ -820,7 +832,10 @@ impl Client {
     /// peer first — a routing adviser has neither — then the MCP servers configured for this
     /// run, minus the ones this agent cannot take.
     fn coordination(&self) -> Vec<McpServer> {
-        let mut servers = match self.peer.as_ref().and_then(crate::mailbox::server_for) {
+        // The mailbox server is this machine's own binary; inside a sandbox it cannot start
+        // until the relay exists (`docs/sandbox-design.md` §8.2).
+        let peer = self.peer.as_ref().filter(|_| !self.config.sandboxed);
+        let mut servers = match peer.and_then(crate::mailbox::server_for) {
             Some((name, command, args)) => vec![McpServer::Stdio(
                 McpServerStdio::new(name, command).args(args),
             )],
@@ -845,6 +860,9 @@ impl Client {
         self.peer.as_ref().map(|peer| peer.id.as_str())
     }
     pub fn peer_note(&self) -> Option<String> {
+        if self.config.sandboxed {
+            return None;
+        }
         self.peer.as_ref().and_then(crate::mailbox::prompt_note_for)
     }
     /// Joins the mailbox as this session and tells other agents what it is running.

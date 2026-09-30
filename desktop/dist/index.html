@@ -108,6 +108,28 @@
     <div id="counts"></div>
   </footer>
 
+  <dialog id="place" aria-labelledby="place-title">
+    <header id="place-head">
+      <h2 id="place-title">New project</h2>
+      <button type="button" id="place-close" aria-label="Close"></button>
+    </header>
+    <div id="place-body">
+      <div class="place-label" id="place-root-label">Project</div>
+      <div id="place-root"></div>
+      <div class="place-label" id="place-modes-label">Runs on</div>
+      <div id="place-modes" role="radiogroup" aria-labelledby="place-modes-label"></div>
+      <p id="place-note"></p>
+      <button type="button" id="place-more" aria-expanded="false">Advanced</button>
+      <div id="place-advanced" hidden>
+        <button type="button" id="place-docker" role="switch" aria-checked="true"></button>
+      </div>
+      <p id="place-error" hidden></p>
+    </div>
+    <footer id="place-foot">
+      <button type="button" id="place-cancel">Cancel</button>
+      <button type="button" class="primary" id="place-go">Create</button>
+    </footer>
+  </dialog>
   <dialog id="panel">
     <header id="panel-head">
       <h2 id="panel-title"></h2>

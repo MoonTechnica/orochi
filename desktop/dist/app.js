@@ -118,6 +118,50 @@ const WORDS = {
     Recent: "最近",
     "Nowhere yet.": "まだありません。",
     "Open folder…": "フォルダを開く…",
+    "New project": "新しいプロジェクト",
+    Project: "プロジェクト",
+    "Runs on": "実行先",
+    "This Mac": "この Mac",
+    "Sandbox · container": "サンドボックス · コンテナ",
+    "Sandbox · VM": "サンドボックス · VM",
+    "The agents run on this machine, as they always have.": "エージェントはこのマシン上で、これまでどおり動きます。",
+    "A Linux container of its own with a Docker daemon inside. The folder is mounted, not copied.":
+      "専用の Linux コンテナで動き、中で Docker デーモンが使えます。フォルダはコピーせずマウントします。",
+    "A virtual machine of its own: the strongest separation, slower to start.":
+      "専用の仮想マシンで動きます。分離は最も強く、起動は遅めです。",
+    "Services started inside open at <name>.sbx, and at 127.0.0.1 while the project is focused.":
+      "中で起動したサービスは <name>.sbx で、フォーカス中は 127.0.0.1 でも開けます。",
+    Advanced: "詳細設定",
+    "Docker inside the sandbox": "サンドボックス内で Docker を使う",
+    Cancel: "キャンセル",
+    Create: "作成",
+    "Creating the sandbox…": "サンドボックスを作成しています…",
+    Sandboxes: "サンドボックス",
+    "Host VM": "ホスト VM",
+    running: "稼働中",
+    stopped: "停止中",
+    missing: "見つかりません",
+    unreachable: "接続できません",
+    "not created": "未作成",
+    "Incus host elsewhere": "別マシンの Incus ホスト",
+    "Set up VM": "VM をセットアップ",
+    "Start VM": "VM を起動",
+    "Stop VM": "VM を停止",
+    "Build image": "イメージをビルド",
+    "Set up network": "ネットワークを設定",
+    "Stop idle": "アイドルを停止",
+    Focus: "フォーカス",
+    Unfocus: "フォーカス解除",
+    Snapshot: "スナップショット",
+    Reset: "リセット",
+    Delete: "削除",
+    "Reset? Docker data is dropped": "リセットしますか？ Docker のデータは消えます",
+    "Delete? The folder is kept": "削除しますか？ フォルダは残ります",
+    "No project has a sandbox yet. A new project is asked where it runs when its first thread starts.":
+      "まだサンドボックスを持つプロジェクトはありません。新しいプロジェクトは最初のスレッドを作るときに実行先を聞かれます。",
+    "Recent operations": "最近の操作",
+    "Create sandbox": "サンドボックスを作成",
+    "Change where it runs": "実行先を変更",
     "No one is seated yet.": "まだ誰も席に着いていません。",
     "Nobody has come or gone yet.": "まだ誰の出入りもありません。",
     "Nothing said yet.": "まだ何も話されていません。",
@@ -978,11 +1022,283 @@ async function chooseFolder() {
 
 async function startIn(root) {
   closeFolders();
+  const where = await call("placement", { root });
+  if (where?.ask && !(await askPlace(root, where))) return;
   const id = await call("new_thread", { root });
   if (!id) return;
   state.thread = id;
   await refresh(true);
 }
+
+// Where a new project runs ------------------------------------------------------
+// Asked once, before a folder nobody has worked in gets its first thread, the way Orca asks
+// where a new worktree runs. Everything after that is the project's own setting.
+const PLACES = [
+  ["host", "This Mac", "The agents run on this machine, as they always have."],
+  ["container", "Sandbox · container",
+    "A Linux container of its own with a Docker daemon inside. The folder is mounted, not copied."],
+  ["vm", "Sandbox · VM", "A virtual machine of its own: the strongest separation, slower to start."],
+];
+
+/// Resolves true once the choice is recorded (a sandbox made where one was chosen), false if
+/// the dialog was dismissed.
+function askPlace(root, where) {
+  const dialog = el("place");
+  let mode = where.mode || "host";
+  let docker = where.docker !== false;
+  el("place-title").textContent = t("New project");
+  el("place-root-label").textContent = t("Project");
+  el("place-modes-label").textContent = t("Runs on");
+  el("place-root").textContent = root;
+  el("place-close").replaceChildren(drawn("x"));
+  el("place-more").textContent = t("Advanced");
+  el("place-cancel").textContent = t("Cancel");
+  el("place-error").hidden = true;
+  const go = el("place-go");
+  go.disabled = false;
+  go.textContent = t("Create");
+
+  const draw = () => {
+    const modes = el("place-modes");
+    modes.replaceChildren();
+    for (const [key, label, where] of PLACES) {
+      const option = document.createElement("button");
+      option.type = "button";
+      option.dataset.mode = key;
+      option.setAttribute("role", "radio");
+      option.setAttribute("aria-checked", String(key === mode));
+      option.append(text("span", "mark"), text("span", "name", t(label)), text("span", "where", t(where)));
+      option.addEventListener("click", () => {
+        mode = key;
+        draw();
+      });
+      modes.append(option);
+    }
+    el("place-note").textContent =
+      mode === "host" ? "" : t("Services started inside open at <name>.sbx, and at 127.0.0.1 while the project is focused.");
+    const toggle = el("place-docker");
+    toggle.textContent = t("Docker inside the sandbox");
+    toggle.setAttribute("aria-checked", String(docker && mode === "container"));
+    toggle.disabled = mode !== "container";
+  };
+  draw();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      for (const [id, handler] of handlers) el(id).removeEventListener("click", handler);
+      dialog.removeEventListener("close", closed);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const closed = () => finish(false);
+    const handlers = [
+      ["place-close", () => finish(false)],
+      ["place-cancel", () => finish(false)],
+      ["place-more", () => {
+        const more = el("place-more");
+        const open = more.getAttribute("aria-expanded") !== "true";
+        more.setAttribute("aria-expanded", String(open));
+        el("place-advanced").hidden = !open;
+      }],
+      ["place-docker", () => {
+        if (mode !== "container") return;
+        docker = !docker;
+        draw();
+      }],
+      ["place-go", async () => {
+        go.disabled = true;
+        if (mode !== "host") go.textContent = t("Creating the sandbox…");
+        try {
+          await invoke("place", { root, mode, docker: docker && mode === "container" });
+          finish(true);
+        } catch (error) {
+          el("place-error").textContent = String(error);
+          el("place-error").hidden = false;
+          go.disabled = false;
+          go.textContent = t("Create");
+        }
+      }],
+    ];
+    for (const [id, handler] of handlers) el(id).addEventListener("click", handler);
+    dialog.addEventListener("close", closed);
+    dialog.showModal();
+  });
+}
+
+// Sandboxes ------------------------------------------------------------------------
+// Everything `orochi sandbox` does, from the window. An operation is the same command run in
+// the background (`sandbox_job`), and this screen follows its output, so a long image build
+// neither freezes the window nor has a second implementation here.
+
+/// Says in the thread's header where its agents run, and opens the screen that changes it.
+async function drawPlace(root) {
+  const head = el("thread-where");
+  let where = null;
+  if (root) {
+    try {
+      where = await invoke("placement", { root });
+    } catch {
+      where = null;
+    }
+  }
+  if (!where || where.mode === "host") return;
+  const pill = document.createElement("button");
+  pill.type = "button";
+  pill.className = "place-pill";
+  pill.textContent = `${where.mode === "vm" ? t("Sandbox · VM") : t("Sandbox · container")} · ${where.name}`;
+  pill.addEventListener("click", () => openPanel("sandboxes"));
+  head.append(" ", pill);
+}
+
+async function job(request) {
+  try {
+    await invoke("sandbox_job", { request });
+  } catch (error) {
+    report(String(error));
+  }
+  state.confirm = null;
+  await drawScreen();
+}
+
+function sandboxAction(label, handler, { danger = false, disabled = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = t(label);
+  if (danger) button.className = "danger";
+  button.disabled = disabled;
+  button.addEventListener("click", handler);
+  return button;
+}
+
+/// A destructive action asks by being pressed twice: the first press turns it into its question.
+function confirming(key, label, question, request, busy) {
+  const armed = state.confirm === key;
+  return sandboxAction(armed ? question : label, () => {
+    if (!armed) {
+      state.confirm = key;
+      drawScreen();
+      return;
+    }
+    job(request);
+  }, { danger: armed, disabled: busy });
+}
+
+async function drawSandboxes(host) {
+  let view;
+  try {
+    view = await invoke("sandboxes", {});
+  } catch (error) {
+    host.append(text("p", "empty", String(error)));
+    return;
+  }
+  if (!view) return;
+  const running = view.jobs.filter((j) => j.exit === null || j.exit === undefined);
+  const busy = (op) => running.some((j) => j.request.op === op);
+
+  const hostBox = text("section", "sbx-host");
+  const vm = view.client === "lima"
+    ? view.vm ? `${t("Host VM")}: ${t(view.vm.toLowerCase())}` : `${t("Host VM")}: ${t("not created")}`
+    : t("Incus host elsewhere");
+  hostBox.append(text("div", "sbx-state", vm));
+  const buttons = text("div", "sbx-actions");
+  if (view.client === "lima" && view.vm === "Running") {
+    buttons.append(sandboxAction("Stop VM", () => job({ op: "down" }), { disabled: busy("down") }));
+  } else {
+    buttons.append(sandboxAction(view.vm ? "Start VM" : "Set up VM", () => job({ op: "up" }), { disabled: busy("up") }));
+  }
+  buttons.append(
+    sandboxAction("Build image", () => job({ op: "image", vm: false }), { disabled: busy("image") || !view.reachable }),
+    sandboxAction("Set up network", () => job({ op: "network" }), { disabled: busy("network") || view.client !== "lima" || view.vm !== "Running" }),
+    sandboxAction("Stop idle", () => job({ op: "gc" }), { disabled: busy("gc") || !view.reachable }),
+  );
+  if (view.projects.some((p) => p.focused.length)) {
+    buttons.append(sandboxAction("Unfocus", () => job({ op: "unfocus" }), { disabled: busy("unfocus") }));
+  }
+  hostBox.append(buttons);
+  host.append(hostBox);
+
+  if (!view.projects.length) {
+    host.append(text("p", "empty", t("No project has a sandbox yet. A new project is asked where it runs when its first thread starts.")));
+  } else {
+    const list = text("div", "sbx-projects");
+    for (const p of view.projects) {
+      const row = text("div", "sbx-project");
+      row.dataset.name = p.name;
+      const head = text("div", "sbx-head");
+      head.append(text("span", "name", p.name), text("span", `sbx-status ${p.status}`, t(p.status)));
+      if (p.busy) head.append(text("span", "sbx-busy", t("working…")));
+      row.append(head, text("div", "where", p.root));
+
+      const modes = text("div", "sbx-modes");
+      modes.setAttribute("role", "radiogroup");
+      for (const [key, label] of PLACES) {
+        const option = sandboxAction(label, () => {
+          if (key !== p.mode) job({ op: "mode", root: p.root, mode: key });
+        }, { disabled: p.busy });
+        option.dataset.mode = key;
+        option.setAttribute("role", "radio");
+        option.setAttribute("aria-checked", String(key === p.mode));
+        modes.append(option);
+      }
+      row.append(modes);
+
+      const reach = text("div", "sbx-reach");
+      if (p.mode !== "host") {
+        reach.append(text("code", null, p.host));
+        if (p.address) reach.append(text("span", "where", p.address));
+        for (const port of p.focused) reach.append(text("code", "sbx-port", `127.0.0.1:${port}`));
+      }
+      row.append(reach);
+
+      const actions = text("div", "sbx-actions");
+      if (p.mode !== "host") {
+        actions.append(
+          p.focused.length
+            ? sandboxAction("Unfocus", () => job({ op: "unfocus" }), { disabled: p.busy })
+            : sandboxAction("Focus", () => job({ op: "focus", root: p.root }), { disabled: p.busy }),
+          sandboxAction("Snapshot", () => job({ op: "snapshot", root: p.root }), { disabled: p.busy }),
+        );
+      }
+      actions.append(
+        confirming(`reset:${p.root}`, "Reset", "Reset? Docker data is dropped", { op: "reset", root: p.root }, p.busy),
+        confirming(`remove:${p.root}`, "Delete", "Delete? The folder is kept", { op: "remove", root: p.root }, p.busy),
+      );
+      row.append(actions);
+      list.append(row);
+    }
+    host.append(list);
+  }
+
+  if (view.jobs.length) {
+    const jobs = text("section", "sbx-jobs");
+    jobs.append(text("h3", null, t("Recent operations")));
+    for (const j of view.jobs) {
+      const done = j.exit !== null && j.exit !== undefined;
+      const line = text("details", "sbx-job");
+      if (!done) line.open = true;
+      const summary = text("summary");
+      summary.append(
+        text("span", "name", t(JOB_NAMES[j.request.op] || j.request.op)),
+        text("span", `sbx-status ${done ? (j.exit === 0 ? "running" : "failed") : "busy"}`,
+          done ? (j.exit === 0 ? t("done") : t("failed")) : t("working…")),
+      );
+      if (j.request.root) summary.append(text("span", "where", j.request.root));
+      line.append(summary);
+      if (j.tail) line.append(text("pre", null, j.tail));
+      jobs.append(line);
+    }
+    host.append(jobs);
+  }
+}
+
+const JOB_NAMES = {
+  up: "Set up VM", down: "Stop VM", image: "Build image", network: "Set up network",
+  create: "Create sandbox", mode: "Change where it runs", focus: "Focus", unfocus: "Unfocus",
+  snapshot: "Snapshot", reset: "Reset", remove: "Delete", gc: "Stop idle",
+};
 
 el("folder").addEventListener("click", () => {
   el("folder-menu").hidden ? openFolders() : closeFolders();
@@ -1802,6 +2118,10 @@ async function drawScreen() {
     );
     return;
   }
+  if (state.panel === "sandboxes") {
+    await drawSandboxes(host);
+    return;
+  }
   if (state.panel === "settings") {
     const [config, remembered] = await Promise.all([
       call("settings", {}),
@@ -1912,6 +2232,7 @@ async function drawScreen() {
 const PANELS = [
   ["agents", "Agents"],
   ["insights", "Insights"],
+  ["sandboxes", "Sandboxes"],
   ["sep"],
   ["settings", "Settings"],
 ];
@@ -2595,6 +2916,7 @@ async function refresh(full) {
   const thread = await call("thread", { id: state.thread });
   if (!thread) return;
   el("thread-where").textContent = `${thread.thread.project} · ${thread.thread.branch || "—"}`;
+  await drawPlace(thread.thread.cwd);
   // The first message names it; until then it is a conversation you have not started.
   el("thread-title").textContent = thread.thread.title || t("New conversation");
   el("thread-status").textContent = thread.thread.status;

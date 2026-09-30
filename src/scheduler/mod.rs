@@ -92,11 +92,18 @@ async fn discover_agents(
     let timeout = Duration::from_secs(config.scheduler.discovery_timeout_secs);
     let mut failures = Vec::new();
     let mut configs = Vec::new();
+    // In a sandboxed project the agents are the image's, so nothing about this machine's
+    // installs decides whether one can run; routing advisers stay here, where they see nothing.
+    let placement = crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)?;
+    if let Some(placement) = &placement {
+        placement.ready(&config.sandbox, store.data_dir())?;
+    }
     for agent in config.agents.iter().filter(|a| {
         a.enabled && (include_advisers || !a.routing_only) && only_agent.is_none_or(|id| id == a.id)
     }) {
+        let inside = placement.is_some() && !agent.routing_only;
         let availability = discovery::inspect(agent, &config.discovery, store.data_dir());
-        if !matches!(availability.status, "ready" | "adapter_required") {
+        if !inside && !matches!(availability.status, "ready" | "adapter_required") {
             failures.push(DiscoveryFailure {
                 agent: agent.id.clone(),
                 missing: availability.status == "not_installed",
@@ -117,11 +124,24 @@ async fn discover_agents(
     let results: Vec<_> = stream::iter(configs.into_iter().map(|agent| {
         let events = events.clone();
         let mcp = mcp.to_vec();
+        let placement = placement.as_ref().filter(|_| !agent.routing_only);
         async move {
-            let launch = match discovery::prepare(&agent, &config.discovery, store.data_dir()).await
-            {
-                Ok(launch) => launch,
-                Err(error) => return (agent, Err(error)),
+            let launch = match placement {
+                Some(placement) => match placement.launch(&config.sandbox, &agent) {
+                    Ok(launch) => launch,
+                    Err(error) => {
+                        return (
+                            agent,
+                            Err(AgentError::new(ErrorKind::Configuration, error.to_string())),
+                        );
+                    }
+                },
+                None => {
+                    match discovery::prepare(&agent, &config.discovery, store.data_dir()).await {
+                        Ok(launch) => launch,
+                        Err(error) => return (agent, Err(error)),
+                    }
+                }
             };
             let result = tokio::time::timeout(
                 timeout,
@@ -835,8 +855,12 @@ async fn run_recorded(
                     if !loud && !evaluator::checks(&config.evaluator, root).is_empty() {
                         report(Progress::Checking);
                     }
+                    let placement =
+                        crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)
+                            .ok()
+                            .flatten();
                     (checks, check_output) = tokio::select! {
-                        result = evaluator::detailed(&config.evaluator, root, loud) => result,
+                        result = evaluator::detailed_in(&config.evaluator, root, loud, placement.as_ref().map(|p| (&config.sandbox, p))) => result,
                         _ = since.wait() => {
                             store.record(&make_record(&task_id, &repository_id, &descriptor, candidate.clone(), clients[index].usage(), clock.elapsed(), attempt, Outcome::Cancelled, vec![], Some("cancelled".into()), started, "execution"))?;
                             return Ok(130);

@@ -107,6 +107,25 @@ fn find(command: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|p| executable(p))
 }
 
+/// What to run for this agent inside a project's sandbox, where the golden image installed the
+/// pinned ACP bridges on its `PATH`: a native CLI becomes its bridge, and a path on this machine
+/// becomes the bare name it has there.
+pub fn inside(agent: &AgentConfig) -> (String, Vec<String>) {
+    if let Some(bridge) = bridge(agent) {
+        return (bridge.binary.to_owned(), vec![]);
+    }
+    let command = Path::new(&agent.command)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| agent.command.clone());
+    (command, agent.args.clone())
+}
+
+/// The pinned bridges, as `package@version`, for the image that runs them.
+pub fn bridge_packages() -> Vec<String> {
+    BRIDGES.iter().map(|(_, b)| b.spec()).collect()
+}
+
 /// An MCP server's command, resolved the way an agent's is: an absolute path as given, a bare
 /// name from an absolute `PATH` entry, nothing else. ACP asks for an absolute path.
 pub fn locate(command: &str) -> Option<PathBuf> {
