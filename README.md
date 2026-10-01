@@ -325,18 +325,30 @@ A project can run its agents and checks in a Linux sandbox of its own instead of
 orochi sandbox up                     # create/start the Lima VM and prepare Incus in it
 orochi sandbox image build            # the golden image: Docker, Node, the agents' CLIs and pinned ACP bridges, Supabase's images
 orochi sandbox create                 # this directory gets a sandbox; its runs now go inside
-orochi sandbox mode host|container|vm # switch where this project's agents run
+orochi sandbox mode host|runner|container|vm  # switch where this project's agents and runtime run
+orochi sandbox exec -- npm test       # run a command in this project's sandbox
 orochi --sandbox=host "task"          # one run here, whatever the project's mode
 orochi sandbox ports                  # what listens inside, and http://<port>-<project>.localhost:1355 for each
 orochi sandbox focus [--watch]        # this project's listening ports at 127.0.0.1, as its tools print them
 orochi sandbox enter | status | snapshot | restore <name> | reset | rm | gc
 ```
 
+**Four places a project can run** (`sandbox mode`, or the desktop's new-project question):
+
+| Mode | The agent | Tests, servers, Docker, Supabase |
+|---|---|---|
+| `host` | on this machine | on this machine |
+| `runner` | on this machine, signed in as it is here, with this machine's MCP servers | in the project's sandbox, through the `orochi-sandbox` MCP tools the agent is given (`sandbox_exec`, `sandbox_start` / `sandbox_logs` / `sandbox_stop`, `sandbox_ports`) and a note telling it to use them; Orochi's checks run there too |
+| `container` / `vm` | inside the sandbox | inside the sandbox |
+
+`runner` keeps each project's runtime apart (no two Supabase stacks or port clashes) with nothing to sign in again; the agent itself is not contained, and what its own shell runs still runs here, which is why it is told which tools to use. `container` / `vm` contain the agent too.
+
 **The VM is there only while it is used.** It powers itself off after `sandbox.vm_idle_minutes` (30; 0 keeps it running) once no agent's work is alive and nothing is connected: *use* is any process in any sandbox that Orochi started or that one of those started (an agent, its tools, a check, `enter`'s shell, and work an agent left running in the background after its turn, which it does not kill), an Incus operation in progress (an image being built), or a connection from this machine through the gateway or a focused port. A sandbox that merely runs (Supabase idling) is not use, and when the check cannot tell it counts as use. Orochi starts the VM again (about 15 s) when a run in a sandboxed project, or any `orochi sandbox` command that needs it, finds it stopped; looking (`status`, the desktop's screen) never starts it. `orochi sandbox status` says what keeps the VM up (`in use: agent work in demo (claude-agent-a, node)`) or how long it has been unused.
 
 **Reaching services needs nothing set up on this machine and never root.** Every sandbox's HTTP services open at `http://<port>-<project>.localhost:1355` (Supabase Studio in project `demo`: `http://54323-demo.localhost:1355`), all projects at once: browsers and curl resolve `*.localhost` to the loopback address themselves, Lima forwards the VM's gateway port, and the gateway (`src/sandbox/gateway.py`, inside the VM) passes each request, WebSocket upgrades included, to `<project>.sbx:<port>`. For anything that is not HTTP (a database port) or a service bound to `127.0.0.1` inside, `focus` puts one project's ports at `127.0.0.1` as its tools print them.
 
-The desktop window asks where a new project runs (this Mac, a sandbox container or a sandbox VM) before its first thread, and its **Sandboxes** screen (account menu) does everything above: set up and stop the VM, build the image, switch a project between here / container / VM, focus, snapshot, reset and delete, with each operation's output. An operation there is the same `orochi sandbox …` command run in the background (`src/sandbox/jobs.rs`, output under `<data>/sandbox/jobs/`). A thread in a sandboxed project says so in its header. Inside a sandbox an agent logs in once (`orochi sandbox enter`, then `claude` / `codex`), and that login serves every sandbox. Verified on a real Lima VM on 2026-09-30 for the host, the image, Docker and Supabase inside a project's sandbox, focus, and a full run with the fixture agent ([record](docs/real-validation-20260930-2.md)); the gateway on 2026-10-01 with Supabase and a second project at once ([record](docs/real-validation-20261001.md)); the VM stopping itself and starting again on use the same day ([record](docs/real-validation-20261001-2.md)); real agents logged in inside and the VM tier are **unverified**. The mailbox and stdio MCP servers are not available inside a sandbox (they are this machine's executables; reported per agent).
+The desktop window asks where a new project runs (this Mac, a sandbox container or a sandbox VM) before its first thread, and its **Sandboxes** screen (account menu) does everything above: set up and stop the VM, build the image, switch a project between here / container / VM, focus, snapshot, reset and delete, with each operation's output. An operation there is the same `orochi sandbox …` command run in the background (`src/sandbox/runner.rs Runner mode: the `orochi-sandbox` MCP server an agent on this machine runs the project's commands in the sandbox with
+src/sandbox/jobs.rs`, output under `<data>/sandbox/jobs/`). A thread in a sandboxed project says so in its header. Inside a sandbox an agent logs in once (`orochi sandbox enter`, then `claude` / `codex`), and that login serves every sandbox. Verified on a real Lima VM on 2026-09-30 for the host, the image, Docker and Supabase inside a project's sandbox, focus, and a full run with the fixture agent ([record](docs/real-validation-20260930-2.md)); the gateway on 2026-10-01 with Supabase and a second project at once ([record](docs/real-validation-20261001.md)); the VM stopping itself and starting again on use the same day ([record](docs/real-validation-20261001-2.md)); runner mode's tools against the real VM ([record](docs/real-validation-20261001-4.md)); real agents logged in inside and the VM tier are **unverified**. The mailbox and stdio MCP servers are not available inside a sandbox (they are this machine's executables; reported per agent).
 
 ### MCP servers
 

@@ -16,6 +16,12 @@ fn main() -> std::process::ExitCode {
         {
             return orochi::mailbox::serve(&args[2..]);
         }
+        if args
+            .get(1)
+            .is_some_and(|a| a == orochi::sandbox::runner::SERVE_FLAG)
+        {
+            return orochi::sandbox::runner::serve(&args[2..]);
+        }
     }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

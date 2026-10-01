@@ -101,7 +101,8 @@ async fn discover_agents(
     for agent in config.agents.iter().filter(|a| {
         a.enabled && (include_advisers || !a.routing_only) && only_agent.is_none_or(|id| id == a.id)
     }) {
-        let inside = placement.is_some() && !agent.routing_only;
+        let inside =
+            placement.as_ref().is_some_and(|p| p.mode.agent_inside()) && !agent.routing_only;
         let availability = discovery::inspect(agent, &config.discovery, store.data_dir());
         if !inside && !matches!(availability.status, "ready" | "adapter_required") {
             failures.push(DiscoveryFailure {
@@ -123,8 +124,20 @@ async fn discover_agents(
     }
     let results: Vec<_> = stream::iter(configs.into_iter().map(|agent| {
         let events = events.clone();
-        let mcp = mcp.to_vec();
-        let placement = placement.as_ref().filter(|_| !agent.routing_only);
+        let mut mcp = mcp.to_vec();
+        // Runner mode: the agent runs here and reaches the project's runtime through the
+        // sandbox's tools.
+        if let Some(runner) = placement
+            .as_ref()
+            .filter(|p| p.mode == crate::sandbox::Mode::Runner && !agent.routing_only)
+            && let Ok(server) =
+                crate::sandbox::runner::server(&config.sandbox, store.data_dir(), &runner.root)
+        {
+            mcp.push(server);
+        }
+        let placement = placement
+            .as_ref()
+            .filter(|p| p.mode.agent_inside() && !agent.routing_only);
         async move {
             let launch = match placement {
                 Some(placement) => match placement.launch(&config.sandbox, &agent) {
@@ -826,6 +839,14 @@ async fn run_recorded(
                     place.seated();
                 }
                 if let Some(note) = clients[index].peer_note() {
+                    text = format!("{note}\n\n{text}");
+                }
+                if fresh
+                    && let Ok(Some(runner)) =
+                        crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)
+                    && runner.mode == crate::sandbox::Mode::Runner
+                {
+                    let note = crate::sandbox::runner::prompt_note(&config.sandbox, &runner.name);
                     text = format!("{note}\n\n{text}");
                 }
                 if fresh
