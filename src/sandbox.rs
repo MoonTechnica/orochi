@@ -14,6 +14,7 @@ use std::{
     process::Stdio,
 };
 
+pub mod auth;
 pub mod jobs;
 pub mod ops;
 pub mod runner;
@@ -401,7 +402,7 @@ pub fn placement(data: &Path, root: &Path, force: Option<Mode>) -> Result<Option
 }
 
 /// Variables that describe this machine and would mislead a process inside.
-const LOCAL_ONLY: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR"];
+pub(crate) const LOCAL_ONLY: [&str; 6] = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR"];
 
 impl Placement {
     /// Starts the instance if it is stopped and marks the project used now.
@@ -420,10 +421,42 @@ impl Placement {
                 self.root.display()
             ),
         }
+        self.forward_host_ports(config)?;
         let mut state = State::load(data)?;
         if let Some(project) = state.projects.iter_mut().find(|p| p.name == self.name) {
             project.last_used = crate::types::now();
             state.save(data)?;
+        }
+        Ok(())
+    }
+
+    /// `localhost:<port>` inside reaches the same port on this machine, for each of
+    /// `sandbox.host_ports` (a local model server, say), so an agent configured for one here
+    /// needs no change inside. Lima's documented address for the host's loopback is
+    /// 192.168.5.2; with an Incus client there is no such host, and nothing is forwarded.
+    fn forward_host_ports(&self, config: &SandboxConfig) -> Result<()> {
+        if config.client != SandboxClient::Lima || config.host_ports.is_empty() {
+            return Ok(());
+        }
+        let incus = Incus::new(config);
+        let instance = incus.instance(&self.name);
+        let devices = incus.run(&["config", "device", "list", &instance])?;
+        for port in &config.host_ports {
+            let device = format!("host-port-{port}");
+            if devices.lines().any(|d| d.trim() == device) {
+                continue;
+            }
+            incus.run(&[
+                "config",
+                "device",
+                "add",
+                &instance,
+                &device,
+                "proxy",
+                "bind=instance",
+                &format!("listen=tcp:127.0.0.1:{port}"),
+                &format!("connect=tcp:192.168.5.2:{port}"),
+            ])?;
         }
         Ok(())
     }
@@ -478,21 +511,38 @@ impl Placement {
 
     /// The agent's launch, wrapped to start inside: the command becomes `incus exec` on this
     /// machine, and what the agent itself is resolved as comes from the image, not from here.
-    pub fn launch(&self, config: &SandboxConfig, agent: &AgentConfig) -> Result<AgentConfig> {
+    /// Its sign-in goes in first (`auth::prepare`); its variables, configured ones included, are
+    /// read from a file in the sandbox's memory rather than passed on a command line.
+    pub fn launch(
+        &self,
+        config: &crate::config::Config,
+        data: &Path,
+        agent: &AgentConfig,
+    ) -> Result<AgentConfig> {
+        auth::prepare(&config.sandbox, &config.mcp, data, self, agent)?;
         let (command, args) = crate::discovery::inside(agent);
-        let env: Vec<(String, String)> = agent
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let inner = self.exec_args(config, &self.root, &env, &command, &args, false);
-        let (program, argv) = Incus::new(config).argv(&inner)?;
+        let mut wrapped = vec![
+            "-c".to_owned(),
+            "set -a; [ -r \"$0\" ] && . \"$0\"; set +a; exec \"$@\"".to_owned(),
+            auth::env_file(agent),
+            command,
+        ];
+        wrapped.extend(args);
+        let inner = self.exec_args(&config.sandbox, &self.root, &[], "sh", &wrapped, false);
+        let (program, argv) = Incus::new(&config.sandbox).argv(&inner)?;
         let mut launch = agent.clone();
         launch.command = program.to_string_lossy().into_owned();
         launch.args = argv;
         launch.env = Default::default();
         launch.sandboxed = true;
         Ok(launch)
+    }
+
+    /// After a run: what the agent refreshed inside goes back to this machine.
+    pub fn settle(&self, config: &crate::config::Config, data: &Path, agent: &AgentConfig) {
+        if let Err(error) = auth::settle(&config.sandbox, data, self, agent) {
+            tracing::warn!(%error, agent = %agent.id, "could not bring a refreshed sign-in back");
+        }
     }
 
     /// A check or any other command, run inside instead of here.

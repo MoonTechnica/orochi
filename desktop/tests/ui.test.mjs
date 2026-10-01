@@ -466,6 +466,12 @@ const SANDBOXES = {
       status: "stopped", address: null, url: "http://<port>-api.localhost:1355", focused: [], busy: false,
     },
   ],
+  auth: [
+    { agent: "codex", files: [".codex/auth.json"], variables: [], missing: false, hint: null },
+    { agent: "claude", files: [], variables: [], missing: true, hint: "`orochi sandbox login claude` runs `claude setup-token`" },
+    { agent: "gemini", files: [], variables: [["GEMINI_API_KEY", "secret"]], missing: false, hint: null },
+  ],
+  host_ports: [11434, 1234],
   jobs: [
     { id: "2", request: { op: "image", vm: false }, started_at: 2, exit: null, tail: "image: installing docker" },
     { id: "1", request: { op: "focus", root: "/work/web-app" }, started_at: 1, exit: 0, tail: "http://127.0.0.1:54323" },
@@ -548,6 +554,37 @@ test("a host VM that is not there is offered to be set up, and nothing that need
   buttons.find((b) => b.textContent === "Set up VM").dispatch("click");
   await settle();
   assert.deepEqual(jobs(calls), [{ op: "up" }]);
+});
+
+test("the sandboxes screen says how each agent is signed in inside, by name and never by value", async () => {
+  const { el } = await sandboxScreen();
+  const auth = el("panel-body").querySelectorAll("div").filter((d) => d.dataset.agent);
+  const said = (agent) => auth.find((d) => d.dataset.agent === agent).render();
+  assert.match(said("codex"), /~\/\.codex\/auth\.json/, "its sign-in file goes in");
+  assert.match(said("gemini"), /GEMINI_API_KEY \(stored key\)/);
+  assert.match(said("claude"), /nothing carried/);
+  assert.match(said("claude"), /claude setup-token/, "with what to do about it");
+  assert.match(el("panel-body").render(), /11434, 1234/, "and which local servers it reaches");
+});
+
+test("a Claude token is made in a terminal, and an API key goes to the keychain from a password field", async () => {
+  const { el, calls } = await sandboxScreen({ sandbox_login: null, sandbox_secret: null });
+  const claude = el("panel-body").querySelectorAll("div").find((d) => d.dataset.agent === "claude");
+  claude.querySelectorAll("button").find((b) => b.textContent === "Get a token").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.find(([n]) => n === "sandbox_login")[1], { agent: "claude" });
+
+  const inputs = el("panel-body").querySelectorAll("input");
+  const name = inputs.find((i) => i.id === "sbx-secret-name");
+  const value = inputs.find((i) => i.id === "sbx-secret-value");
+  assert.equal(value.type, "password");
+  name.value = "OPENROUTER_API_KEY";
+  value.value = "sk-or-secret";
+  name.dispatch("input");
+  el("panel-body").querySelectorAll("button").find((b) => b.textContent === "Store key").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.find(([n]) => n === "sandbox_secret")[1], { name: "OPENROUTER_API_KEY", value: "sk-or-secret" });
+  assert.equal(value.value, "", "and the field does not keep it");
 });
 
 test("a thread in a sandboxed project says so in its header", async () => {

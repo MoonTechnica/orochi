@@ -670,6 +670,7 @@ pub fn remove(config: &SandboxConfig, data: &Path, root: &Path) -> Result<Projec
         .with_context(|| format!("no sandbox for {}", root.display()))?;
     unfocus_if(config, &mut state, &project.name)?;
     destroy(config, &project)?;
+    super::auth::forget(data, &project.name);
     state.projects.retain(|p| p.root != root);
     state.save(data)?;
     Ok(project)

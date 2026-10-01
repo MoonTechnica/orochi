@@ -115,12 +115,18 @@ elif command == "exec":
             i += 1
         elif options[i] == "--env":
             key, value = options[i + 1].split("=", 1)
-            if key != "HOME":
-                env[key] = value
+            # The sandbox's home is a directory of the test's own: a test never writes to the
+            # home of the machine it runs on.
+            env[key] = os.environ["FAKE_INCUS_HOME"] if key == "HOME" else value
             i += 1
         i += 1
     if argv[:1] == ["sbx-run"]:
         argv = argv[1:]
+    # So is the sandbox's memory.
+    shm = os.environ["FAKE_INCUS_SHM"]
+    argv = [a.replace("/dev/shm/", shm + "/") for a in argv]
+    os.makedirs(env.get("HOME", shm), exist_ok=True)
+    os.makedirs(shm, exist_ok=True)
     if argv[:1] == ["ss"]:
         for port in os.environ.get("FAKE_SS", "").split(","):
             if port:

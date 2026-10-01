@@ -221,6 +221,9 @@ pub struct SandboxConfig {
     pub subnet: String,
     /// The gateway's port on this machine: `http://<port>-<project>.localhost:<gateway_port>`.
     pub gateway_port: u16,
+    /// Ports on this machine's loopback that `localhost` inside every sandbox reaches too: a
+    /// local model server (Ollama 11434, LM Studio 1234) an agent is configured for.
+    pub host_ports: Vec<u16>,
     /// Per sandbox.
     pub limits_cpu: u32,
     pub limits_memory_gib: u32,
@@ -268,6 +271,7 @@ impl Default for SandboxConfig {
             pool_gib: 60,
             subnet: "10.203.0.1/24".into(),
             gateway_port: 1355,
+            host_ports: vec![11434, 1234],
             limits_cpu: 4,
             limits_memory_gib: 6,
             quota_gib: 30,
@@ -384,6 +388,14 @@ pub struct AgentConfig {
     /// cannot start inside it.
     #[serde(skip)]
     pub sandboxed: bool,
+    /// In a sandbox: files under the home directory this agent keeps its sign-in in, beside
+    /// the ones Orochi knows for it (`sandbox::auth::recipe`). Kept in step with this machine.
+    #[serde(default)]
+    pub sandbox_files: Vec<String>,
+    /// In a sandbox: variables this agent reads its credentials or endpoint from, given from
+    /// `orochi sandbox secret`, this entry's `env`, or this machine's environment.
+    #[serde(default)]
+    pub sandbox_env: Vec<String>,
 }
 fn yes() -> bool {
     true
@@ -421,6 +433,8 @@ impl AgentConfig {
             image: false,
             routing_only: false,
             sandboxed: false,
+            sandbox_files: vec![],
+            sandbox_env: vec![],
         }
     }
 }
@@ -865,6 +879,24 @@ impl Config {
                     "invalid router settings"
                 );
             }
+        }
+        for agent in &self.agents {
+            ensure!(
+                agent
+                    .sandbox_files
+                    .iter()
+                    .all(|f| crate::sandbox::auth::file_ok(f)),
+                "{}: sandbox_files must be paths inside the home directory",
+                agent.id
+            );
+            ensure!(
+                agent
+                    .sandbox_env
+                    .iter()
+                    .all(|v| crate::sandbox::auth::variable_ok(v)),
+                "{}: sandbox_env must be variable names",
+                agent.id
+            );
         }
         let sandbox = &self.sandbox;
         ensure!(

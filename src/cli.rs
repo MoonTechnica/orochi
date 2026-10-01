@@ -289,6 +289,14 @@ pub enum SandboxCommand {
     Gc,
     /// What this project's sandbox listens on, and the address each opens at here.
     Ports { path: Option<PathBuf> },
+    /// What each agent is signed in with inside a sandbox, carried from this machine.
+    Auth,
+    /// Make the credential an agent signs in with inside, its own documented way
+    /// (`claude setup-token` for Claude Code).
+    Login { agent: String },
+    /// Values agents in sandboxes read (API keys, tokens), kept in this machine's keychain.
+    #[command(subcommand)]
+    Secret(SecretCommand),
     /// Build the golden image every sandbox is created from.
     Image {
         /// Build the VM tier's image instead.
@@ -297,6 +305,18 @@ pub enum SandboxCommand {
     },
     /// Print the script that prepares a Linux machine as an Incus sandbox host.
     HostScript,
+}
+#[derive(Debug, Subcommand)]
+pub enum SecretCommand {
+    /// Store a value, typed or pasted without echo, or piped in.
+    Set {
+        name: String,
+    },
+    Rm {
+        name: String,
+    },
+    /// The names stored, never the values.
+    List,
 }
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -1782,6 +1802,80 @@ async fn sandbox(
             }
             for name in stopped {
                 println!("stopped {name}");
+            }
+        }
+        SandboxCommand::Auth => {
+            use sbx::auth::Source;
+            for agent in config
+                .agents
+                .iter()
+                .filter(|a| a.enabled && !a.routing_only)
+            {
+                let report = sbx::auth::report(agent, data, &config.mcp)?;
+                let mut parts: Vec<String> =
+                    report.files.iter().map(|f| format!("~/{f}")).collect();
+                parts.extend(report.variables.iter().map(|(name, source)| {
+                    format!(
+                        "{name} ({})",
+                        match source {
+                            Source::Secret => "orochi sandbox secret",
+                            Source::Config => "config",
+                            Source::Environment => "this shell",
+                        }
+                    )
+                }));
+                let what = if parts.is_empty() {
+                    "nothing to carry".to_owned()
+                } else {
+                    parts.join(", ")
+                };
+                println!("{:<12} {what}", report.agent);
+                if (report.missing || parts.is_empty())
+                    && let Some(hint) = report.hint
+                {
+                    println!("{:<12} → {hint}", "");
+                }
+            }
+            if !sandbox.host_ports.is_empty() {
+                println!(
+                    "localhost inside reaches this machine on {}",
+                    sandbox
+                        .host_ports
+                        .iter()
+                        .map(u16::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        SandboxCommand::Login { agent } => {
+            let agent = config
+                .agents
+                .iter()
+                .find(|a| a.id == agent)
+                .with_context(|| format!("no agent {agent}"))?;
+            println!("{}", sbx::auth::login(agent, data, &config.mcp)?);
+        }
+        SandboxCommand::Secret(command) => {
+            let secrets = sbx::auth::Secrets::open(data, &config.mcp);
+            match command {
+                SecretCommand::Set { name } => {
+                    let value = sbx::auth::read_hidden(&format!("{name} (not shown): "))?;
+                    secrets.set(&name, &value)?;
+                    println!("{name} stored; agents in sandboxes that read it get it.");
+                }
+                SecretCommand::Rm { name } => {
+                    if secrets.forget(&name)? {
+                        println!("{name} removed");
+                    } else {
+                        println!("{name} was not stored");
+                    }
+                }
+                SecretCommand::List => {
+                    for name in secrets.names() {
+                        println!("{name}");
+                    }
+                }
             }
         }
         SandboxCommand::Ports { path } => {

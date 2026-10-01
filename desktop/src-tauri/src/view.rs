@@ -164,6 +164,10 @@ pub struct Sandboxes {
     pub reachable: bool,
     pub projects: Vec<SandboxRow>,
     pub jobs: Vec<orochi::sandbox::jobs::Job>,
+    /// What each agent is signed in with inside, carried from this machine: names, never values.
+    pub auth: Vec<orochi::sandbox::auth::Report>,
+    /// Ports of this machine that `localhost` inside reaches (local model servers).
+    pub host_ports: Vec<u16>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct SandboxRow {
@@ -238,7 +242,44 @@ pub fn sandboxes(config: &Path, data: &Path) -> Result<Sandboxes> {
             })
             .collect(),
         jobs,
+        auth: config
+            .agents
+            .iter()
+            .filter(|a| a.enabled && !a.routing_only)
+            .filter_map(|a| orochi::sandbox::auth::report(a, data, &config.mcp).ok())
+            .collect(),
+        host_ports: sandbox.host_ports.clone(),
     })
+}
+
+/// Stores a value agents in sandboxes read (an API key), in this machine's keychain.
+pub fn sandbox_secret(config: &Path, data: &Path, name: &str, value: &str) -> Result<()> {
+    let config = orochi::config::Config::load(config).unwrap_or_default();
+    orochi::sandbox::auth::Secrets::open(data, &config.mcp).set(name, value)
+}
+
+/// The command that signs an agent in for sandboxes, for a terminal to run: it is
+/// interactive (a browser, then a token pasted back), which a window cannot be.
+pub fn sandbox_login_command(
+    binary: &Path,
+    config: &Path,
+    data: &Path,
+    agent: &str,
+) -> Result<String> {
+    ensure!(
+        !agent.is_empty()
+            && agent
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "no such agent: {agent}"
+    );
+    let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "'\\''"));
+    Ok(format!(
+        "{} --config {} --data-dir {} sandbox login {agent}",
+        quote(binary),
+        quote(config),
+        quote(data)
+    ))
 }
 
 /// Starts one sandbox operation in the background, as `orochi sandbox …`.
