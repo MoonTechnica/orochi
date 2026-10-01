@@ -251,6 +251,11 @@ pub enum SandboxCommand {
     },
     /// A shell inside this project's sandbox, in its tree.
     Enter { path: Option<PathBuf> },
+    /// Run a command in this project's sandbox, in the current directory's place there.
+    Exec {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        command: Vec<String>,
+    },
     /// Put this project's listening ports at this machine's 127.0.0.1 (one project at a time).
     Focus {
         path: Option<PathBuf>,
@@ -1636,11 +1641,18 @@ async fn sandbox(
                     ports,
                 },
             )?;
+            let what = if project.mode == Mode::Runner {
+                "agents run on this machine and run the project there (runner)".to_owned()
+            } else {
+                format!(
+                    "agents and checks now run inside it ({})",
+                    project.mode.key()
+                )
+            };
             println!(
-                "Sandbox {} ready: agents and checks in {} now run inside it ({}). Its services open at {}.",
+                "Sandbox {} ready for {}: {what}. Its services open at {}.",
                 project.name,
                 project.root.display(),
-                project.mode.key(),
                 ops::url(sandbox, &project.name, None)
             );
         }
@@ -1648,7 +1660,7 @@ async fn sandbox(
             let root = project_root(path)?;
             let state = sbx::State::load(data)?;
             if let Some(current) = state.exact(&root)
-                && mode.sandboxed()
+                && mode.agent_inside()
                 && mode != current.tier
                 && !confirmed(
                     &format!(
@@ -1668,9 +1680,23 @@ async fn sandbox(
                 project.root.display(),
                 match mode {
                     Mode::Host => "on this machine".to_owned(),
+                    Mode::Runner => format!(
+                        "on this machine, running the project in sandbox {}",
+                        project.name
+                    ),
                     _ => format!("in sandbox {} ({})", project.name, mode.key()),
                 }
             );
+        }
+        SandboxCommand::Exec { command } => {
+            let placement = sbx::placement(data, here, None)?
+                .with_context(|| format!("{} runs on this machine; no sandbox", here.display()))?;
+            placement.ready(sandbox, data)?;
+            let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+            let args =
+                placement.exec_args(sandbox, here, &[], &command[0], &command[1..], terminal);
+            let status = sbx::Incus::new(sandbox).command(&args)?.status()?;
+            return Ok(status.code().unwrap_or(1).clamp(0, 255) as u8);
         }
         SandboxCommand::Enter { path } => {
             let root = at(path)?;

@@ -124,6 +124,9 @@ const WORDS = {
     "This Mac": "この Mac",
     "Sandbox · container": "サンドボックス · コンテナ",
     "Sandbox · VM": "サンドボックス · VM",
+    "This Mac · runs in sandbox": "この Mac · 実行はサンドボックス",
+    "The agents run here, signed in as they are; tests, servers, Docker and Supabase run in a Linux sandbox of its own.":
+      "エージェントはこの Mac でいつものサインインのまま動き、テスト・サーバー・Docker・Supabase は専用の Linux サンドボックスで動きます。",
     "The agents run on this machine, as they always have.": "エージェントはこのマシン上で、これまでどおり動きます。",
     "A Linux container of its own with a Docker daemon inside. The folder is mounted, not copied.":
       "専用の Linux コンテナで動き、中で Docker デーモンが使えます。フォルダはコピーせずマウントします。",
@@ -1034,6 +1037,8 @@ async function startIn(root) {
 // where a new worktree runs. Everything after that is the project's own setting.
 const PLACES = [
   ["host", "This Mac", "The agents run on this machine, as they always have."],
+  ["runner", "This Mac · runs in sandbox",
+    "The agents run here, signed in as they are; tests, servers, Docker and Supabase run in a Linux sandbox of its own."],
   ["container", "Sandbox · container",
     "A Linux container of its own with a Docker daemon inside. The folder is mounted, not copied."],
   ["vm", "Sandbox · VM", "A virtual machine of its own: the strongest separation, slower to start."],
@@ -1077,8 +1082,9 @@ function askPlace(root, where) {
       mode === "host" ? "" : t("Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.");
     const toggle = el("place-docker");
     toggle.textContent = t("Docker inside the sandbox");
-    toggle.setAttribute("aria-checked", String(docker && mode === "container"));
-    toggle.disabled = mode !== "container";
+    const withDocker = mode === "container" || mode === "runner";
+    toggle.setAttribute("aria-checked", String(docker && withDocker));
+    toggle.disabled = !withDocker;
   };
   draw();
 
@@ -1103,7 +1109,7 @@ function askPlace(root, where) {
         el("place-advanced").hidden = !open;
       }],
       ["place-docker", () => {
-        if (mode !== "container") return;
+        if (mode !== "container" && mode !== "runner") return;
         docker = !docker;
         draw();
       }],
@@ -1111,7 +1117,7 @@ function askPlace(root, where) {
         go.disabled = true;
         if (mode !== "host") go.textContent = t("Creating the sandbox…");
         try {
-          await invoke("place", { root, mode, docker: docker && mode === "container" });
+          await invoke("place", { root, mode, docker: docker && (mode === "container" || mode === "runner") });
           finish(true);
         } catch (error) {
           el("place-error").textContent = String(error);
@@ -1147,7 +1153,8 @@ async function drawPlace(root) {
   const pill = document.createElement("button");
   pill.type = "button";
   pill.className = "place-pill";
-  pill.textContent = `${where.mode === "vm" ? t("Sandbox · VM") : t("Sandbox · container")} · ${where.name}`;
+  const label = { vm: "Sandbox · VM", runner: "This Mac · runs in sandbox" }[where.mode] || "Sandbox · container";
+  pill.textContent = `${t(label)} · ${where.name}`;
   pill.addEventListener("click", () => openPanel("sandboxes"));
   head.append(" ", pill);
 }

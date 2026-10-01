@@ -16,6 +16,7 @@ use std::{
 
 pub mod jobs;
 pub mod ops;
+pub mod runner;
 
 /// Where a project's agents run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -28,6 +29,10 @@ pub enum Mode {
     Container,
     /// In an Incus virtual machine.
     Vm,
+    /// The agent on this machine, signed in as it is here; the project's runtime (tests,
+    /// servers, Docker) in its sandbox, reached through the `orochi-sandbox` tools
+    /// (`sandbox/runner.rs`). The sandbox is a container unless it was made as a VM.
+    Runner,
 }
 impl Mode {
     pub fn key(self) -> &'static str {
@@ -35,10 +40,16 @@ impl Mode {
             Mode::Host => "host",
             Mode::Container => "container",
             Mode::Vm => "vm",
+            Mode::Runner => "runner",
         }
     }
+    /// The project has a sandbox and uses it.
     pub fn sandboxed(self) -> bool {
         self != Mode::Host
+    }
+    /// The agent itself runs inside, rather than on this machine.
+    pub fn agent_inside(self) -> bool {
+        matches!(self, Mode::Container | Mode::Vm)
     }
 }
 
@@ -354,6 +365,7 @@ pub fn placement(data: &Path, root: &Path, force: Option<Mode>) -> Result<Option
     let project = state.project_for(root);
     let mode = match (force, project) {
         (Some(mode), _) if !mode.sandboxed() => return Ok(None),
+        (Some(Mode::Runner), Some(_)) => Mode::Runner,
         (Some(mode), Some(project)) => {
             ensure!(
                 mode == project.tier,

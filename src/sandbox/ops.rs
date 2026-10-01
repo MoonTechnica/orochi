@@ -338,7 +338,7 @@ fn reclaim_hint() -> String {
 /// Docker data is cloned from).
 pub fn build_image(config: &SandboxConfig, tier: Mode) -> Result<()> {
     ensure_vm(config, true)?;
-    ensure!(tier.sandboxed(), "an image is built for container or vm");
+    ensure!(tier.agent_inside(), "an image is built for container or vm");
     let incus = Incus::new(config);
     let builder = format!("sbx-build-{}", tier.key());
     let (uid, gid) = ids();
@@ -494,7 +494,12 @@ pub fn create(
         name,
         root: root.to_path_buf(),
         mode: request.mode,
-        tier: request.mode,
+        // A runner-mode project's sandbox is a container; `reset --mode vm` makes it a VM.
+        tier: if request.mode == Mode::Vm {
+            Mode::Vm
+        } else {
+            Mode::Container
+        },
         docker: request.docker,
         shadow: request.shadow,
         ports: request.ports,
@@ -708,7 +713,7 @@ pub fn set_mode(config: &SandboxConfig, data: &Path, root: &Path, mode: Mode) ->
             root.display()
         )
     })?;
-    if mode.sandboxed() && mode != project.tier {
+    if mode.agent_inside() && mode != project.tier {
         return reset(config, data, root, Some(mode));
     }
     let incus = Incus::new(config);

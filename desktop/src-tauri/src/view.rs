@@ -123,6 +123,7 @@ pub fn place(config: &Path, data: &Path, root: &Path, mode: &str, docker: bool) 
         "host" => Mode::Host,
         "container" => Mode::Container,
         "vm" => Mode::Vm,
+        "runner" => Mode::Runner,
         other => bail!("no such place to run: {other}"),
     };
     let root = root.canonicalize()?;

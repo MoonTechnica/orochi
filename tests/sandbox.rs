@@ -781,3 +781,157 @@ fn status_says_what_keeps_the_vm_up_or_how_long_it_has_been_unused() {
         "unused for 12 min; stops itself at 30 min"
     );
 }
+
+#[test]
+fn in_runner_mode_the_agent_runs_here_with_the_sandbox_tools_and_its_checks_run_inside() {
+    let mut w = Workspace::new();
+    w.config.evaluator.checks = vec![CheckCommand {
+        name: "tests".into(),
+        command: "python3".into(),
+        args: vec![
+            "-c".into(),
+            "import os; assert os.environ['OROCHI_SANDBOX'] == 'repo'".into(),
+        ],
+    }];
+    success(&w.run(&["sandbox", "create", "--mode", "runner"]));
+    let state = State::load(&w.data()).unwrap();
+    let project = state.exact(&w.repo()).unwrap();
+    assert_eq!(
+        (project.mode, project.tier),
+        (Mode::Runner, Mode::Container)
+    );
+    success(&w.run(&["Implement a small endpoint"]));
+    // The agent itself was not started through incus exec…
+    assert!(
+        !w.execs()
+            .iter()
+            .any(|c| c.iter().any(|a| a.ends_with("mock_acp.py"))),
+        "{:?}",
+        w.execs()
+    );
+    // …it was given the sandbox's tools and told to use them…
+    let log = w.agent_log();
+    assert!(log.contains("orochi-sandbox"), "{log}");
+    assert!(log.contains("--internal-sandbox-runner"), "{log}");
+    assert!(
+        log.contains("this project's runtime is a Linux sandbox"),
+        "{log}"
+    );
+    // …and Orochi's check ran in the sandbox.
+    assert!(w.execs().iter().any(|c| c.contains(&"CI=true".to_owned())));
+    let records = Store::open(&w.data()).unwrap().recent_runs(10).unwrap();
+    assert_eq!(records[0].outcome, Outcome::Success);
+}
+
+#[test]
+fn the_sandbox_tools_run_commands_inside_and_keep_them_inside_the_project() {
+    use std::io::{BufRead, BufReader, Write};
+    let w = Workspace::new();
+    success(&w.run(&["sandbox", "create", "--mode", "runner"]));
+    std::fs::create_dir(w.repo().join("web")).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .args([
+            "--internal-sandbox-runner",
+            w.data().to_str().unwrap(),
+            w.repo().to_str().unwrap(),
+            &serde_json::to_string(&w.config.sandbox).unwrap(),
+        ])
+        .env("FAKE_SS", "54323")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut ask = |id: u64, method: &str, params: serde_json::Value| -> serde_json::Value {
+        let request =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        writeln!(stdin, "{request}").unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let call = |reply: serde_json::Value| -> (serde_json::Value, bool) {
+        let result = &reply["result"];
+        let text = result["content"][0]["text"].as_str().unwrap().to_owned();
+        (
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+            result["isError"].as_bool().unwrap(),
+        )
+    };
+    assert_eq!(
+        ask(1, "initialize", serde_json::json!({}))["result"]["serverInfo"]["name"],
+        "orochi-sandbox"
+    );
+    let tools: Vec<String> = ask(2, "tools/list", serde_json::json!({}))["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        tools,
+        [
+            "sandbox_exec",
+            "sandbox_start",
+            "sandbox_logs",
+            "sandbox_stop",
+            "sandbox_ports"
+        ]
+    );
+    let (result, error) = call(ask(
+        3,
+        "tools/call",
+        serde_json::json!({"name": "sandbox_exec",
+        "arguments": {"command": "pwd; echo from-the-sandbox; exit 3", "cwd": "web"}}),
+    ));
+    assert!(!error, "{result}");
+    assert_eq!(result["exit_code"], 3);
+    let output = result["output"].as_str().unwrap();
+    assert!(output.contains("from-the-sandbox"), "{output}");
+    assert!(
+        output.contains("/repo/web"),
+        "ran in the project's own directory: {output}"
+    );
+    let (result, error) = call(ask(
+        4,
+        "tools/call",
+        serde_json::json!({"name": "sandbox_exec",
+        "arguments": {"command": "true", "cwd": "../elsewhere"}}),
+    ));
+    assert!(
+        error,
+        "a directory outside the project is refused: {result}"
+    );
+    let (result, error) = call(ask(
+        5,
+        "tools/call",
+        serde_json::json!({"name": "sandbox_ports", "arguments": {}}),
+    ));
+    assert!(!error, "{result}");
+    assert_eq!(result[0]["url"], "http://54323-repo.localhost:1355");
+    let (_, error) = call(ask(
+        6,
+        "tools/call",
+        serde_json::json!({"name": "sandbox_start",
+        "arguments": {"name": "Bad Name", "command": "sleep 1"}}),
+    ));
+    assert!(error, "a background command's name is a plain label");
+    drop(stdin);
+    child.wait().unwrap();
+    // Every command ran as the agent's work, marked for the VM's idle check.
+    assert!(
+        w.execs()
+            .iter()
+            .any(|c| c.contains(&"OROCHI_SANDBOX=repo".to_owned()))
+    );
+}
+
+#[test]
+fn sandbox_exec_runs_a_command_inside_and_passes_its_exit_code_through() {
+    let w = Workspace::new();
+    create(&w);
+    let output = w.run(&["sandbox", "exec", "--", "sh", "-c", "echo inside; exit 4"]);
+    assert_eq!(output.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("inside"));
+}

@@ -378,7 +378,7 @@ test("a new project is asked where it runs before its first thread, this Mac fir
   assert.equal(el("place").open, true, "the question is open");
   assert.match(el("place-root").textContent, /\/work\/fresh/);
   const modes = el("place-modes").querySelectorAll("button");
-  assert.deepEqual(modes.map((b) => b.dataset.mode), ["host", "container", "vm"]);
+  assert.deepEqual(modes.map((b) => b.dataset.mode), ["host", "runner", "container", "vm"]);
   assert.equal(modes[0].getAttribute("aria-checked"), "true", "running here stays the default");
   assert.equal(el("place-docker").disabled, true, "Docker is a sandbox's to have");
   assert.equal(calls.some(([name]) => name === "new_thread"), false, "nothing starts before the answer");
@@ -400,6 +400,15 @@ test("choosing a sandbox makes it before the thread starts", async () => {
   });
   assert.ok(names.indexOf("place") < names.indexOf("new_thread"), "the sandbox exists before the thread");
   assert.equal(el("place").open, false);
+});
+
+test("running here with the project in a sandbox is a choice of its own, with Docker inside", async () => {
+  const { el, calls } = await freshFolder();
+  choose(el, "runner");
+  assert.equal(el("place-docker").disabled, false, "the project's runtime has Docker");
+  el("place-go").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.find(([name]) => name === "place")[1], { root: "/work/fresh", mode: "runner", docker: true });
 });
 
 test("a sandbox without Docker is asked for under advanced", async () => {
