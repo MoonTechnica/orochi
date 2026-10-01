@@ -944,3 +944,30 @@ fn the_sandboxes_screen_lists_each_project_even_when_the_host_is_not_there() {
     );
     assert!(screen.jobs.is_empty());
 }
+
+#[test]
+fn signing_an_agent_in_is_a_terminal_command_naming_only_a_known_kind_of_agent() {
+    let command = view::sandbox_login_command(
+        std::path::Path::new("/Applications/Orochi.app/Contents/MacOS/orochi"),
+        std::path::Path::new("/Users/a b/.config/orochi/config.toml"),
+        std::path::Path::new("/Users/a b/.local/share/orochi"),
+        "claude",
+    )
+    .unwrap();
+    assert_eq!(
+        command,
+        "'/Applications/Orochi.app/Contents/MacOS/orochi' --config '/Users/a b/.config/orochi/config.toml' --data-dir '/Users/a b/.local/share/orochi' sandbox login claude"
+    );
+    for bad in ["", "claude; rm -rf ~", "a b", "$(x)"] {
+        assert!(
+            view::sandbox_login_command(
+                std::path::Path::new("/o"),
+                std::path::Path::new("/c"),
+                std::path::Path::new("/d"),
+                bad
+            )
+            .is_err(),
+            "{bad}"
+        );
+    }
+}

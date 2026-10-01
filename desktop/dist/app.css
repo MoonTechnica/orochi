@@ -1108,3 +1108,15 @@ details[open] > summary .icon { transform: rotate(90deg); }
   margin: 6px 0 0; padding: 8px; max-height: 180px; overflow: auto;
   background: var(--raised); border-radius: var(--radius); font-size: 11px; white-space: pre-wrap;
 }
+
+.sbx-auth { padding: 12px var(--gutter); display: grid; gap: 6px; border-top: 1px solid var(--line); }
+.sbx-auth h3 { margin: 0; font-size: 13px; }
+.sbx-auth-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.sbx-auth-row .name { font-weight: 600; min-width: 90px; }
+.sbx-auth-row .missing { color: var(--danger); }
+.sbx-hint { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+.sbx-secret { display: flex; flex-wrap: wrap; gap: 6px; }
+.sbx-secret input {
+  font: inherit; color: inherit; background: var(--raised);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-width: 0; flex: 1 1 140px;
+}

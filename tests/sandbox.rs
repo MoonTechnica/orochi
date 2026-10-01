@@ -37,9 +37,11 @@ impl Workspace {
         std::fs::write(
             &incus,
             format!(
-                "#!/bin/sh\nFAKE_INCUS_STATE='{}' FAKE_INCUS_LOG='{}' exec python3 '{}' \"$@\"\n",
+                "#!/bin/sh\nFAKE_INCUS_STATE='{}' FAKE_INCUS_LOG='{}' FAKE_INCUS_HOME='{}' FAKE_INCUS_SHM='{}' exec python3 '{}' \"$@\"\n",
                 dir.path().join("incus.json").display(),
                 dir.path().join("incus.jsonl").display(),
+                dir.path().join("sandbox-home").display(),
+                dir.path().join("sandbox-shm").display(),
                 fake.display()
             ),
         )
@@ -190,9 +192,27 @@ fn a_sandboxed_run_starts_its_agent_inside_in_the_same_directory_and_without_thi
     assert_eq!(at("--cwd"), repo.to_str().unwrap());
     assert_eq!(at("--user"), orochi::sandbox::ids().0.to_string());
     let run = agent.iter().position(|a| a == "sbx-run").unwrap();
-    assert_eq!(agent[run + 1], "python3");
-    assert!(agent.contains(&"MOCK_BEHAVIOR=success".to_owned()));
+    assert_eq!(agent[run + 1..run + 3], ["sh", "-c"]);
+    assert_eq!(agent[run + 4], "/dev/shm/orochi-env-test");
+    assert_eq!(agent[run + 5], "python3");
     assert!(agent.contains(&"HOME=/home/dev".to_owned()));
+    // What the agent is configured with may be a key: it reaches the agent through a file only
+    // it can read, in the sandbox's memory, never on a command line.
+    assert!(
+        !agent.iter().any(|a| a.contains("MOCK_BEHAVIOR")),
+        "{agent:?}"
+    );
+    let env_file = w.dir.path().join("sandbox-shm/orochi-env-test");
+    let env = std::fs::read_to_string(&env_file).unwrap();
+    assert!(env.contains("export MOCK_BEHAVIOR='success'"), "{env}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&env_file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
     assert!(!agent.iter().any(|a| a.starts_with("PATH=")));
     // The session's cwd is the path the tree has on this machine, unchanged.
     let log = w.agent_log();
@@ -224,7 +244,7 @@ fn checks_of_a_sandboxed_run_execute_inside_the_sandbox() {
     let check = w
         .execs()
         .into_iter()
-        .find(|c| c.iter().any(|a| a == "-c"))
+        .find(|c| c.iter().any(|a| a.contains("OROCHI_SANDBOX'] == 'repo'")))
         .expect("the check ran through incus exec");
     assert!(check.contains(&"CI=true".to_owned()));
     let records = Store::open(&w.data()).unwrap().recent_runs(10).unwrap();
@@ -928,10 +948,168 @@ fn the_sandbox_tools_run_commands_inside_and_keep_them_inside_the_project() {
 }
 
 #[test]
+fn a_sign_in_goes_in_before_a_run_and_a_refresh_inside_comes_back_after_it() {
+    let mut w = Workspace::new();
+    // The agent keeps its sign-in in a file under the home directory, as Codex does.
+    let here = w.dir.path().join("home-here");
+    std::fs::create_dir_all(here.join(".probe")).unwrap();
+    std::fs::write(here.join(".probe/auth.json"), "v1").unwrap();
+    w.config.agents[0].sandbox_files = vec![".probe/auth.json".into()];
+    w.config.agents[0].sandbox_env = vec!["PROBE_KEY".into()];
+    create(&w);
+    let run = |w: &Workspace| {
+        let output = w
+            .command()
+            .args(["Implement a small endpoint"])
+            .env("HOME", &here)
+            .env("PROBE_KEY", "from-this-shell")
+            .output()
+            .unwrap();
+        success(&output);
+    };
+    run(&w);
+    let inside = w.dir.path().join("sandbox-home/.probe/auth.json");
+    assert_eq!(
+        std::fs::read_to_string(&inside).unwrap(),
+        "v1",
+        "in before the run"
+    );
+    let env = std::fs::read_to_string(w.dir.path().join("sandbox-shm/orochi-env-test")).unwrap();
+    assert!(env.contains("export PROBE_KEY='from-this-shell'"), "{env}");
+    // The agent refreshes its sign-in inside; it comes back.
+    std::fs::write(&inside, "v2").unwrap();
+    run(&w);
+    assert_eq!(
+        std::fs::read_to_string(here.join(".probe/auth.json")).unwrap(),
+        "v2"
+    );
+    // This machine signs in again; that goes in, and is not overwritten by the old copy.
+    std::fs::write(here.join(".probe/auth.json"), "v3").unwrap();
+    run(&w);
+    assert_eq!(std::fs::read_to_string(&inside).unwrap(), "v3");
+    assert_eq!(
+        std::fs::read_to_string(here.join(".probe/auth.json")).unwrap(),
+        "v3"
+    );
+}
+
+#[test]
+fn which_side_wins_is_decided_from_what_both_last_held() {
+    use orochi::sandbox::auth::{Step, step};
+    assert_eq!(
+        step(Some("a"), None, None),
+        Step::In,
+        "first time: this machine's goes in"
+    );
+    assert_eq!(step(Some("a"), Some("a"), Some("a")), Step::Nothing);
+    assert_eq!(
+        step(Some("a"), Some("b"), Some("a")),
+        Step::Out,
+        "refreshed inside"
+    );
+    assert_eq!(
+        step(Some("c"), Some("a"), Some("a")),
+        Step::In,
+        "signed in again here"
+    );
+    assert_eq!(
+        step(Some("c"), Some("b"), Some("a")),
+        Step::In,
+        "both moved: this machine wins"
+    );
+    assert_eq!(step(None, Some("b"), Some("a")), Step::Out);
+    assert_eq!(
+        step(None, Some("a"), Some("a")),
+        Step::Nothing,
+        "signed out here stays out"
+    );
+}
+
+#[test]
+fn each_agent_is_given_what_its_own_documentation_says_a_headless_one_needs() {
+    use orochi::sandbox::auth::recipe;
+    let config = Config::default();
+    let by = |id: &str| recipe(config.agents.iter().find(|a| a.id == id).unwrap());
+    assert_eq!(by("codex").files, [".codex/auth.json"]);
+    assert!(
+        by("claude")
+            .env
+            .contains(&"CLAUDE_CODE_OAUTH_TOKEN".to_owned())
+    );
+    assert!(
+        by("claude").files.is_empty(),
+        "a keychain login is not a file to carry"
+    );
+    assert!(by("gemini").env.contains(&"GEMINI_API_KEY".to_owned()));
+    assert!(by("antigravity").env.contains(&"GEMINI_API_KEY".to_owned()));
+    assert!(by("antigravity").hint.unwrap().contains("keychain"));
+    // Anything else says what it needs in its own entry.
+    let mut other = AgentConfig::preset("opencode", Provider::OPENAI, "opencode", &["acp"]);
+    other.sandbox_files = vec![".local/share/opencode/auth.json".into()];
+    other.sandbox_env = vec!["OPENROUTER_API_KEY".into()];
+    let r = recipe(&other);
+    assert_eq!(r.files, [".local/share/opencode/auth.json"]);
+    assert_eq!(r.env, ["OPENROUTER_API_KEY"]);
+}
+
+#[test]
+fn a_secret_is_stored_without_echo_and_listed_by_name_only() {
+    let w = Workspace::new();
+    let mut child = w
+        .command()
+        .args(["sandbox", "secret", "set", "OPENROUTER_API_KEY"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"sk-or-very-secret\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    success(&output);
+    let listed = w.run(&["sandbox", "secret", "list"]);
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "OPENROUTER_API_KEY"
+    );
+    for out in [&output, &listed] {
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("very-secret"));
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("very-secret"));
+    }
+    assert!(
+        !w.run(&["sandbox", "secret", "set", "not a name"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn sandbox_exec_runs_a_command_inside_and_passes_its_exit_code_through() {
     let w = Workspace::new();
     create(&w);
     let output = w.run(&["sandbox", "exec", "--", "sh", "-c", "echo inside; exit 4"]);
     assert_eq!(output.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&output.stdout).contains("inside"));
+}
+
+#[test]
+fn a_local_model_server_here_is_reached_as_localhost_inside() {
+    let w = Workspace::new().behind_a_vm(true);
+    create(&w);
+    success(&w.run(&["Implement a small endpoint"]));
+    let devices = &w.incus()["instances"]["repo"]["devices"];
+    let ollama = &devices["host-port-11434"];
+    assert_eq!(ollama["type"], "proxy");
+    assert_eq!(ollama["bind"], "instance");
+    assert_eq!(ollama["listen"], "tcp:127.0.0.1:11434");
+    assert_eq!(
+        ollama["connect"], "tcp:192.168.5.2:11434",
+        "Lima's address for this machine"
+    );
+    assert!(devices.get("host-port-1234").is_some());
 }

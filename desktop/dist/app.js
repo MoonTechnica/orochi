@@ -164,6 +164,16 @@ const WORDS = {
     "Recent operations": "最近の操作",
     "Create sandbox": "サンドボックスを作成",
     "Change where it runs": "実行先を変更",
+    "Agent sign-in": "エージェントのサインイン",
+    "stored key": "保存したキー",
+    config: "設定",
+    "this Mac's environment": "この Mac の環境変数",
+    "nothing carried": "引き継ぐものなし",
+    "Get a token": "トークンを取得",
+    "Renew token": "トークンを更新",
+    "localhost inside reaches this Mac on": "中の localhost からこの Mac に届くポート:",
+    value: "値",
+    "Store key": "キーを保存",
     "No one is seated yet.": "まだ誰も席に着いていません。",
     "Nobody has come or gone yet.": "まだ誰の出入りもありません。",
     "Nothing said yet.": "まだ何も話されていません。",
@@ -1277,6 +1287,8 @@ async function drawSandboxes(host) {
     host.append(list);
   }
 
+  host.append(drawSignIn(view));
+
   if (view.jobs.length) {
     const jobs = text("section", "sbx-jobs");
     jobs.append(text("h3", null, t("Recent operations")));
@@ -1297,6 +1309,70 @@ async function drawSandboxes(host) {
     }
     host.append(jobs);
   }
+}
+
+/// What each agent is signed in with inside a sandbox, carried from this machine (names
+/// only, never values), with the one action each needs where nothing is carried.
+function drawSignIn(view) {
+  const box = text("section", "sbx-auth");
+  box.append(text("h3", null, t("Agent sign-in")));
+  const where = { secret: t("stored key"), config: t("config"), environment: t("this Mac's environment") };
+  for (const r of view.auth || []) {
+    const row = text("div", "sbx-auth-row");
+    row.dataset.agent = r.agent;
+    row.append(text("span", "name", r.agent));
+    const carried = [
+      ...r.files.map((f) => `~/${f}`),
+      ...r.variables.map(([name, source]) => `${name} (${where[source] || source})`),
+    ];
+    row.append(text("span", carried.length ? "where" : "where missing", carried.length ? carried.join(", ") : t("nothing carried")));
+    if (!carried.length && r.hint) row.append(text("span", "sbx-hint", r.hint));
+    if (r.agent.includes("claude")) {
+      row.append(sandboxAction(carried.length ? "Renew token" : "Get a token", async () => {
+        try {
+          await invoke("sandbox_login", { agent: r.agent });
+        } catch (error) {
+          report(String(error));
+        }
+      }));
+    }
+    box.append(row);
+  }
+  if (view.host_ports?.length) {
+    box.append(text("p", "where", `${t("localhost inside reaches this Mac on")} ${view.host_ports.join(", ")}`));
+  }
+  // An API key, typed into a password field and sent straight to the keychain.
+  const form = text("div", "sbx-secret");
+  const name = document.createElement("input");
+  name.id = "sbx-secret-name";
+  name.placeholder = "GEMINI_API_KEY";
+  name.value = state.secretName || "";
+  const value = document.createElement("input");
+  value.id = "sbx-secret-value";
+  value.type = "password";
+  value.placeholder = t("value");
+  const typing = () => {
+    state.secretName = name.value;
+    state.secretTyping = Boolean(name.value || value.value);
+  };
+  name.addEventListener("input", typing);
+  value.addEventListener("input", typing);
+  const save = sandboxAction("Store key", async () => {
+    const key = name.value.trim();
+    if (!key || !value.value) return;
+    try {
+      await invoke("sandbox_secret", { name: key, value: value.value });
+      value.value = "";
+      state.secretName = "";
+      state.secretTyping = false;
+      await drawScreen();
+    } catch (error) {
+      report(String(error));
+    }
+  });
+  form.append(name, value, save);
+  box.append(form);
+  return box;
 }
 
 const JOB_NAMES = {
@@ -2094,6 +2170,8 @@ async function drawScreen() {
   const host = el("panel-body");
   // The palette is typed into; redrawing it on every refresh would take the typing away.
   if (state.panel === "search" && host.children?.length) return;
+  // A key half typed into the sign-in form is not redrawn away.
+  if (state.panel === "sandboxes" && state.secretTyping && host.children?.length) return;
   host.replaceChildren();
   if (state.panel === "activity") {
     drawActivity(host);

@@ -54,6 +54,35 @@ async fn sandboxes(open: State<'_, Open>) -> Result<orochi_desktop::view::Sandbo
         .map_err(fail)
 }
 
+/// Stores an API key for agents in sandboxes; the value goes straight to the keychain.
+#[tauri::command]
+fn sandbox_secret(open: State<'_, Open>, name: String, value: String) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::sandbox_secret(&config, &data, &name, &value).map_err(fail)
+}
+
+/// Opens Terminal on `orochi sandbox login <agent>`: a browser sign-in and a token pasted
+/// back, which only a terminal can take.
+#[tauri::command]
+fn sandbox_login(open: State<'_, Open>, agent: String) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    let command = orochi_desktop::view::sandbox_login_command(&orochi(), &config, &data, &agent)
+        .map_err(fail)?;
+    let script = format!(
+        "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
+        command.replace('\\', "\\\\").replace('"', "\\\"")
+    );
+    let status = std::process::Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("Terminal could not be opened".into())
+    }
+}
+
 /// One sandbox operation, started in the background; the screen follows its output.
 #[tauri::command]
 fn sandbox_job(
@@ -429,6 +458,8 @@ fn main() {
             place,
             sandboxes,
             sandbox_job,
+            sandbox_secret,
+            sandbox_login,
             ensure_host,
             watch,
             room,

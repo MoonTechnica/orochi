@@ -140,7 +140,7 @@ async fn discover_agents(
             .filter(|p| p.mode.agent_inside() && !agent.routing_only);
         async move {
             let launch = match placement {
-                Some(placement) => match placement.launch(&config.sandbox, &agent) {
+                Some(placement) => match placement.launch(config, store.data_dir(), &agent) {
                     Ok(launch) => launch,
                     Err(error) => {
                         return (
@@ -868,6 +868,18 @@ async fn run_recorded(
         };
         // Freeze agent-side writes before running checks or starting a fallback.
         clients[index].stop().await;
+        // A sign-in the agent refreshed inside goes back to this machine now, before anything
+        // here uses the copy it replaced.
+        if clients[index].config.sandboxed
+            && let Ok(Some(placement)) =
+                crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)
+            && let Some(agent) = config
+                .agents
+                .iter()
+                .find(|a| a.id == clients[index].config.id)
+        {
+            placement.settle(config, store.data_dir(), agent);
+        }
         let outcome = match &result {
             Ok(completed) => {
                 // A chat turn that changed nothing has nothing to verify; it stays unlabeled.
