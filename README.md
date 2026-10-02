@@ -570,7 +570,11 @@ src/cli.rs          User-facing commands
 under the folder they work in, the turn's timeline, the seats at it, the files it changed, and
 the questions waiting for an answer. It writes only rows — a queued message, an answer, a
 control — so the window and a terminal are peers rather than one driving the other, and a
-question raised in either can be answered in either.
+question raised in either can be answered in either. Right-click on a conversation to rename,
+pin, archive or delete it, copy its id, reveal its folder, or open it in Terminal (`orochi --thread
+<id> chat`, which continues that conversation in its own folder); on a project to start a
+thread, rename, pin or hide it, show its archived conversations, or delete it with everything
+in it. Deleting asks first and is refused while an agent is still working there.
 
 ```sh
 cargo run --manifest-path desktop/src-tauri/Cargo.toml     # run the window

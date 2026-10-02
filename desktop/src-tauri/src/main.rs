@@ -68,6 +68,11 @@ fn sandbox_login(open: State<'_, Open>, agent: String) -> Result<(), String> {
     let (config, data) = open.0.lock().unwrap().paths();
     let command = orochi_desktop::view::sandbox_login_command(&orochi(), &config, &data, &agent)
         .map_err(fail)?;
+    in_terminal(&command)
+}
+
+/// Runs one command in a new Terminal window.
+fn in_terminal(command: &str) -> Result<(), String> {
     let script = format!(
         "tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell",
         command.replace('\\', "\\\\").replace('"', "\\\"")
@@ -81,6 +86,98 @@ fn sandbox_login(open: State<'_, Open>, agent: String) -> Result<(), String> {
     } else {
         Err("Terminal could not be opened".into())
     }
+}
+
+// The sidebar's context menus: a thread or a project renamed, pinned, archived, hidden or
+// deleted is a row changed, and the window redraws from the view like anyone else.
+
+#[tauri::command]
+fn rename_thread(open: State<'_, Open>, thread: String, title: String) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .rename_thread(&thread, &title)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn pin_thread(open: State<'_, Open>, thread: String, pinned: bool) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .pin_thread(&thread, pinned)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn archive_thread(open: State<'_, Open>, thread: String, archived: bool) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .archive_thread(&thread, archived)
+        .map_err(fail)
+}
+
+/// Deletes one conversation. The window asks first; this does it.
+#[tauri::command]
+fn delete_thread(open: State<'_, Open>, thread: String) -> Result<(), String> {
+    open.0.lock().unwrap().delete_thread(&thread).map_err(fail)
+}
+
+#[tauri::command]
+fn rename_project(open: State<'_, Open>, project: String, name: String) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .rename_project(&project, &name)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn pin_project(open: State<'_, Open>, project: String, pinned: bool) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .pin_project(&project, pinned)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn hide_project(open: State<'_, Open>, project: String, hidden: bool) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .hide_project(&project, hidden)
+        .map_err(fail)
+}
+
+/// Deletes a project and every conversation in it. The window asks first; this does it.
+#[tauri::command]
+fn delete_project(open: State<'_, Open>, project: String) -> Result<usize, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .delete_project(&project)
+        .map_err(fail)
+}
+
+/// Shows a folder in the Finder.
+#[tauri::command]
+fn open_folder(open: State<'_, Open>, root: String) -> Result<(), String> {
+    open.0.lock().unwrap().open_folder(&root).map_err(fail)
+}
+
+/// Opens Terminal on `orochi chat --thread <id>` in the thread's folder: the conversation
+/// carries on there, as `/desktop` hands one the other way in Claude Code.
+#[tauri::command]
+fn open_terminal(open: State<'_, Open>, thread: String) -> Result<(), String> {
+    let command = open
+        .0
+        .lock()
+        .unwrap()
+        .terminal_command(&orochi(), &thread)
+        .map_err(fail)?;
+    in_terminal(&command)
 }
 
 /// One sandbox operation, started in the background; the screen follows its output.
@@ -460,6 +557,16 @@ fn main() {
             sandbox_job,
             sandbox_secret,
             sandbox_login,
+            rename_thread,
+            pin_thread,
+            archive_thread,
+            delete_thread,
+            rename_project,
+            pin_project,
+            hide_project,
+            delete_project,
+            open_folder,
+            open_terminal,
             ensure_host,
             watch,
             room,

@@ -65,6 +65,10 @@ pub struct Cli {
     /// Continue the most recent recorded session in this directory.
     #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
     pub continue_last: bool,
+    /// Continue one recorded conversation, by the id `orochi threads` lists, in its own folder.
+    /// Not global: `orochi host` has a `--thread` of its own.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["continue_last", "resume"])]
+    pub thread: Option<String>,
     /// How to answer ACP permission requests; defaults to ask (denies without a TTY).
     #[arg(long, value_enum)]
     pub permission: Option<PermissionMode>,
@@ -590,6 +594,32 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             None => bail!("--continue found no recorded session in this repository"),
         }
     }
+    // `--thread` names the conversation outright, as a desktop window hands one to a terminal.
+    // The thread knows its own folder, so running it anywhere else is refused rather than
+    // carrying its turns on in the wrong tree.
+    if let Some(id) = &cli.thread {
+        ensure!(
+            matches!(cli.command, Some(Command::Chat)),
+            "--thread continues a conversation in `orochi chat`"
+        );
+        ensure!(
+            config.activity.enabled,
+            "activity.enabled is false, so no conversation is recorded"
+        );
+        let activity =
+            crate::activity::Activity::open(&paths.data, config.activity.retention_days)?;
+        let id = named(&activity, id)?;
+        let (cwd, ..) = activity
+            .thread_settings(&id)?
+            .with_context(|| format!("no thread {id}"))?;
+        let there = PathBuf::from(&cwd);
+        ensure!(
+            there.canonicalize().ok() == root.canonicalize().ok(),
+            "thread {} works in {cwd}; run from there (or with -C)",
+            &id[..8.min(id.len())]
+        );
+        continued_thread = Some(id);
+    }
     let shared = config.scheduler.shared_workspace;
     let joins = matches!(
         cli.command,
@@ -1100,10 +1130,8 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 }
                 Some(ThreadCommand::Delete { id, all }) => {
                     if all {
-                        for project in activity.sidebar(usize::MAX, true)? {
-                            for thread in project.threads {
-                                activity.delete_thread(&thread.id)?;
-                            }
+                        for thread in activity.all_threads()? {
+                            activity.delete_thread(&thread)?;
                         }
                     } else {
                         let id = named(&activity, &id)?;

@@ -3019,3 +3019,53 @@ fn a_repository_cannot_send_an_agents_own_credentials_to_a_server_it_names() {
     );
     assert_eq!(servers["local"]["env"][0]["value"], "sk-ant-E2E-SECRET");
 }
+
+/// `--thread` is how a desktop window hands a conversation to a terminal: it names the
+/// thread outright, and the thread knows its own folder.
+#[test]
+fn thread_names_a_recorded_conversation_and_is_refused_anywhere_else() {
+    let workspace = Workspace::new();
+    let missing = workspace.run(&["--thread", "nope", "chat"]);
+    assert!(!missing.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("no thread nope"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
+
+    success(&workspace.run(&["Add a helper to src/lib.rs"]));
+    let json = workspace.run(&["threads", "--json"]);
+    success(&json);
+    let listing: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    let id = listing["projects"][0]["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // The same binary, store and configuration, run one folder up from the repository.
+    let elsewhere = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .args([
+            "--config",
+            workspace.dir.path().join("config.toml").to_str().unwrap(),
+            "--data-dir",
+            workspace.dir.path().join("data").to_str().unwrap(),
+            "--cwd",
+            workspace.dir.path().to_str().unwrap(),
+            "--thread",
+            &id,
+            "chat",
+        ])
+        .output()
+        .unwrap();
+    assert!(!elsewhere.status.success());
+    assert!(
+        String::from_utf8_lossy(&elsewhere.stderr).contains("works in"),
+        "a thread is continued in its own folder, not wherever the command ran: {}",
+        String::from_utf8_lossy(&elsewhere.stderr)
+    );
+    let with_task = workspace.run(&["--thread", &id, "Another task"]);
+    assert!(
+        !with_task.status.success(),
+        "--thread continues a conversation; it is not a one-shot run"
+    );
+}

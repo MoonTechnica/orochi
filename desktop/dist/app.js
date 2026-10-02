@@ -42,6 +42,11 @@ const state = {
   statuses: null,
   asked: new Set(),
   sound: remembered("sound") === true,
+  // Archived conversations are kept out of the list until asked for; the asking is this
+  // window's own, like a folded project.
+  archived: remembered("archived") === true,
+  // A project or conversation whose name is being typed over, `{ kind, id }`.
+  renaming: null,
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -247,6 +252,32 @@ const WORDS = {
     "comments waiting": "件のコメントが未送信",
     deleted: "削除済み",
     partial: "一部のみ",
+    Rename: "名前を変更",
+    Pin: "ピン留め",
+    Unpin: "ピン留めを解除",
+    "Open in Terminal": "ターミナルで開く",
+    "Reveal in Finder": "Finder で表示",
+    "Copy ID": "ID をコピー",
+    Archive: "アーカイブ",
+    Unarchive: "アーカイブを解除",
+    "Delete conversation": "会話を削除",
+    "Where it runs…": "実行先…",
+    "Show archived conversations": "アーカイブした会話を表示",
+    "Hide project": "プロジェクトを隠す",
+    "Delete project": "プロジェクトを削除",
+    "stop it first": "先に停止してください",
+    "open in a terminal": "ターミナルで開いています",
+    "Delete this conversation?": "この会話を削除しますか？",
+    "Everything said in it is deleted for good. Orochi keeps what it learned from the runs.":
+      "会話の内容はすべて完全に削除されます。実行から学習した内容は残ります。",
+    "Delete this project?": "このプロジェクトを削除しますか？",
+    "{n} conversations are deleted for good. The folder and its sandbox are kept.":
+      "{n} 件の会話が完全に削除されます。フォルダとサンドボックスは残ります。",
+    "Its one conversation is deleted for good. The folder and its sandbox are kept.":
+      "1 件の会話が完全に削除されます。フォルダとサンドボックスは残ります。",
+    "Nothing is in it yet. The folder and its sandbox are kept.":
+      "まだ会話はありません。フォルダとサンドボックスは残ります。",
+    archived: "アーカイブ済み",
   },
 };
 
@@ -311,11 +342,29 @@ function drawSidebar() {
 
     const summary = document.createElement("summary");
     summary.append(drawn("folder", "icon"));
-    summary.append(text("span", "name", project.name));
+    if (renaming("project", project.id)) {
+      // Typed over in place. A click in the field must not fold the project it is naming.
+      const field = renameField(project.name, (name) =>
+        call("rename_project", { project: project.id, name }),
+      );
+      field.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation?.();
+      });
+      summary.append(field);
+    } else {
+      summary.append(text("span", "name", project.name));
+    }
+    if (project.pinned) summary.append(drawn("pin", "pin"));
     if (names.get(project.name) > 1) {
       const parent = (project.root || "").split("/").filter(Boolean).slice(-2, -1)[0];
       if (parent) summary.append(text("span", "hint", parent));
     }
+    summary.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation?.();
+      openMenu(event, projectMenu(project));
+    });
     const waiting = project.threads.filter((t) => t.asking > 0).length;
     const busy = project.threads.filter((t) => t.status === "working").length;
     if (waiting || busy) {
@@ -483,9 +532,20 @@ function place(project, cwd, threads) {
     return card;
   }
   for (const thread of threads) {
+    if (renaming("thread", thread.id)) {
+      // A field cannot sit inside a button, so the row is the field while the name is typed.
+      const row = text("div", "renaming");
+      row.append(drawn(MARKS[thread.status] || "circle", "state"));
+      row.append(
+        renameField(thread.title, (title) => call("rename_thread", { thread: thread.id, title })),
+      );
+      card.append(row);
+      continue;
+    }
     const row = document.createElement("button");
     row.className = "thread";
     row.dataset.status = thread.status;
+    if (thread.archived) row.dataset.archived = "true";
     row.setAttribute("aria-current", String(thread.id === state.thread));
     const mark = drawn(MARKS[thread.status] || "circle", "state");
     mark.setAttribute("title", t(STATES[thread.status] || thread.status));
@@ -499,6 +559,17 @@ function place(project, cwd, threads) {
     // What the lead is doing right now, while it is doing it: `title - Bash: curl …`.
     if (thread.doing) line.append(text("span", "doing", ` - ${thread.doing.split("\n")[0]}`));
     row.append(line);
+    if (thread.pinned) row.append(drawn("pin", "pin"));
+    if (thread.archived) {
+      const put = drawn("archive", "pin");
+      put.setAttribute("title", t("archived"));
+      row.append(put);
+    }
+    row.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation?.();
+      openMenu(event, threadMenu(project, thread));
+    });
     if (thread.status === "working" && thread.seats > 1) {
       row.append(text("span", "seats", `${thread.seats}`));
     }
@@ -529,6 +600,296 @@ function place(project, cwd, threads) {
   }
   return card;
 }
+
+// Context menu --------------------------------------------------------------
+// Right-click on a conversation or a project, as Claude Code's and Codex's sidebars have.
+// Every verb here is a row changed — a name, a pin, an archive date — and the list redraws
+// from the view; the two that cannot be undone ask first, and nothing else does.
+
+const renaming = (kind, id) => state.renaming?.kind === kind && state.renaming?.id === id;
+
+/// The name, typed over where it is shown. Enter keeps it, Esc puts the old one back, and
+/// leaving the field keeps it too, as a filename does in the Finder.
+function renameField(current, save) {
+  const field = document.createElement("input");
+  field.className = "rename";
+  field.type = "text";
+  field.value = current;
+  field.setAttribute("aria-label", t("Rename"));
+  let done = false;
+  const finish = async (keep) => {
+    if (done) return;
+    done = true;
+    state.renaming = null;
+    const name = field.value.trim();
+    if (keep && name && name !== current) await save(name);
+    await refresh(false);
+  };
+  field.addEventListener("keydown", (event) => {
+    event.stopPropagation?.();
+    if (event.key === "Enter") {
+      event.preventDefault?.();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault?.();
+      finish(false);
+    }
+  });
+  field.addEventListener("blur", () => finish(true));
+  // Focused once it is on the page; the row it replaces is drawn in the same pass.
+  setTimeout(() => {
+    field.focus?.();
+    field.select?.();
+  }, 0);
+  return field;
+}
+
+function closeMenu() {
+  const menu = el("context-menu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  menu.replaceChildren();
+}
+
+/// Draws `items` where the pointer is. An item is `{ label, icon, run, danger, disabled,
+/// hint, on }` or `"sep"`; `on` is a tick, for a setting shown as a menu line.
+function openMenu(event, items) {
+  closeMenu();
+  const menu = el("context-menu");
+  for (const item of items) {
+    if (item === "sep") {
+      menu.append(text("div", "sep"));
+      continue;
+    }
+    const row = document.createElement("button");
+    row.type = "button";
+    row.setAttribute("role", "menuitem");
+    if (item.danger) row.className = "danger";
+    if (item.disabled) row.disabled = true;
+    row.dataset.action = item.key;
+    row.append(drawn(item.icon || "circle", "icon"));
+    row.append(text("span", "name", t(item.label)));
+    if (item.on) row.append(drawn("check", "tick"));
+    if (item.hint) row.append(text("span", "hint", t(item.hint)));
+    row.addEventListener("click", (clicked) => {
+      clicked.stopPropagation?.();
+      if (item.disabled) return;
+      closeMenu();
+      item.run();
+    });
+    menu.append(row);
+  }
+  menu.hidden = false;
+  // At the pointer, and kept inside the window: a menu opened near the bottom edge opens
+  // upward rather than being cut off.
+  const x = event.clientX ?? 0;
+  const y = event.clientY ?? 0;
+  const width = menu.offsetWidth || 0;
+  const height = menu.offsetHeight || 0;
+  const maxX = (window.innerWidth || Infinity) - width - 8;
+  const maxY = (window.innerHeight || Infinity) - height - 8;
+  menu.style.setProperty("left", `${Math.max(8, Math.min(x, maxX))}px`);
+  menu.style.setProperty("top", `${Math.max(8, Math.min(y, maxY))}px`);
+  [...menu.querySelectorAll("button")].find((b) => !b.disabled)?.focus?.();
+}
+
+/// The one question asked before something is gone for good. Resolves true only if the
+/// red button was pressed; Esc, the backdrop and Cancel all mean no.
+function ask({ title, body, verb }) {
+  const dialog = el("confirm");
+  el("confirm-title").textContent = title;
+  el("confirm-body").textContent = body;
+  el("confirm-cancel").textContent = t("Cancel");
+  el("confirm-go").textContent = verb;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      el("confirm-cancel").removeEventListener("click", no);
+      el("confirm-go").removeEventListener("click", yes);
+      dialog.removeEventListener("close", no);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const no = () => finish(false);
+    const yes = () => finish(true);
+    el("confirm-cancel").addEventListener("click", no);
+    el("confirm-go").addEventListener("click", yes);
+    dialog.addEventListener("close", no);
+    dialog.showModal();
+    el("confirm-cancel").focus?.();
+  });
+}
+
+const copyText = (value) => window.navigator?.clipboard?.writeText?.(value);
+
+/// Something the list showed is gone or put away: the conversation in view moves on to the
+/// next one rather than staying on a thread the list no longer has.
+async function moveOn(ids) {
+  if (ids.includes(state.thread)) state.thread = null;
+  await refresh(true);
+}
+
+function threadMenu(project, thread) {
+  // A turn still running, or a terminal sitting in the thread, holds it: deleting it under
+  // them is refused by the core, so the line says why instead of failing afterwards.
+  const held = ["working", "needs_you", "queued", "background"].includes(thread.status);
+  const running = ["working", "needs_you", "background"].includes(thread.status);
+  return [
+    {
+      key: "rename", label: "Rename", icon: "pencil",
+      run: () => {
+        state.renaming = { kind: "thread", id: thread.id };
+        drawSidebar();
+      },
+    },
+    {
+      key: "pin", label: thread.pinned ? "Unpin" : "Pin", icon: thread.pinned ? "pin-off" : "pin",
+      run: async () => {
+        await call("pin_thread", { thread: thread.id, pinned: !thread.pinned });
+        await refresh(false);
+      },
+    },
+    "sep",
+    {
+      key: "terminal", label: "Open in Terminal", icon: "terminal",
+      run: () => call("open_terminal", { thread: thread.id }),
+    },
+    {
+      key: "reveal", label: "Reveal in Finder", icon: "folder-open",
+      run: () => call("open_folder", { root: thread.cwd || project.root }),
+    },
+    { key: "copy", label: "Copy ID", icon: "copy", run: () => copyText(thread.id) },
+    "sep",
+    // Esc for the turn in hand; helpers that outlived their turn are stopped as the Activity
+    // screen stops them.
+    ...(running
+      ? [{
+          key: "stop", label: "Stop", icon: "square",
+          run: () =>
+            thread.status === "background"
+              ? call("stop_seat", { thread: thread.id, seat: null })
+              : call("interrupt", { thread: thread.id }),
+        }]
+      : []),
+    {
+      key: "archive",
+      label: thread.archived ? "Unarchive" : "Archive",
+      icon: thread.archived ? "archive-restore" : "archive",
+      run: async () => {
+        await call("archive_thread", { thread: thread.id, archived: !thread.archived });
+        await moveOn(thread.archived || state.archived ? [] : [thread.id]);
+      },
+    },
+    {
+      key: "delete", label: "Delete conversation", icon: "trash", danger: true,
+      disabled: held || thread.terminal,
+      hint: held ? "stop it first" : thread.terminal ? "open in a terminal" : null,
+      run: async () => {
+        const sure = await ask({
+          title: t("Delete this conversation?"),
+          body: t("Everything said in it is deleted for good. Orochi keeps what it learned from the runs."),
+          verb: t("Delete"),
+        });
+        if (!sure) return;
+        if ((await call("delete_thread", { thread: thread.id })) === null) return;
+        await moveOn([thread.id]);
+      },
+    },
+  ];
+}
+
+function projectMenu(project) {
+  const inside = project.threads.map((th) => th.id);
+  const held = project.threads.some((th) =>
+    ["working", "needs_you", "background"].includes(th.status) || th.terminal,
+  );
+  return [
+    { key: "new", label: "New thread", icon: "plus", run: () => startIn(project.root) },
+    {
+      key: "rename", label: "Rename", icon: "pencil",
+      run: () => {
+        state.renaming = { kind: "project", id: project.id };
+        drawSidebar();
+      },
+    },
+    {
+      key: "pin", label: project.pinned ? "Unpin" : "Pin", icon: project.pinned ? "pin-off" : "pin",
+      run: async () => {
+        await call("pin_project", { project: project.id, pinned: !project.pinned });
+        await refresh(false);
+      },
+    },
+    "sep",
+    { key: "place", label: "Where it runs…", icon: "box", run: () => openPanel("sandboxes") },
+    { key: "reveal", label: "Reveal in Finder", icon: "folder-open", run: () => call("open_folder", { root: project.root }) },
+    { key: "copy", label: "Copy path", icon: "copy", run: () => copyText(project.root) },
+    "sep",
+    {
+      key: "archived", label: "Show archived conversations", icon: "archive", on: state.archived,
+      run: async () => {
+        state.archived = !state.archived;
+        remember("archived", state.archived);
+        await refresh(false);
+      },
+    },
+    {
+      key: "hide", label: "Hide project", icon: "eye-off",
+      run: async () => {
+        await call("hide_project", { project: project.id, hidden: true });
+        await moveOn(inside);
+      },
+    },
+    {
+      key: "delete", label: "Delete project", icon: "trash", danger: true,
+      disabled: held,
+      hint: held ? "stop it first" : null,
+      run: async () => {
+        const n = project.threads.length;
+        const sure = await ask({
+          title: t("Delete this project?"),
+          body: `${project.name} — ${
+            n === 0
+              ? t("Nothing is in it yet. The folder and its sandbox are kept.")
+              : n === 1
+                ? t("Its one conversation is deleted for good. The folder and its sandbox are kept.")
+                : t("{n} conversations are deleted for good. The folder and its sandbox are kept.").replace("{n}", n)
+          }`,
+          verb: t("Delete"),
+        });
+        if (!sure) return;
+        if ((await call("delete_project", { project: project.id })) === null) return;
+        await moveOn(inside);
+      },
+    },
+  ];
+}
+
+document.addEventListener("click", (event) => {
+  if (!el("context-menu").contains?.(event.target)) closeMenu();
+});
+document.addEventListener("contextmenu", closeMenu);
+// A right-click on the menu itself is not a request for the browser's own menu.
+el("context-menu").addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+  event.stopPropagation?.();
+});
+document.addEventListener("keydown", (event) => {
+  const menu = el("context-menu");
+  if (menu.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault?.();
+    closeMenu();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault?.();
+    const rows = [...menu.querySelectorAll("button")].filter((b) => !b.disabled);
+    const at = rows.indexOf(event.target);
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    rows[(at + step + rows.length) % rows.length]?.focus?.();
+  }
+});
+el("projects").addEventListener("scroll", closeMenu);
 
 // Thread --------------------------------------------------------------------
 function chip(item) {
@@ -853,6 +1214,18 @@ const ICONS = {
   maximize: ["M15 3h6v6", "M9 21H3v-6", "M21 3l-7 7", "M3 21l7-7"],
   ban: ["circle:12,12,10", "m4.9 4.9 14.2 14.2"],
   hexagon: ["M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"],
+  // The context menus' verbs.
+  pencil: ["M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z", "m15 5 4 4"],
+  pin: ["M12 17v5", "M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"],
+  "pin-off": ["M12 17v5", "M15 9.34V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H7.89", "m2 2 20 20", "M9 9v1.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h11"],
+  trash: ["M3 6h18", "M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6", "M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2", "M10 11v6", "M14 11v6"],
+  archive: ["rect:2,3,20,5", "M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8", "M10 12h4"],
+  "archive-restore": ["rect:2,3,20,5", "M4 8v11a2 2 0 0 0 2 2h2", "M20 8v11a2 2 0 0 1-2 2h-2", "m9 15 3-3 3 3", "M12 12v9"],
+  "eye-off": ["M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49", "M14.084 14.158a3 3 0 0 1-4.242-4.242", "M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143", "m2 2 20 20"],
+  copy: ["rect:8,8,14,14", "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"],
+  "folder-open": ["m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"],
+  box: ["M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z", "m3.3 7 8.7 5 8.7-5", "M12 22V12"],
+  square: ["rect:5,5,14,14"],
 };
 
 /// One drawing, wherever the window shows a picture. A character standing in for an icon is
@@ -2957,7 +3330,7 @@ async function select(id) {
 
 async function refresh(full) {
   const [projects, prompts, folders] = await Promise.all([
-    call("sidebar", { limit: 30, archived: false }),
+    call("sidebar", { limit: 30, archived: state.archived }),
     call("open_prompts", {}),
     call("folders", {}),
   ]);

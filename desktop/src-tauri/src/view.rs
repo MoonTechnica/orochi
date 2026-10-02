@@ -282,6 +282,29 @@ pub fn sandbox_login_command(
     ))
 }
 
+/// The command that carries a conversation on in a terminal: the same store, the thread's own
+/// folder, and `--thread` naming it, so what was said here is what the terminal picks up.
+pub fn terminal_command(
+    binary: &Path,
+    config: &Path,
+    data: &Path,
+    cwd: &Path,
+    thread: &str,
+) -> Result<String> {
+    ensure!(
+        !thread.is_empty() && thread.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
+        "no such thread: {thread}"
+    );
+    let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "'\\''"));
+    Ok(format!(
+        "cd {} && {} --config {} --data-dir {} --thread {thread} chat",
+        quote(cwd),
+        quote(binary),
+        quote(config),
+        quote(data)
+    ))
+}
+
 /// Starts one sandbox operation in the background, as `orochi sandbox …`.
 pub fn sandbox_job(
     binary: &Path,
@@ -468,14 +491,114 @@ impl Client {
     /// is overwritten rather than left in free pages.
     pub fn forget_all(&self) -> Result<usize> {
         let mut removed = 0;
-        for project in self.activity.sidebar(usize::MAX, true)? {
-            for thread in project.threads {
-                if self.activity.delete_thread(&thread.id)? {
-                    removed += 1;
-                }
+        for thread in self.activity.all_threads()? {
+            if self.activity.delete_thread(&thread)? {
+                removed += 1;
             }
         }
         Ok(removed)
+    }
+
+    // The sidebar's context menus. Each is one row changed, and the list redraws from the
+    // view like any other change; nothing here is a state the window keeps for itself.
+
+    /// The user's own name for a conversation, which an agent's title never replaces.
+    pub fn rename_thread(&self, thread: &str, title: &str) -> Result<()> {
+        ensure!(!title.trim().is_empty(), "a conversation needs a name");
+        ensure!(self.known_thread(thread)?, "no thread {thread}");
+        self.activity.title(thread, title, true)
+    }
+
+    pub fn pin_thread(&self, thread: &str, pinned: bool) -> Result<()> {
+        ensure!(
+            self.activity.pin_thread(thread, pinned)?,
+            "no thread {thread}"
+        );
+        Ok(())
+    }
+
+    pub fn archive_thread(&self, thread: &str, archived: bool) -> Result<()> {
+        ensure!(
+            self.activity.archive_thread(thread, archived)?,
+            "no thread {thread}"
+        );
+        Ok(())
+    }
+
+    /// One conversation, for good. A turn still running is refused rather than pulled out
+    /// from under the agent running it: the window says to stop it first.
+    pub fn delete_thread(&self, thread: &str) -> Result<()> {
+        self.activity.reap_hosts()?;
+        let running: bool = self.activity.connection().query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE thread_id=?1 AND state='running')",
+            [thread],
+            |r| r.get(0),
+        )?;
+        ensure!(!running, "stop the agent before deleting this conversation");
+        ensure!(self.activity.delete_thread(thread)?, "no thread {thread}");
+        Ok(())
+    }
+
+    pub fn rename_project(&self, project: &str, name: &str) -> Result<()> {
+        ensure!(
+            self.activity.rename_project(project, name)?,
+            "no project {project}"
+        );
+        Ok(())
+    }
+
+    pub fn pin_project(&self, project: &str, pinned: bool) -> Result<()> {
+        ensure!(
+            self.activity.pin_project(project, pinned)?,
+            "no project {project}"
+        );
+        Ok(())
+    }
+
+    pub fn hide_project(&self, project: &str, hidden: bool) -> Result<()> {
+        ensure!(
+            self.activity.hide_project(project, hidden)?,
+            "no project {project}"
+        );
+        Ok(())
+    }
+
+    /// A project and every conversation in it. Its folder and its sandbox are not the store's
+    /// and stay; a conversation still running is refused, as `delete_thread` refuses it.
+    pub fn delete_project(&self, project: &str) -> Result<usize> {
+        self.activity.reap_hosts()?;
+        let (threads, running): (usize, bool) = self.activity.connection().query_row(
+            "SELECT (SELECT count(*) FROM threads WHERE project_id=?1),
+                    EXISTS(SELECT 1 FROM turns tn JOIN threads t ON t.id=tn.thread_id
+                           WHERE t.project_id=?1 AND tn.state='running')",
+            [project],
+            |r| Ok((r.get::<_, i64>(0)? as usize, r.get(1)?)),
+        )?;
+        ensure!(!running, "stop the agents before deleting this project");
+        ensure!(
+            self.activity.delete_project(project)?,
+            "no project {project}"
+        );
+        Ok(threads)
+    }
+
+    /// Shows a project's or a thread's folder in the Finder.
+    pub fn open_folder(&self, root: &str) -> Result<()> {
+        crate::files::open(Path::new(root), "", false)
+    }
+
+    /// The command a terminal runs to carry a conversation on where this window left it.
+    pub fn terminal_command(&self, binary: &Path, thread: &str) -> Result<String> {
+        let cwd = self.cwd(thread)?;
+        terminal_command(binary, &self.config, &self.data, &cwd, thread)
+    }
+
+    fn known_thread(&self, thread: &str) -> Result<bool> {
+        Ok(self.activity.connection().query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1)",
+            [thread],
+            |r| r.get(0),
+        )?)
     }
 
     /// The folders this window offers: the projects already worked in, most recent first, so

@@ -1243,3 +1243,51 @@ fn an_agent_title_that_is_orochis_own_preamble_never_names_the_thread() {
         "named again from the message that opened it"
     );
 }
+
+/// The sidebar's context menus write rows, and the rows mean what they say: a hidden project
+/// keeps its conversations and comes back when something works in it; a deleted project
+/// takes every conversation with it, and `all_threads` is the one list that sees everything.
+#[test]
+fn a_hidden_project_keeps_its_threads_and_a_deleted_one_takes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, ..) = thread_with_a_turn(&activity);
+    activity
+        .project("other", std::path::Path::new("/tmp/other"))
+        .unwrap();
+
+    assert!(activity.hide_project("proj", true).unwrap());
+    let names: Vec<String> = activity
+        .sidebar(20, true)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["other"],
+        "hidden means out of the list, archived included"
+    );
+    assert_eq!(
+        activity.all_threads().unwrap(),
+        vec![thread.clone()],
+        "and still there for whoever deletes everything"
+    );
+    activity
+        .project("proj", std::path::Path::new("/tmp/repo"))
+        .unwrap();
+    assert_eq!(
+        activity.sidebar(20, false).unwrap().len(),
+        2,
+        "working in it brings it back"
+    );
+
+    assert!(activity.delete_project("proj").unwrap());
+    assert!(
+        activity.thread(&thread).unwrap().is_none(),
+        "its threads go with it"
+    );
+    assert!(activity.all_threads().unwrap().is_empty());
+    assert!(!activity.delete_project("proj").unwrap());
+    assert!(!activity.hide_project("proj", false).unwrap());
+}
