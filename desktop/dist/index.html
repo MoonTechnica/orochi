@@ -137,6 +137,15 @@
     </header>
     <div id="panel-body"></div>
   </dialog>
+  <dialog id="confirm" aria-labelledby="confirm-title">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <footer id="confirm-foot">
+      <button type="button" id="confirm-cancel">Cancel</button>
+      <button type="button" class="danger" id="confirm-go"></button>
+    </footer>
+  </dialog>
+  <div id="context-menu" role="menu" hidden></div>
 </div>
 <script type="module" src="app.js"></script>
 </body>

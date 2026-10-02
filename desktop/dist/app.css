@@ -901,6 +901,78 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .marks .state[data-status="needs_you"] { color: var(--brand); }
 .marks .state[data-status="working"], .marks .state[data-status="background"] { color: var(--ok); }
 
+/* Context menu ------------------------------------------------------------
+   Right-click on a project or a conversation. Drawn where the pointer is, at the window's
+   top layer, and gone on the next click anywhere. */
+#context-menu {
+  position: fixed;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .35);
+  z-index: 40;
+}
+#context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+#context-menu button:hover:not(:disabled), #context-menu button:focus-visible { background: var(--line); outline: none; }
+#context-menu button:disabled { color: var(--muted); cursor: default; }
+#context-menu button .icon { color: var(--muted); }
+#context-menu button.danger, #context-menu button.danger .icon { color: var(--danger); }
+#context-menu button.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+#context-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
+#context-menu .hint { margin-left: auto; color: var(--muted); font-size: 11px; padding-left: 12px; }
+#context-menu .tick { margin-left: auto; color: var(--brand); }
+/* Archived conversations, shown only when asked for, and quieter than the live ones. */
+.thread[data-archived="true"] { opacity: .6; }
+
+/* A name being changed, in the row it names. */
+.rename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--brand);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: -1px 0;
+}
+.renaming {
+  display: flex; gap: 8px; align-items: center; width: 100%;
+  padding: 5px var(--gutter) 5px 16px;
+}
+.thread .pin, .project > summary .pin { color: var(--muted); }
+.thread .pin svg, .project > summary .pin svg { width: 11px; height: 11px; }
+
+/* The one question asked before something is gone for good. */
+#confirm {
+  width: min(400px, calc(100vw - 32px));
+  padding: var(--gutter);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgb(0 0 0 / .5);
+}
+#confirm::backdrop { background: rgb(0 0 0 / .45); }
+#confirm-title { margin: 0 0 8px; font-size: 15px; }
+#confirm-body { margin: 0; color: var(--muted); }
+#confirm-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+#confirm-foot button { padding: 6px 12px; border-radius: 6px; }
+#confirm-foot .danger { border-color: var(--danger); background: var(--danger); color: #fff; }
+#confirm-foot .danger:hover { filter: brightness(1.1); }
+
 /* Markdown in the conversation. */
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }

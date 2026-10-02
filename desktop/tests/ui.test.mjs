@@ -44,6 +44,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "app", "side", "sidebar-resizer", "side-resizer",
     "pane-files", "files-head", "files-where", "files-refresh",
     "tree-search", "tree-by", "tree", "viewer",
+    "context-menu", "confirm", "confirm-title", "confirm-body", "confirm-foot", "confirm-cancel", "confirm-go",
   ], markup);
   const localStorage = {
     store: new Map(Object.entries(stored)),
@@ -1514,6 +1515,194 @@ test("two projects with one name say which folder each is", async () => {
   const { el } = await open({ sidebar: projects });
   const heads = el("projects").querySelectorAll(".hint").map((h) => h.textContent);
   assert.deepEqual(heads, ["Development", "s7"]);
+});
+
+// Right-click on the sidebar. Each verb is a row changed; the two that cannot be undone ask.
+const menuLabels = (el) =>
+  el("context-menu").querySelectorAll("button").map((b) => b.querySelectorAll(".name")[0].textContent);
+const menuItem = (el, key) =>
+  el("context-menu").querySelectorAll("button").find((b) => b.dataset.action === key);
+const rightClick = (node) => node.dispatch("contextmenu", { clientX: 40, clientY: 120 });
+
+test("a right-click on a conversation offers what can be done with it, and nothing else", async () => {
+  const { el, calls } = await open();
+  assert.equal(el("context-menu").hidden, true, "nothing is shown until asked");
+  const rows = el("projects").querySelectorAll(".thread");
+  rightClick(rows[0]);
+  assert.equal(el("context-menu").hidden, false);
+  assert.deepEqual(menuLabels(el), [
+    "Rename", "Pin", "Open in Terminal", "Reveal in Finder", "Copy ID", "Archive", "Delete conversation",
+  ]);
+  assert.equal(el("context-menu").style.left, "40px", "drawn where the pointer is");
+  assert.equal(menuItem(el, "delete").className, "danger", "and the one that cannot be undone says so");
+
+  menuItem(el, "pin").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("context-menu").hidden, true, "choosing closes the menu");
+  const pinned = calls.find(([name]) => name === "pin_thread");
+  assert.deepEqual(pinned[1], { thread: recorded.sidebar[0].threads[0].id, pinned: true });
+
+  // Esc and a click elsewhere both close it without choosing.
+  rightClick(rows[1]);
+  el("projects").dispatch("keydown", { key: "Escape" });
+  assert.equal(el("context-menu").hidden, true);
+  rightClick(rows[1]);
+  el("timeline").dispatch("click");
+  assert.equal(el("context-menu").hidden, true);
+  assert.equal(calls.filter(([name]) => name === "pin_thread").length, 1, "and nothing was asked for");
+});
+
+test("deleting a conversation asks first, and only the red button does it", async () => {
+  const { el, calls } = await open();
+  const row = el("projects").querySelectorAll(".thread")[1];
+  const id = recorded.sidebar[0].threads[1].id;
+  rightClick(row);
+  menuItem(el, "delete").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("confirm").open, true, "a question, not a deletion");
+  assert.equal(el("confirm-title").textContent, "Delete this conversation?");
+  el("confirm-cancel").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("confirm").open, false);
+  assert.equal(calls.find(([name]) => name === "delete_thread"), undefined, "Cancel deletes nothing");
+
+  rightClick(row);
+  menuItem(el, "delete").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  el("confirm-go").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(calls.find(([name]) => name === "delete_thread")[1], { thread: id });
+});
+
+/// The recorded sidebar plus a second project with a thread an agent is working in and one
+/// a terminal is sitting in: what holds a conversation, and what a right-click must respect.
+function withHeldThreads() {
+  const projects = structuredClone(recorded.sidebar);
+  const base = projects[0].threads[0];
+  const held = (id, title, status, terminal) => ({
+    ...base, id, title, status, terminal, project: "web-app", project_id: "p2",
+    project_root: "/work/web-app", cwd: "/work/web-app", branch: "main",
+  });
+  projects.push({
+    id: "p2", name: "web-app", root: "/work/web-app", pinned: false, collapsed: false,
+    threads: [
+      held("w1", "Add sign-in with a magic link", "needs_you", true),
+      held("w2", "Dark mode for the settings page", "working", false),
+      held("w3", "Retire the old API", "background", false),
+    ],
+  });
+  return projects;
+}
+
+test("a conversation an agent is working in, or a terminal holds, cannot be deleted from here", async () => {
+  const { el, calls } = await open({ sidebar: withHeldThreads() });
+  const rows = el("projects").querySelectorAll(".thread");
+  assert.equal(rows.length, 5);
+  rightClick(rows[3]);
+  assert.equal(menuItem(el, "delete").disabled, true);
+  assert.match(menuItem(el, "delete").render(), /stop it first/);
+  menuItem(el, "delete").dispatch("click");
+  assert.equal(el("confirm").open, false, "a disabled line asks nothing");
+  assert.ok(menuItem(el, "stop"), "what it can do instead is stop it");
+  menuItem(el, "stop").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(calls.find(([name]) => name === "interrupt")[1], { thread: "w2" }, "Esc, from here");
+
+  rightClick(rows[2]);
+  assert.equal(menuItem(el, "delete").disabled, true, "a question waiting is a turn still running");
+  el("timeline").dispatch("click");
+
+  rightClick(rows[4]);
+  menuItem(el, "stop").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    calls.find(([name]) => name === "stop_seat")[1],
+    { thread: "w3", seat: null },
+    "helpers that outlived their turn are stopped as the Activity screen stops them",
+  );
+});
+
+test("renaming a conversation is typed over its name, and Enter keeps it", async () => {
+  const { el, calls } = await open();
+  const id = recorded.sidebar[0].threads[0].id;
+  rightClick(el("projects").querySelectorAll(".thread")[0]);
+  menuItem(el, "rename").dispatch("click");
+  const field = el("projects").querySelectorAll(".rename")[0];
+  assert.ok(field, "the row becomes a field");
+  assert.equal(field.value, "Refactor the scheduler retry loop", "holding the name it has");
+  field.value = "Retry loop";
+  field.dispatch("keydown", { key: "Enter" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(calls.find(([name]) => name === "rename_thread")[1], { thread: id, title: "Retry loop" });
+  assert.equal(el("projects").querySelectorAll(".rename").length, 0, "and the row is a row again");
+
+  // Esc puts the old name back without asking anything.
+  rightClick(el("projects").querySelectorAll(".thread")[0]);
+  menuItem(el, "rename").dispatch("click");
+  const again = el("projects").querySelectorAll(".rename")[0];
+  again.value = "something else";
+  again.dispatch("keydown", { key: "Escape" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls.filter(([name]) => name === "rename_thread").length, 1);
+});
+
+test("a right-click on a project offers its own verbs, and hiding it keeps its conversations", async () => {
+  const { el, calls, localStorage } = await open();
+  const head = el("projects").querySelectorAll("summary")[0];
+  rightClick(head);
+  assert.deepEqual(menuLabels(el), [
+    "New thread", "Rename", "Pin", "Where it runs…", "Reveal in Finder", "Copy path",
+    "Show archived conversations", "Hide project", "Delete project",
+  ]);
+  menuItem(el, "hide").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(calls.find(([name]) => name === "hide_project")[1], { project: recorded.sidebar[0].id, hidden: true });
+  assert.equal(calls.find(([name]) => name === "delete_project"), undefined, "hidden is not deleted");
+
+  // Archived conversations are shown on request, and the request is remembered.
+  rightClick(el("projects").querySelectorAll("summary")[0]);
+  menuItem(el, "archived").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const asked = calls.filter(([name]) => name === "sidebar").at(-1);
+  assert.equal(asked[1].archived, true);
+  assert.equal(localStorage.getItem("archived"), "true");
+  rightClick(el("projects").querySelectorAll("summary")[0]);
+  assert.ok(menuItem(el, "archived").querySelectorAll(".tick").length, "and the line says it is on");
+
+  // Renaming a project is the same field, in its heading.
+  menuItem(el, "rename").dispatch("click");
+  const field = el("projects").querySelectorAll("summary")[0].querySelectorAll(".rename")[0];
+  assert.equal(field.value, "repo");
+  field.value = "Orochi";
+  field.dispatch("keydown", { key: "Enter" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(calls.find(([name]) => name === "rename_project")[1], { project: recorded.sidebar[0].id, name: "Orochi" });
+});
+
+test("deleting a project says how much goes with it, and is refused while an agent works in it", async () => {
+  const { el, calls } = await open();
+  rightClick(el("projects").querySelectorAll("summary")[0]);
+  menuItem(el, "delete").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("confirm").open, true);
+  assert.match(el("confirm-body").textContent, /repo — 2 conversations are deleted for good/);
+  el("confirm-go").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(calls.find(([name]) => name === "delete_project")[1], { project: recorded.sidebar[0].id });
+
+  el("timeline").dispatch("click");
+  const { el: held } = await open({ sidebar: withHeldThreads() });
+  rightClick(held("projects").querySelectorAll("summary")[1]);
+  assert.equal(menuItem(held, "delete").disabled, true, "web-app has a thread working");
+  assert.match(menuItem(held, "delete").render(), /stop it first/);
+});
+
+test("the menu speaks the window's language too", async () => {
+  const { el } = await open({}, { language: "ja-JP" });
+  rightClick(el("projects").querySelectorAll(".thread")[0]);
+  assert.deepEqual(menuLabels(el), [
+    "名前を変更", "ピン留め", "ターミナルで開く", "Finder で表示", "ID をコピー", "アーカイブ", "会話を削除",
+  ]);
 });
 
 test("what an agent writes is drawn as Markdown, and none of it becomes markup", async () => {

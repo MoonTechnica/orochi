@@ -670,6 +670,68 @@ impl Activity {
             == 1)
     }
 
+    /// Every thread there is, archived and in hidden projects included: what `delete --all`
+    /// and the window's "delete every conversation" go through.
+    pub fn all_threads(&self) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare("SELECT id FROM threads")?;
+        let ids = statement.query_map([], |r| r.get(0))?;
+        ids.map(|id| Ok(id?)).collect()
+    }
+
+    /// A pinned thread heads its project's list and outlives the retention window.
+    pub fn pin_thread(&self, id: &str, pinned: bool) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE threads SET pinned=?2 WHERE id=?1",
+            params![id, i64::from(pinned)],
+        )? == 1)
+    }
+
+    /// An archived thread leaves the sidebar and is no longer what `--continue` picks up; its
+    /// rows stay, so it still reads back and can be brought back.
+    pub fn archive_thread(&self, id: &str, archived: bool) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE threads SET archived_at=?2 WHERE id=?1",
+            params![id, archived.then(millis)],
+        )? == 1)
+    }
+
+    /// The user's own name for a project. Empty is refused rather than written: a section
+    /// with no heading cannot be found by eye, which is what the name is for.
+    pub fn rename_project(&self, id: &str, name: &str) -> Result<bool> {
+        let name = crate::context::bounded(name.trim(), 120);
+        ensure!(!name.is_empty(), "a project needs a name");
+        Ok(self
+            .connection
+            .execute("UPDATE projects SET name=?2 WHERE id=?1", params![id, name])?
+            == 1)
+    }
+
+    /// A pinned project heads the sidebar.
+    pub fn pin_project(&self, id: &str, pinned: bool) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE projects SET pinned=?2 WHERE id=?1",
+            params![id, i64::from(pinned)],
+        )? == 1)
+    }
+
+    /// A hidden project leaves the sidebar and the folder picker, conversations intact, until
+    /// something works in it again (`project` clears it).
+    pub fn hide_project(&self, id: &str, hidden: bool) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE projects SET hidden_at=?2 WHERE id=?1",
+            params![id, hidden.then(millis)],
+        )? == 1)
+    }
+
+    /// A project and every conversation under it (R4: delete means gone). The folder on disk
+    /// and any sandbox made for it are not this store's and are left alone.
+    pub fn delete_project(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .connection
+            .execute("DELETE FROM projects WHERE id=?1", [id])?
+            == 1)
+    }
+
     pub fn connection(&self) -> &Connection {
         &self.connection
     }
@@ -681,8 +743,15 @@ impl Activity {
 
     /// The sidebar: projects by name, pinned first, each with its threads newest first. The
     /// ordering is the one a client renders and is decided here rather than in the client, so
-    /// `orochi threads` and the app agree about what the list looks like.
+    /// `orochi threads` and the app agree about what the list looks like. A hidden project is
+    /// not in it, archived or not: `all_threads` is the list of everything.
     pub fn sidebar(&self, limit: usize, archived: bool) -> Result<Vec<ProjectRow>> {
+        self.listing(limit, archived, false)
+    }
+
+    /// The sidebar's rows, with or without the projects the user hid: a thread in a hidden
+    /// project is still a thread, and reads back by its id.
+    fn listing(&self, limit: usize, archived: bool, hidden: bool) -> Result<Vec<ProjectRow>> {
         self.reap_hosts()?;
         let mut statement = self.connection.prepare(
             "SELECT id, project, project_id, project_root, project_pinned, project_collapsed,
@@ -691,10 +760,11 @@ impl Activity {
                     host_kind, host_pid, host_start, doing, background, running_since, overrides,
                     lead_route
              FROM v_sidebar WHERE (?1 OR archived_at IS NULL)
+               AND (?2 OR project_id IN (SELECT id FROM projects WHERE hidden_at IS NULL))
              ORDER BY project_pinned DESC, project_sort, pinned DESC, updated_at DESC",
         )?;
         let mut projects: Vec<ProjectRow> = Vec::new();
-        let rows = statement.query_map(params![archived], |r| {
+        let rows = statement.query_map(params![archived, hidden], |r| {
             let running: i64 = r.get(14)?;
             let queued: i64 = r.get(15)?;
             let asking: i64 = r.get(16)?;
@@ -801,9 +871,9 @@ impl Activity {
         // A project with every thread archived or deleted keeps its place, so the list of
         // projects is stable between visits.
         let mut statement = self.connection.prepare(
-            "SELECT id, name, root, pinned, collapsed FROM projects WHERE hidden_at IS NULL",
+            "SELECT id, name, root, pinned, collapsed FROM projects WHERE ?1 OR hidden_at IS NULL",
         )?;
-        let empty = statement.query_map([], |r| {
+        let empty = statement.query_map(params![hidden], |r| {
             Ok(ProjectRow {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -883,7 +953,7 @@ impl Activity {
     /// Everything one thread's screens need, in one read.
     pub fn thread(&self, id: &str) -> Result<Option<Thread>> {
         let Some(thread) = self
-            .sidebar(usize::MAX, true)?
+            .listing(usize::MAX, true, true)?
             .into_iter()
             .flat_map(|p| p.threads)
             .find(|t| t.id == id)
@@ -999,9 +1069,10 @@ impl Activity {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| root.display().to_string());
+        // Working in a hidden project is what brings it back: there is no list of hidden ones.
         self.connection.execute(
             "INSERT INTO projects (id, root, name, created_at) VALUES (?1,?2,?3,?4)
-             ON CONFLICT(id) DO UPDATE SET root=excluded.root",
+             ON CONFLICT(id) DO UPDATE SET root=excluded.root, hidden_at=NULL",
             params![id, root.display().to_string(), name, millis()],
         )?;
         Ok(())

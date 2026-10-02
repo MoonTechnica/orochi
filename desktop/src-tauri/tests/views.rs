@@ -971,3 +971,159 @@ fn signing_an_agent_in_is_a_terminal_command_naming_only_a_known_kind_of_agent()
         );
     }
 }
+
+/// The fixture's turn is running under this process, which is alive: what a host that is
+/// still there looks like. Ending it is what stopping the agent leaves behind.
+fn stop_the_fixture(dir: &std::path::Path) {
+    let activity = Activity::open(dir, 30).unwrap();
+    activity
+        .connection()
+        .execute_batch("UPDATE turns SET state='completed'; DELETE FROM hosts;")
+        .unwrap();
+}
+
+/// §6.2's context menu on a thread: every verb is a row changed, and the list redraws from
+/// the view. Deleting is refused while an agent (or a terminal) still holds the thread.
+#[test]
+fn a_conversation_can_be_renamed_pinned_archived_and_deleted_from_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+
+    client
+        .rename_thread(&thread, "  Mailbox placement  ")
+        .unwrap();
+    assert!(
+        client.rename_thread(&thread, "   ").is_err(),
+        "a blank name is refused, not written"
+    );
+    client.pin_thread(&thread, true).unwrap();
+    let row = &client.sidebar(20, false).unwrap()[0].threads[0];
+    assert_eq!(
+        row.title, "Mailbox placement",
+        "trimmed, and the user's own"
+    );
+    assert!(row.pinned);
+
+    // Archived: out of the list, still readable, back on request.
+    client.archive_thread(&thread, true).unwrap();
+    assert!(client.sidebar(20, false).unwrap()[0].threads.is_empty());
+    assert!(client.sidebar(20, true).unwrap()[0].threads[0].archived);
+    assert!(client.thread(&thread).unwrap().is_some());
+    client.archive_thread(&thread, false).unwrap();
+    assert_eq!(client.sidebar(20, false).unwrap()[0].threads.len(), 1);
+
+    assert!(
+        client.delete_thread(&thread).is_err(),
+        "a turn still running under a live host is not pulled out from under it"
+    );
+    stop_the_fixture(dir.path());
+    client.delete_thread(&thread).unwrap();
+    assert!(
+        client.thread(&thread).unwrap().is_none(),
+        "R4: delete means gone"
+    );
+    assert!(
+        client.delete_thread(&thread).is_err(),
+        "and twice is an error, not a no-op"
+    );
+    for missing in [
+        client.pin_thread("nope", true),
+        client.archive_thread("nope", true),
+        client.rename_thread("nope", "x"),
+    ] {
+        assert!(missing.is_err(), "a thread that is not there is said so");
+    }
+}
+
+/// §6.2's context menu on a project. Hiding keeps every conversation and working in the
+/// folder again brings the section back; deleting takes the conversations with it and
+/// leaves the folder and its sandbox, which are not the store's.
+#[test]
+fn a_project_can_be_renamed_pinned_hidden_and_deleted_from_the_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path()).unwrap();
+
+    client.rename_project("proj", "Orochi core").unwrap();
+    assert!(client.rename_project("proj", " ").is_err());
+    client.pin_project("proj", true).unwrap();
+    let project = &client.sidebar(20, false).unwrap()[0];
+    assert_eq!(project.name, "Orochi core");
+    assert!(project.pinned);
+
+    client.hide_project("proj", true).unwrap();
+    assert!(
+        client.sidebar(20, true).unwrap().is_empty(),
+        "hidden is out of the list, archived or not"
+    );
+    assert!(
+        client.folders().unwrap().is_empty(),
+        "and out of the folder picker"
+    );
+    assert!(
+        client.thread(&thread).unwrap().is_some(),
+        "its conversations are kept"
+    );
+    // Something works in the folder again: a terminal run, a thread started from the picker.
+    Activity::open(dir.path(), 30)
+        .unwrap()
+        .project("proj", std::path::Path::new("/tmp/orochi"))
+        .unwrap();
+    let back = client.sidebar(20, false).unwrap();
+    assert_eq!(back.len(), 1, "working in it brings it back");
+    assert_eq!(back[0].name, "Orochi core", "with the name it was given");
+    assert_eq!(back[0].threads.len(), 1);
+
+    assert!(
+        client.delete_project("proj").is_err(),
+        "refused while an agent still works in it"
+    );
+    stop_the_fixture(dir.path());
+    assert_eq!(
+        client.delete_project("proj").unwrap(),
+        1,
+        "says how many went with it"
+    );
+    assert!(client.sidebar(20, true).unwrap().is_empty());
+    assert!(client.thread(&thread).unwrap().is_none());
+    assert!(client.delete_project("proj").is_err());
+}
+
+/// Open in Terminal: the same store, the thread's own folder, and the thread named outright.
+#[test]
+fn opening_a_conversation_in_a_terminal_is_a_command_naming_its_folder_and_its_thread() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let client = Client::open(dir.path())
+        .unwrap()
+        .with_config(std::path::Path::new(
+            "/Users/a b/.config/orochi/config.toml",
+        ));
+    let command = client
+        .terminal_command(
+            std::path::Path::new("/Applications/Orochi.app/Contents/MacOS/orochi"),
+            &thread,
+        )
+        .unwrap();
+    assert_eq!(
+        command,
+        format!(
+            "cd '/tmp/orochi' && '/Applications/Orochi.app/Contents/MacOS/orochi' --config '/Users/a b/.config/orochi/config.toml' --data-dir '{}' --thread {thread} chat",
+            dir.path().display()
+        )
+    );
+    for bad in ["", "x; rm -rf ~", "a b", "$(x)"] {
+        assert!(
+            view::terminal_command(
+                std::path::Path::new("/o"),
+                std::path::Path::new("/c"),
+                std::path::Path::new("/d"),
+                std::path::Path::new("/w"),
+                bad
+            )
+            .is_err(),
+            "{bad}"
+        );
+    }
+}
