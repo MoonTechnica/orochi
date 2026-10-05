@@ -30,18 +30,23 @@ fn new_thread(open: State<'_, Open>, root: String) -> Result<String, String> {
         .map_err(fail)
 }
 
+#[cfg(windows)]
+const OROCHI_SIDECAR: &str = "orochi.exe";
+#[cfg(not(windows))]
+const OROCHI_SIDECAR: &str = "orochi";
+
 /// The `orochi` this window starts: `OROCHI_BIN`, then the one shipped beside this window,
 /// then the one the user would run. A window opened from Finder has no shell `PATH`, so a
 /// sibling is what makes a packaged app work at all.
 fn orochi() -> std::path::PathBuf {
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("orochi")))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(OROCHI_SIDECAR)))
         .filter(|path| path.is_file());
     std::env::var_os("OROCHI_BIN")
         .map(std::path::PathBuf::from)
         .or(beside)
-        .unwrap_or_else(|| "orochi".into())
+        .unwrap_or_else(|| OROCHI_SIDECAR.into())
 }
 
 /// The Sandboxes screen. It asks Incus through the VM, so it is read off the connection.

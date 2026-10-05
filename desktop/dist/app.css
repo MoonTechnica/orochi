@@ -638,47 +638,9 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 .card .where { color: var(--muted); font-size: 12px; }
 
 /* Room ------------------------------------------------------------------- */
-/* The room is a group chat: a face per speaker, a run of their messages under one header,
-   and the person's own notes on the other side of the table. */
+/* The room is the coming and going beside the conversation, and the box the person writes in.
+   What anyone said is a `.post` in the transcript, above; nothing here draws a message. */
 #room { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
-.avatar {
-  width: 20px; height: 20px; border-radius: 50%;
-  display: inline-flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 600; text-transform: lowercase;
-  background: var(--tone); color: #12151a; flex: none;
-}
-[data-tone="0"] { --tone: #7aa2f7; } [data-tone="1"] { --tone: #9ece6a; }
-[data-tone="2"] { --tone: #e0af68; } [data-tone="3"] { --tone: #bb9af7; }
-[data-tone="4"] { --tone: #7dcfff; } [data-tone="5"] { --tone: #f7768e; }
-[data-tone="6"] { --tone: #73daca; } [data-tone="7"] { --tone: #ff9e64; }
-
-.said { display: grid; grid-template-columns: 20px 1fr; gap: 0 8px; margin-top: 12px; }
-.turn .said { margin-left: 2px; }
-.said[data-run="true"] { margin-top: 1px; }
-.said .who {
-  grid-column: 1 / -1; display: flex; gap: 6px; align-items: center;
-  font-size: 12px; color: var(--muted); margin-bottom: 2px;
-}
-.said .who .name { color: var(--text); font-weight: 600; }
-.said .who .to::before { content: "· "; }
-.said .who .model { opacity: 0.7; }
-.said .who .at { margin-left: auto; font-variant-numeric: tabular-nums; }
-.said .body {
-  grid-column: 2; white-space: pre-wrap; word-break: break-word;
-  background: var(--raised); border-radius: 10px; padding: 6px 10px;
-  border-left: 2px solid var(--tone, var(--line));
-}
-.said[data-run="true"] .body { border-top-left-radius: 4px; }
-/* The person is at the table too, and sits on the other side of it. */
-.said[data-mine="true"] .body {
-  background: color-mix(in srgb, var(--brand) 16%, var(--raised));
-  border-left-color: var(--brand);
-}
-.said[data-mine="true"] .who .name { color: var(--brand); }
-.said.system {
-  display: block; color: var(--muted); font-size: 12px; text-align: center;
-  margin: 10px 0 2px; opacity: 0.8;
-}
 #say-form { margin-top: 8px; }
 #say { width: 100%; background: var(--bg); color: inherit; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
 #say-hint { font-size: 11px; margin: 4px 0 0; }
@@ -711,7 +673,9 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .route .chip { display: inline-flex; align-items: center; gap: 6px; }
 #new-thread, #account { display: flex; align-items: center; gap: 6px; }
 #folder { display: inline-flex; align-items: center; gap: 6px; }
-.said.system { display: flex; align-items: center; gap: 6px; justify-content: flex-start; }
+/* A line that wraps hangs under the first one, so the icon keeps the left edge to itself and
+   stays beside the line it marks rather than floating between two. */
+.said.system { display: flex; align-items: flex-start; gap: 6px; justify-content: flex-start; }
 
 /* What is happening while nothing has been said yet. */
 .live-turn { margin-top: 14px; color: var(--muted); font-size: 13px; }

@@ -26,3 +26,16 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+
+  # Windows ships the window, not the console: `chat/term.rs` reads no keys there and the suite
+  # drives a pty, so what is shipped is compiled and the tests are not run. Keep this job green or
+  # the desktop installer has no CLI to carry.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          components: clippy
+      - run: cargo clippy --locked -- -D warnings

@@ -1,0 +1,157 @@
+name: Release
+
+# A tag builds and publishes. Running it by hand builds everything and publishes nothing, which
+# is the only honest way to find out whether a release would succeed before cutting one.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_CLI: "@tauri-apps/cli@^2"
+
+jobs:
+  draft:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The tag and the manifests are set apart, so they drift. A release that says one version
+      # and installs another is worse than one that never happened.
+      - name: The tag and the manifests must agree
+        run: |
+          set -eu
+          . scripts/read-versions.sh
+          for other in "$desktop" "$bundle"; do
+            [ "$other" = "$cli" ] || {
+              echo "versions differ: cli $cli, desktop $desktop, bundle $bundle" >&2
+              exit 1
+            }
+          done
+          [ "${GITHUB_REF_NAME#v}" = "$cli" ] || {
+            echo "tag $GITHUB_REF_NAME does not name version $cli" >&2
+            exit 1
+          }
+      - name: Open a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "$GITHUB_REF_NAME" --generate-notes
+          notes=$(gh release view "$GITHUB_REF_NAME" --json body -q .body)
+          printf '%s\n\n%s\n' "$(cat .github/release-preamble.md)" "$notes" |
+            gh release edit "$GITHUB_REF_NAME" --notes-file -
+
+  # The CLI, for people who want the terminal. Windows is absent on purpose: `chat/term.rs` reads
+  # no keys there, so a Windows `orochi` in a terminal would accept no input. It is still built
+  # below, as the binary the window carries.
+  cli:
+    needs: draft
+    if: ${{ !cancelled() && (needs.draft.result == 'success' || needs.draft.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          # 22.04 rather than the newest: a binary linked against a newer glibc will not start on
+          # the distributions people are actually running.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: ./scripts/package.sh ${{ matrix.target }}
+      - if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.sha256 --clobber
+
+  desktop:
+    needs: draft
+    if: ${{ !cancelled() && (needs.draft.result == 'success' || needs.draft.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: universal-apple-darwin
+            rust: aarch64-apple-darwin,x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96.0"
+          targets: ${{ matrix.rust }}
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf \
+            libayatana-appindicator3-dev
+      # The window cannot be built without it: `externalBin` is checked at build-script time.
+      - name: Put the CLI beside the window
+        shell: bash
+        run: ./scripts/sidecar.sh --release --target ${{ matrix.target }}
+      - name: Bundle
+        shell: bash
+        env:
+          # `bundle_dmg.sh` asks Finder over Apple Events to lay the window out, which fails where
+          # nothing granted that permission; `CI` is what makes the bundler skip it. Actions sets
+          # it already — it is written here so a hand-run build does not fail on cosmetics.
+          CI: "true"
+          # Set these six in the repository's secrets and the bundler signs and notarizes.
+          # Left empty it still builds, and macOS then asks the user to allow the app by hand.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx --yes "$TAURI_CLI" build --target ${{ matrix.target }}
+        working-directory: desktop/src-tauri
+      - name: Gather what was bundled
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p dist
+          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle \
+            -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \
+            -o -name '*.msi' -o -name '*-setup.exe' \) -exec cp {} dist/ \;
+          ls -l dist
+      - if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+  publish:
+    needs: [cli, desktop]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=false \
+            --repo "$GITHUB_REPOSITORY" --latest

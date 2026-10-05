@@ -50,6 +50,28 @@ The [Live Validation of Remaining Tasks (2026-09-16, part 2)](docs/real-validati
 
 Switching from the real Claude's usage limit to the real Codex has not been confirmed. Live E2E for Antigravity is waiting on a Google login. Additional validation of the Gemini CLI was made out of scope at the user's instruction. Verification against the real CLI with local models has not been done yet.
 
+## Install
+
+The CLI, on macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MoonTechnica/orochi/main/install.sh | sh
+```
+
+It picks the archive for the machine from the [latest release](https://github.com/MoonTechnica/orochi/releases/latest), checks it against the `.sha256` published beside it, and puts `orochi` in `~/.local/bin` (`OROCHI_BIN_DIR` moves it, `OROCHI_VERSION` pins the release). The archives can also be unpacked by hand.
+
+The desktop window is a separate download from the same release — `.dmg` on macOS, `.AppImage` or `.deb` on Linux, `-setup.exe` or `.msi` on Windows. It carries its own `orochi`, so the CLI need not be installed first.
+
+What each platform does **not** get:
+
+| | |
+|---|---|
+| Windows | **The window only.** The interactive console is not ported: `chat/term.rs` reads keys through termios, so `orochi` in a Windows terminal refuses to open a console rather than open one that accepts nothing. A task given on the command line still runs. Process supervision is weaker too — a lease whose owner died is not reclaimed (`process.rs`). No CLI archive is published for Windows; the installer carries the binary the window runs |
+| Linux | Built against glibc 2.35 (Ubuntu 22.04). An older distribution will not run it |
+| macOS | Nothing is withheld |
+
+Orochi does not talk to a model. It chooses among the coding-agent CLIs **you** have installed and authenticated, so at least one of them has to be there first — see [Preparing Agents](#preparing-agents) below.
+
 ## Build
 
 Requires Rust **1.96.0** and C/C++ build tools. SQLite is built from the bundled source.
@@ -61,6 +83,10 @@ orochi --help
 ```
 
 Rust is pinned in `rust-toolchain.toml`. If you use mise, select the same Rust version in this directory.
+
+A release is cut by tagging: `scripts/version.sh <x.y.z>` sets the one version the CLI, the window and the bundle all carry, and `git push origin v<x.y.z>` builds and publishes it (`.github/workflows/release.yml`; running that workflow by hand builds everything and publishes nothing, which is how to find out whether a release would succeed before cutting one). The workflow refuses a tag that does not name the version in the manifests.
+
+The macOS bundle is signed and notarized when six repository secrets are set, and builds unsigned without them — in which case macOS asks the user to allow the app by hand. They are `APPLE_CERTIFICATE` (a Developer ID Application `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (the certificate's full name), and `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID` for notarization.
 
 ## Preparing Agents
 
@@ -594,9 +620,12 @@ thread, rename, pin or hide it, show its archived conversations, or delete it wi
 in it. Deleting asks first and is refused while an agent is still working there.
 
 ```sh
+./scripts/sidecar.sh                                       # first: the CLI the window runs
 cargo run --manifest-path desktop/src-tauri/Cargo.toml     # run the window
 cargo test --manifest-path desktop/src-tauri/Cargo.toml    # its tests (needs node)
 ```
+
+The first line is not optional. The window looks for `orochi` beside its own executable, because one opened from Finder has no shell `PATH`; Tauri's `externalBin` is what puts it there, and the build script refuses to run without it. `scripts/sidecar.sh --release --target <triple>` is what the release workflow calls, and it makes a universal binary for `universal-apple-darwin`.
 
 It is its own Cargo workspace, so the binary's `cargo test`, `clippy` and `fmt` never build a
 webview. Its appearance has not been verified against a screen; its behavior is covered by

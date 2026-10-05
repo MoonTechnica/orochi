@@ -405,7 +405,8 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
         cli.task.is_none() || cli.command.is_none(),
         "a task and subcommand cannot be used together"
     );
-    if cli.command.is_none()
+    if cfg!(unix)
+        && cli.command.is_none()
         && cli.task.is_none()
         && !cli.dry_run
         && std::io::stdin().is_terminal()
@@ -666,6 +667,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     };
     match cli.command {
         Some(Command::Chat) => {
+            console_available()?;
             ensure!(
                 !cli.json && !cli.dry_run,
                 "--json and --dry-run need a task"
@@ -1548,6 +1550,21 @@ pub(crate) fn mcp_state(state: &crate::mcp::oauth::State) -> String {
         State::Open => "no sign-in needed".into(),
         State::Unreachable(error) => format!("unreachable: {error}"),
     }
+}
+
+/// The console reads keys through termios (`chat/term.rs`), which is not ported. Opening one
+/// where it cannot read is worse than not opening it: the window appears and swallows everything
+/// typed into it, including the interrupt that would close it.
+#[cfg(unix)]
+fn console_available() -> Result<()> {
+    Ok(())
+}
+#[cfg(not(unix))]
+fn console_available() -> Result<()> {
+    bail!(
+        "the interactive console is available on Unix only. Give the task on the command line \
+         (`orochi \"…\"`), or use the desktop window, which does not read the terminal."
+    )
 }
 
 fn check_overrides(
