@@ -16,17 +16,17 @@ pub struct Role {
 
 const ARCHITECT: Role = Role {
     name: "architect",
-    brief: "Work out the shape of this change before it is built: what has to happen, which pieces it touches, what breaks if it is done the obvious way, and how the result can be checked.",
+    brief: "Work out the structure of the requested result: what has to happen, how the pieces fit, dependencies, risks and how the result can be checked.",
     writes: false,
 };
 const RESEARCHER: Role = Role {
     name: "researcher",
-    brief: "The request leaves things open. Read the repository and pin down what is actually there: where the relevant code lives, what already exists, and which reading of the request the code supports.",
+    brief: "The request leaves things open. Examine the relevant materials and available sources, pin down the evidence, distinguish facts from assumptions and identify unresolved questions.",
     writes: false,
 };
 const REVIEWER: Role = Role {
     name: "reviewer",
-    brief: "Read the work as it lands and say what is wrong with it: bugs, cases it misses, conventions it breaks, and anything elsewhere in the repository it quietly invalidates.",
+    brief: "Read the work as it lands and check it against the request: correctness, evidence, reasoning, missing cases, completeness and any relevant conventions or checks.",
     writes: false,
 };
 
@@ -99,11 +99,16 @@ pub fn seats(task: &TaskDescriptor) -> Vec<Role> {
             "documentation" => "writer",
             "test" => "tester",
             "investigation" => "investigator",
+            "analysis" => "analyst",
+            "planning" => "planner",
+            "creative" => "creator",
+            "general" => "worker",
+            "discussion" => "facilitator",
             "small_edit" => "editor",
             _ => "implementer",
         },
-        brief: "Carry out the task and own every change.",
-        writes: true,
+        brief: "Carry out the task and own the requested deliverable.",
+        writes: task.task_type != "discussion",
     };
     // Asked for outright: seat as many agents as were asked for, each a different view.
     if task.collaborative {
@@ -127,8 +132,7 @@ pub fn seats(task: &TaskDescriptor) -> Vec<Role> {
     }
     let structural = task.requires_architecture_change
         || matches!(task.task_type.as_str(), "architecture" | "migration");
-    let worth_it = !matches!(task.task_type.as_str(), "small_edit" | "documentation")
-        && task.complexity != Complexity::Simple
+    let worth_it = task.complexity != Complexity::Simple
         && (structural
             || task.long_horizon
             || matches!(task.complexity, Complexity::Complex | Complexity::Extreme));

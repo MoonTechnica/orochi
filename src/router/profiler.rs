@@ -176,13 +176,41 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
     } else if has(&["bug", "fix", "不具合", "バグ", "修正"]) {
         "bug_fix"
     } else if !builds_software
-        && opening_has(&["readme", "documentation", "ドキュメント", "説明文"])
+        && opening_has(&[
+            "readme",
+            "documentation",
+            "document",
+            "report",
+            "ドキュメント",
+            "説明文",
+            "レポート",
+            "報告書",
+            "資料",
+            "記事",
+            "文章",
+        ])
     {
         "documentation"
     } else if !builds_software && opening_has(&["test", "テスト"]) {
         "test"
-    } else if !builds_software && has(&["investigate", "調査", "原因"]) {
+    } else if !builds_software && has(&["investigate", "research", "調査", "原因"]) {
         "investigation"
+    } else if !builds_software
+        && opening_has(&[
+            "analyze", "analysis", "compare", "分析", "比較", "評価", "検討",
+        ])
+    {
+        "analysis"
+    } else if !builds_software
+        && opening_has(&[
+            "plan ", "planning", "strategy", "計画", "企画", "立案", "戦略",
+        ])
+    {
+        "planning"
+    } else if !builds_software
+        && opening_has(&["story", "poem", "fiction", "物語", "小説", "詩", "創作"])
+    {
+        "creative"
     } else if !builds_software && opening_has(&["typo", "rename", "誤字", "名称変更"]) {
         // The opening, and only when nothing is being built: a request to build an app that
         // mentions renaming a task in passing is not a rename (2026-09-22).
@@ -285,7 +313,7 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
     candidates.sort();
     candidates.dedup();
     candidates.truncate(30);
-    let architecture = matches!(task_type, "architecture" | "migration")
+    let cross_cutting = matches!(task_type, "architecture" | "migration")
         || has(&["across the", "全体", "全面", "刷新"]);
     let long_horizon = lower
         .split(|c: char| !c.is_ascii_alphabetic())
@@ -293,10 +321,10 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         || has(&["end-to-end", "from scratch", "全面", "新規構築", "大規模"])
         || task.chars().count() > 3000;
     let simple =
-        matches!(task_type, "small_edit" | "documentation") && !architecture && !long_horizon;
-    let complexity = if architecture && long_horizon {
+        matches!(task_type, "small_edit" | "documentation") && !cross_cutting && !long_horizon;
+    let complexity = if cross_cutting && long_horizon {
         Complexity::Extreme
-    } else if architecture || long_horizon || task_type == "refactor" {
+    } else if cross_cutting || long_horizon || task_type == "refactor" {
         Complexity::Complex
     } else if simple {
         Complexity::Simple
@@ -319,7 +347,17 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         estimated_scope: scope,
         estimated_context: (scope as u64 * 1500).min(120_000) + task.len() as u64 / 3,
         complexity,
-        requires_architecture_change: architecture,
+        requires_architecture_change: cross_cutting
+            && matches!(
+                task_type,
+                "implementation"
+                    | "architecture"
+                    | "migration"
+                    | "refactor"
+                    | "bug_fix"
+                    | "test"
+                    | "small_edit"
+            ),
         requires_browser: has(&[
             "browser",
             "ブラウザ",

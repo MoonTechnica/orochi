@@ -704,6 +704,114 @@ fn chat_splits_only_the_work_that_needs_more_than_one_agent() {
     assert!(prompts[3].contains("Review"));
 }
 
+#[test]
+fn chat_plans_and_checks_complex_non_coding_deliverables() {
+    for (task, kind, work) in [
+        (
+            "Research across the entire collection from scratch",
+            "investigation",
+            "research",
+        ),
+        (
+            "Write documentation across the entire collection from scratch",
+            "documentation",
+            "write",
+        ),
+        (
+            "Review across the entire collection from scratch",
+            "review",
+            "analyze",
+        ),
+        (
+            "Compare options across the entire collection from scratch",
+            "analysis",
+            "analyze",
+        ),
+    ] {
+        let w = Workspace::new();
+        let output = chat(&w, &format!("{task}\n"));
+        success(&output);
+        let prompts: Vec<_> = session_requests(&w)
+            .into_iter()
+            .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
+            .map(|r| r.2)
+            .collect();
+        assert_eq!(prompts.len(), 3, "{task}: {prompts:?}");
+        assert!(prompts[0].contains("acceptance criteria"));
+        assert!(prompts[1].contains("following the plan above"));
+        assert!(prompts[1].contains("From the previous step:\nFixture completed."));
+        assert!(prompts[2].contains("Check correctness, evidence"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for step in [
+            "⏵ plan step 1/3".to_owned(),
+            format!("⏵ {work} step 2/3"),
+            "⏵ review step 3/3".to_owned(),
+        ] {
+            assert!(stderr.contains(&step), "{task}: missing {step} in {stderr}");
+        }
+        // The substantive work keeps its original type and extreme difficulty even though
+        // it follows a plan, and therefore cannot silently fall onto the normal-tier model.
+        let runs = w.store().recent_runs(100).unwrap();
+        assert!(
+            runs.iter().any(|run| run.task_type == kind
+                && run.complexity == Some(orochi::types::Complexity::Extreme)),
+            "{task}: {runs:?}"
+        );
+        assert!(
+            runs.iter()
+                .all(|run| run.task_type != "implementation" && run.task_type != "architecture")
+        );
+    }
+}
+
+#[test]
+fn correcting_a_response_deliverable_keeps_the_plan_work_and_review() {
+    let mut w = Workspace::new();
+    w.config.agents[0].env.insert(
+        "MOCK_DESIGN_REPLY".into(),
+        "Cover sources A and B; check agreement.".into(),
+    );
+    w.config.agents[0].env.insert(
+        "MOCK_REVIEW_REPLY".into(),
+        "Source B is missing.\nVERDICT: fix".into(),
+    );
+    let output = chat(&w, "/team Research the available sources\n");
+    success(&output);
+    let prompts: Vec<_> = session_requests(&w)
+        .into_iter()
+        .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
+        .map(|r| r.2)
+        .collect();
+    assert_eq!(prompts.len(), 4, "{prompts:?}");
+    assert!(prompts[2].contains("Plan and acceptance criteria:\nCover sources A and B"));
+    assert!(prompts[3].contains("Source B is missing.\nVERDICT: fix"));
+    assert!(prompts[3].contains("Previous deliverable to correct:\nFixture completed."));
+    assert!(prompts[3].contains("Plan and acceptance criteria:\nCover sources A and B"));
+}
+
+#[test]
+fn a_staged_discussion_continues_with_its_panel_after_review() {
+    let w = Workspace::new();
+    let output = chat(
+        &w,
+        "/team Have two agents discuss the proposal\nkeep talking\n",
+    );
+    success(&output);
+    let prompts: Vec<_> = session_requests(&w)
+        .into_iter()
+        .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
+        .map(|r| r.2)
+        .collect();
+    assert_eq!(prompts.len(), 4, "{prompts:?}");
+    let followup = prompts.last().unwrap();
+    assert!(followup.contains("keep talking"));
+    assert!(
+        followup.contains("you are peer \"facilitator\""),
+        "{followup}"
+    );
+    assert!(!followup.contains("you are peer \"implementer\""));
+}
+
 /// The design step may divide the work into parts for Orochi to order. That answer is for
 /// Orochi: it never reaches the transcript or the next step's handover. Off a terminal, where
 /// nobody can be asked before several agents start writing, the work stays one turn.

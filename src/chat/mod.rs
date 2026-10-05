@@ -10,6 +10,7 @@ mod background;
 mod banner;
 pub mod host;
 pub mod term;
+mod workflow;
 
 use crate::{
     acp::{ExecutionEvent, FileDiff, Progress, ToolUpdate, allow_once_option},
@@ -37,6 +38,7 @@ use std::{
 use term::{Key, Keyboard, Prompt, Term, width_of};
 use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthChar;
+use workflow::{DESIGN, IMPLEMENT, Phase, REVIEW};
 
 const USER_CHARS: usize = 8192;
 const AGENT_CHARS: usize = 16384;
@@ -81,7 +83,7 @@ const COMMANDS: [Command; 14] = [
         name: "team",
         aliases: &["collaborate"],
         usage: "<task>",
-        about: "Force the design, implement and review steps (Orochi decides on its own otherwise)",
+        about: "Force planning, task execution and review (Orochi decides on its own otherwise)",
         anytime: false,
     },
     Command {
@@ -204,41 +206,6 @@ enum Steps {
     Team,
     Solo,
 }
-
-/// A step of `/team`: its own agent, chosen for this kind of work.
-struct Phase {
-    name: &'static str,
-    /// Wording the profiler reads, so each phase is routed on its own merits.
-    instruction: &'static str,
-    /// The phase passes its reply on to the next one.
-    hands_over: bool,
-    /// The phase carries out what another phase decided, so it asks one step less of the
-    /// model than the turn's own complexity. Deciding is where the capability is needed.
-    asks_less: bool,
-}
-const DESIGN: usize = 0;
-const IMPLEMENT: usize = 1;
-const REVIEW: usize = 2;
-const PHASES: [Phase; 3] = [
-    Phase {
-        name: "design",
-        asks_less: false,
-        instruction: "Plan the work first (設計 / architecture). Change nothing yet. Answer with what has to happen, the pieces involved, the risks, and how the result will be checked. Answer in the language the user used. If the work divides into parts that can be built without each other's code, end with one line holding only {\"parts\":[{\"id\":\"<lowercase letters, digits, ->\",\"brief\":\"what this part builds\",\"paths\":[\"<relative paths it writes>\"],\"after\":[\"<ids of parts whose code it needs>\"]}]}; two parts that only have to agree on an interface need not wait for each other. Leave it out when the work does not divide.",
-        hands_over: true,
-    },
-    Phase {
-        name: "implement",
-        asks_less: true,
-        instruction: "Carry out the task, following the plan above. Verify the result yourself. Answer in the language the user used.",
-        hands_over: true,
-    },
-    Phase {
-        name: "review",
-        asks_less: false,
-        instruction: "Review (レビュー) the work just done. Change nothing. Report what is wrong or missing, most important first, in the language the user used. End with one line: \"VERDICT: fix\" when something must change, or \"VERDICT: ok\" when it is sound.",
-        hands_over: true,
-    },
-];
 
 /// Every prompt Orochi writes is English, whatever the user writes in; without this the seats
 /// answer in different languages.
@@ -1995,7 +1962,15 @@ impl Session<'_> {
     /// all read this same answer instead of asking again about the same words. `None` when the
     /// user stopped the turn while it was being classified: Esc stops whatever is running.
     async fn profile(&mut self, text: &str) -> Option<TaskDescriptor> {
-        let mut task = crate::router::profiler::profile(text, self.root);
+        self.refine_profile(text, crate::router::profiler::profile(text, self.root))
+            .await
+    }
+
+    async fn refine_profile(
+        &mut self,
+        text: &str,
+        mut task: TaskDescriptor,
+    ) -> Option<TaskDescriptor> {
         let Ok(policies) = Registry::load(self.data) else {
             return Some(task);
         };
@@ -2387,29 +2362,11 @@ impl Session<'_> {
         Ok(())
     }
 
-    /// Splits work Orochi judges too big for one turn: a design pass for the hard thinking,
-    /// then implementation, then a review when the result needs checking.
+    /// Splits complex work regardless of its deliverable: plan, do the work, then check it.
     fn steps(&mut self, message: &Message, task: &TaskDescriptor) -> Vec<usize> {
-        match message.steps {
-            Steps::Solo => return vec![],
-            Steps::Team => return vec![DESIGN, IMPLEMENT, REVIEW],
-            Steps::Auto => {}
-        }
-        // Questions, reviews and one-line edits stay a single turn.
-        if matches!(
-            task.task_type.as_str(),
-            "review" | "investigation" | "documentation" | "small_edit" | "discussion"
-        ) {
-            return vec![];
-        }
-        let steps = match task.complexity {
-            crate::types::Complexity::Extreme => vec![DESIGN, IMPLEMENT, REVIEW],
-            crate::types::Complexity::Complex => vec![DESIGN, IMPLEMENT],
-            _ if task.requires_architecture_change => vec![DESIGN, IMPLEMENT],
-            _ => vec![],
-        };
-        if !steps.is_empty() {
-            let names: Vec<_> = steps.iter().map(|i| PHASES[*i].name).collect();
+        let steps = workflow::steps(message.steps, task);
+        if !steps.is_empty() && message.steps == Steps::Auto {
+            let names: Vec<_> = steps.iter().map(|i| Phase::new(*i, task).name).collect();
             self.view.note(&format!(
                 "{} task · {}",
                 task.complexity.key(),
@@ -2429,12 +2386,15 @@ impl Session<'_> {
     ) -> Result<()> {
         let task = message.text.clone();
         let mut handover = String::new();
+        let mut plan = String::new();
+        let mut deliverable = String::new();
+        let mut last_stage = None;
         let mut steps = steps;
         let mut index = 0;
         while index < steps.len() {
-            let phase = &PHASES[steps[index]];
+            let phase = Phase::new(steps[index], descriptor);
             self.view.phase(phase.name, index + 1, steps.len());
-            let text = format!(
+            let mut text = format!(
                 "{}\n\nTask:\n{task}{}",
                 phase.instruction,
                 if handover.is_empty() {
@@ -2443,6 +2403,16 @@ impl Session<'_> {
                     format!("\n\nFrom the previous step:\n{handover}")
                 }
             );
+            if index > 1 && !plan.is_empty() {
+                text.push_str(&format!("\n\nPlan and acceptance criteria:\n{plan}"));
+            }
+            if index > 1 && phase.stage == IMPLEMENT && !deliverable.is_empty() {
+                // Findings and written answers may exist only in the response, so a
+                // correction must receive the work itself as well as the review notes.
+                text.push_str(&format!(
+                    "\n\nPrevious deliverable to correct:\n{deliverable}"
+                ));
+            }
             let step = Message {
                 queued: None,
                 text,
@@ -2454,10 +2424,17 @@ impl Session<'_> {
                 steps: Steps::Solo,
                 from_helpers: false,
             };
-            let hands_over = phase.hands_over;
             let implementing = steps[index] == IMPLEMENT;
             let reviewing = steps[index] == REVIEW && index + 1 == steps.len();
-            let (code, reply) = match self.execute(step, Some(phase), None).await {
+            // Added workflow instructions must not erase the user's kind of work or lower
+            // its difficulty. The classifier may still recommend a model for this phase.
+            let seed = phase.profile(descriptor);
+            let kind = seed.task_type.clone();
+            let Some(mut profile) = self.refine_profile(&step.text, seed).await else {
+                break;
+            };
+            profile.task_type = kind;
+            let (code, reply) = match self.execute(step, Some(&phase), Some(profile)).await {
                 Ok(result) => result,
                 Err(error) => {
                     self.view.result(ERR, &format!("✗ {error:#}"));
@@ -2465,13 +2442,17 @@ impl Session<'_> {
                 }
             };
             let designed = steps[index] == DESIGN;
+            last_stage = Some(phase.stage);
             let (reply, parts) = if designed {
                 divided(&reply)
             } else {
                 (reply, None)
             };
-            if hands_over {
-                handover = bounded(&reply, AGENT_CHARS);
+            handover = bounded(&reply, AGENT_CHARS);
+            if designed {
+                plan = bounded(&reply, 4096);
+            } else if implementing {
+                deliverable = handover.clone();
             }
             if designed
                 && code == 0
@@ -2519,6 +2500,26 @@ impl Session<'_> {
                 break;
             }
             index += 1;
+        }
+        if !deliverable.is_empty() {
+            let result = if last_stage == Some(REVIEW) {
+                let review = bounded(&handover, 4096);
+                self.conversation.pending = Some(format!(
+                    "The independent review of the previous task concluded:\n{review}"
+                ));
+                format!("{deliverable}\n\nIndependent review:\n{review}")
+            } else {
+                deliverable
+            };
+            self.conversation.remember(&message.text, &result);
+            self.conversation.panel =
+                (descriptor.task_type == "discussion" && descriptor.collaborative).then_some((
+                    descriptor
+                        .seats
+                        .unwrap_or(2)
+                        .clamp(2, crate::router::roles::MAX_SEATS),
+                    true,
+                ));
         }
         self.refresh_status(None);
         Ok(())
@@ -2623,6 +2624,9 @@ impl Session<'_> {
             }
         }
         let mut seats = crate::router::roles::seats(&profile);
+        if phase.is_some_and(|p| p.stage != IMPLEMENT) {
+            seats[0].writes = false;
+        }
         // A seat is a whole session and costs like one however small the work turns out to be.
         if seats.len() > 1
             && !crate::router::roles::worth_seating(self.config, self.store, &profile)
@@ -2635,7 +2639,7 @@ impl Session<'_> {
             && self.feed.is_some()
             // `/solo` asks for one agent; a step of a plan carries Solo for its own reason.
             && match phase {
-                Some(phase) => phase.name == "implement",
+                Some(phase) => phase.stage == IMPLEMENT,
                 None => !matches!(message.steps, Steps::Solo),
             } {
             seats[1..].to_vec()
@@ -2757,7 +2761,7 @@ impl Session<'_> {
         let mut finished: BTreeSet<&'static str> = BTreeSet::new();
         let mut reply = String::new();
         // The design's division of the work is for Orochi, which shows the order instead.
-        let mut withhold = Withhold::new(phase.is_some_and(|p| p.name == PHASES[DESIGN].name));
+        let mut withhold = Withhold::new(phase.is_some_and(|p| p.stage == DESIGN));
         let mut pending: Option<Pending> = None;
         let mut signalled = false;
         let mut stopping = false;
@@ -3096,7 +3100,7 @@ impl Session<'_> {
             });
         }
         // Follow-up messages continue the phase that did the work; a guest turn changes nothing.
-        let continues = !guest && phase.is_none_or(|p| p.name == "implement");
+        let continues = !guest && phase.is_none_or(|p| p.stage == IMPLEMENT);
         if let Some(continuation) = continuation.filter(|_| continues) {
             self.approval.modes = continuation.modes.clone();
             let session = &continuation.session;
@@ -4466,7 +4470,7 @@ impl View {
         }
         out.push_str(&format!(
             "  {}\n",
-            self.paint(&format!("1;{BRAND}"), "What do you want to build?")
+            self.paint(&format!("1;{BRAND}"), "What would you like to work on?")
         ));
         if compact {
             out.push_str(&format!(

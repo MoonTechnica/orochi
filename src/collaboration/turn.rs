@@ -352,12 +352,16 @@ fn prompt(
         .collect();
     let parallel = report.plan.indices(Role::Implementer).len() > 1;
     let waves = report.plan.waves();
+    let task = profiler::profile(&report.task, &report.root);
     let role = match participant.role {
         Role::Implementer if turn.unit.is_some() => {
-            "Build your part of the task, and only that part, in your workspace. Other parts are built by other sessions: some at the same time in separate copies, some after yours on top of what you leave. Orochi merges them, so stay within the paths you own and leave the other parts alone. The project may fail its checks until every part is in; Orochi verifies the integrated result. Summarize what you changed and what the parts after yours need to know."
+            "Carry out your part of the task, and only that part, in your workspace. Produce the research, analysis, document or code that this part requests. Other parts are handled by other sessions: some at the same time in separate copies, some after yours using what you leave. Orochi merges file deliverables, so stay within the paths you own and leave the other parts alone. The combined work may not pass its checks until every part is in; Orochi verifies the integrated result. Summarize your findings or changes and what the parts after yours need to know."
         }
         Role::Coordinator => {
-            "Coordinate the user's task. Read the saved plan, peer results and verification evidence. Update the implementation plan, explain decisions, track unresolved questions and recommend the next step. Do not edit files. Reply ONLY with JSON: {\"plan\":[\"...\"],\"decisions\":[\"...\"],\"open_questions\":[\"...\"],\"next_step\":\"...\",\"messages\":[]}. Orochi owns stage transitions and evaluates the final result; do not claim an unverified result is complete."
+            "Coordinate the user's task. Read the saved plan, peer results and verification evidence. Update the work plan and acceptance criteria, explain decisions, track unresolved questions and recommend the next step. Choose research, analysis, writing, discussion or implementation according to the requested deliverable. Do not edit files. Reply ONLY with JSON: {\"plan\":[\"...\"],\"decisions\":[\"...\"],\"open_questions\":[\"...\"],\"next_step\":\"...\",\"messages\":[]}. Orochi owns stage transitions and evaluates the final result; do not claim an unverified result is complete."
+        }
+        Role::Implementer if !task.is_coding() => {
+            "Produce the requested research, analysis, document or discussion outcome in your workspace. Follow the user's task and saved work plan; do not turn it into software implementation. Other worker sessions may handle separate parts: keep to your owned output paths when given and avoid unrelated edits. Use peer handoffs as evidence to assess, distinguish facts from assumptions, and summarize findings, sources, deliverables and open questions for independent review. Write files only when the requested deliverable calls for them; a response can itself be the deliverable."
         }
         Role::Implementer if parallel => {
             "Implement your part of the task in your workspace. Other implementer sessions work concurrently in separate copies and Orochi merges all results, so keep to your owned paths when given and avoid unrelated rewrites. Summarize changes and open questions for the other sessions."
@@ -366,10 +370,10 @@ fn prompt(
             "Implement the task in your workspace. Summarize changes and open questions for the independent review sessions."
         }
         Role::Reviewer => {
-            "Review the implementation in your private workspace. Do not edit files. Check the task requirements and report concrete defects and suggested fixes to the integration session."
+            "Review the deliverables and peer responses in your private workspace. Do not edit files. Check the task requirements, correctness, evidence, reasoning, coverage and acceptance criteria. For research check sources and conclusions; for documents check accuracy and completeness; for code check defects and relevant tests. Report concrete defects and suggested corrections to the integration session."
         }
         Role::Integrator => {
-            "Integrate the implementation and independent review findings in your workspace. Fix confirmed defects, resolve any merge conflict markers, explain disagreements and verify the result."
+            "Combine the deliverables and peer responses with the independent review findings into the result the user requested. Correct confirmed errors and omissions, assess evidence and unresolved disagreements, and verify the result against the task and acceptance criteria. In your workspace resolve any file merge conflict markers. Write files only when the requested deliverable calls for them; a response can itself be the final result."
         }
     };
     let mut text = format!(
@@ -387,7 +391,7 @@ fn prompt(
         && seats > 1
     {
         text.push_str(&format!(
-            "This first turn decides how the work divides. If it divides into pieces that can be built without each other's code, add \"parts\": [{{\"id\":\"<lowercase letters, digits, ->\",\"brief\":\"what this part builds\",\"paths\":[\"<relative path it writes>\"],\"after\":[\"<id of a part whose code it needs>\"]}}]. Up to {seats} parts run at the same time, each in its own copy, and are merged afterwards; parts that write the same paths, or name none, run one after the other. Two parts that only have to agree on an interface can run at the same time; one that needs another's code comes after it. Leave \"parts\" out when the work does not divide.\n"
+            "This first turn decides how the work divides. If it divides into pieces with separate file deliverables, add \"parts\": [{{\"id\":\"<lowercase letters, digits, ->\",\"brief\":\"what this part produces\",\"paths\":[\"<relative output path it writes>\"],\"after\":[\"<id of a part whose findings or deliverables it needs>\"]}}]. Up to {seats} parts run at the same time, each in its own copy, and are merged afterwards; parts that write the same paths, or name none, run one after the other. Two independent research or writing parts can run together; a part that needs another's results comes after it. Leave \"parts\" out when the work does not divide into file deliverables.\n"
         ));
     }
     if let Some(unit) = &turn.unit {
@@ -429,7 +433,7 @@ fn prompt(
     }
     if !turn.markers.is_empty() && turn.kind == TurnKind::Scheduled {
         text.push_str(&format!(
-            "Orochi merged concurrent implementations. Resolve every conflict: {}\n",
+            "Orochi merged concurrent deliverables. Resolve every conflict: {}\n",
             serde_json::to_string(&final_merge(report).map(|m| &m.conflicts))?
         ));
     }
@@ -507,7 +511,14 @@ async fn select(
     let store = cx.store;
     let participant = &turn.participant;
     let root = &turn.workspace;
-    let descriptor = profiler::profile(&report.task, &cx.output.join("baseline"));
+    let mut descriptor = profiler::profile(&report.task, &cx.output.join("baseline"));
+    match participant.role {
+        Role::Coordinator if descriptor.is_coding() => {
+            descriptor.task_type = "architecture".into();
+        }
+        Role::Reviewer => descriptor.task_type = "review".into(),
+        _ => {}
+    }
     // Preferences only apply to the first attempt. Fallback gets its own reasoning/mode
     // from policy; a Claude model name must never constrain a Codex replacement.
     let has_preference = !participant.agent.is_empty() || participant.model.is_some();
@@ -559,7 +570,7 @@ async fn select(
         let vault = crate::mcp::oauth::Vault::new(store.data_dir(), &scoped.mcp);
         crate::mcp::oauth::authorize(&mut mcp, &vault).await;
         let (mut clients, discovered) = tokio::select! {
-            result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(sink), overrides.model.as_deref(), Some(&participant.id), false, &mcp) => result?,
+            result = scheduler::discover_as(&scoped, root, store, overrides.agent.as_deref(), config.scheduler.permission, Some(sink), overrides.model.as_deref(), Some(&participant.id), matches!(participant.role, Role::Coordinator | Role::Reviewer), &mcp) => result?,
             _ = cx.since.wait() => return Err(AgentError::new(ErrorKind::Cancelled, "interrupted during discovery").into()),
         };
         failures.extend(

@@ -104,7 +104,7 @@ def chat(messages, lines, wait=True, delay=0.01, finish=0.0, seats=0, env=None, 
 
     try:
         done = lambda s, n: sum("Fixture completed." in row for row in s.text()) >= n
-        pump(START, until=lambda s: "What do you want to build?" in "\n".join(s.text()))
+        pump(START, until=lambda s: "What would you like to work on?" in "\n".join(s.text()))
         # `wait=False` types the next message while a row is half written, which is when a
         # queued line can land on top of the agent's own text.
         open_row = lambda s: any(
@@ -173,7 +173,7 @@ def typing(chunks, lines=1, during_turn=False):
 
     shots = []
     try:
-        pump(START, until=lambda s: "What do you want to build?" in "\n".join(s.text()))
+        pump(START, until=lambda s: "What would you like to work on?" in "\n".join(s.text()))
         if during_turn:
             # Candidates have to survive the agent streaming into the transcript above them.
             os.write(master, b"keep talking\n")
@@ -267,7 +267,7 @@ MOCK_LOG = "{dir / 'agent.jsonl'}"
 
     shown = lambda text: lambda s: any(text in row for row in s.text())
     try:
-        pump(START, until=shown("What do you want to build?"))
+        pump(START, until=shown("What would you like to work on?"))
         os.write(master, b"rewrite the entire architecture from scratch")
         pump(START, until=shown("from scratch"))
         os.write(master, b"\n")
@@ -353,7 +353,7 @@ MOCK_LOG = "{self.log}"
             env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS)))
         os.close(slave)
         self.screen = screen_module.Screen(ROWS, COLS)
-        self.wait("What do you want to build?")
+        self.wait("What would you like to work on?")
 
     def pump(self, seconds, until=None):
         end = time.time() + seconds

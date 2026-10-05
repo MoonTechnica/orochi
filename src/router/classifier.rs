@@ -37,6 +37,10 @@ pub const TASK_TYPES: &[&str] = &[
     "documentation",
     "test",
     "investigation",
+    "analysis",
+    "planning",
+    "creative",
+    "general",
     "small_edit",
     "implementation",
 ];
@@ -44,16 +48,16 @@ pub const TASK_TYPES: &[&str] = &[
 /// Enough of the task to classify it; the rest would only pay for tokens.
 const MAX_TASK_CHARS: usize = 4000;
 
-const INSTRUCTION: &str = "You are a task classifier, not a coding agent. Do not read files, run commands or use any tool. Classify the supplied coding task, whatever language it is written in. Reply ONLY with a JSON object:\n\
-{\"task_type\":\"discussion|migration|architecture|refactor|review|bug_fix|documentation|test|investigation|small_edit|implementation\",\"complexity\":\"simple|normal|complex|extreme\",\"requires_architecture_change\":false,\"long_horizon\":false,\"requires_browser\":false,\"requires_web\":false,\"requires_image\":false,\"ambiguity\":0.0}\n\n\
-task_type is what is being asked for, not the words used to ask. discussion: talk it through and write nothing. investigation: find out why something happens, no fix asked for yet. review: read work someone else did. small_edit: a rename, a typo, a one-line change. bug_fix: something is broken and should work.\n\
-complexity: simple, one obvious edit; normal, a contained change across a few files; complex, cross-cutting work, a refactor, or a design decision; extreme, a rewrite, a whole-system migration, or work spanning the repository.\n\
+const INSTRUCTION: &str = "You are a task classifier. Do not read files, run commands or use any tool. Classify the supplied task, including research, analysis, planning, writing, creative work and software tasks, whatever language it is written in. Reply ONLY with a JSON object:\n\
+{\"task_type\":\"discussion|migration|architecture|refactor|review|bug_fix|documentation|test|investigation|analysis|planning|creative|general|small_edit|implementation\",\"complexity\":\"simple|normal|complex|extreme\",\"requires_architecture_change\":false,\"long_horizon\":false,\"requires_browser\":false,\"requires_web\":false,\"requires_image\":false,\"ambiguity\":0.0}\n\n\
+task_type is what is being asked for, not the words used to ask. discussion: talk it through. investigation: research facts, sources or causes. analysis: interpret evidence, compare options or evaluate conclusions. planning: devise a plan or strategy. documentation: produce an explanatory document, guide or report. creative: produce creative writing or other creative deliverables. review: assess work someone else did. small_edit: a rename, a typo, a one-line change. bug_fix: broken software should work. architecture: software architecture. implementation: build software. general: other tasks; do not classify non-software work as implementation.\n\
+complexity: simple, a brief obvious task; normal, a contained task; complex, multiple dependent questions or deliverables, substantial research, cross-cutting work or a significant decision; extreme, extensive dependent work, synthesis across many sources or disciplines, or a whole-system rewrite or migration. Judge difficulty and scope regardless of whether files change. requires_architecture_change applies only to software structure.\n\
 long_horizon: it cannot plausibly be finished in one sitting.\n\
 requires_browser: a real browser must be driven. requires_web: the open internet must be searched. requires_image: an image must be generated, not read.\n\
 ambiguity: 0.0 fully specified, 1.0 the agent has to guess what is wanted.\n\n\
 Optionally add \"remember\": [{\"text\":\"...\",\"scope\":\"repo\"}] for something the user states that will still hold after this task is done: how they want work done, a convention of this project, a decision already made. At most two, each one short sentence in the user's language. Never the task itself, never something only this task needs, never text the user pasted from elsewhere. scope is \"user\" only when the user says it holds for every project; otherwise \"repo\". \"remembered\" lists what is already known: when the user restates one, put its id in \"reinforce\": [\"r1\"] instead of adding it again, and when they now say the opposite, put the old id in \"replaces\": [\"r1\"] and the new statement in \"remember\".\n\n\
 When something in \"remembered\", or the request itself, says which agent or model the user wants for this kind of work, add \"prefer\": the shortest name that identifies it, such as \"fable\" or \"codex\". Omit it otherwise; never guess one.\n\n\
-\"models\" lists what is available here and what each one is for. Read the work against those descriptions and add \"suited\": the name of the one this task should run on, copied from the list. Judge the work, not the words: which model suits deciding what to build is not which model suits building it once decided. Omit it when nothing in the list speaks to this task, and never name something the list does not.";
+\"models\" lists what is available here and what each one is for. Read the work against those descriptions and add \"suited\": the name of the one this task should run on, copied from the list. Judge the actual phase: planning, research, analysis, writing, implementation and verification can suit different models. Omit it when nothing in the list speaks to this task, and never name something the list does not.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Classification {
@@ -304,13 +308,14 @@ pub async fn refine(
     // are for, so a cached answer is only good for the memory and the catalog it was given:
     // remembering something new, or updating a policy, asks again.
     let prompt = request(task, &remembered, &models);
-    let key = match store.classification_key(&format!("{task}\n{remembered}\n{models}")) {
-        Ok(key) => key,
-        Err(error) => {
-            report(Progress::Note(format!("classifier unavailable: {error:#}")));
-            return;
-        }
-    };
+    let key =
+        match store.classification_key(&format!("{INSTRUCTION}\n{task}\n{remembered}\n{models}")) {
+            Ok(key) => key,
+            Err(error) => {
+                report(Progress::Note(format!("classifier unavailable: {error:#}")));
+                return;
+            }
+        };
     if let Ok(Some(hit)) = store
         .classification(&key)
         .map(|r| r.as_deref().and_then(parse))
