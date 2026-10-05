@@ -302,7 +302,7 @@ def finish(request):
             if discussion:
                 messages = [{"to": "AUTHOR", "body": "Please add input validation"}, {"to": "nobody", "body": "lost"}]
             text = "REVIEW_FINDING: integrate the confirmed fix"
-        elif "Integrate the implementation" in prompt:
+        elif role == "integrator":
             if parts:
                 pass
             elif parallel:
@@ -495,6 +495,10 @@ for line in sys.stdin:
             send({"method": "session/update", "params": {"sessionId": session, "update": {
                 "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ["MOCK_CLASSIFICATION"]}}}})
             result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 20, "inputTokens": 15, "outputTokens": 5}})
+        elif os.environ.get("MOCK_REVIEW_REPLY") and "You are a task classifier" not in request["params"]["prompt"][0]["text"] and "Review (レビュー) the work just done" in request["params"]["prompt"][0]["text"]:
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ["MOCK_REVIEW_REPLY"]}}}})
+            result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 40, "inputTokens": 30, "outputTokens": 10}})
         elif os.environ.get("MOCK_DESIGN_REPLY") and "Plan the work first" in request["params"]["prompt"][0]["text"]:
             # Streamed in small pieces, so whatever reads it sees every boundary.
             reply = os.environ["MOCK_DESIGN_REPLY"]

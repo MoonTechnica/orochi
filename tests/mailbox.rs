@@ -810,7 +810,7 @@ fn a_request_for_several_agents_seats_all_of_them_in_one_process() {
 /// The console path has its own profile and its own seat decision, so the classifier being
 /// wired into `scheduler` proves nothing about it. A task the local heuristic reads as an
 /// ordinary one-agent change must actually get the heavier treatment when the classifier
-/// says so — and the phase split and the seats must agree, having asked only once.
+/// says so — and the phase split and the seats must agree on the original task's difficulty.
 #[test]
 fn a_chat_turn_is_seated_by_the_classifier_not_by_the_keyword_profile() {
     let dir = tempfile::tempdir().unwrap();
@@ -886,21 +886,22 @@ fn a_chat_turn_is_seated_by_the_classifier_not_by_the_keyword_profile() {
             .is_empty(),
         "a complex turn was left with one seat: {stderr}"
     );
-    // One request, and one line about it. A second announcement used to arrive while the turn
-    // was already drawing its route and landed on top of that half-written row.
+    // One classification of the original request, then one per phase to choose its model.
+    // Complex reviews now split too; announcements arrive before each phase's route.
     let log = std::fs::read_to_string(dir.path().join("agent.jsonl")).unwrap_or_default();
     assert_eq!(
         log.lines()
             .filter(|l| l.contains("You are a task classifier"))
             .count(),
-        1,
+        3,
         "{log}"
     );
     assert_eq!(
         stderr.matches("classified as").count(),
-        1,
-        "the turn announced its classification more than once: {stderr}"
+        3,
+        "expected the task and its two phases to be classified: {stderr}"
     );
+    assert!(stderr.contains("complex task · plan → analyze"), "{stderr}");
 
     // The same reply said what was worth keeping; nothing extra was asked for it. It is shown
     // when it is kept, lives outside telemetry, and reaches the next fresh session.

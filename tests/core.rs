@@ -40,6 +40,45 @@ fn supporting_readme_and_tests_do_not_downgrade_application_work() {
 }
 
 #[test]
+fn non_software_tasks_keep_their_kind_and_can_receive_a_second_opinion() {
+    let root = tempfile::tempdir().unwrap();
+    for (text, kind, lead) in [
+        (
+            "Research across the entire market",
+            "investigation",
+            "investigator",
+        ),
+        (
+            "Compare options across the entire market",
+            "analysis",
+            "analyst",
+        ),
+        (
+            "新規事業の戦略を全体から立案してください",
+            "planning",
+            "planner",
+        ),
+        (
+            "Write documentation across the entire collection",
+            "documentation",
+            "writer",
+        ),
+        ("物語の全体を創作してください", "creative", "creator"),
+    ] {
+        let task = profiler::profile(text, root.path());
+        assert_eq!(task.task_type, kind, "{text}");
+        assert!(!task.is_coding());
+        assert!(!task.requires_architecture_change, "{text}");
+        let seats = roles::seats(&task);
+        assert_eq!(seats.len(), 2, "{text}");
+        assert_eq!(seats[0].name, lead);
+        assert!(!seats[1].writes);
+    }
+    let small = profiler::profile("READMEの起動手順を更新してください", root.path());
+    assert_eq!(roles::seats(&small).len(), 1);
+}
+
+#[test]
 fn quota_backoff_probe_and_recovery() {
     let mut state = RuntimeState::new("codex", "*");
     let error = AgentError::new(ErrorKind::RateLimit, "limited");

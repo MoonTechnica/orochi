@@ -239,6 +239,9 @@ impl Scenario {
         self.temp.path().join("output")
     }
     fn command(&self, resume: bool) -> Command {
+        self.command_for(resume, "Implement a small function")
+    }
+    fn command_for(&self, resume: bool, task: &str) -> Command {
         let config = self.temp.path().join("config.toml");
         fs::write(&config, toml::to_string(&self.config).unwrap()).unwrap();
         let plan = self.temp.path().join("plan.json");
@@ -253,10 +256,7 @@ impl Scenario {
         if resume {
             cmd.arg("collaborate-resume");
         } else {
-            cmd.arg("collaborate")
-                .arg("Implement a small function")
-                .arg("--plan")
-                .arg(plan);
+            cmd.arg("collaborate").arg(task).arg("--plan").arg(plan);
         }
         cmd.arg("--output").arg(self.output());
         cmd
@@ -288,6 +288,34 @@ impl Scenario {
             .filter(|r| r["method"] == "session/prompt")
             .collect()
     }
+}
+
+#[test]
+fn research_collaboration_reviews_and_combines_findings_without_requiring_code() {
+    let mut s = Scenario::new("unused", "rate_limit");
+    s.config.classifier.enabled = false;
+    s.config.evaluator.checks.clear();
+    let result = s
+        .command_for(false, "Research the available sources")
+        .output()
+        .unwrap();
+    succeeded(&result);
+    let report = s.report();
+    assert_eq!(report["status"], "completed");
+    assert_eq!(report["outcome"], "partial_success");
+    let prompts = s.prompts("primary");
+    let text = |role: &str| {
+        prompts
+            .iter()
+            .filter_map(|r| r["params"]["prompt"][0]["text"].as_str())
+            .find(|p| p.contains(&format!("Role: {role}.")))
+            .unwrap()
+    };
+    assert!(text("Implementer").contains("Produce the requested research"));
+    assert!(text("Reviewer").contains("For research check sources and conclusions"));
+    assert!(text("Integrator").contains("Combine the deliverables and peer responses"));
+    assert!(text("Reviewer").contains("Peer handoffs and previous attempts"));
+    assert!(text("Integrator").contains("Implementation ready"));
 }
 
 #[test]

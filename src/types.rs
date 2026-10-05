@@ -228,6 +228,19 @@ pub struct TaskDescriptor {
     pub suited: Option<String>,
 }
 impl TaskDescriptor {
+    pub fn is_coding(&self) -> bool {
+        matches!(
+            self.task_type.as_str(),
+            "implementation"
+                | "architecture"
+                | "migration"
+                | "refactor"
+                | "bug_fix"
+                | "test"
+                | "small_edit"
+        )
+    }
+
     pub fn size_prior(&self) -> f64 {
         size_prior(self.estimated_context, self.estimated_scope)
     }

@@ -180,7 +180,7 @@ impl TaskEnvelope {
         self.tests = checks;
     }
     pub fn prompt(&self, handoff: bool) -> String {
-        let prefix = "You are executing a coding task scheduled by Orochi. The filesystem is the source of truth. Follow repository instructions, preserve existing changes, and verify your work.\n\n";
+        let prefix = "You are executing a task scheduled by Orochi. Produce the requested deliverable, whether it is code, research, analysis or a document. Check relevant files and sources, follow workspace instructions, preserve existing changes, and verify your work against the request.\n\n";
         if handoff {
             format!(
                 "{prefix}Continue the task using this compact handoff. A previous attempt stopped; changes may be incomplete. Inspect the filesystem and git before continuing. Do not assume a passed check proves the whole task is complete.\n{}",

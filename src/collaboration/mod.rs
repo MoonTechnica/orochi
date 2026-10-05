@@ -55,6 +55,8 @@ pub struct Participant {
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     Coordinator,
+    /// Produces the requested deliverable: code, research, analysis or documents.
+    /// The serialized name is retained for existing plans and checkpoints.
     Implementer,
     Reviewer,
     Integrator,
