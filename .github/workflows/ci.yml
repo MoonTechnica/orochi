@@ -3,6 +3,12 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  windows-launcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - shell: pwsh
+        run: ./tests/windows-launcher.ps1
   test:
     strategy:
       matrix:

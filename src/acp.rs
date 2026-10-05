@@ -672,7 +672,7 @@ impl Client {
             events,
             // Routing advisers get no tools beyond the agent's own.
             peer: (!isolated)
-                .then(|| crate::mailbox::register_session(peer))
+                .then(|| crate::mailbox::register_session_at(peer, root))
                 .flatten(),
             mcp: vec![],
             mcp_skipped: vec![],
@@ -747,6 +747,18 @@ impl Client {
         }));
         client.mcp = attached;
         client.mcp_skipped = skipped;
+        if client.config.sandboxed
+            && let Some(peer) = &mut client.peer
+        {
+            peer.relay = Some(crate::mailbox::relay::Relay::start(peer, root).map_err(
+                |error| {
+                    AgentError::new(
+                        ErrorKind::Configuration,
+                        format!("cannot start sandbox mailbox relay: {error:#}"),
+                    )
+                },
+            )?);
+        }
         client.new_session(root).await?;
         Ok(client)
     }
@@ -832,10 +844,12 @@ impl Client {
     /// peer first — a routing adviser has neither — then the MCP servers configured for this
     /// run, minus the ones this agent cannot take.
     fn coordination(&self) -> Vec<McpServer> {
-        // The mailbox server is this machine's own binary; inside a sandbox it cannot start
-        // until the relay exists (`docs/sandbox-design.md` §8.2).
-        let peer = self.peer.as_ref().filter(|_| !self.config.sandboxed);
-        let mut servers = match peer.and_then(crate::mailbox::server_for) {
+        let mut servers = match self.peer.as_ref().and_then(|peer| {
+            peer.relay
+                .as_ref()
+                .map(|relay| relay.server())
+                .or_else(|| crate::mailbox::server_for(peer))
+        }) {
             Some((name, command, args)) => vec![McpServer::Stdio(
                 McpServerStdio::new(name, command).args(args),
             )],
@@ -860,9 +874,6 @@ impl Client {
         self.peer.as_ref().map(|peer| peer.id.as_str())
     }
     pub fn peer_note(&self) -> Option<String> {
-        if self.config.sandboxed {
-            return None;
-        }
         self.peer.as_ref().and_then(crate::mailbox::prompt_note_for)
     }
     /// Joins the mailbox as this session and tells other agents what it is running.

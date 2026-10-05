@@ -55,7 +55,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 13] = [
+const COMMANDS: [Command; 14] = [
     Command {
         name: "help",
         aliases: &[],
@@ -125,6 +125,13 @@ const COMMANDS: [Command; 13] = [
         usage: "",
         about: "Show the agent, model and session in use",
         anytime: true,
+    },
+    Command {
+        name: "workspaces",
+        aliases: &[],
+        usage: "",
+        about: "Show retained worktrees owned by this conversation",
+        anytime: false,
     },
     Command {
         name: "memory",
@@ -327,6 +334,7 @@ struct Session<'a> {
     data: &'a Path,
     store: &'a Store,
     root: &'a Path,
+    workspace_id: String,
     options: Options,
     view: View,
     /// Whether there is a terminal to ask a question at. Without one every stdin line is a
@@ -539,6 +547,10 @@ pub async fn run_with(
         data,
         store,
         root,
+        workspace_id: options
+            .thread
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         conversation: Conversation {
             resume: options.resume.clone(),
             ..Default::default()
@@ -799,6 +811,26 @@ impl<'a> Session<'a> {
                 let status = self.view.session_status(&self.conversation, self.root);
                 self.view.rows(status);
             }
+            "workspaces" => {
+                let directory = self.env().workspace;
+                let rows = (|| -> Result<Vec<String>> {
+                    if !directory.join("workspaces.json").exists() {
+                        return Ok(vec!["No worker workspaces in this conversation".into()]);
+                    }
+                    let work = crate::workspaces::Workspaces::open(self.root, &directory)?;
+                    let mut rows = vec![format!("lead · {}", self.root.display())];
+                    rows.extend(
+                        work.workspaces
+                            .iter()
+                            .map(|w| format!("{} · {}", w.name, w.root.display())),
+                    );
+                    Ok(rows)
+                })();
+                match rows {
+                    Ok(rows) => self.view.rows(rows),
+                    Err(error) => self.view.result(WARN, &format!("{error:#}")),
+                }
+            }
             "memory" => self.memory(argument),
             "mcp" => self.mcp = Some(argument.to_owned()),
             "new" | "clear" => {
@@ -815,6 +847,7 @@ impl<'a> Session<'a> {
                         .note(&format!("Stopped {}", background_agents(stopped)));
                 }
                 self.conversation = Conversation::default();
+                self.workspace_id = uuid::Uuid::new_v4().to_string();
                 if let Some(recorded) = &mut self.recorded {
                     recorded.reset();
                 }
@@ -950,6 +983,14 @@ impl<'a> Session<'a> {
             root: self.root,
             data: self.data,
             headless: self.headless,
+            permission: self.approval.confirm,
+            workspace: crate::workspaces::directory(
+                self.root,
+                self.recorded
+                    .as_ref()
+                    .and_then(|r| r.thread.as_deref())
+                    .unwrap_or(&self.workspace_id),
+            ),
         }
     }
 
@@ -2529,6 +2570,13 @@ impl Session<'_> {
         phase: Option<&Phase>,
         classified: Option<TaskDescriptor>,
     ) -> Result<(u8, String)> {
+        let mut execution_config = self.config.clone();
+        let directory = self.env().workspace;
+        if crate::sandbox::placement(self.data, self.root, self.config.sandbox.force)?.is_some() {
+            let work = crate::workspaces::Workspaces::open(self.root, &directory)?;
+            crate::sandbox::ops::session(&self.config.sandbox, self.data, &work)?;
+            execution_config.sandbox.session_root = Some(directory);
+        }
         let _lock = workspace_lock(
             self.data,
             &self.store.repository_id(self.root)?,
@@ -2746,7 +2794,7 @@ impl Session<'_> {
         let order = crate::mailbox::Order::new(1 + beside.len());
         let result = {
             let run = scheduler::run_turn(
-                self.config,
+                &execution_config,
                 &policies,
                 self.store,
                 self.root,
@@ -2775,7 +2823,7 @@ impl Session<'_> {
                 Some(events),
                 &mut continuation,
             );
-            let (config, store, rules, order) = (self.config, self.store, &policies, &order);
+            let (config, store, rules, order) = (&execution_config, self.store, &policies, &order);
             // Every other seat runs beside the lead, in this same working tree, reading only.
             let others: futures::stream::FuturesUnordered<_> = aside_runs
                 .into_iter()
@@ -2948,7 +2996,7 @@ impl Session<'_> {
                         let started = grant(
                             feed.as_ref().expect("feed"),
                             helpers,
-                            env,
+                            env.clone(),
                             recorded,
                             Some(&descriptor),
                             lead,
@@ -3516,12 +3564,31 @@ fn grant<'a>(
         }
         let taken = crate::mailbox::our_names();
         let name = background.free_name(&request.name, &|name| taken.contains(name));
+        let workspace = if request.write {
+            match crate::workspaces::Workspaces::open(env.root, &env.workspace)
+                .and_then(|mut work| work.create(&name))
+            {
+                Ok(root) => Some(root),
+                Err(error) => {
+                    refuse(&format!("cannot create workspace: {error:#}"));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(root) = &workspace
+            && let Err(error) = feed.mailbox.set_request_workspace(&request.id, root)
+        {
+            refuse(&format!("cannot record workspace: {error:#}"));
+            continue;
+        }
         let ordinal = 100 + started.len() + background.len();
         let seat = recorded.and_then(|recorded| {
             let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
             let store = recorded.store();
             let seat = store
-                .create_seat(&turn, ordinal, &name, false, true, None, None)
+                .create_seat(&turn, ordinal, &name, false, !request.write, None, None)
                 .ok()?;
             let _ = store.seat_details(&seat, Some(&request.title), true, "lead");
             Some(crate::activity::SeatRef {
@@ -3555,13 +3622,14 @@ fn grant<'a>(
             continue;
         }
         background.start(
-            env,
+            env.clone(),
             lead,
             name.clone(),
             request.title.clone(),
             &request.task,
             descriptor.clone(),
             seat,
+            workspace,
         );
         started.push((name, request.title));
     }

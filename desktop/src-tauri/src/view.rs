@@ -157,6 +157,7 @@ pub fn place(config: &Path, data: &Path, root: &Path, mode: &str, docker: bool) 
 pub struct Sandboxes {
     /// `lima` (a VM on this machine) or `incus` (a client for an Incus host elsewhere).
     pub client: String,
+    pub local: bool,
     /// The Lima VM's state (`Running`, `Stopped`), `None` where it was never created or the
     /// client is `incus`.
     pub vm: Option<String>,
@@ -216,8 +217,11 @@ pub fn sandboxes(config: &Path, data: &Path) -> Result<Sandboxes> {
             .map(|p| (p.clone(), "stopped".to_owned(), None))
             .collect()
     };
-    let reachable = asked && rows.iter().all(|(_, status, _)| status != "unreachable");
+    let reachable = asked && orochi::sandbox::Incus::new(sandbox)
+        .run(&["project", "show", &sandbox.project]).is_ok()
+        && rows.iter().all(|(_, status, _)| status != "unreachable");
     Ok(Sandboxes {
+        local: !lima && sandbox.remote.is_empty(),
         client: if lima { "lima" } else { "incus" }.into(),
         vm,
         reachable,

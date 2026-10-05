@@ -2,16 +2,32 @@
 # Prepares the sandbox host: Incus, a ZFS pool, the bridge and the profiles every sandbox is
 # made from. Run as root by `orochi sandbox up`; safe to run again, and applies changed sizes.
 set -euo pipefail
+trap 'echo "sandbox host: setup failed at line $LINENO" >&2' ERR
 : "${SBX_PROJECT:?}" "${SBX_SUBNET:?}" "${SBX_POOL_GIB:?}" "${SBX_UID:?}" "${SBX_GID:?}"
 : "${SBX_CPU:?}" "${SBX_MEM_GIB:?}" "${SBX_USER:=}" "${SBX_GATEWAY_PORT:?}" "${SBX_VM_IDLE_MINUTES:?}"
 export DEBIAN_FRONTEND=noninteractive
+: "${SBX_MANAGED_VM:=0}"
+if [ ! -d /run/systemd/system ]; then
+  echo 'sandbox host: systemd is required. In WSL2 enable [boot] systemd=true in /etc/wsl.conf, restart that distribution, then retry.' >&2
+  exit 1
+fi
+if [ "$SBX_MANAGED_VM" = 1 ]; then
+  DRIVER=zfs
+else
+  # WSL's kernel does not provide ZFS. Directory storage works on its Linux filesystem;
+  # native Linux can use Btrfs when the kernel supports it.
+  modprobe btrfs 2>/dev/null || true
+  modprobe loop 2>/dev/null || true
+  if grep -qw btrfs /proc/filesystems && losetup --find >/dev/null 2>&1; then DRIVER=btrfs; else DRIVER=dir; fi
+fi
 
 if ! command -v incus >/dev/null; then
-  echo "sandbox host: installing Incus and ZFS"
+  echo "sandbox host: installing Incus"
+  if command -v apt-get >/dev/null; then
   apt-get update -qq
-  apt-get install -y -qq curl gnupg zfsutils-linux
+  apt-get install -y -qq curl gnupg
   mkdir -p /etc/apt/keyrings
-  curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --dearmor -o /etc/apt/keyrings/zabbly.gpg
+  curl -fsSL https://pkgs.zabbly.com/key.asc | gpg --batch --yes --dearmor -o /etc/apt/keyrings/zabbly.gpg
   cat > /etc/apt/sources.list.d/zabbly-incus-stable.sources <<SRC
 Enabled: yes
 Types: deb
@@ -23,8 +39,26 @@ Signed-By: /etc/apt/keyrings/zabbly.gpg
 SRC
   apt-get update -qq
   apt-get install -y -qq incus
+  elif command -v dnf >/dev/null; then
+    dnf install -y incus
+  elif command -v pacman >/dev/null; then
+    pacman -S --needed --noconfirm incus
+  else
+    echo 'sandbox host: install Incus with your distribution package manager, then retry.' >&2
+    exit 1
+  fi
 fi
-command -v zfs >/dev/null || apt-get install -y -qq zfsutils-linux
+package() {
+  if command -v apt-get >/dev/null; then apt-get install -y -qq "$@"
+  elif command -v dnf >/dev/null; then dnf install -y "$@"
+  elif command -v pacman >/dev/null; then pacman -S --needed --noconfirm "$@"
+  else echo 'sandbox host: required storage tools are missing' >&2; exit 1; fi
+}
+if [ "$DRIVER" = zfs ]; then command -v zfs >/dev/null || package zfsutils-linux; fi
+if [ "$DRIVER" = btrfs ]; then command -v btrfs >/dev/null || package btrfs-progs; fi
+command -v python3 >/dev/null || package python3
+if ! command -v resolvectl >/dev/null && command -v apt-get >/dev/null; then package systemd-resolved; fi
+# Debian/Ubuntu name the tools btrfs-progs too.
 
 # Docker inside a container cannot load modules; the host loads them.
 cat > /etc/modules-load.d/orochi-sandbox.conf <<MOD
@@ -41,19 +75,28 @@ for m in $(cat /etc/modules-load.d/orochi-sandbox.conf); do modprobe "$m" 2>/dev
 
 # ZFS's cache counts as used memory and by default grows to half the VM (measured: 2.85 of
 # 3.87 GiB on an 8 GiB VM with one Supabase stack). The sandboxes need that memory more.
+if [ "$DRIVER" = zfs ]; then
 ARC_MAX=$((1024 * 1024 * 1024))
 echo "options zfs zfs_arc_max=$ARC_MAX" > /etc/modprobe.d/orochi-zfs.conf
-[ -w /sys/module/zfs/parameters/zfs_arc_max ] && echo "$ARC_MAX" > /sys/module/zfs/parameters/zfs_arc_max
+if [ -w /sys/module/zfs/parameters/zfs_arc_max ]; then echo "$ARC_MAX" > /sys/module/zfs/parameters/zfs_arc_max; fi
+fi
 
 # raw.idmap may only name IDs root is delegated.
 grep -qx "root:${SBX_UID}:1" /etc/subuid || echo "root:${SBX_UID}:1" >> /etc/subuid
 grep -qx "root:${SBX_GID}:1" /etc/subgid || echo "root:${SBX_GID}:1" >> /etc/subgid
+systemctl enable incus 2>/dev/null || true
 systemctl restart incus 2>/dev/null || true
+incus admin waitready --timeout=60
 [ -n "$SBX_USER" ] && usermod -aG incus-admin "$SBX_USER" || true
 
 if ! incus storage show sbx-pool >/dev/null 2>&1; then
   incus admin init --minimal 2>/dev/null || true
-  incus storage create sbx-pool zfs size="${SBX_POOL_GIB}GiB"
+  if [ "$DRIVER" = dir ]; then
+    incus storage create sbx-pool dir
+    echo 'sandbox host: directory storage; disk quotas and copy-on-write clones are unavailable'
+  else
+    incus storage create sbx-pool "$DRIVER" size="${SBX_POOL_GIB}GiB"
+  fi
 else
   incus storage set sbx-pool size="${SBX_POOL_GIB}GiB" 2>/dev/null || true
 fi
@@ -95,8 +138,8 @@ PROFILE
 cat > /etc/systemd/system/orochi-sandbox-dns.service <<UNIT
 [Unit]
 Description=Resolve sandboxes' names from sbxbr0's DNS
-BindsTo=sys-subsystem-net-devices-sbxbr0.device
-After=sys-subsystem-net-devices-sbxbr0.device
+After=network-online.target incus.service
+Wants=network-online.target incus.service
 
 [Service]
 Type=oneshot
@@ -106,7 +149,7 @@ ExecStopPost=/usr/bin/resolvectl revert sbxbr0
 RemainAfterExit=yes
 
 [Install]
-WantedBy=sys-subsystem-net-devices-sbxbr0.device
+WantedBy=multi-user.target
 UNIT
 
 # The HTTP gateway: http://<port>-<project>.localhost:<port> on the Mac, forwarded by Lima
@@ -128,11 +171,17 @@ Restart=always
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable orochi-sandbox-dns.service orochi-sandbox-gateway.service
-systemctl restart orochi-sandbox-dns.service orochi-sandbox-gateway.service
+if command -v resolvectl >/dev/null; then
+  systemctl enable --now systemd-resolved
+  systemctl enable orochi-sandbox-dns.service
+  systemctl restart orochi-sandbox-dns.service
+fi
+systemctl enable orochi-sandbox-gateway.service
+systemctl restart orochi-sandbox-gateway.service
 
 # The VM powers itself off once unused for SBX_VM_IDLE_MINUTES (0: never); Orochi starts it
 # again when something needs it. Copied in beside this script by `orochi sandbox up`.
+if [ "$SBX_MANAGED_VM" = 1 ]; then
 printf 'SBX_VM_IDLE_MINUTES=%s\nSBX_GATEWAY_PORT=%s\n' "$SBX_VM_IDLE_MINUTES" "$SBX_GATEWAY_PORT" \
   > /etc/orochi-sandbox.conf
 install -m 0755 /var/lib/orochi-sandbox-idle.py /usr/local/lib/orochi-sandbox-idle.py
@@ -157,6 +206,10 @@ WantedBy=timers.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now orochi-sandbox-idle.timer
+else
+  # Never install the poweroff timer on a person's Linux host or WSL distribution.
+  systemctl disable --now orochi-sandbox-idle.timer 2>/dev/null || true
+fi
 
 # One login inside serves every sandbox: the CLIs' own homes live here, mounted into each.
 install -d -o "$SBX_UID" -g "$SBX_GID" -m 0700 /var/lib/sbx/creds/claude /var/lib/sbx/creds/codex

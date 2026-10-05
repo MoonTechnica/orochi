@@ -26,3 +26,5 @@ pub mod sandbox;
 pub mod scheduler;
 pub mod storage;
 pub mod types;
+
+pub mod workspaces;

@@ -27,6 +27,64 @@ struct Workspace {
     dir: tempfile::TempDir,
     config: Config,
 }
+
+#[test]
+fn linux_group_access_preserves_arguments_without_interpreting_them() {
+    let status = Command::new("python3")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test_linux_setup.py"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn directory_storage_supports_sandboxes_without_unsupported_root_quotas() {
+    let w = Workspace::new();
+    success(
+        &w.command()
+            .env("FAKE_INCUS_DRIVER", "dir")
+            .args(["sandbox", "create"])
+            .output()
+            .unwrap(),
+    );
+    assert!(!w.calls().iter().any(|args| args.starts_with(&[
+        "config".into(),
+        "device".into(),
+        "override".into()
+    ])));
+    assert!(State::load(&w.data()).unwrap().exact(&w.repo()).is_some());
+}
+
+#[test]
+fn initialization_reuses_a_prepared_incus_host_and_existing_image() {
+    let w = Workspace::new();
+    for _ in 0..2 {
+        let output = w.run(&["init"]);
+        success(&output);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("image already exists"));
+    }
+    assert!(
+        w.calls()
+            .iter()
+            .all(|args| args[0] == "project" || args[0] == "image")
+    );
+    success(&w.run(&["init", "--host-only"]));
+    assert_eq!(w.calls().last().unwrap()[0], "project");
+}
+
+#[test]
+fn initialization_does_not_build_after_a_host_connection_failure() {
+    let w = Workspace::new();
+    let output = w
+        .command()
+        .env("FAKE_INCUS_FAIL", "project")
+        .arg("init")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not reachable"));
+    assert_eq!(w.calls().len(), 1);
+}
 impl Workspace {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
@@ -221,8 +279,9 @@ fn a_sandboxed_run_starts_its_agent_inside_in_the_same_directory_and_without_thi
             || log.contains(&format!("\"cwd\":\"{}\"", repo.display())),
         "{log}"
     );
-    // Neither the mailbox nor a stdio server naming this machine's executables goes inside.
-    assert!(!log.contains("orochi-mailbox"), "{log}");
+    // The portable mailbox relay goes inside; host executables from other stdio servers do not.
+    assert!(log.contains("orochi-mailbox"), "{log}");
+    assert!(log.contains("relay-"), "{log}");
     assert!(!log.contains("local-tool"), "{log}");
     let records = Store::open(&w.data()).unwrap().recent_runs(10).unwrap();
     assert_eq!(records.len(), 1);
@@ -329,7 +388,7 @@ fn creating_without_an_image_says_how_to_build_one_and_records_nothing() {
     .unwrap();
     let output = w.run(&["sandbox", "create"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("image build"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("orochi init"));
     assert!(State::load(&w.data()).unwrap().projects.is_empty());
 }
 
@@ -612,6 +671,7 @@ fn what_a_window_may_ask_for_becomes_fixed_arguments_and_nothing_else() {
         Request::Image { vm: true }.args(),
         ["sandbox", "image", "--vm"]
     );
+    assert_eq!(Request::Setup.args(), ["init"]);
     // Nothing a window can ask for needs an administrator: there is no network setup to run.
     assert!(serde_json::from_str::<Request>(r#"{"op":"network"}"#).is_err());
     let parsed: Request = serde_json::from_str(r#"{"op":"remove","root":"/work/web"}"#).unwrap();
@@ -1112,4 +1172,187 @@ fn a_local_model_server_here_is_reached_as_localhost_inside() {
         "Lima's address for this machine"
     );
     assert!(devices.get("host-port-1234").is_some());
+}
+
+#[test]
+fn conversations_get_distinct_sandboxes_and_all_their_workspaces_share_one() {
+    let w = Workspace::new();
+    success(&w.run(&["sandbox", "create", "--no-docker"]));
+    let source = w.repo();
+    let first = orochi::workspaces::Workspaces::open(
+        &source,
+        &orochi::workspaces::directory(&source, "first"),
+    )
+    .unwrap();
+    let second = orochi::workspaces::Workspaces::open(
+        &source,
+        &orochi::workspaces::directory(&source, "second"),
+    )
+    .unwrap();
+    orochi::sandbox::ops::session(&w.config.sandbox, &w.data(), &first).unwrap();
+    orochi::sandbox::ops::session(&w.config.sandbox, &w.data(), &second).unwrap();
+    orochi::sandbox::ops::session(&w.config.sandbox, &w.data(), &first).unwrap();
+    let state = State::load(&w.data()).unwrap();
+    assert_eq!(state.projects.len(), 3);
+    let a = state.exact(&first.directory).unwrap();
+    let b = state.exact(&second.directory).unwrap();
+    assert_ne!(a.name, b.name);
+    assert!(!a.docker && !b.docker);
+    assert!(a.mounts.contains(&source));
+    let mut config = w.config.sandbox.clone();
+    config.session_root = Some(first.directory.clone());
+    for root in [
+        &source,
+        &first.directory.join("alice"),
+        &first.directory.join("bob"),
+    ] {
+        let place = orochi::sandbox::placement_for(&w.data(), root, &config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(place.name, a.name);
+        assert_eq!(place.root, *root);
+    }
+    config.session_root = Some(second.directory);
+    assert_eq!(
+        orochi::sandbox::placement_for(&w.data(), &source, &config)
+            .unwrap()
+            .unwrap()
+            .name,
+        b.name
+    );
+    config.force = Some(Mode::Host);
+    assert!(
+        orochi::sandbox::placement_for(&w.data(), &source, &config)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn chat_turns_share_their_session_sandbox_and_a_new_chat_gets_another() {
+    use std::io::Write;
+    let w = Workspace::new();
+    create(&w);
+    for input in ["First\nSecond\n", "Third\n"] {
+        let mut child = w
+            .command()
+            .arg("chat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        success(&child.wait_with_output().unwrap());
+    }
+    let state = State::load(&w.data()).unwrap();
+    assert_eq!(state.projects.len(), 3);
+    let agents: Vec<_> = w
+        .execs()
+        .into_iter()
+        .filter(|c| c.contains(&"sbx-run".to_owned()))
+        .collect();
+    assert_eq!(agents.len(), 3);
+    assert_eq!(agents[0][1], agents[1][1]);
+    assert_ne!(agents[0][1], agents[2][1]);
+    assert_ne!(agents[0][1], "repo");
+}
+
+#[test]
+fn sandboxed_leads_can_start_writable_helpers_through_the_portable_mailbox_relay() {
+    use std::io::Write;
+    let mut w = Workspace::new();
+    let root = w.repo();
+    for args in [
+        vec!["init"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@localhost"],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::write(root.join("source.txt"), "baseline").unwrap();
+    assert!(
+        Command::new("git")
+            .current_dir(&root)
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .current_dir(&root)
+            .args(["commit", "-m", "initial"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    w.config.mailbox.enabled = true;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert(
+        "MOCK_HELPERS".into(),
+        "alice:Implement A,bob:Implement B".into(),
+    );
+    env.insert("MOCK_WRITERS".into(), "alice,bob".into());
+    env.insert("MOCK_LEAD_DELAY".into(), "4".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    create(&w);
+    let mut child = w
+        .command()
+        .args(["--permission", "allow", "chat"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"Implement both components and add verification\n")
+        .unwrap();
+    success(&child.wait_with_output().unwrap());
+    let replies: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("started.txt")).unwrap()).unwrap();
+    for (reply, name) in replies.as_array().unwrap().iter().zip(["alice", "bob"]) {
+        let worker = Path::new(reply["workspace"].as_str().unwrap());
+        assert!(worker.join(format!("helper-{name}.txt")).is_file());
+        assert!(!root.join(format!("helper-{name}.txt")).exists());
+    }
+    let state = State::load(&w.data()).unwrap();
+    assert_eq!(state.projects.len(), 2);
+    let instance = &state.projects[1].name;
+    for launch in w
+        .execs()
+        .iter()
+        .filter(|c| c.contains(&"sbx-run".to_owned()))
+    {
+        assert_eq!(launch[1], *instance);
+    }
+    // Peer metadata reports each worker's own directory, rather than the host's cwd.
+    let activity = orochi::activity::Activity::open(&w.data(), 30).unwrap();
+    let paths: Vec<String> = activity
+        .connection()
+        .prepare("SELECT worktree FROM peers WHERE name IN ('alice','bob') ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(paths.len(), 2);
+    assert_ne!(paths[0], paths[1]);
 }

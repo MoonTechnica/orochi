@@ -1,10 +1,9 @@
 //! Seats that outlive the turn that started them (`docs/supervision-design.md` §4).
 //!
 //! The lead of a console turn asks for a helper with the mailbox's `start_agent`; the console
-//! decides, and a granted helper runs as a read-only seat owned by the session rather than by
-//! the turn. The lead answers and ends its turn; the helper keeps working, and when it ends its
-//! result goes back to the lead as a turn of its own. A helper takes no workspace lock (it
-//! writes nothing, and a lock held between turns would lock the user's own next turn out), and
+//! decides, and a granted helper runs as a seat owned by the session rather than by the turn. The lead answers and ends its turn; the helper keeps working, and when it ends its
+//! result goes back to the lead as a turn of its own. Writable helpers lock their dedicated
+//! worktrees; read-only helpers take no lock, leaving the lead free to continue.
 //! the process's interrupt does not reach it: Esc stops the lead, a helper is stopped by name.
 use super::{LANGUAGE, answerer};
 use crate::{
@@ -32,13 +31,15 @@ use tokio::sync::mpsc;
 pub const RESULT_CHARS: usize = 4_000;
 
 /// What a helper needs from the session, without borrowing the session.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Env<'a> {
     pub config: &'a Config,
     pub store: &'a Store,
     pub root: &'a Path,
     pub data: &'a Path,
     pub headless: bool,
+    pub permission: PermissionMode,
+    pub workspace: std::path::PathBuf,
 }
 
 pub struct Helper {
@@ -52,6 +53,7 @@ pub struct Helper {
     /// The tool it is running, while it runs one.
     pub doing: Option<String>,
     pub seat: Option<crate::activity::SeatRef>,
+    pub workspace: Option<std::path::PathBuf>,
     /// The descriptor of the turn that asked for it, which the completion turn is routed by.
     pub descriptor: TaskDescriptor,
     reply: String,
@@ -74,6 +76,7 @@ pub struct Finished {
     pub route: Option<String>,
     pub ending: Ending,
     pub result: String,
+    pub workspace: Option<std::path::PathBuf>,
     pub descriptor: TaskDescriptor,
     /// When it ended, for how long its report has been held.
     pub ended: Instant,
@@ -137,10 +140,14 @@ impl<'a> Background<'a> {
         task: &str,
         descriptor: TaskDescriptor,
         seat: Option<crate::activity::SeatRef>,
+        workspace: Option<std::path::PathBuf>,
     ) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let options = RunOptions {
-            task: format!("{LANGUAGE}\n\n{}", prompt(lead, &name, &title, task)),
+            task: format!(
+                "{LANGUAGE}\n\n{}",
+                prompt(lead, &name, &title, task, workspace.as_deref())
+            ),
             descriptor: Some(descriptor.clone()),
             // A helper is asked for a part of the task, not the whole of it.
             difficulty: Some(descriptor.complexity.eased()),
@@ -148,25 +155,50 @@ impl<'a> Background<'a> {
             dry_run: false,
             json: false,
             resume: None,
-            permission: PermissionMode::Allow,
+            permission: if workspace.is_some() {
+                env.permission
+            } else {
+                PermissionMode::Allow
+            },
             interactive: true,
             attachments: vec![],
             peer: Some(name.clone()),
             verify: false,
-            read_only: true,
+            read_only: workspace.is_none(),
             place: None,
             seat: seat.clone(),
-            answerer: answerer(PermissionMode::Allow, env.headless),
+            answerer: answerer(
+                if workspace.is_some() {
+                    env.permission
+                } else {
+                    PermissionMode::Allow
+                },
+                env.headless,
+            ),
             background: true,
         };
+        let run_root = workspace.clone().unwrap_or_else(|| env.root.to_path_buf());
         let (run, abort) = abortable(async move {
+            let mut config = env.config.clone();
+            if crate::sandbox::placement(env.data, env.root, config.sandbox.force)?.is_some() {
+                config.sandbox.session_root = Some(env.workspace.clone());
+            }
+            let _lock = if options.read_only {
+                None
+            } else {
+                Some(crate::storage::workspace_lock(
+                    env.data,
+                    &env.store.repository_id(&run_root)?,
+                    false,
+                )?)
+            };
             let policies = Registry::load(env.data)?;
             let mut slot: Option<Continuation> = None;
             scheduler::run_turn(
-                env.config,
+                &config,
                 &policies,
                 env.store,
-                env.root,
+                &run_root,
                 options,
                 Some(sender),
                 &mut slot,
@@ -184,6 +216,7 @@ impl<'a> Background<'a> {
             route: None,
             doing: None,
             seat,
+            workspace,
             descriptor,
             reply: String::new(),
             receiver,
@@ -293,6 +326,7 @@ impl<'a> Background<'a> {
             }
         }
         Some(Finished {
+            workspace: helper.workspace,
             result: bounded_result(&helper.reply),
             name: helper.name,
             title: helper.title,
@@ -363,7 +397,13 @@ pub fn completion(finished: &[Finished]) -> String {
     finished
         .iter()
         .map(|f| {
-            let head = format!("Background agent `{}` ({})", f.name, f.title);
+            let mut head = format!("Background agent `{}` ({})", f.name, f.title);
+            if let Some(root) = &f.workspace {
+                head.push_str(&format!(
+                    "; workspace: {} (changes retained; integrate explicitly)",
+                    root.display()
+                ));
+            }
             let elapsed = super::span(f.elapsed);
             match &f.ending {
                 Ending::Finished if f.result.is_empty() => {
@@ -398,7 +438,13 @@ fn first_line(text: &str) -> String {
 }
 
 /// A helper's own instructions: one part of the task, read only, and a report at the end.
-fn prompt(lead: &str, name: &str, title: &str, task: &str) -> String {
+fn prompt(lead: &str, name: &str, title: &str, task: &str, workspace: Option<&Path>) -> String {
+    if let Some(root) = workspace {
+        return format!(
+            "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\nImplement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree. Do not merge into the original workspace. Report changed files, checks and remaining issues, including the workspace path. Your changes are retained after you finish. Never start another agent or another Orochi.\n\nYour task:\n{task}",
+            root.display()
+        );
+    }
     format!(
         "You are `{name}`, working in the background for `{lead}` on one part of what the user \
          asked: {title}.\n\nYou can read everything and change nothing: write tools are refused \

@@ -91,6 +91,12 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Initialize the sandbox environment: install Lima, prepare Incus and the container image.
+    Init {
+        /// Prepare just the host; defer the golden image's downloads.
+        #[arg(long)]
+        host_only: bool,
+    },
     /// Converse interactively; the default when `orochi` starts on a terminal without a task.
     Chat,
     /// Expose Orochi as an ACP v1 agent over stdin/stdout.
@@ -560,6 +566,10 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
         config.scheduler.permission = permission;
     }
     config.sandbox.force = cli.sandbox;
+    if let Some(Command::Init { host_only }) = cli.command {
+        crate::sandbox::setup::run(&config.sandbox, &paths.data, host_only)?;
+        return Ok(0);
+    }
     if let Some(Command::Sandbox(command)) = cli.command {
         return sandbox(&config, &paths.data, &root, command).await;
     }
@@ -1385,7 +1395,9 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 serde_json::to_string_pretty(&store.recent_runs(limit as usize)?)?
             );
         }
-        Some(Command::Config(_) | Command::Policy(_) | Command::Sandbox(_)) => unreachable!(),
+        Some(
+            Command::Config(_) | Command::Policy(_) | Command::Sandbox(_) | Command::Init { .. },
+        ) => unreachable!(),
         None => {
             let Some(task) = cli.task else {
                 use clap::CommandFactory;

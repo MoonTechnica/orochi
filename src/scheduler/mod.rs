@@ -94,7 +94,7 @@ async fn discover_agents(
     let mut configs = Vec::new();
     // In a sandboxed project the agents are the image's, so nothing about this machine's
     // installs decides whether one can run; routing advisers stay here, where they see nothing.
-    let placement = crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)?;
+    let placement = crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)?;
     if let Some(placement) = &placement {
         placement.ready(&config.sandbox, store.data_dir())?;
     }
@@ -127,11 +127,11 @@ async fn discover_agents(
         let mut mcp = mcp.to_vec();
         // Runner mode: the agent runs here and reaches the project's runtime through the
         // sandbox's tools.
-        if let Some(runner) = placement
+        if let Some(_runner) = placement
             .as_ref()
             .filter(|p| p.mode == crate::sandbox::Mode::Runner && !agent.routing_only)
             && let Ok(server) =
-                crate::sandbox::runner::server(&config.sandbox, store.data_dir(), &runner.root)
+                crate::sandbox::runner::server(&config.sandbox, store.data_dir(), root)
         {
             mcp.push(server);
         }
@@ -843,7 +843,7 @@ async fn run_recorded(
                 }
                 if fresh
                     && let Ok(Some(runner)) =
-                        crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)
+                        crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)
                     && runner.mode == crate::sandbox::Mode::Runner
                 {
                     let note = crate::sandbox::runner::prompt_note(&config.sandbox, &runner.name);
@@ -872,7 +872,7 @@ async fn run_recorded(
         // here uses the copy it replaced.
         if clients[index].config.sandboxed
             && let Ok(Some(placement)) =
-                crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)
+                crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)
             && let Some(agent) = config
                 .agents
                 .iter()
@@ -889,7 +889,7 @@ async fn run_recorded(
                         report(Progress::Checking);
                     }
                     let placement =
-                        crate::sandbox::placement(store.data_dir(), root, config.sandbox.force)
+                        crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)
                             .ok()
                             .flatten();
                     (checks, check_output) = tokio::select! {

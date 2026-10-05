@@ -31,7 +31,7 @@ pub fn image(tier: Mode) -> &'static str {
 const POOL: &str = "sbx-pool";
 
 fn limactl(config: &SandboxConfig) -> Result<PathBuf> {
-    crate::discovery::locate(&config.limactl).with_context(|| {
+    super::setup::locate(&config.limactl).with_context(|| {
         format!(
             "{} not found; install Lima (`brew install lima`) or set sandbox.limactl",
             config.limactl
@@ -190,7 +190,7 @@ pub fn lima_yaml(config: &SandboxConfig) -> String {
         .replace("{{MOUNTS}}", &mounts)
 }
 
-fn host_env(config: &SandboxConfig) -> Vec<String> {
+pub(super) fn host_env(config: &SandboxConfig) -> Vec<String> {
     let (uid, gid) = ids();
     vec![
         format!("SBX_PROJECT={}", config.project),
@@ -203,6 +203,10 @@ fn host_env(config: &SandboxConfig) -> Vec<String> {
         format!("SBX_USER={}", std::env::var("USER").unwrap_or_default()),
         format!("SBX_GATEWAY_PORT={}", config.gateway_port),
         format!("SBX_VM_IDLE_MINUTES={}", config.vm_idle_minutes),
+        format!(
+            "SBX_MANAGED_VM={}",
+            u8::from(config.client == SandboxClient::Lima)
+        ),
     ]
 }
 
@@ -210,11 +214,21 @@ fn host_env(config: &SandboxConfig) -> Vec<String> {
 /// host is someone else's machine: only its reachability is checked.
 pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
     if config.client == SandboxClient::Incus {
+        if config.remote.is_empty()
+            && config.incus == "incus"
+            && (!Path::new(&format!("/var/lib/orochi-sandbox-{}.ready", config.project)).exists()
+                || Incus::new(config)
+                    .run(&["project", "show", &config.project])
+                    .is_err())
+        {
+            super::setup::prepare_linux(config, data)?;
+        }
         Incus::new(config).run(&["project", "show", &config.project])
             .context("the Incus host is not reachable or not prepared; run `orochi sandbox host-script | sudo bash` on it")?;
         println!("Incus host reachable; project {} ready", config.project);
         return Ok(());
     }
+    super::setup::ensure_lima(config)?;
     let limactl = limactl(config)?;
     match vm_status(config)?.as_deref() {
         Some("Running") => println!("{} is running", config.lima_instance),
@@ -303,7 +317,7 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
     let mut child = shell(&run).stdin(Stdio::null()).spawn()?;
     ensure!(child.wait()?.success(), "the sandbox host setup failed");
     println!(
-        "Sandbox host ready. Next: `orochi sandbox image build`. Services open at {} from this machine.",
+        "Sandbox host ready. Next: `orochi sandbox image`. Services open at {} from this machine.",
         url(config, "<project>", None)
     );
     Ok(())
@@ -480,10 +494,10 @@ pub fn create(
         .run(&["image", "show", image(request.mode)])
         .with_context(|| {
             format!(
-                "no {} image; run `orochi sandbox up` and `orochi sandbox image build{}` first",
+                "no {} image; run `orochi init`{} first",
                 image(request.mode),
                 if request.mode == Mode::Vm {
-                    " --vm"
+                    " and `orochi sandbox image --vm`"
                 } else {
                     ""
                 }
@@ -493,6 +507,7 @@ pub fn create(
     let project = Project {
         name,
         root: root.to_path_buf(),
+        mounts: vec![],
         mode: request.mode,
         // A runner-mode project's sandbox is a container; `reset --mode vm` makes it a VM.
         tier: if request.mode == Mode::Vm {
@@ -510,6 +525,44 @@ pub fn create(
     state.projects.push(project.clone());
     state.save(data)?;
     Ok(project)
+}
+
+/// One instance per conversation; project settings supply defaults for new sessions.
+pub fn session(
+    config: &SandboxConfig,
+    data: &Path,
+    work: &crate::workspaces::Workspaces,
+) -> Result<()> {
+    let _lock = crate::storage::workspace_lock(data, "sandbox-sessions", false)?;
+    let mut state = State::load(data)?;
+    if state.exact(&work.directory).is_some() {
+        return Ok(());
+    }
+    let Some(place) = super::placement(data, &work.source, config.force)? else {
+        return Ok(());
+    };
+    let template = state
+        .named(&place.name)
+        .context("sandbox template missing")?
+        .clone();
+    ensure_vm(config, false)?;
+    let mut project = template;
+    project.name = state.allocate(&work.directory);
+    project.root = work.directory.clone();
+    project.mode = place.mode;
+    project.mounts = vec![work.source.clone()];
+    if let Ok(common) = work.git_common()
+        && !common.starts_with(&work.source)
+    {
+        project.mounts.push(common);
+    }
+    project.shadow.clear();
+    project.created_at = crate::types::now();
+    project.last_used = project.created_at;
+    provision(config, &project)?;
+    state.projects.push(project);
+    state.save(data)?;
+    Ok(())
 }
 
 /// Makes the instance for a recorded project: from the tier's image, with its volumes.
@@ -548,6 +601,18 @@ fn provision(config: &SandboxConfig, project: &Project) -> Result<()> {
             &format!("source={root}"),
             &format!("path={root}"),
         ])?;
+        for (index, mount) in project.mounts.iter().enumerate() {
+            incus.run(&[
+                "config",
+                "device",
+                "add",
+                &instance,
+                &format!("workspace-{index}"),
+                "disk",
+                &format!("source={}", mount.display()),
+                &format!("path={}", mount.display()),
+            ])?;
+        }
         for (device, source, path) in [
             (
                 "claude",
@@ -574,14 +639,24 @@ fn provision(config: &SandboxConfig, project: &Project) -> Result<()> {
         // Docker's data (images under /var/lib/containerd since Docker 29) stays on the root
         // disk, a ZFS clone of the golden image: the pre-pulled images are shared copy-on-write
         // and a snapshot of the instance covers them. The quota bounds that disk.
-        incus.run(&[
-            "config",
-            "device",
-            "override",
-            &instance,
-            "root",
-            &format!("size={}GiB", config.quota_gib),
-        ])?;
+        let directory_pool = incus
+            .run(&["storage", "show", POOL])
+            .ok()
+            .is_some_and(|output| output.lines().any(|line| line == "driver: dir"));
+        if directory_pool {
+            eprintln!(
+                "Directory storage: per-container disk quotas are unavailable; the host disk bounds usage"
+            );
+        } else {
+            incus.run(&[
+                "config",
+                "device",
+                "override",
+                &instance,
+                "root",
+                &format!("size={}GiB", config.quota_gib),
+            ])?;
+        }
         if container {
             for (index, dir) in project.shadow.iter().enumerate() {
                 // The mountpoint lives in the user's tree (the same path here); making it

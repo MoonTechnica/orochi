@@ -126,12 +126,12 @@ const WORDS = {
     "New project": "新しいプロジェクト",
     Project: "プロジェクト",
     "Runs on": "実行先",
-    "This Mac": "この Mac",
+    "This computer": "このコンピューター",
     "Sandbox · container": "サンドボックス · コンテナ",
     "Sandbox · VM": "サンドボックス · VM",
-    "This Mac · runs in sandbox": "この Mac · 実行はサンドボックス",
+    "This computer · runs in sandbox": "このコンピューター · 実行はサンドボックス",
     "The agents run here, signed in as they are; tests, servers, Docker and Supabase run in a Linux sandbox of its own.":
-      "エージェントはこの Mac でいつものサインインのまま動き、テスト・サーバー・Docker・Supabase は専用の Linux サンドボックスで動きます。",
+      "エージェントはこのコンピューター でいつものサインインのまま動き、テスト・サーバー・Docker・Supabase は専用の Linux サンドボックスで動きます。",
     "The agents run on this machine, as they always have.": "エージェントはこのマシン上で、これまでどおり動きます。",
     "A Linux container of its own with a Docker daemon inside. The folder is mounted, not copied.":
       "専用の Linux コンテナで動き、中で Docker デーモンが使えます。フォルダはコピーせずマウントします。",
@@ -152,7 +152,12 @@ const WORDS = {
     unreachable: "接続できません",
     "not created": "未作成",
     "Incus host elsewhere": "別マシンの Incus ホスト",
+    "Local Incus host": "ローカルの Incus ホスト",
+    "Install and prepare local Incus and the container image. Administrator authorization may be required; progress appears below.": "ローカルに Incus とコンテナイメージを導入・準備します。管理者の認証が必要になる場合があります。進捗を下に表示します。",
     "Set up VM": "VM をセットアップ",
+    "Initialize sandbox environment": "サンドボックス環境を初期化",
+    "Install Lima if needed, prepare Incus and the container image. Existing installations are reused; progress appears below.": "必要に応じて Lima を導入し、Incus とコンテナイメージを準備します。既存環境は再利用し、進捗を下に表示します。",
+    "Check the configured Incus host and prepare the container image. Progress appears below.": "設定済みの Incus ホストへの接続を確認し、コンテナイメージを準備します。進捗を下に表示します。",
     "Start VM": "VM を起動",
     "Stop VM": "VM を停止",
     "Build image": "イメージをビルド",
@@ -172,11 +177,11 @@ const WORDS = {
     "Agent sign-in": "エージェントのサインイン",
     "stored key": "保存したキー",
     config: "設定",
-    "this Mac's environment": "この Mac の環境変数",
+    "this Mac's environment": "このコンピューター の環境変数",
     "nothing carried": "引き継ぐものなし",
     "Get a token": "トークンを取得",
     "Renew token": "トークンを更新",
-    "localhost inside reaches this Mac on": "中の localhost からこの Mac に届くポート:",
+    "localhost inside reaches this Mac on": "中の localhost からこのコンピューター に届くポート:",
     value: "値",
     "Store key": "キーを保存",
     "No one is seated yet.": "まだ誰も席に着いていません。",
@@ -1419,8 +1424,8 @@ async function startIn(root) {
 // Asked once, before a folder nobody has worked in gets its first thread, the way Orca asks
 // where a new worktree runs. Everything after that is the project's own setting.
 const PLACES = [
-  ["host", "This Mac", "The agents run on this machine, as they always have."],
-  ["runner", "This Mac · runs in sandbox",
+  ["host", "This computer", "The agents run on this machine, as they always have."],
+  ["runner", "This computer · runs in sandbox",
     "The agents run here, signed in as they are; tests, servers, Docker and Supabase run in a Linux sandbox of its own."],
   ["container", "Sandbox · container",
     "A Linux container of its own with a Docker daemon inside. The folder is mounted, not copied."],
@@ -1536,7 +1541,7 @@ async function drawPlace(root) {
   const pill = document.createElement("button");
   pill.type = "button";
   pill.className = "place-pill";
-  const label = { vm: "Sandbox · VM", runner: "This Mac · runs in sandbox" }[where.mode] || "Sandbox · container";
+  const label = { vm: "Sandbox · VM", runner: "This computer · runs in sandbox" }[where.mode] || "Sandbox · container";
   pill.textContent = `${t(label)} · ${where.name}`;
   pill.addEventListener("click", () => openPanel("sandboxes"));
   head.append(" ", pill);
@@ -1586,24 +1591,30 @@ async function drawSandboxes(host) {
   if (!view) return;
   const running = view.jobs.filter((j) => j.exit === null || j.exit === undefined);
   const busy = (op) => running.some((j) => j.request.op === op);
+  const preparing = busy("setup");
 
   const hostBox = text("section", "sbx-host");
   const vm = view.client === "lima"
     ? view.vm ? `${t("Host VM")}: ${t(view.vm.toLowerCase())}` : `${t("Host VM")}: ${t("not created")}`
-    : t("Incus host elsewhere");
+    : t(view.local ? "Local Incus host" : "Incus host elsewhere");
   hostBox.append(text("div", "sbx-state", vm));
+  hostBox.append(text("p", "where", t(view.client === "lima"
+    ? "Install Lima if needed, prepare Incus and the container image. Existing installations are reused; progress appears below."
+    : view.local ? "Install and prepare local Incus and the container image. Administrator authorization may be required; progress appears below."
+    : "Check the configured Incus host and prepare the container image. Progress appears below.")));
   const buttons = text("div", "sbx-actions");
+  buttons.append(sandboxAction("Initialize sandbox environment", () => job({ op: "setup" }), { disabled: running.length > 0 }));
   if (view.client === "lima" && view.vm === "Running") {
-    buttons.append(sandboxAction("Stop VM", () => job({ op: "down" }), { disabled: busy("down") }));
-  } else {
-    buttons.append(sandboxAction(view.vm ? "Start VM" : "Set up VM", () => job({ op: "up" }), { disabled: busy("up") }));
+    buttons.append(sandboxAction("Stop VM", () => job({ op: "down" }), { disabled: preparing || busy("down") }));
+  } else if (view.client === "lima") {
+    buttons.append(sandboxAction(view.vm ? "Start VM" : "Set up VM", () => job({ op: view.vm ? "up" : "setup" }), { disabled: preparing || busy("up") }));
   }
   buttons.append(
-    sandboxAction("Build image", () => job({ op: "image", vm: false }), { disabled: busy("image") || !view.reachable }),
-    sandboxAction("Stop idle", () => job({ op: "gc" }), { disabled: busy("gc") || !view.reachable }),
+    sandboxAction("Build image", () => job({ op: "image", vm: false }), { disabled: preparing || busy("image") || !view.reachable }),
+    sandboxAction("Stop idle", () => job({ op: "gc" }), { disabled: preparing || busy("gc") || !view.reachable }),
   );
   if (view.projects.some((p) => p.focused.length)) {
-    buttons.append(sandboxAction("Unfocus", () => job({ op: "unfocus" }), { disabled: busy("unfocus") }));
+    buttons.append(sandboxAction("Unfocus", () => job({ op: "unfocus" }), { disabled: preparing || busy("unfocus") }));
   }
   hostBox.append(buttons);
   host.append(hostBox);
@@ -1613,6 +1624,7 @@ async function drawSandboxes(host) {
   } else {
     const list = text("div", "sbx-projects");
     for (const p of view.projects) {
+      const projectBusy = preparing || p.busy;
       const row = text("div", "sbx-project");
       row.dataset.name = p.name;
       const head = text("div", "sbx-head");
@@ -1625,7 +1637,7 @@ async function drawSandboxes(host) {
       for (const [key, label] of PLACES) {
         const option = sandboxAction(label, () => {
           if (key !== p.mode) job({ op: "mode", root: p.root, mode: key });
-        }, { disabled: p.busy });
+        }, { disabled: projectBusy });
         option.dataset.mode = key;
         option.setAttribute("role", "radio");
         option.setAttribute("aria-checked", String(key === p.mode));
@@ -1645,14 +1657,14 @@ async function drawSandboxes(host) {
       if (p.mode !== "host") {
         actions.append(
           p.focused.length
-            ? sandboxAction("Unfocus", () => job({ op: "unfocus" }), { disabled: p.busy })
-            : sandboxAction("Focus", () => job({ op: "focus", root: p.root }), { disabled: p.busy }),
-          sandboxAction("Snapshot", () => job({ op: "snapshot", root: p.root }), { disabled: p.busy }),
+            ? sandboxAction("Unfocus", () => job({ op: "unfocus" }), { disabled: projectBusy })
+            : sandboxAction("Focus", () => job({ op: "focus", root: p.root }), { disabled: projectBusy }),
+          sandboxAction("Snapshot", () => job({ op: "snapshot", root: p.root }), { disabled: projectBusy }),
         );
       }
       actions.append(
-        confirming(`reset:${p.root}`, "Reset", "Reset? Docker data is dropped", { op: "reset", root: p.root }, p.busy),
-        confirming(`remove:${p.root}`, "Delete", "Delete? The folder is kept", { op: "remove", root: p.root }, p.busy),
+        confirming(`reset:${p.root}`, "Reset", "Reset? Docker data is dropped", { op: "reset", root: p.root }, projectBusy),
+        confirming(`remove:${p.root}`, "Delete", "Delete? The folder is kept", { op: "remove", root: p.root }, projectBusy),
       );
       row.append(actions);
       list.append(row);
@@ -1749,6 +1761,7 @@ function drawSignIn(view) {
 }
 
 const JOB_NAMES = {
+  setup: "Initialize sandbox environment",
   up: "Set up VM", down: "Stop VM", image: "Build image",
   create: "Create sandbox", mode: "Change where it runs", focus: "Focus", unfocus: "Unfocus",
   snapshot: "Snapshot", reset: "Reset", remove: "Delete", gc: "Stop idle",

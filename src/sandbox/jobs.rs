@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    Setup,
     Up,
     Down,
     Image {
@@ -42,9 +43,13 @@ pub enum Request {
 }
 impl Request {
     pub fn args(&self) -> Vec<String> {
+        if matches!(self, Request::Setup) {
+            return vec!["init".into()];
+        }
         let path = |p: &PathBuf| p.to_string_lossy().into_owned();
         let mut args = vec!["sandbox".to_owned()];
         match self {
+            Request::Setup => unreachable!(),
             Request::Up => args.push("up".into()),
             Request::Down => args.push("down".into()),
             Request::Image { vm } => {

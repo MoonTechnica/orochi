@@ -33,6 +33,12 @@ pub fn server(config: &SandboxConfig, data: &Path, root: &Path) -> Result<McpSer
             SERVE_FLAG.into(),
             data.to_string_lossy().into_owned(),
             root.to_string_lossy().into_owned(),
+            config
+                .session_root
+                .as_deref()
+                .unwrap_or(root)
+                .to_string_lossy()
+                .into_owned(),
             serde_json::to_string(config)?,
         ],
         ..McpServerConfig::default()
@@ -274,9 +280,13 @@ fn shell_quote(value: &str) -> String {
 }
 
 pub fn serve(args: &[std::ffi::OsString]) -> ExitCode {
-    let [data, root, config] = args else {
-        eprintln!("orochi: invalid sandbox runner arguments");
-        return ExitCode::from(2);
+    let (data, root, scope, config) = match args {
+        [data, root, config] => (data, root, root, config),
+        [data, root, scope, config] => (data, root, scope, config),
+        _ => {
+            eprintln!("orochi: invalid sandbox runner arguments");
+            return ExitCode::from(2);
+        }
     };
     let data = PathBuf::from(data);
     let root = PathBuf::from(root);
@@ -287,8 +297,11 @@ pub fn serve(args: &[std::ffi::OsString]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let runner = match placement(&data, &root, Some(Mode::Runner)) {
-        Ok(Some(placement)) => Runner { config, placement },
+    let runner = match placement(&data, &PathBuf::from(scope), Some(Mode::Runner)) {
+        Ok(Some(mut placement)) => {
+            placement.root = root.clone();
+            Runner { config, placement }
+        }
         Ok(None) => {
             eprintln!("orochi: {} has no sandbox", root.display());
             return ExitCode::FAILURE;

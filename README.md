@@ -322,8 +322,10 @@ Specifying `agents` replaces the default 4 entries. Multiple custom IDs can be r
 A project can run its agents and checks in a Linux sandbox of its own instead of on this machine, with a Docker daemon inside it (so `supabase start` runs there). One Lima VM holds Incus; each project is an Incus system container (or VM) made from a golden image. The project's directory is mounted into its sandbox **at the same path**, not copied, so switching a project between the sandbox and this machine moves no file. Orochi itself stays on this machine: only the agent process (over `incus exec`, whose stdio carries ACP) and the evaluator's checks start inside. Designed in [Per-Project Sandboxes](docs/sandbox-design.md).
 
 ```sh
-orochi sandbox up                     # create/start the Lima VM and prepare Incus in it
-orochi sandbox image build            # the golden image: Docker, Node, the agents' CLIs and pinned ACP bridges, Supabase's images
+orochi init                           # install missing Lima, prepare Incus in the VM, build a missing container image
+orochi init --host-only               # defer the image's downloads
+orochi sandbox up                     # create/start the Lima VM and prepare Incus in it (installs missing Lima)
+orochi sandbox image                  # explicitly rebuild the golden image
 orochi sandbox create                 # this directory gets a sandbox; its runs now go inside
 orochi sandbox mode host|runner|container|vm  # switch where this project's agents and runtime run
 orochi sandbox exec -- npm test       # run a command in this project's sandbox
@@ -332,6 +334,21 @@ orochi sandbox ports                  # what listens inside, and http://<port>-<
 orochi sandbox focus [--watch]        # this project's listening ports at 127.0.0.1, as its tools print them
 orochi sandbox enter | status | snapshot | restore <name> | reset | rm | gc
 ```
+
+The desktop's **Sandboxes → Initialize sandbox environment** runs the same `orochi init`
+in a background job, with its progress and errors shown in the window. On macOS, missing
+Lima is installed using Homebrew ([Lima's installation instructions](https://lima-vm.io/docs/installation/));
+Incus is installed inside the Lima VM, using the existing host setup script. Homebrew must
+already be installed; otherwise setup reports how to install it and retry. Existing Lima
+and golden images are reused, and an incomplete setup can be retried. `config init` only
+writes configuration; ordinary CLI or desktop launches do not install dependencies.
+On Linux, initialization installs and prepares local Incus using administrator authorization.
+Windows uses the PowerShell launcher and WSL2 for the CLI, desktop and Incus.
+See [Linux and Windows setup](docs/platform-setup.md) for installation, authorization,
+storage differences and validation limits. Explicit custom Incus commands and remote hosts
+are reused; prepare remote hosts with `orochi sandbox host-script` first.
+The default container image is prepared automatically; the optional VM tier still uses
+`orochi sandbox image --vm`.
 
 **Four places a project can run** (`sandbox mode`, or the desktop's new-project question):
 
@@ -590,3 +607,10 @@ ACP specification references: [Rust SDK](https://github.com/agentclientprotocol/
 ## License
 
 MIT
+
+### Multiple workspaces in one conversation
+
+A console or headless conversation can start writable background agents with the mailbox
+`start_agent` tool (`write: true`). Each receives a retained Git worktree, while all seats
+of the conversation share one session container or VM when sandboxing is enabled.
+See [Session workspaces](docs/session-workspaces.md) for ownership, snapshots and integration.

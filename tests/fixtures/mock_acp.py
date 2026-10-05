@@ -193,7 +193,7 @@ def delegate(request):
     answers = []
     for pair in os.environ.get("MOCK_HELPERS", "spec:Research the API,explorer:Map the flow").split(","):
         name, title = pair.split(":", 1)
-        reply = tool("start_agent", name=name, title=title, task=f"Find out: {title}")
+        reply = tool("start_agent", name=name, title=title, task=f"Find out: {title}", write=name in os.environ.get("MOCK_WRITERS", "").split(","))
         answers.append(reply)
     (root / "started.txt").write_text(json.dumps(answers))
     proc.terminate()

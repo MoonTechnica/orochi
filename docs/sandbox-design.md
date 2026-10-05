@@ -2,6 +2,10 @@
 
 Written: 2026-09-30.
 
+Console and headless conversations now allocate a sandbox per conversation, inheriting the
+project configuration. See [Session workspaces](session-workspaces.md); the project sandbox
+behavior below still describes one-shot runs and project management commands.
+
 **Status (2026-09-30): S1–S3 implemented, with focus (S2), snapshots and idle stop (S5 in part)
 and the desktop (S6). Verified on a real Lima VM the same day** for the host, the image, Docker
 and Supabase inside a project's sandbox, focus, and a full ACP run with the fixture agent
@@ -479,7 +483,7 @@ executing agent's launch and the evaluator each check; the desktop asks where a 
 | The tree at `/work` inside (§5.1) | **At its own absolute path** | The ACP `cwd`, attachment paths and file names in replies then need no translation anywhere, and a subdirectory maps to itself |
 | A dedicated Lima disk for the ZFS pool (§4.1) | A sparse ZFS pool file inside the VM's disk (`incus storage create sbx-pool zfs size=…`) | One fewer device to identify at boot; the pool does not outlive `limactl delete`, which the design did not need |
 | Incus reached as `incus` (D6) | `sandbox.client = "lima"` runs `incus` in the VM over `limactl shell`; `"incus"` uses a local client and an optional remote | Nothing to install or trust on the Mac; the `incus` client form is the remote-host path (R10) |
-| Mailbox relay (§8.2, S4) | **Not built.** A sandboxed session gets neither the mailbox server nor its prompt note, and configured stdio MCP servers are reported as skipped for that agent | They are this machine's executables. Remote (http/sse) servers still reach the agent |
+| Mailbox relay (§8.2, S4) | **Implemented 2026-10-05 through the existing workspace mount.** A portable Python stdio endpoint relays each peer's requests to the same host-side mailbox handler; database access remains on the host | No Linux Orochi binary, additional socket, network listener or port is required. Other configured host stdio servers remain skipped; remote (http/sse) servers still reach the agent |
 | Routing advisers and the classifier | Stay on this machine | They are shown no repository and no tools; they are only asked when installed here |
 | `RunRecord.sandbox` (§8.4) | Not added | Sixteen record literals for a value nothing reads yet; add it with the first analysis that compares modes |
 | Idle stop (§7) | Sandboxes: `orochi sandbox gc`, by hand. **The VM** (2026-10-01): a systemd timer inside it (`src/sandbox/idle.py`) powers it off after `vm_idle_minutes` (30) once no agent's work is alive — no process in any sandbox carrying `OROCHI_SANDBOX` (set on everything Orochi starts there and inherited by every descendant), no Incus operation in progress, no connection to the gateway or a focused port — and counts a failed look as use; `ops::ensure_vm` starts it again, under a lock, from every operation that needs Incus and from `Placement::ready`, and never from `status` or the desktop's screen. `sbx-run` no longer kills what an agent leaves when its session ends; it still ends a check Orochi stopped | The user asked for the VM to stop when unused and start when used, judged by the agent's processes, and that work an agent left running in the background is the agent still working. Deciding inside the VM needs nothing resident on the Mac, and the processes are only visible there |

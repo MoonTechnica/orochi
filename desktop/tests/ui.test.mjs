@@ -554,7 +554,35 @@ test("a host VM that is not there is offered to be set up, and nothing that need
   assert.equal(buttons.find((b) => b.textContent === "Build image").disabled, true);
   buttons.find((b) => b.textContent === "Set up VM").dispatch("click");
   await settle();
-  assert.deepEqual(jobs(calls), [{ op: "up" }]);
+  assert.deepEqual(jobs(calls), [{ op: "setup" }]);
+});
+
+test("environment initialization stays visible while running and prevents conflicting host jobs", async () => {
+  const { el } = await sandboxScreen({
+    sandboxes: { ...SANDBOXES, jobs: [{ id: "setup-1", request: { op: "setup" }, exit: null, tail: "Installing Lima…", started_at: 1 }] },
+  });
+  const buttons = el("panel-body").querySelectorAll("button");
+  for (const label of ["Initialize sandbox environment", "Stop VM", "Build image"]) {
+    assert.equal(buttons.find((b) => b.textContent === label).disabled, true);
+  }
+  assert.match(el("panel-body").render(), /Installing Lima/);
+});
+
+test("a local Linux host offers Incus initialization and lets a failed setup be retried", async () => {
+  const { el, calls } = await sandboxScreen({
+    sandboxes: { ...SANDBOXES, client: "incus", local: true, vm: null, reachable: false,
+      projects: [], jobs: [{ id: "setup-1", request: { op: "setup" }, exit: 1,
+        tail: "Run orochi init in a terminal to authorize setup", started_at: 1 }] },
+  });
+  assert.match(el("panel-body").render(), /Local Incus host/);
+  assert.match(el("panel-body").render(), /authorize setup/);
+  const buttons = el("panel-body").querySelectorAll("button");
+  assert.equal(buttons.some((b) => b.textContent === "Set up VM"), false);
+  const setup = buttons.find((b) => b.textContent === "Initialize sandbox environment");
+  assert.equal(setup.disabled, false);
+  setup.dispatch("click");
+  await settle();
+  assert.deepEqual(jobs(calls), [{ op: "setup" }]);
 });
 
 test("the sandboxes screen says how each agent is signed in inside, by name and never by value", async () => {

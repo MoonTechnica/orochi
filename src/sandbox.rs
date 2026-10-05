@@ -18,6 +18,7 @@ pub mod auth;
 pub mod jobs;
 pub mod ops;
 pub mod runner;
+pub mod setup;
 
 /// Where a project's agents run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -65,6 +66,8 @@ pub struct Project {
     /// The Incus instance, a DNS label: also the project's name on the bridge (`<name>.sbx`).
     pub name: String,
     pub root: PathBuf,
+    /// Additional trees needed by a session (source and Git metadata).
+    pub mounts: Vec<PathBuf>,
     pub mode: Mode,
     /// The tier the instance was created as (`container` or `vm`); `mode` may be `host` while
     /// the instance is kept.
@@ -81,6 +84,7 @@ impl Default for Project {
         Self {
             name: String::new(),
             root: PathBuf::new(),
+            mounts: vec![],
             mode: Mode::Host,
             tier: Mode::Container,
             docker: true,
@@ -257,13 +261,21 @@ impl<'a> Incus<'a> {
             ),
             SandboxClient::Incus => (&self.config.incus, vec![]),
         };
-        let resolved =
-            crate::discovery::locate(program).with_context(|| match self.config.client {
-                SandboxClient::Lima => format!(
-                    "{program} not found; install Lima (`brew install lima`) or set sandbox.limactl"
-                ),
-                SandboxClient::Incus => format!("{program} not found; set sandbox.incus"),
-            })?;
+        let resolved = (if self.config.client == SandboxClient::Incus
+            && self.config.remote.is_empty()
+            && program == "incus"
+        {
+            setup::locate("/usr/local/bin/orochi-incus")
+        } else {
+            None
+        })
+        .or_else(|| setup::locate(program))
+        .with_context(|| match self.config.client {
+            SandboxClient::Lima => format!(
+                "{program} not found; install Lima (`brew install lima`) or set sandbox.limactl"
+            ),
+            SandboxClient::Incus => format!("{program} not found; set sandbox.incus"),
+        })?;
         Ok((resolved, prefix))
     }
     /// An instance as Incus names it, with the remote where one is configured.
@@ -399,6 +411,22 @@ pub fn placement(data: &Path, root: &Path, force: Option<Mode>) -> Result<Option
         uid,
         gid,
     }))
+}
+
+/// Resolve all seats of a conversation through its one sandbox, retaining each seat's cwd.
+pub fn placement_for(
+    data: &Path,
+    root: &Path,
+    config: &SandboxConfig,
+) -> Result<Option<Placement>> {
+    let scope = config.session_root.as_deref().unwrap_or(root);
+    let mut place = placement(data, scope, config.force)?;
+    if config.session_root.is_some()
+        && let Some(place) = &mut place
+    {
+        place.root = root.to_path_buf();
+    }
+    Ok(place)
 }
 
 /// Variables that describe this machine and would mislead a process inside.

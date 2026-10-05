@@ -244,6 +244,9 @@ pub struct SandboxConfig {
     /// This run's `--sandbox`, overriding the project's mode; never read from a file.
     #[serde(skip)]
     pub force: Option<crate::sandbox::Mode>,
+    /// Runtime-only conversation sandbox scope.
+    #[serde(skip)]
+    pub session_root: Option<PathBuf>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -284,6 +287,7 @@ impl Default for SandboxConfig {
             idle_stop_minutes: 30,
             vm_idle_minutes: 30,
             force: None,
+            session_root: None,
         }
     }
 }

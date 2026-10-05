@@ -167,6 +167,9 @@ Gates, in order — each refusal is a sentence the lead can repeat to the user:
 there is nobody to report to. `mailbox::prompt_note` gains one line for the lead describing it;
 `alongside`'s "never start another agent" becomes "start helpers only with `start_agent`".
 
+Writable helpers and session-owned containers extend this original read-only design; see
+[Session workspaces](session-workspaces.md) for current behavior and ownership.
+
 ### 4.3 Lifecycle
 
 ```

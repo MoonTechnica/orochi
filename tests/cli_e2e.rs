@@ -3069,3 +3069,61 @@ fn thread_names_a_recorded_conversation_and_is_refused_anywhere_else() {
         "--thread continues a conversation; it is not a one-shot run"
     );
 }
+
+#[test]
+fn writable_helpers_run_concurrently_in_dedicated_retained_worktrees() {
+    let mut w = Workspace::new();
+    let root = w.dir.path().join("repo");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@localhost"]);
+    std::fs::write(root.join("source.txt"), "baseline").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    w.config.mailbox.enabled = true;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert(
+        "MOCK_HELPERS".into(),
+        "alice:Implement component A,bob:Implement component B".into(),
+    );
+    env.insert("MOCK_WRITERS".into(), "alice,bob".into());
+    env.insert("MOCK_LEAD_DELAY".into(), "4".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Implement both components and add verification\n");
+    success(&output);
+    let replies: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("started.txt")).unwrap()).unwrap();
+    let paths: Vec<_> = replies
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| Path::new(r["workspace"].as_str().unwrap()))
+        .collect();
+    assert_eq!(paths.len(), 2);
+    assert_ne!(paths[0], paths[1]);
+    for (path, name) in paths.iter().zip(["alice", "bob"]) {
+        assert!(path.join(".git").is_file());
+        assert!(path.join(format!("helper-{name}.txt")).is_file());
+        assert!(!root.join(format!("helper-{name}.txt")).exists());
+        assert_eq!(
+            std::fs::read_to_string(path.join("source.txt")).unwrap(),
+            "baseline"
+        );
+    }
+    let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap();
+    assert!(completions.contains("workspace:") && completions.contains("integrate explicitly"));
+}

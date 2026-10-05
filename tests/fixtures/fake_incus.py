@@ -74,6 +74,9 @@ elif command == "config":
         elif action == "list":
             print("\n".join(devices))
 elif command == "storage":
+    if rest[0] == "show":
+        print("driver: " + os.environ.get("FAKE_INCUS_DRIVER", "zfs"))
+        sys.exit(0)
     action, pool = rest[1], rest[2]
     volumes = state["volumes"]
     if action == "copy":
