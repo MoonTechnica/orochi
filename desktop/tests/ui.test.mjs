@@ -2107,3 +2107,79 @@ test("a file read wide takes half the window for as long as it is open, and is n
   assert.equal(el("app").style["--right"], undefined, "and the width it was dragged to comes back");
   assert.equal(localStorage.getItem("widths"), null);
 });
+
+
+function mediaThread(reply) {
+  const thread = structuredClone(recorded.thread);
+  let supplied = false;
+  thread.items = thread.items.map((item) => {
+    if (item.kind !== "agent_message") return item;
+    const text = supplied ? "" : reply;
+    supplied = true;
+    return { ...item, text };
+  });
+  return thread;
+}
+
+test("screenshots from local links render inline and enlarge on click", async () => {
+  const cwd = recorded.thread.thread.cwd;
+  const { el, calls } = await open({
+    thread: mediaThread(`![Screenshot](shot.png)\n[Same shot](<${cwd}/shot.png>)`),
+    tree_media: { mime: "image/png", bytes: 12, data: "data:image/png;base64,AAAA" },
+  });
+  const images = el("timeline").querySelectorAll(".attachment-media");
+  assert.equal(images.length, 2);
+  assert.equal(images[0].getAttribute("src"), "data:image/png;base64,AAAA");
+  assert.equal(images[0].getAttribute("alt"), "Screenshot");
+  assert.equal(calls.filter(([name]) => name === "tree_media").length, 1, "streamed references share a bounded read");
+  el("timeline").querySelectorAll(".attachment-image")[0].dispatch("click");
+  assert.equal(el("app").querySelectorAll(".media-overlay").length, 1);
+  el("app").querySelectorAll(".media-close")[0].dispatch("click");
+  assert.equal(el("app").querySelectorAll(".media-overlay").length, 0);
+});
+
+test("localhost screenshots, video and audio use native previews without autoplay", async () => {
+  const { el } = await open({ thread: mediaThread(
+    "![Screenshot](http://localhost:8731/screenshot)\n[Video](http://127.0.0.1:8731/clip.mp4)\n[Audio](https://example.com/voice.mp3)"
+  ) });
+  const media = el("timeline").querySelectorAll(".attachment-media");
+  assert.deepEqual(media.map((node) => node.tagName), ["IMG", "VIDEO", "AUDIO"]);
+  for (const node of media.slice(1)) {
+    assert.equal(node.getAttribute("controls"), "");
+    assert.equal(node.getAttribute("autoplay"), null);
+  }
+});
+
+test("unsafe image references stay text and missing previews keep a file action", async () => {
+  const { el, calls } = await open({ thread: mediaThread(
+    "![bad](javascript:alert)\n![bad](file:///etc/private.png)\n![bad](../secret.png)\n![bad](http://remote.example/shot.png)\n![bad](%2e%2e/secret.png)\n![missing](missing.png)\n[Report](report.pdf)"
+  ), tree_media: new Error("not there") });
+  assert.equal(el("timeline").querySelectorAll(".attachment-media").length, 0);
+  assert.equal(calls.filter(([name]) => name === "tree_media").length, 1);
+  assert.equal(el("timeline").querySelectorAll(".attachment-file").length, 2);
+  assert.match(el("timeline").render(), /Preview unavailable/);
+});
+
+test("code examples do not load media", async () => {
+  const { el, calls } = await open({ thread: mediaThread(
+    "`![example](shot.png)`\n\n```md\n![example](other.png)\n```"
+  ) });
+  assert.equal(el("timeline").querySelectorAll(".attachment-media").length, 0);
+  assert.equal(calls.filter(([name]) => name === "tree_media").length, 0);
+});
+
+
+test("file links open Files and preserve root-file line positions and encoded spaces", async () => {
+  const { el, calls } = await open(tree({ thread: mediaThread(
+    "[Source](README.md:7)\n[Report](<reports/my report.pdf>)\n[Encoded](reports/my%20report.pdf)"
+  ) }));
+  const links = el("timeline").querySelectorAll(".attachment-file");
+  assert.equal(links.length, 3);
+  links[0].dispatch("click");
+  await settle();
+  assert.equal(el("pane-files").hidden, false);
+  assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "README.md"));
+  links[2].dispatch("click");
+  await settle();
+  assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "reports/my report.pdf"));
+});

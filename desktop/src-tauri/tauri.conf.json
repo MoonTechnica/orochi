@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http://localhost:* http://127.0.0.1:* http://[::1]:*; media-src 'self' data: https: http://localhost:* http://127.0.0.1:* http://[::1]:*"
     },
     "withGlobalTauri": true
   },

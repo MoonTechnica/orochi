@@ -217,6 +217,57 @@ fn a_file_is_read_bounded_and_said_to_be_what_it_is() {
 }
 
 #[test]
+fn timeline_media_is_bounded_and_stays_inside_the_thread() {
+    let tree = tree();
+    let (client, thread) = open(&tree);
+    // A screenshot larger than the Files viewer's image budget still draws in chat.
+    write(&tree.repo.join("screenshot.png"), vec![0; 3 * 1024 * 1024]);
+    let image = client.tree_media(&thread, "screenshot.png").unwrap();
+    assert_eq!(image.mime, "image/png");
+    assert_eq!(image.bytes, 3 * 1024 * 1024);
+    assert!(image.data.unwrap().starts_with("data:image/png;base64,"));
+    for (path, mime) in [("clip.webm", "video/webm"), ("voice.mp3", "audio/mpeg")] {
+        write(&tree.repo.join(path), b"test bytes");
+        let media = client.tree_media(&thread, path).unwrap();
+        assert_eq!(media.mime, mime);
+        assert!(
+            media
+                .data
+                .unwrap()
+                .starts_with(&format!("data:{mime};base64,"))
+        );
+    }
+    write(
+        &tree.repo.join("large.mp4"),
+        vec![0; files::MEDIA_LIMIT as usize + 1],
+    );
+    assert!(
+        client
+            .tree_media(&thread, "large.mp4")
+            .unwrap()
+            .data
+            .is_none()
+    );
+    assert!(
+        client
+            .tree_media(&thread, "README.md")
+            .unwrap()
+            .data
+            .is_none()
+    );
+    assert!(client.tree_media(&thread, "../outside.png").is_err());
+    assert!(client.tree_media(&thread, ".git/config").is_err());
+    assert!(client.tree_media(&thread, "src").is_err());
+    #[cfg(unix)]
+    {
+        let outside = tree.repo.parent().unwrap().join("outside.png");
+        write(&outside, b"private");
+        std::os::unix::fs::symlink(&outside, tree.repo.join("escape.png")).unwrap();
+        assert!(client.tree_media(&thread, "escape.png").is_err());
+    }
+}
+
+#[test]
 fn files_are_found_by_name_and_lines_by_content() {
     let tree = tree();
     let (client, thread) = open(&tree);

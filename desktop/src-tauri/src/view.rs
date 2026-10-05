@@ -850,6 +850,11 @@ impl Client {
         crate::files::read(&cwd, path, state)
     }
 
+    /// A bounded timeline preview of a file in this thread.
+    pub fn tree_media(&self, thread: &str, path: &str) -> Result<crate::files::Media> {
+        crate::files::media(&self.cwd(thread)?, path)
+    }
+
     /// Files by name or lines by content; `None` when content search has no repository.
     pub fn tree_find(
         &self,

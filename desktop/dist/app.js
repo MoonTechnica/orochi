@@ -161,6 +161,9 @@ const WORDS = {
     "Start VM": "VM を起動",
     "Stop VM": "VM を停止",
     "Build image": "イメージをビルド",
+    "Image preview": "画像を拡大",
+    "Close": "閉じる",
+    "Preview unavailable": "プレビューを表示できません",
     "Stop idle": "アイドルを停止",
     Focus: "フォーカス",
     Unfocus: "フォーカス解除",
@@ -1882,7 +1885,7 @@ document.addEventListener("click", (event) => {
 // Markdown ------------------------------------------------------------------
 // What agents write is Markdown. It is drawn as elements built here, never as HTML handed to
 // the page: an agent's text is data, and nothing in it can become markup. Only what agents
-// actually write: headings, paragraphs, lists, code, emphasis, links, quotes, tables, rules.
+// actually write: headings, paragraphs, lists, code, emphasis, links, media, quotes, tables, rules.
 function markdown(source) {
   const host = text("div", "md");
   const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
@@ -2036,8 +2039,8 @@ function list(lines, start, host) {
   return index;
 }
 
-/// Code, links, bold, italic and strikethrough within one line, as text nodes and elements.
-const INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
+/// Code, links, images, bold, italic and strikethrough within one line, as DOM elements.
+const INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|!?\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
 function inline(line, host) {
   let at = 0;
@@ -2046,8 +2049,8 @@ function inline(line, host) {
     at = match.index + match[0].length;
     if (match[1]) {
       host.append(text("code", null, match[2].trim()));
-    } else if (match[3]) {
-      host.append(link(match[3], match[4]));
+    } else if (match[3] !== undefined) {
+      host.append(link(match[3], match[4].replace(/^<|>$/g, ""), match[0].startsWith("!")));
     } else if (match[5] || match[6]) {
       const node = text("strong");
       inline(match[5] || match[6], node);
@@ -2067,13 +2070,122 @@ function inline(line, host) {
   if (at < line.length) host.append(document.createTextNode(line.slice(at)));
 }
 
-/// A link is shown with where it goes, and never followed inside the window: the window is the
-/// conversation, not a browser, and a path an agent cites is somewhere on this machine.
-function link(label, target) {
-  const node = text("span", "link");
-  inline(label, node);
-  node.setAttribute("title", target);
-  return node;
+// Keep a few bounded file previews briefly, to avoid disk reads on every streamed token.
+const mediaCache = new Map();
+function localMedia(thread, path) {
+  const key = `${thread}:${path}`;
+  const cached = mediaCache.get(key);
+  if (cached && Date.now() - cached.at < 5000) return cached.value;
+  const value = quietly("tree_media", { thread, path });
+  mediaCache.set(key, { at: Date.now(), value });
+  if (mediaCache.size > 4) mediaCache.delete(mediaCache.keys().next().value);
+  return value;
+}
+
+function fileTarget(target) {
+  let line = null;
+  target = target.replace(/:(\d+)(?::\d+)?$/, (_, n) => { line = Number(n); return ""; });
+  target = target.replace(/#L(\d+)(?:-L?\d+)?$/, (_, n) => { line = Number(n); return ""; });
+  try { target = decodeURIComponent(target); } catch { return null; }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) {
+    if (!target.startsWith("file:///")) return null;
+    target = target.slice(7);
+  }
+  const path = inTree(target);
+  if (!path || path.split("/").some((part) => part === ".." || part === ".git")) return null;
+  return { path, line };
+}
+
+function mediaKind(target) {
+  const path = target.split(/[?#]/)[0];
+  if (/\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(path)) return "image";
+  if (/\.(mp4|m4v|webm|mov)$/i.test(path)) return "video";
+  if (/\.(mp3|m4a|wav|ogg|flac)$/i.test(path)) return "audio";
+  return null;
+}
+
+function remoteMedia(target) {
+  return /^https:\/\//i.test(target) ||
+    /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(target) ||
+    /^data:image\/(?:png|jpeg|gif|webp|bmp|avif);base64,[a-z0-9+/=]+$/i.test(target);
+}
+
+function enlargeImage(src, label, trigger) {
+  const overlay = text("div", "media-overlay");
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", label || t("Image preview"));
+  const close = text("button", "media-close", t("Close"));
+  close.type = "button";
+  const image = document.createElement("img");
+  image.setAttribute("src", src);
+  image.setAttribute("alt", label);
+  const dismiss = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+    trigger.focus?.();
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape") dismiss();
+    if (event.key === "Tab") { event.preventDefault(); close.focus?.(); }
+  };
+  close.addEventListener("click", dismiss);
+  overlay.addEventListener("click", (event) => { if (event.target === overlay) dismiss(); });
+  document.addEventListener("keydown", onKey);
+  overlay.append(close, image);
+  el("app").append(overlay);
+  close.focus?.();
+}
+
+function link(label, target, imageSyntax = false) {
+  const file = fileTarget(target);
+  const kind = imageSyntax ? "image" : mediaKind(target);
+  const thread = state.thread;
+  const host = text("span", kind ? "attachment" : "link");
+  host.setAttribute("title", target);
+  if (file && thread) {
+    const button = text("button", "attachment-file", label || file.path);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      if (state.thread === thread) showFiles(file.path, file.line);
+    });
+    host.append(button);
+  } else {
+    host.append(text("span", null, label || target));
+  }
+  if (!kind || (!file && !remoteMedia(target))) return host;
+  const draw = (src) => {
+    const media = document.createElement(kind === "image" ? "img" : kind);
+    media.className = "attachment-media";
+    media.setAttribute("src", src);
+    media.addEventListener("error", () => {
+      media.remove();
+      host.append(text("span", "attachment-error", t("Preview unavailable")));
+    });
+    if (kind === "image") {
+      media.setAttribute("alt", label || target);
+      media.setAttribute("loading", "lazy");
+      const button = text("button", "attachment-image");
+      button.type = "button";
+      button.setAttribute("aria-label", t("Image preview"));
+      button.addEventListener("click", () => enlargeImage(src, label || target, button));
+      button.append(media);
+      host.append(button);
+    } else {
+      media.setAttribute("controls", "");
+      media.setAttribute("preload", "metadata");
+      host.append(media);
+    }
+  };
+  if (file && thread) {
+    localMedia(thread, file.path).then((result) => {
+      if (result?.data && result.mime.startsWith(`${kind}/`)) draw(result.data);
+      else host.append(text("span", "attachment-error", t("Preview unavailable")));
+    });
+  } else {
+    draw(target);
+  }
+  return host;
 }
 
 // Status bar ----------------------------------------------------------------

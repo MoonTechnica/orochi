@@ -382,7 +382,67 @@ const IMAGES: &[(&str, &str)] = &[
     ("gif", "image/gif"),
     ("webp", "image/webp"),
     ("svg", "image/svg+xml"),
+    ("bmp", "image/bmp"),
+    ("avif", "image/avif"),
 ];
+
+/// Timeline previews have a separate budget from the source-code viewer. Screenshots
+/// often exceed its 2 MiB image limit. Paths still pass the same tree boundary check.
+pub const MEDIA_LIMIT: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Serialize)]
+pub struct Media {
+    pub bytes: u64,
+    pub mime: String,
+    /// None for unsupported or oversized files; the UI keeps a file link instead.
+    pub data: Option<String>,
+}
+
+pub fn media(cwd: &Path, path: &str) -> Result<Media> {
+    let full = within(cwd, path)?;
+    ensure!(std::fs::metadata(&full)?.is_file(), "{path} is not a file");
+    let mut file = std::fs::File::open(&full)?;
+    let meta = file.metadata()?;
+    ensure!(meta.is_file(), "{path} is not a file");
+    let ext = full
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = IMAGES
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, m)| *m)
+        .or_else(|| match ext.as_str() {
+            "mp4" | "m4v" => Some("video/mp4"),
+            "webm" => Some("video/webm"),
+            "mov" => Some("video/quicktime"),
+            "mp3" => Some("audio/mpeg"),
+            "m4a" => Some("audio/mp4"),
+            "wav" => Some("audio/wav"),
+            "ogg" => Some("audio/ogg"),
+            "flac" => Some("audio/flac"),
+            _ => None,
+        })
+        .unwrap_or("application/octet-stream");
+    let mut result = Media {
+        bytes: meta.len(),
+        mime: mime.into(),
+        data: None,
+    };
+    if mime != "application/octet-stream" && meta.len() <= MEDIA_LIMIT {
+        let mut bytes = Vec::new();
+        // Also bound the read if a running agent grows the file after metadata was read.
+        (&mut file).take(MEDIA_LIMIT + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 <= MEDIA_LIMIT {
+            result.data = Some(format!(
+                "data:{mime};base64,{}",
+                crate::view::base64(&bytes)
+            ));
+        }
+    }
+    Ok(result)
+}
 
 /// A file's text, bounded; an image as a data URL; a binary file as what it is.
 pub fn read(cwd: &Path, path: &str, state: &TreeState) -> Result<FileText> {

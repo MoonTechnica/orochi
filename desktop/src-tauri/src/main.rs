@@ -341,6 +341,19 @@ fn tree_read(
 }
 
 #[tauri::command]
+fn tree_media(
+    open: State<'_, Open>,
+    thread: String,
+    path: String,
+) -> Result<orochi_desktop::files::Media, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .tree_media(&thread, &path)
+        .map_err(fail)
+}
+
+#[tauri::command]
 fn tree_find(
     open: State<'_, Open>,
     thread: String,
@@ -584,6 +597,7 @@ fn main() {
             tree_refresh,
             tree_list,
             tree_read,
+            tree_media,
             tree_find,
             open_path,
             comment,

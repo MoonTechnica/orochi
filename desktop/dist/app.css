@@ -963,6 +963,14 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .md th, .md td { border: 1px solid var(--line); padding: 3px 8px; text-align: left; }
 .md th { background: var(--raised); }
 .md .link { color: var(--brand); text-decoration: underline; cursor: default; }
+.attachment { display: inline-flex; flex-direction: column; gap: 6px; max-width: 100%; vertical-align: top; margin: 6px 0; }
+.attachment-file { color: var(--brand); text-decoration: underline; text-align: left; overflow-wrap: anywhere; }
+.attachment-image { display: block; padding: 0; overflow: hidden; cursor: zoom-in; border-radius: 8px; }
+.attachment-media { display: block; max-width: 100%; width: auto; max-height: 420px; object-fit: contain; }
+.attachment-error { color: var(--muted); font-size: 12px; }
+.media-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, .88); display: flex; align-items: center; justify-content: center; padding: 48px 24px 24px; }
+.media-overlay img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.media-close { position: absolute; top: 12px; right: 24px; }
 
 /* Files ------------------------------------------------------------------ */
 #pane-files { display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 0; }

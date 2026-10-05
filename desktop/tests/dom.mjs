@@ -41,6 +41,10 @@ class Node {
     }
   }
   replaceChildren(...nodes) { this.children = []; this._text = ""; this.append(...nodes); }
+  remove() {
+    if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
+    this.parent = null;
+  }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
   addEventListener(name, handler) {
@@ -144,6 +148,10 @@ export const document = {
   addEventListener(name, handler) {
     if (!document.listeners.has(name)) document.listeners.set(name, []);
     document.listeners.get(name).push(handler);
+  },
+  removeEventListener(name, handler) {
+    const handlers = document.listeners.get(name) || [];
+    if (handlers.includes(handler)) handlers.splice(handlers.indexOf(handler), 1);
   },
   getElementById(id) {
     if (!document.byId.has(id)) {
