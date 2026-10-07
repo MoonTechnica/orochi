@@ -1081,8 +1081,12 @@ details[open] > summary .icon { transform: rotate(90deg); }
   border-radius: var(--radius);
   background: var(--raised);
   overflow-wrap: anywhere;
+  text-align: left;
 }
+#place-root.empty { color: var(--muted); }
+#place-root:disabled { cursor: default; }
 #place-modes { display: grid; gap: 6px; }
+#place-modes button:disabled { opacity: .5; cursor: default; }
 #place-modes button {
   display: grid;
   grid-template-columns: auto 1fr;

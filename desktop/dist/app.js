@@ -139,6 +139,10 @@ const WORDS = {
       "専用の仮想マシンで動きます。分離は最も強く、起動は遅めです。",
     "Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.":
       "中で起動したサービスは http://<ポート>-<プロジェクト>.localhost:1355 で、フォーカス中は 127.0.0.1 でも開けます。",
+    "Choose a folder": "フォルダを選択",
+    "Choose a folder…": "フォルダを選択…",
+    "This folder is already a project; where it runs is changed under Sandboxes.":
+      "このフォルダはすでにプロジェクトです。実行先はサンドボックス画面で変更できます。",
     Advanced: "詳細設定",
     "Docker inside the sandbox": "サンドボックス内で Docker を使う",
     Cancel: "キャンセル",
@@ -1407,9 +1411,12 @@ async function openFolders() {
 }
 
 /// The system's own directory picker, so the window never asks anyone to type a path.
+function pickFolder() {
+  return window.__TAURI__.dialog.open({ directory: true, multiple: false, title: t("Choose a folder") });
+}
+
 async function chooseFolder() {
-  const dialog = window.__TAURI__.dialog;
-  const root = await dialog.open({ directory: true, multiple: false, title: "Choose a folder" });
+  const root = await pickFolder();
   if (root) await startIn(root);
 }
 
@@ -1417,10 +1424,21 @@ async function startIn(root) {
   closeFolders();
   const where = await call("placement", { root });
   if (where?.ask && !(await askPlace(root, where))) return;
+  await openThreadIn(root);
+}
+
+async function openThreadIn(root) {
   const id = await call("new_thread", { root });
   if (!id) return;
   state.thread = id;
   await refresh(true);
+}
+
+/// Adding a project opens its dialog first; the folder is one of the things chosen in it.
+async function addProject() {
+  closeFolders();
+  const root = await askPlace(null, null);
+  if (root) await openThreadIn(root);
 }
 
 // Where a new project runs ------------------------------------------------------
@@ -1435,25 +1453,31 @@ const PLACES = [
   ["vm", "Sandbox · VM", "A virtual machine of its own: the strongest separation, slower to start."],
 ];
 
-/// Resolves true once the choice is recorded (a sandbox made where one was chosen), false if
-/// the dialog was dismissed.
+/// Resolves to the project's folder once the choice is recorded (a sandbox made where one was
+/// chosen), null if the dialog was dismissed. Without a `root` the folder is chosen in the
+/// dialog; a folder already worked in keeps where it runs, which the Sandboxes screen changes.
 function askPlace(root, where) {
   const dialog = el("place");
-  let mode = where.mode || "host";
-  let docker = where.docker !== false;
+  const fixed = Boolean(root);
+  let mode = where?.mode || "host";
+  let docker = where?.docker !== false;
+  let known = false;
   el("place-title").textContent = t("New project");
   el("place-root-label").textContent = t("Project");
   el("place-modes-label").textContent = t("Runs on");
-  el("place-root").textContent = root;
   el("place-close").replaceChildren(drawn("x"));
   el("place-more").textContent = t("Advanced");
   el("place-cancel").textContent = t("Cancel");
   el("place-error").hidden = true;
   const go = el("place-go");
-  go.disabled = false;
   go.textContent = t("Create");
 
   const draw = () => {
+    const field = el("place-root");
+    field.textContent = root || t("Choose a folder…");
+    field.className = root ? "" : "empty";
+    field.disabled = fixed;
+    go.disabled = !root;
     const modes = el("place-modes");
     modes.replaceChildren();
     for (const [key, label, where] of PLACES) {
@@ -1462,6 +1486,7 @@ function askPlace(root, where) {
       option.dataset.mode = key;
       option.setAttribute("role", "radio");
       option.setAttribute("aria-checked", String(key === mode));
+      option.disabled = known;
       option.append(text("span", "mark"), text("span", "name", t(label)), text("span", "where", t(where)));
       option.addEventListener("click", () => {
         mode = key;
@@ -1469,13 +1494,14 @@ function askPlace(root, where) {
       });
       modes.append(option);
     }
-    el("place-note").textContent =
-      mode === "host" ? "" : t("Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.");
+    el("place-note").textContent = known
+      ? t("This folder is already a project; where it runs is changed under Sandboxes.")
+      : mode === "host" ? "" : t("Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.");
     const toggle = el("place-docker");
     toggle.textContent = t("Docker inside the sandbox");
     const withDocker = mode === "container" || mode === "runner";
     toggle.setAttribute("aria-checked", String(docker && withDocker));
-    toggle.disabled = !withDocker;
+    toggle.disabled = known || !withDocker;
   };
   draw();
 
@@ -1489,10 +1515,25 @@ function askPlace(root, where) {
       if (dialog.open) dialog.close();
       resolve(value);
     };
-    const closed = () => finish(false);
+    const closed = () => finish(null);
     const handlers = [
-      ["place-close", () => finish(false)],
-      ["place-cancel", () => finish(false)],
+      ["place-close", () => finish(null)],
+      ["place-cancel", () => finish(null)],
+      ["place-root", async () => {
+        if (fixed) return;
+        const picked = await pickFolder();
+        if (!picked || settled) return;
+        const found = await call("placement", { root: picked });
+        if (settled) return;
+        root = picked;
+        known = found ? !found.ask : false;
+        if (found) {
+          mode = found.mode || "host";
+          docker = found.docker !== false;
+        }
+        el("place-error").hidden = true;
+        draw();
+      }],
       ["place-more", () => {
         const more = el("place-more");
         const open = more.getAttribute("aria-expanded") !== "true";
@@ -1505,11 +1546,13 @@ function askPlace(root, where) {
         draw();
       }],
       ["place-go", async () => {
+        if (!root) return;
+        if (known) return finish(root);
         go.disabled = true;
         if (mode !== "host") go.textContent = t("Creating the sandbox…");
         try {
           await invoke("place", { root, mode, docker: docker && (mode === "container" || mode === "runner") });
-          finish(true);
+          finish(root);
         } catch (error) {
           el("place-error").textContent = String(error);
           el("place-error").hidden = false;
@@ -3589,8 +3632,7 @@ el("add-project").setAttribute("title", t("Add a project"));
 el("add-project").setAttribute("aria-label", t("Add a project"));
 el("add-project").addEventListener("click", async (event) => {
   event.stopPropagation();
-  closeFolders();
-  await chooseFolder();
+  await addProject();
 });
 
 // The page ships English; it says the same words in the window's language before it is read.

@@ -327,19 +327,62 @@ test("a project's own plus starts a thread in that project", async () => {
   assert.equal(prevented, 1, "and the click does not also fold the project");
 });
 
-test("adding a project asks the system's picker and starts a thread there", async () => {
+test("adding a project opens its dialog first, and the folder is chosen inside it", async () => {
   const picked = [];
-  const { el, calls } = await open({}, {
+  const { el, calls } = await open({ placement: NEW }, {
     pick: (options) => {
       picked.push(options);
       return "/work/fresh";
     },
   });
   el("add-project").dispatch("click");
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  await settle();
 
-  assert.equal(picked.length, 1, "even with a thread open: this is for somewhere new");
+  assert.equal(el("place").open, true, "even with a thread open: this is for somewhere new");
+  assert.equal(picked.length, 0, "the picker waits to be asked for");
+  assert.equal(el("place-go").disabled, true, "nothing to create before there is a folder");
+
+  el("place-root").dispatch("click");
+  await settle();
+  assert.equal(picked.length, 1, "the system's own picker, from inside the dialog");
+  assert.match(el("place-root").textContent, /\/work\/fresh/);
+  assert.equal(el("place-go").disabled, false);
+  choose(el, "container");
+  el("place-go").dispatch("click");
+  await settle();
+
+  assert.deepEqual(calls.find(([name]) => name === "place")[1], { root: "/work/fresh", mode: "container", docker: true });
   assert.deepEqual(calls.find(([name]) => name === "new_thread")?.[1], { root: "/work/fresh" });
+  assert.equal(el("place").open, false);
+});
+
+test("adding a folder that is already a project keeps where it runs", async () => {
+  const { el, calls } = await open(
+    { placement: { ask: false, mode: "container", tier: "container", docker: true, name: "repo" } },
+    { pick: () => "/work/orochi" },
+  );
+  el("add-project").dispatch("click");
+  await settle();
+  el("place-root").dispatch("click");
+  await settle();
+
+  const modes = el("place-modes").querySelectorAll("button");
+  assert.equal(modes.find((b) => b.dataset.mode === "container").getAttribute("aria-checked"), "true");
+  assert.ok(modes.every((b) => b.disabled), "changed under Sandboxes, not here");
+  el("place-go").dispatch("click");
+  await settle();
+  assert.equal(calls.some(([name]) => name === "place"), false);
+  assert.deepEqual(calls.find(([name]) => name === "new_thread")?.[1], { root: "/work/orochi" });
+});
+
+test("dismissing a new project before choosing a folder starts nothing", async () => {
+  const { el, calls } = await open({}, { pick: () => "/work/fresh" });
+  el("add-project").dispatch("click");
+  await settle();
+  el("place-cancel").dispatch("click");
+  await settle();
+  assert.equal(el("place").open, false);
+  assert.equal(calls.some(([name, args]) => name === "new_thread" || args?.root === "/work/fresh"), false);
 });
 
 test("new thread asks where, when nowhere has been worked in yet", async () => {
