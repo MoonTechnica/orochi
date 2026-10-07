@@ -327,6 +327,56 @@ fn a_thread_is_interrupted_when_the_host_running_it_is_gone() {
     assert_eq!(hosts, 0, "a dead host releases the thread it owned");
 }
 
+#[test]
+fn unregistering_a_host_interrupts_its_unfinished_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (_, turn, _) = thread_with_a_turn(&activity);
+    let host = activity.register_host(None, "headless").unwrap();
+    assert!(activity.claim_turn(&turn, &host).unwrap());
+    activity.unregister_host(&host).unwrap();
+    let (state, ended): (String, Option<i64>) = activity
+        .connection()
+        .query_row(
+            "SELECT state, ended_at FROM turns WHERE id=?1",
+            [&turn],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(state, "interrupted");
+    assert!(ended.is_some());
+}
+
+#[test]
+fn reaping_repairs_turns_left_running_after_their_host_was_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, orphan, _) = thread_with_a_turn(&activity);
+    let host = activity.register_host(None, "headless").unwrap();
+    assert!(activity.claim_turn(&orphan, &host).unwrap());
+    let live_host = activity.register_host(None, "headless").unwrap();
+    // Reproduce the state left by older versions, bypassing the repaired unregister.
+    activity
+        .connection()
+        .execute("DELETE FROM hosts WHERE id=?1", [&host])
+        .unwrap();
+    let live = activity
+        .queue_turn(&thread, "Next", &[], "auto", "terminal")
+        .unwrap();
+    assert!(activity.claim_turn(&live, &live_host).unwrap());
+    activity.reap_hosts().unwrap();
+    let state = |id: &str| {
+        activity
+            .connection()
+            .query_row("SELECT state FROM turns WHERE id=?1", [id], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(state(&orphan), "interrupted");
+    assert_eq!(state(&live), "running", "a live host keeps its turn");
+}
+
 /// R8: a thread read back out of the store renders the same timeline the live one did. This
 /// is the test that keeps "the app is a view over SQLite" true — if an event cannot be
 /// recovered from rows, the app needs a second, live-only data path and the premise is false.

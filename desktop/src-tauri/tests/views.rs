@@ -1090,6 +1090,20 @@ fn a_project_can_be_renamed_pinned_hidden_and_deleted_from_the_window() {
     assert!(client.delete_project("proj").is_err());
 }
 
+/// A missing host cannot keep the last project from being deleted.
+#[test]
+fn the_last_project_can_be_deleted_after_its_host_left_an_unfinished_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let db = Activity::open(dir.path(), 30).unwrap();
+    db.connection().execute("DELETE FROM hosts", []).unwrap();
+    let client = Client::open(dir.path()).unwrap();
+    assert_eq!(client.delete_project("proj").unwrap(), 1);
+    assert!(client.sidebar(20, true).unwrap().is_empty());
+    assert!(client.folders().unwrap().is_empty());
+    assert!(client.thread(&thread).unwrap().is_none());
+}
+
 /// Open in Terminal: the same store, the thread's own folder, and the thread named outright.
 #[test]
 fn opening_a_conversation_in_a_terminal_is_a_command_naming_its_folder_and_its_thread() {

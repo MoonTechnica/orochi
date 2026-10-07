@@ -1951,8 +1951,14 @@ impl Activity {
     }
 
     pub fn unregister_host(&self, host: &str) -> Result<()> {
-        self.connection
-            .execute("DELETE FROM hosts WHERE id=?1", [host])?;
+        let tx = self.connection.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE turns SET state='interrupted', ended_at=?2
+             WHERE host_id=?1 AND state='running'",
+            params![host, millis()],
+        )?;
+        tx.execute("DELETE FROM hosts WHERE id=?1", [host])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1982,6 +1988,14 @@ impl Activity {
             self.connection
                 .execute("DELETE FROM hosts WHERE id=?1", [id])?;
         }
+        // Older hosts could unregister without finishing their turn. There is no process
+        // left to finish it, and the missing host cannot be found by the loop above.
+        self.connection.execute(
+            "UPDATE turns SET state='interrupted', ended_at=?1
+             WHERE state='running' AND host_id IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM hosts WHERE id=turns.host_id)",
+            [millis()],
+        )?;
         Ok(())
     }
 }
