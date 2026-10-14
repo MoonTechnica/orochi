@@ -2,6 +2,14 @@ name: CI
 on: [push, pull_request]
 permissions:
   contents: read
+# A newer push to the same branch makes the older run's answer moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+# The dependencies are most of a cold build (5½ of the desktop job's 7 minutes, measured), so
+# they are cached; only main writes the cache, which every branch reads.
+env:
+  CACHE_SAVE: ${{ github.ref == 'refs/heads/main' }}
 jobs:
   windows-launcher:
     runs-on: windows-latest
@@ -20,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ env.CACHE_SAVE }}
       - run: mise run fmt
       - run: mise run lint
       - run: mise run test
@@ -35,6 +46,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
+      # The desktop tasks build into the CLI's target directory, so one cache holds both;
+      # naming both crates keys it on both lockfiles.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            desktop/src-tauri -> ../../target
+          save-if: ${{ env.CACHE_SAVE }}
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -54,4 +73,7 @@ jobs:
         with:
           toolchain: "1.96.0"
           components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ env.CACHE_SAVE }}
       - run: cargo clippy --locked -- -D warnings
