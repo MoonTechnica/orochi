@@ -427,9 +427,10 @@ def finish(request):
 
 
 if log_path:
-    # What an agent host would see of this launch: its hook variables and its pane key.
+    # What an agent host would see of this launch: its hook variables and its pane key. And
+    # what codex-acp would read of it: the session configuration a lean session is given.
     with open(log_path + ".env", "a") as out:
-        out.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith("ORCA_")}) + "\n")
+        out.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith("ORCA_") or k == "CODEX_CONFIG"}) + "\n")
 
 for line in sys.stdin:
     request = json.loads(line)

@@ -568,13 +568,14 @@ fn tier_pooling_carries_evidence_across_a_model_replacement() {
     );
 }
 
-/// Asking what a task is costs a whole extra ACP session, and on a given machine one agent's
-/// session is far dearer than another's (2026-09-20: 37,630 tokens against 23,800 for the same
-/// question). Which agent is asked follows what asking it has actually cost, not the order
-/// agents happen to appear in the configuration — but one that has never answered is asked
-/// once first, or its own price would stay unknown for good.
+/// Asking what a task is costs a whole extra ACP session that the turn waits on, and on a given
+/// machine one agent's session takes far longer than another's (2026-10-15: 7 s against 29 s
+/// for the same lean question). Which agent is asked follows how long asking it has actually
+/// taken, not the order agents happen to appear in the configuration — but one that has never
+/// answered is asked once first, or its own time would stay unknown for good. A refusal is not
+/// an answer: a spent account fails fast, and must not look like the fastest answerer.
 #[test]
-fn the_classifier_asks_whichever_agent_has_answered_most_cheaply() {
+fn the_classifier_asks_whichever_agent_has_answered_fastest() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let config = Config {
@@ -584,35 +585,37 @@ fn the_classifier_asks_whichever_agent_has_answered_most_cheaply() {
         ],
         ..Config::default()
     };
-    let asked = |tokens: u64, agent: &str, at: i64| {
+    let asked = |millis: u64, agent: &str, at: i64| {
         let mut record = run(at as usize, true);
         record.purpose = "classification".into();
         record.candidate.agent = agent.into();
-        record.usage = Usage {
-            total_tokens: Some(tokens),
-            ..Default::default()
-        };
+        record.duration_ms = millis;
         record.started_at = at;
         record
     };
     assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);
-    store.record(&asked(37_630, "claude", 1)).unwrap();
+    store.record(&asked(29_000, "claude", 1)).unwrap();
     assert_eq!(classifier::agents(&config, &store), ["codex", "claude"]);
-    store.record(&asked(23_800, "codex", 2)).unwrap();
+    store.record(&asked(7_000, "codex", 2)).unwrap();
     assert_eq!(classifier::agents(&config, &store), ["codex", "claude"]);
-    // It follows the evidence when the evidence changes.
-    for (at, tokens) in [(3, 900), (4, 900)] {
-        store.record(&asked(tokens, "claude", at)).unwrap();
+    // It follows the evidence when the evidence changes, and the median is what it follows:
+    // one slow start does not keep an agent that answers in a second behind the others.
+    for at in 3..6 {
+        store.record(&asked(900, "claude", at)).unwrap();
     }
     assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);
-    // Execution is not advice: what the work itself costs never decides who is asked.
-    for at in 5..9 {
+    // A refusal is quick and is not an answer.
+    for at in 6..10 {
+        let mut record = asked(50, "codex", at);
+        record.error_kind = Some("rate_limit".into());
+        store.record(&record).unwrap();
+    }
+    assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);
+    // Execution is not advice: how long the work itself takes never decides who is asked.
+    for at in 10..14 {
         let mut record = run(at, true);
         record.candidate.agent = "codex".into();
-        record.usage = Usage {
-            total_tokens: Some(1),
-            ..Default::default()
-        };
+        record.duration_ms = 1;
         store.record(&record).unwrap();
     }
     assert_eq!(classifier::agents(&config, &store), ["claude", "codex"]);

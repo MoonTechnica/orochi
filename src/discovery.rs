@@ -5,6 +5,7 @@ use crate::{
     types::Provider,
 };
 use serde::Serialize;
+use serde_json::{Map, Value, json};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -54,6 +55,53 @@ impl Bridge {
         directory.join("node_modules/.bin").join(self.binary)
     }
 }
+
+/// What an isolated session that only answers a question is given so it costs like one.
+/// The coding agent's own system prompt, tools and settings are most of what such a session
+/// costs — measured 2026-10-15: 43,854 tokens against 815 through `claude-agent-acp` 0.77.0,
+/// and 20,587 against 14,645 on `codex` 0.160.1 with its base instructions replaced — so each
+/// bridge is told, in the words it reads, to load none of it. `claude-agent-acp` takes a
+/// `systemPrompt` and Claude Agent SDK options in `session/new`'s `_meta`; `codex-acp` takes
+/// Codex configuration in `CODEX_CONFIG`, whose `model_instructions_file` replaces the base
+/// instructions with a file. Another agent gets neither, and ignores `_meta` as ACP requires.
+/// The session's model is still chosen afterwards, by the scorer, as for any adviser.
+pub fn lean(launch: &mut AgentConfig, workspace: &Path, instruction: &str) -> Option<Meta> {
+    if launch.provider == Provider::ANTHROPIC {
+        let meta = json!({
+            "systemPrompt": instruction,
+            "claudeCode": {"options": {
+                "settingSources": [],
+                "strictMcpConfig": true,
+                "disallowedTools": ["*"],
+                "maxTurns": 1,
+            }},
+        });
+        match meta {
+            Value::Object(map) => Some(map),
+            _ => None,
+        }
+    } else if launch.provider == Provider::OPENAI {
+        let path = workspace.join("instructions.md");
+        std::fs::write(&path, instruction).ok()?;
+        let mut config = launch
+            .env
+            .get("CODEX_CONFIG")
+            .and_then(|text| serde_json::from_str::<Map<String, Value>>(text).ok())
+            .unwrap_or_default();
+        config.insert(
+            "model_instructions_file".into(),
+            Value::String(path.to_string_lossy().into_owned()),
+        );
+        launch
+            .env
+            .insert("CODEX_CONFIG".into(), Value::Object(config).to_string());
+        None
+    } else {
+        None
+    }
+}
+/// `_meta` on an ACP request: a JSON object.
+pub type Meta = Map<String, Value>;
 
 fn bridge(agent: &AgentConfig) -> Option<Bridge> {
     // Existing custom ACP commands/arguments remain authoritative. Native commands

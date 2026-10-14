@@ -232,13 +232,18 @@ session_overhead_tokens = 29000
 ```toml
 [classifier]
 enabled = false        # turn it off
-agent = "claude"       # pin the recipient; omitted, the agent that has answered most cheaply
+agent = "claude"       # pin the recipient; omitted, the agent that has answered fastest here
 model = "haiku"        # if omitted, chosen automatically from the policy at Simple difficulty (= the cheapest candidate)
 timeout_secs = 60
 max_cost_share = 0.25  # the largest share of what work like this costs that asking may take
+lean = true            # ask in a session that opens with nothing but the classifier's instruction
 ```
 
-**Asking costs a session of its own, so it has to be worth it.** Measured on 2026-09-20 with real CLIs: the same question cost 37,630 tokens on Claude and 23,800 on Codex, almost all of it the session's fixed cost rather than the question ([pilot](real-validation-20260920.md)). So what each answer costs is recorded as a `classification` run — never an execution, so it never teaches the router — and two things follow from it. The agent asked is whichever has answered most cheaply here, an agent nobody has priced going first so its own price becomes known. And once both sides are measured, a question that would take more than `max_cost_share` of what work like this has cost is not asked at all: the local profile stands, the evaluator still checks the result, and a failure still moves to another candidate. Until there is something to weigh, Orochi asks.
+**The question is asked in a lean session.** A coding agent's session opens with its own system prompt, tools, settings and MCP servers, and that was nearly all of what asking cost. Each bridge is told, in the words it reads, to load none of it: `claude-agent-acp` takes a replacement `systemPrompt` and Claude Agent SDK options (`settingSources = []`, `strictMcpConfig`, every tool disallowed, one turn) in `session/new`'s `_meta`; `codex-acp` takes `CODEX_CONFIG` with `model_instructions_file` pointing at the instruction. Measured on 2026-10-15 ([results](real-validation-20261015.md)): 43,854 tokens and a 28 s turn against 815 tokens and 7 s on Claude; 20,587 against 14,645 input tokens on Codex, whose tool definitions cannot be dropped. Same account, same model, same answer. An agent that is neither bridge gets nothing and ignores `_meta`, as ACP requires. `lean = false` asks the old way.
+
+**The fastest answerer is asked first, and a spent account is skipped.** Each answer is recorded as a `classification` run with its wall time, session start included, and `classifier::agents` orders the enabled agents by the median of their recent answered times — an agent nobody has timed goes first, so its time becomes known; a refused answer is not timed, since a limit fails fast. An agent whose account hit a rate limit or an authentication error is in cooldown (the execution side shares the account, so the cooldown is the same one) and is not started at all; the next fastest is asked instead, within one agent's worth of time in total. This is how the classifier keeps answering when one subscription's credit runs out: it moves to the other.
+
+**Asking costs a session of its own, so it has to be worth it.** Measured on 2026-09-20 with real CLIs: the same question cost 37,630 tokens on Claude and 23,800 on Codex, almost all of it the session's fixed cost rather than the question ([pilot](real-validation-20260920.md)). So what each answer costs is recorded as a `classification` run — never an execution, so it never teaches the router — and once both sides are measured, a question that would take more than `max_cost_share` of what work like this has cost is not asked at all: the local profile stands, the evaluator still checks the result, and a failure still moves to another candidate. Until there is something to weigh, Orochi asks.
 
 **Nothing with no choice left to make starts an agent.** A `--dry-run`, a read-only seat, and a route with both `--agent` and `--model` specified proceed with the heuristic's label.
 

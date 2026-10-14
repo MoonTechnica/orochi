@@ -886,6 +886,97 @@ fn what_the_classifier_spent_is_recorded_beside_the_run_it_decided() {
     assert!(!stored.contains("PRIVATE"), "{stored}");
 }
 
+/// Asking what a request is must not cost what a coding session costs. The classifier's
+/// session opens with the classifier's instruction and nothing of the agent's own, said in the
+/// words each bridge reads: `codex-acp` through `CODEX_CONFIG`, `claude-agent-acp` through
+/// `_meta` on `session/new`. The session that does the work is given neither, and
+/// `lean = false` asks the old way.
+#[test]
+fn the_classifier_asks_in_a_session_that_opens_with_nothing_but_its_instruction() {
+    let classification = r#"{"task_type":"implementation","complexity":"normal"}"#;
+    let mut w = Workspace::new();
+    w.config.classifier.enabled = true;
+    w.config.agents[0]
+        .env
+        .insert("MOCK_CLASSIFICATION".into(), classification.into());
+    success(&w.run(&["Implement the endpoint"]));
+    let launches = std::fs::read_to_string(w.dir.path().join("agent.jsonl.env")).unwrap();
+    let configured: Vec<_> = launches
+        .lines()
+        .filter(|line| line.contains("CODEX_CONFIG"))
+        .collect();
+    assert_eq!(launches.lines().count(), 2, "{launches}");
+    assert_eq!(configured.len(), 1, "{launches}");
+    assert!(
+        configured[0].contains("model_instructions_file")
+            && configured[0].contains("instructions.md"),
+        "{launches}"
+    );
+    let sessions: Vec<_> = w
+        .log()
+        .lines()
+        .filter(|line| line.contains("\"session/new\""))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(sessions.len(), 2, "{sessions:?}");
+    assert!(
+        sessions.iter().all(|line| !line.contains("_meta")),
+        "{sessions:?}"
+    );
+
+    let mut w = Workspace::new();
+    w.config.classifier.enabled = true;
+    w.config.agents[0].provider = Provider::ANTHROPIC;
+    w.config.agents[0]
+        .env
+        .insert("MOCK_CLASSIFICATION".into(), classification.into());
+    success(&w.run(&["Implement the endpoint"]));
+    let sessions: Vec<serde_json::Value> = w
+        .log()
+        .lines()
+        .filter(|line| line.contains("\"session/new\""))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(sessions.len(), 2, "{sessions:?}");
+    let lean: Vec<_> = sessions
+        .iter()
+        .filter(|s| s["params"].get("_meta").is_some())
+        .collect();
+    assert_eq!(lean.len(), 1, "{sessions:?}");
+    let meta = &lean[0]["params"]["_meta"];
+    assert!(
+        meta["systemPrompt"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are a task classifier"),
+        "{meta}"
+    );
+    assert_eq!(
+        meta["claudeCode"]["options"]["disallowedTools"],
+        json!(["*"])
+    );
+    assert_eq!(meta["claudeCode"]["options"]["settingSources"], json!([]));
+    assert_eq!(
+        meta["claudeCode"]["options"]["strictMcpConfig"],
+        json!(true)
+    );
+    let launches = std::fs::read_to_string(w.dir.path().join("agent.jsonl.env")).unwrap();
+    assert!(!launches.contains("CODEX_CONFIG"), "{launches}");
+
+    w.config.classifier.lean = false;
+    success(&w.run(&["Implement the other endpoint"]));
+    let log = w.log();
+    let sessions: Vec<_> = log
+        .lines()
+        .filter(|line| line.contains("\"session/new\""))
+        .collect();
+    assert_eq!(sessions.len(), 4, "{sessions:?}");
+    assert!(
+        sessions[2..].iter().all(|line| !line.contains("_meta")),
+        "{sessions:?}"
+    );
+}
+
 /// Asking an agent what a request is costs a session of its own. Once Orochi has measured
 /// what asking costs and what work like this costs, it stops paying for a question worth less
 /// than its share of the work, and says so instead of going quiet.

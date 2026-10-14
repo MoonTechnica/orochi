@@ -371,6 +371,45 @@ impl Store {
             .collect())
     }
 
+    /// How long asking each agent for advice has taken lately: the median wall time, session
+    /// start included, of its most recent answered records of that purpose. A record that ended
+    /// in an error is not an answer and is left out: a refusal is quick, and would make a spent
+    /// account look like the fastest answerer.
+    pub fn advice_latency(&self, purpose: &str, limit: usize) -> Result<BTreeMap<String, f64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT record FROM runs WHERE purpose=?1
+             ORDER BY started_at DESC, rowid DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![purpose, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut took: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+        for row in rows {
+            let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
+                continue;
+            };
+            if run.error_kind.is_some() {
+                continue;
+            }
+            took.entry(run.candidate.agent)
+                .or_default()
+                .push(run.duration_ms as f64);
+        }
+        Ok(took
+            .into_iter()
+            .map(|(agent, mut times)| {
+                times.sort_by(f64::total_cmp);
+                let middle = times.len() / 2;
+                let median = if times.len().is_multiple_of(2) {
+                    (times[middle - 1] + times[middle]) / 2.0
+                } else {
+                    times[middle]
+                };
+                (agent, median)
+            })
+            .collect())
+    }
+
     pub fn recent_runs(&self, limit: usize) -> Result<Vec<RunRecord>> {
         let mut stmt = self
             .connection

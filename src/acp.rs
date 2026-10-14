@@ -353,6 +353,10 @@ pub struct Client {
     shutdown: Option<oneshot::Sender<()>>,
     pub capabilities: Capabilities,
     timeout: Duration,
+    /// Sent as `_meta` on `session/new`: what an isolated session is for, in the words its
+    /// adapter reads (`discovery::lean`). An agent that does not know the keys ignores them,
+    /// as ACP requires of `_meta`.
+    session_meta: Option<Meta>,
     #[cfg_attr(not(unix), allow(dead_code))]
     lease: Option<std::path::PathBuf>,
 }
@@ -424,17 +428,19 @@ impl Client {
         mcp: Vec<crate::config::McpServerConfig>,
     ) -> Result<Self, AgentError> {
         Self::start_inner(
-            config, root, permission, timeout, events, model, false, peer, read_only, mcp,
+            config, root, permission, timeout, events, model, false, peer, read_only, mcp, None,
         )
         .await
     }
-    /// Start without Orochi's coordination tools (routing advisers).
+    /// Start without Orochi's coordination tools (routing advisers). `meta` goes on
+    /// `session/new` as `_meta`, which is where an adapter reads what the session is for.
     pub async fn start_isolated(
         config: AgentConfig,
         root: &Path,
         timeout: Duration,
         events: Option<EventSink>,
         model: Option<&str>,
+        meta: Option<Meta>,
     ) -> Result<Self, AgentError> {
         Self::start_inner(
             config,
@@ -447,6 +453,7 @@ impl Client {
             None,
             false,
             vec![],
+            meta,
         )
         .await
     }
@@ -462,6 +469,7 @@ impl Client {
         peer: Option<&str>,
         read_only: bool,
         mcp: Vec<crate::config::McpServerConfig>,
+        session_meta: Option<Meta>,
     ) -> Result<Self, AgentError> {
         let observations = Arc::new(Mutex::new(Observation::default()));
         let debug_state = observations.clone();
@@ -697,6 +705,7 @@ impl Client {
                 declared: crate::types::Abilities::default(),
             },
             timeout,
+            session_meta,
             lease,
         };
         let initialized = client
@@ -886,7 +895,9 @@ impl Client {
         }
     }
     pub async fn new_session(&mut self, root: &Path) -> Result<(), AgentError> {
-        let request = NewSessionRequest::new(root).mcp_servers(self.coordination());
+        let request = NewSessionRequest::new(root)
+            .mcp_servers(self.coordination())
+            .meta(self.session_meta.clone());
         let session = self.request(request).await?;
         self.capabilities.session_id = session.session_id.to_string();
         // Raw response retained by the SDK observer also preserves legacy model fields.

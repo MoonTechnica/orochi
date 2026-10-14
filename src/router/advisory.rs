@@ -205,6 +205,7 @@ async fn turn(
                 policies: cx.policies,
                 store: cx.store,
                 complexity,
+                lean: None,
             };
             let started = Session::start(choice, &selection).await;
             match started {

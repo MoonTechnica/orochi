@@ -57,6 +57,10 @@ pub struct Selection<'a> {
     pub store: &'a Store,
     /// Difficulty of the routing decision, used only to choose a default model.
     pub complexity: Complexity,
+    /// The instruction the session exists to follow. Given, it replaces the agent's own system
+    /// prompt and nothing else of the agent's is loaded (`discovery::lean`); the question then
+    /// costs what the question costs, not what a coding session opens with.
+    pub lean: Option<String>,
 }
 
 /// Without an explicit model, score the agent's advertised models like execution candidates
@@ -144,13 +148,16 @@ impl Session {
             .with_context(|| format!("unknown or disabled adviser agent: {}", config.agent))?;
         let timeout = Duration::from_secs(config.timeout_secs);
         let start = async {
-            let launch = crate::discovery::prepare(
+            let mut launch = crate::discovery::prepare(
                 agent,
                 &selection.config.discovery,
                 selection.store.data_dir(),
             )
             .await?;
             let workspace = tempfile::tempdir()?;
+            let meta = selection.lean.as_deref().and_then(|instruction| {
+                crate::discovery::lean(&mut launch, workspace.path(), instruction)
+            });
             let (tx, events) = unbounded_channel();
             let client = Client::start_isolated(
                 launch,
@@ -158,6 +165,7 @@ impl Session {
                 timeout,
                 Some(tx),
                 config.model.as_deref(),
+                meta,
             )
             .await?;
             let (model, reasoning) = match &config.model {

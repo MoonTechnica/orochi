@@ -222,9 +222,12 @@ pub fn apply(descriptor: &mut TaskDescriptor, classification: &Classification) {
 /// Named outright, or every agent that would run the work anyway: sending the request to one
 /// of those puts the text where it was already going. Empty when classification is off.
 ///
-/// Asking is a whole extra session, and what that costs differs by agent far more than by
-/// question, so the cheapest answerer is asked first — measured here, not assumed. An agent
-/// that has never answered goes ahead of the priced ones, or its own price stays unknown.
+/// Asking is a whole extra session that the turn waits on, and how long one takes differs by
+/// agent far more than by question (measured 2026-10-15: a lean session answered in 7 s on
+/// one agent and 29 s on another), so the fastest answerer is asked first — measured here, not
+/// assumed, from the start of its session to its answer. An agent that has never answered
+/// goes ahead of the timed ones, or its own time stays unknown. One whose account is spent is
+/// in cooldown and not started at all (`consult`), so the next fastest is asked instead.
 pub fn agents(config: &Config, store: &Store) -> Vec<String> {
     if !config.classifier.enabled {
         return vec![];
@@ -232,15 +235,17 @@ pub fn agents(config: &Config, store: &Store) -> Vec<String> {
     if let Some(agent) = &config.classifier.agent {
         return vec![agent.clone()];
     }
-    let spent = store.advice_cost("classification", 64).unwrap_or_default();
+    let took = store
+        .advice_latency("classification", 64)
+        .unwrap_or_default();
     let mut agents: Vec<String> = config
         .agents
         .iter()
         .filter(|a| a.enabled && !a.routing_only)
         .map(|a| a.id.clone())
         .collect();
-    // A stable sort, so agents nobody has priced yet keep their configured order.
-    agents.sort_by(|a, b| match (spent.get(a), spent.get(b)) {
+    // A stable sort, so agents nobody has timed yet keep their configured order.
+    agents.sort_by(|a, b| match (took.get(a), took.get(b)) {
         (Some(one), Some(other)) => one.total_cmp(other),
         (Some(_), None) => std::cmp::Ordering::Greater,
         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -348,6 +353,7 @@ pub async fn refine(
             root,
             labels: &labels,
             purpose: "classification",
+            instruction: INSTRUCTION,
         };
         match ask(config, policies, store, choice, &prompt, &ledger).await {
             Ok(classification) => {
@@ -427,6 +433,8 @@ struct Ledger<'a> {
     root: &'a Path,
     labels: &'a TaskDescriptor,
     purpose: &'static str,
+    /// What the session is asked to do; a lean session opens with this and nothing else.
+    instruction: &'static str,
 }
 
 /// One turn in a fresh adviser session on the classifier's seat.
@@ -450,11 +458,17 @@ async fn consult(
         // Classification is the simplest decision Orochi delegates; the cheapest model that
         // clears the policy floor is the right one.
         complexity: Complexity::Simple,
+        lean: config
+            .classifier
+            .lean
+            .then(|| ledger.instruction.to_owned()),
     };
+    // Timed from before the session starts: starting it is most of the wait, and the wait is
+    // what `agents` orders the answerers by.
+    let (started, clock) = (now(), std::time::Instant::now());
     let mut session = Session::start(choice, &selection).await?;
     let model = session.model();
     let reasoning = session.reasoning();
-    let (started, clock) = (now(), std::time::Instant::now());
     let (result, usage) = session.ask(text).await;
     session.stop().await;
     if let Ok(repository) = store.repository_id(ledger.root) {
@@ -573,6 +587,7 @@ pub async fn distill(
             root,
             labels: &labels,
             purpose: "distillation",
+            instruction: DISTILL,
         };
         let reply = consult(
             config,

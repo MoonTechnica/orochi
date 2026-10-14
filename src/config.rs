@@ -596,6 +596,12 @@ pub struct ClassifierConfig {
     pub max_cost_share: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_overhead_tokens: Option<u64>,
+    /// Ask in a session that loads nothing of the coding agent's own: its system prompt
+    /// replaced by the classifier's instruction, no tools, no settings, no MCP servers
+    /// (`discovery::lean`). It is the same account and the same model; what changes is what
+    /// the session opens with, which was nearly all of what asking cost (measured 2026-10-15
+    /// on `claude-agent-acp`: 43,854 tokens against 815, and 28 s against 7 s for the turn).
+    pub lean: bool,
 }
 impl Default for ClassifierConfig {
     fn default() -> Self {
@@ -609,6 +615,7 @@ impl Default for ClassifierConfig {
             max_output_tokens: 512,
             max_cost_share: 0.25,
             session_overhead_tokens: None,
+            lean: true,
         }
     }
 }
