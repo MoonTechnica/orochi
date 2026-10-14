@@ -27,8 +27,23 @@ run = "cargo clippy --locked --all-targets -- -D warnings"
 description = "The CLI's test suite"
 run = "cargo test --locked"
 
+# cli_e2e drives real ptys and is most of the suite's time (3.5 minutes of it, measured).
+[tasks."test:quick"]
+description = "The CLI's tests but cli_e2e"
+run = '''
+cargo test --locked --lib --bins $(for t in tests/*.rs; do
+  name=$(basename "$t" .rs)
+  [ "$name" = cli_e2e ] || printf -- '--test %s ' "$name"
+done)
+'''
+
+[tasks.quick]
+description = "fmt, clippy and the tests but cli_e2e: the loop while working; `check` before main"
+depends = ["fmt", "lint", "test:quick"]
+
 # The desktop crate is not a workspace member, and it does not compile without the CLI placed
-# beside it as a sidecar.
+# beside it as a sidecar. Its checks build into the CLI's target directory so the CLI is not
+# compiled a second time for it; release builds and installers keep the crate's own.
 [tasks."desktop:sidecar"]
 description = "Build the CLI and place it where the desktop crate expects it"
 run = "scripts/sidecar.sh"
@@ -37,12 +52,14 @@ run = "scripts/sidecar.sh"
 description = "Clippy on the desktop crate"
 depends = ["desktop:sidecar"]
 dir = "{{config_root}}/desktop/src-tauri"
+env = { CARGO_TARGET_DIR = "{{config_root}}/target" }
 run = "cargo clippy --locked --all-targets -- -D warnings"
 
 [tasks."desktop:test"]
 description = "The desktop crate's tests, the window's UI tests among them"
 depends = ["desktop:sidecar"]
 dir = "{{config_root}}/desktop/src-tauri"
+env = { CARGO_TARGET_DIR = "{{config_root}}/target" }
 run = "cargo test --locked"
 
 [tasks."desktop:preview"]
