@@ -2091,6 +2091,16 @@ fn what_the_user_does_after_an_answer_is_recorded_as_a_weak_label() {
     ] {
         stdin.write_all(format!("{line}\n").as_bytes()).unwrap();
         after(runs);
+        if line == "/reroute" {
+            // Adds no run, so wait for the label it gives the last one rather than a pause:
+            // that race was lost on a loaded CI runner.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while std::time::Instant::now() < deadline
+                && store.recent_runs(1).unwrap()[0].feedback.is_none()
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
     }
     drop(stdin);
     assert!(child.wait().unwrap().success());
@@ -2163,7 +2173,15 @@ fn an_interruption_is_judged_by_what_the_user_does_next() {
             }
             wait(&|| store.recent_runs(2).unwrap().len() == 2);
         } else {
-            std::thread::sleep(Duration::from_millis(400));
+            // Until the command has labelled the stopped turn: a fixed pause lost that race
+            // on a loaded CI runner.
+            wait(&|| {
+                store
+                    .recent_runs(1)
+                    .unwrap()
+                    .first()
+                    .is_some_and(|run| run.feedback.is_some())
+            });
         }
         drop(stdin);
         let _ = child.wait();
