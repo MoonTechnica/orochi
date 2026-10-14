@@ -1,0 +1,23 @@
+#!/bin/sh
+# The fast half of CI, before anything leaves this machine: formatting and clippy, about
+# twenty seconds once built. The tests run on CI, which nothing waits for. Enabled by
+# `mise run setup`; `git push --no-verify` skips it.
+set -eu
+
+pushing=false
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+	case $local_sha in
+	*[!0]*) pushing=true ;;
+	esac
+done
+# Only deleting branches: nothing to check.
+$pushing || exit 0
+
+if ! command -v mise >/dev/null 2>&1; then
+	echo "pre-push: mise is not on PATH (https://mise.jdx.dev); push with --no-verify to skip" >&2
+	exit 1
+fi
+if ! git diff --quiet HEAD; then
+	echo "pre-push: uncommitted changes are checked along with what is pushed" >&2
+fi
+exec mise run fmt ::: lint

@@ -1,4 +1,5 @@
-# Everything the checks need: `mise install` once, then `mise run check`.
+# Everything the checks need: `mise install` and `mise run setup` once; `mise run quick` while
+# working, `mise run check` for everything CI runs.
 # Rust's pin of record is rust-toolchain.toml, which rustup and CI read; mise exports
 # RUSTUP_TOOLCHAIN, which overrides that file, so the two numbers must move together.
 [tools]
@@ -7,6 +8,10 @@ rust = { version = "1.96.0", components = "rustfmt,clippy", profile = "minimal" 
 node = "24"
 # The pty-driven tests and their fixtures; CI takes the latest 3.x.
 python = "3.13"
+
+[tasks.setup]
+description = "Use the repository's git hooks (.githooks/pre-push: fmt and clippy before a push)"
+run = "git config core.hooksPath .githooks"
 
 [tasks.build]
 description = "Debug binary (examples/demo.py and the tests expect target/debug/orochi)"

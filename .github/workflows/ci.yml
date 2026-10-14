@@ -1,5 +1,14 @@
 name: CI
-on: [push, pull_request]
+# main and pull requests, not every branch push: a branch that is going to main is checked
+# once, when it gets there. Nothing waits on this; .githooks/pre-push runs fmt and clippy
+# before a push, and a red main is fixed before anything else lands on it.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
 permissions:
   contents: read
 # A newer push to the same branch makes the older run's answer moot.
