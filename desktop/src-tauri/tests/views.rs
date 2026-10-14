@@ -641,6 +641,12 @@ fn a_host_that_stops_at_once_is_reported_rather_than_counted_as_running() {
         "old-orochi",
         "#!/bin/sh\necho \"error: unexpected argument '--thread' found\" >&2\nexit 2\n",
     );
+    // macOS checks a newly written executable on its first launch, which has measured longer
+    // than the window `start_host` gives a binary to fail in. The binary this is about has
+    // been run before; so is this one.
+    let _ = std::process::Command::new(&old)
+        .stderr(std::process::Stdio::null())
+        .status();
     let error = view::start_host(&old, "thread-1").unwrap_err().to_string();
     assert!(
         error.contains("--thread") && error.contains("old-orochi"),
@@ -722,9 +728,14 @@ fn a_host_survives_the_call_that_started_it() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     view::start_host(&path, "thread-1").expect("it is running");
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    // Four seconds of talking, and however long a loaded machine adds to forty launches.
+    let finished = dir.path().join("finished");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !finished.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     assert!(
-        dir.path().join("finished").exists(),
+        finished.exists(),
         "the host was cut off the moment it wrote something"
     );
 }

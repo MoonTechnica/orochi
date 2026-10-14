@@ -1,2 +1,59 @@
+# Everything the checks need: `mise install` once, then `mise run check`.
+# Rust's pin of record is rust-toolchain.toml, which rustup and CI read; mise exports
+# RUSTUP_TOOLCHAIN, which overrides that file, so the two numbers must move together.
 [tools]
-rust = "1.96.0"
+rust = { version = "1.96.0", components = "rustfmt,clippy", profile = "minimal" }
+# desktop/tests/ui.test.mjs, run by desktop/src-tauri/tests/ui.rs.
+node = "24"
+# The pty-driven tests and their fixtures; CI takes the latest 3.x.
+python = "3.13"
+
+[tasks.build]
+description = "Debug binary (examples/demo.py and the tests expect target/debug/orochi)"
+run = "cargo build --locked"
+
+[tasks.fmt]
+description = "Check formatting of the CLI and the desktop crate"
+run = [
+  "cargo fmt --all -- --check",
+  "cargo fmt --all --manifest-path desktop/src-tauri/Cargo.toml -- --check",
+]
+
+[tasks.lint]
+description = "Clippy with warnings as errors, as CI runs it"
+run = "cargo clippy --locked --all-targets -- -D warnings"
+
+[tasks.test]
+description = "The CLI's test suite"
+run = "cargo test --locked"
+
+# The desktop crate is not a workspace member, and it does not compile without the CLI placed
+# beside it as a sidecar.
+[tasks."desktop:sidecar"]
+description = "Build the CLI and place it where the desktop crate expects it"
+run = "scripts/sidecar.sh"
+
+[tasks."desktop:lint"]
+description = "Clippy on the desktop crate"
+depends = ["desktop:sidecar"]
+dir = "{{config_root}}/desktop/src-tauri"
+run = "cargo clippy --locked --all-targets -- -D warnings"
+
+[tasks."desktop:test"]
+description = "The desktop crate's tests, the window's UI tests among them"
+depends = ["desktop:sidecar"]
+dir = "{{config_root}}/desktop/src-tauri"
+run = "cargo test --locked"
+
+[tasks."desktop:preview"]
+description = "Regenerate desktop/dist/preview.html from index.html"
+run = "node desktop/tests/make-preview.mjs"
+
+[tasks.check]
+description = "Everything CI checks, plus the desktop crate"
+depends = ["fmt", "lint", "test", "desktop:lint", "desktop:test"]
+
+[tasks.demo]
+description = "End-to-end smoke without any account"
+depends = ["build"]
+run = "python3 examples/demo.py"

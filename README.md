@@ -82,7 +82,7 @@ cargo install --path . --locked
 orochi --help
 ```
 
-Rust is pinned in `rust-toolchain.toml`. If you use mise, select the same Rust version in this directory.
+Rust is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` sets up the same Rust plus the Node and Python the tests need (`mise.toml`), and `mise run check` runs everything CI checks and the desktop crate's tests besides; `mise tasks` lists the rest.
 
 A release is cut by tagging: `scripts/version.sh <x.y.z>` sets the one version the CLI, the window and the bundle all carry, and `git push origin v<x.y.z>` builds and publishes it (`.github/workflows/release.yml`; running that workflow by hand builds everything and publishes nothing, which is how to find out whether a release would succeed before cutting one). The workflow refuses a tag that does not name the version in the manifests.
 
