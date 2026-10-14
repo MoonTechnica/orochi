@@ -276,6 +276,7 @@ pub async fn prepare(
     })
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 struct InstallProcess(Option<u32>);
 impl Drop for InstallProcess {
     fn drop(&mut self) {

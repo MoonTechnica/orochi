@@ -156,6 +156,7 @@ pub fn apply(map: &mut RuntimeMap, snapshot: &Snapshot, time: i64) {
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 struct ProcessGuard(Option<u32>);
 impl Drop for ProcessGuard {
     fn drop(&mut self) {

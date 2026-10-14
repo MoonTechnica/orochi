@@ -63,6 +63,7 @@ pub fn checks(config: &EvaluatorConfig, root: &Path) -> Vec<CheckCommand> {
     checks
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 struct ProcessGuard(Option<u32>);
 impl Drop for ProcessGuard {
     fn drop(&mut self) {

@@ -353,6 +353,7 @@ pub struct Client {
     shutdown: Option<oneshot::Sender<()>>,
     pub capabilities: Capabilities,
     timeout: Duration,
+    #[cfg_attr(not(unix), allow(dead_code))]
     lease: Option<std::path::PathBuf>,
 }
 impl Drop for Client {
