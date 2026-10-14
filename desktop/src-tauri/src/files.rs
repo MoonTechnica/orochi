@@ -413,7 +413,7 @@ pub fn media(cwd: &Path, path: &str) -> Result<Media> {
         .iter()
         .find(|(e, _)| *e == ext)
         .map(|(_, m)| *m)
-        .or_else(|| match ext.as_str() {
+        .or(match ext.as_str() {
             "mp4" | "m4v" => Some("video/mp4"),
             "webm" => Some("video/webm"),
             "mov" => Some("video/quicktime"),

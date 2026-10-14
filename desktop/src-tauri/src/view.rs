@@ -217,8 +217,10 @@ pub fn sandboxes(config: &Path, data: &Path) -> Result<Sandboxes> {
             .map(|p| (p.clone(), "stopped".to_owned(), None))
             .collect()
     };
-    let reachable = asked && orochi::sandbox::Incus::new(sandbox)
-        .run(&["project", "show", &sandbox.project]).is_ok()
+    let reachable = asked
+        && orochi::sandbox::Incus::new(sandbox)
+            .run(&["project", "show", &sandbox.project])
+            .is_ok()
         && rows.iter().all(|(_, status, _)| status != "unreachable");
     Ok(Sandboxes {
         local: !lima && sandbox.remote.is_empty(),
