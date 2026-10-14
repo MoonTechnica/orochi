@@ -581,10 +581,22 @@ impl Activity {
         // Threads an agent named after Orochi's own preamble before that was refused: named
         // again from the message that opened them.
         repair_titles(&connection)?;
-        // Every open, because a view is a definition and not data: changing one then needs no
-        // version of its own, and an older binary's copy cannot outlive the columns it was
-        // written against.
-        crate::storage::setup(&connection, VIEWS)?;
+        // Checked every open, because a view is a definition and not data: changing one then
+        // needs no version of its own, and an older binary's copy cannot outlive the columns it
+        // was written against. Rewritten only when they differ: every rewrite changes the schema
+        // under every other open connection, and a statement prepared across that change has
+        // been seen to fail with "no such table" for a table that was there. Decided again
+        // inside the write lock, so several opens of a new store rewrite them once between them.
+        if !views_current(&connection)? {
+            let transaction = rusqlite::Transaction::new_unchecked(
+                &connection,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            if !views_current(&transaction)? {
+                transaction.execute_batch(VIEWS)?;
+            }
+            transaction.commit()?;
+        }
         let activity = Self {
             connection,
             retention_days,
@@ -2087,6 +2099,30 @@ fn repair_titles(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Whether the store's views are this binary's, compared as SQLite keeps them: a view's
+/// definition is stored as written, so a store built in memory says what they should read.
+fn views_current(connection: &Connection) -> Result<bool> {
+    static DEFINED: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    let read = |connection: &Connection| -> Result<Vec<(String, String)>> {
+        let mut statement = connection
+            .prepare("SELECT name, sql FROM sqlite_master WHERE type='view' ORDER BY name")?;
+        let views = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(views.collect::<rusqlite::Result<_>>()?)
+    };
+    let defined = match DEFINED.get() {
+        Some(defined) => defined,
+        None => {
+            let memory = Connection::open_in_memory()?;
+            memory.execute_batch(SCHEMA)?;
+            added(&memory)?;
+            memory.execute_batch(VIEWS)?;
+            let views = read(&memory)?;
+            DEFINED.get_or_init(|| views)
+        }
+    };
+    Ok(!defined.is_empty() && read(connection)? == *defined)
+}
+
 /// Brings an existing store up to `ADDED` / `ADDED_TABLES`. Read first without a write lock,
 /// so an up-to-date store costs nothing; then again *inside* the write transaction, because two
 /// processes opening at once would otherwise both find a column missing and both add it, and
@@ -2441,7 +2477,6 @@ CREATE TRIGGER IF NOT EXISTS ch_peers_u AFTER UPDATE ON peers BEGIN
 /// the views expose `host_pid` / `host_start` and the reader applies `process::alive`, the
 /// same judgement `mailbox::prune` makes.
 const VIEWS: &str = r#"
-BEGIN IMMEDIATE;
 DROP VIEW IF EXISTS v_projects;
 CREATE VIEW v_projects AS
 SELECT p.id, p.root, p.name, p.pinned, p.collapsed, p.hidden_at,
@@ -2586,5 +2621,4 @@ SELECT a.id AS attempt_id, tn.thread_id, s.turn_id, s.id AS seat_id, s.role,
        a.considered, a.run_id, a.outcome, a.error_kind, a.error, a.checks, a.usage,
        a.started_at, a.ended_at
 FROM attempts a JOIN seats s ON s.id=a.seat_id JOIN turns tn ON tn.id=s.turn_id;
-COMMIT;
 "#;
