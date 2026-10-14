@@ -155,6 +155,27 @@ pub(super) fn prepare_linux(config: &SandboxConfig, data: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Linux will not run a file that a fork made by another test's thread still holds open
+    /// for writing, until that child execs ("Text file busy"). A script written here can meet
+    /// one, and nothing has run when it does, so the launch is tried again.
+    fn launching<T>(mut run: impl FnMut() -> Result<T>) -> Result<T> {
+        for _ in 0..50 {
+            match run() {
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.raw_os_error() == Some(libc::ETXTBSY))
+                    }) =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                result => return result,
+            }
+        }
+        run()
+    }
+
     #[test]
     fn installed_lima_never_invokes_a_package_manager() {
         ensure_lima_with(&SandboxConfig::default(), |name| {
@@ -201,8 +222,8 @@ mod tests {
             "limactl" if installed.exists() => Some(installed.clone()),
             _ => None,
         };
-        ensure_lima_with(&SandboxConfig::default(), locate).unwrap();
-        ensure_lima_with(&SandboxConfig::default(), locate).unwrap();
+        launching(|| ensure_lima_with(&SandboxConfig::default(), locate)).unwrap();
+        launching(|| ensure_lima_with(&SandboxConfig::default(), locate)).unwrap();
     }
 
     #[test]
@@ -217,8 +238,10 @@ mod tests {
             )
             .unwrap();
             std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let error = ensure_lima_with(&SandboxConfig::default(), |name| {
-                (name == "brew").then(|| brew.clone())
+            let error = launching(|| {
+                ensure_lima_with(&SandboxConfig::default(), |name| {
+                    (name == "brew").then(|| brew.clone())
+                })
             })
             .unwrap_err()
             .to_string();
