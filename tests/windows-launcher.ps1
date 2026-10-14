@@ -39,4 +39,6 @@ $global:failWsl = $true
 $threw = $false
 try { & $launcher -WorkingDirectory '/home/test/project' } catch { $threw = $true }
 if (-not $threw) { throw 'A failed WSL launch must fail the launcher too.' }
+# The failing fake left its exit code behind, and the step reports the last one it sees.
+$global:LASTEXITCODE = 0
 Write-Host 'Windows launcher tests passed'

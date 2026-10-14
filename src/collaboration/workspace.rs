@@ -321,6 +321,8 @@ pub fn commit(root: &Path, changes: &[&Change]) -> Result<Vec<PathBuf>> {
             std::fs::create_dir_all(parent)?;
             let mut temp = tempfile::NamedTempFile::new_in(parent)?;
             std::io::Write::write_all(&mut temp, bytes)?;
+            #[cfg(not(unix))]
+            let _ = executable;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

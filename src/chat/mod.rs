@@ -575,9 +575,7 @@ pub async fn run_with(
 impl<'a> Session<'a> {
     /// The idle loop: keys, queued messages and mailbox traffic until the user quits.
     async fn serve(&mut self) -> Result<u8> {
-        #[cfg(unix)]
-        let mut resized =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?;
+        let mut resized = Resized::listen()?;
         let mut mail = mail_ticker();
         // Claude Code asks at startup, before anything is typed; so does this.
         self.review_repository_servers().await;
@@ -2871,9 +2869,7 @@ impl Session<'_> {
             let interrupt = tokio::signal::ctrl_c();
             let mut ticker = tokio::time::interval(Duration::from_millis(100));
             let mut mail = mail_ticker();
-            #[cfg(unix)]
-            let mut resized =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?;
+            let mut resized = Resized::listen()?;
             tokio::pin!(run, interrupt, others);
             loop {
                 tokio::select! {
@@ -5660,6 +5656,29 @@ fn pane_tool(state: &ToolState) -> (String, Option<String>) {
         .map(|d| d.strip_prefix("$ ").unwrap_or(d).to_owned())
         .or_else(|| state.title.clone().filter(|t| t != name));
     (name.to_owned(), input)
+}
+
+/// The terminal changing size. Windows has no signal for it, and the console reads no keys
+/// there, so there it never fires.
+struct Resized {
+    #[cfg(unix)]
+    signal: tokio::signal::unix::Signal,
+}
+
+impl Resized {
+    fn listen() -> Result<Self> {
+        Ok(Self {
+            #[cfg(unix)]
+            signal: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())?,
+        })
+    }
+
+    async fn recv(&mut self) -> Option<()> {
+        #[cfg(unix)]
+        return self.signal.recv().await;
+        #[cfg(not(unix))]
+        std::future::pending().await
+    }
 }
 
 fn mail_ticker() -> tokio::time::Interval {

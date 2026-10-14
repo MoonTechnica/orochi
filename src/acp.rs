@@ -465,7 +465,9 @@ impl Client {
         let observations = Arc::new(Mutex::new(Observation::default()));
         let debug_state = observations.clone();
         let provider = config.provider;
-        let (mut command, mut args) = (config.command.clone(), config.args.clone());
+        let (command, args) = (config.command.clone(), config.args.clone());
+        #[cfg(unix)]
+        let (mut command, mut args) = (command, args);
         #[cfg(unix)]
         let lease = crate::process::wrap(&mut command, &mut args);
         #[cfg(not(unix))]

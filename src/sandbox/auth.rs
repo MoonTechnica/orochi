@@ -589,7 +589,9 @@ pub fn login(agent: &AgentConfig, data: &Path, mcp: &McpConfig) -> Result<String
 
 /// A line read without echo, for a token pasted into a terminal.
 pub fn read_hidden(prompt: &str) -> Result<String> {
-    use std::io::{BufRead, IsTerminal, Write};
+    #[cfg(unix)]
+    use std::io::IsTerminal;
+    use std::io::{BufRead, Write};
     eprint!("{prompt}");
     std::io::stderr().flush()?;
     let stdin = std::io::stdin();

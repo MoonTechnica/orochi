@@ -11,6 +11,7 @@ Rust 1.96.0 is pinned in `rust-toolchain.toml`; edition 2024. `Cargo.lock` is co
 ## Commands
 
 ```sh
+mise install && mise run check             # every check CI runs, CLI and desktop crate; `mise tasks` lists the rest
 cargo build --locked                       # debug binary (examples/demo.py expects target/debug/orochi)
 cargo build --release --locked
 cargo fmt --all -- --check
@@ -28,7 +29,9 @@ python3 -m unittest discover -s tests -p test_quota_terminal.py   # also run by 
 
 End-to-end smoke without any account: `cargo build --locked && python3 examples/demo.py`.
 
-CI (`.github/workflows/ci.yml`) runs fmt / clippy / test on ubuntu + macOS with Python 3 installed. No account, network LLM call, or API billing is needed for any test.
+CI (`.github/workflows/ci.yml`) runs fmt / clippy / test on ubuntu + macOS through `mise.toml` (the same Rust, Node and Python as `mise install` gives locally), the desktop crate's clippy and tests (`desktop:lint`, `desktop:test`, which build the sidecar first), a Windows clippy of the CLI and the Windows launcher test. No account, network LLM call, or API billing is needed for any test.
+
+**Before anything reaches `main`:** `mise run check` passes locally (it is the CLI and the desktop crate together; `desktop/src-tauri` is outside the workspace, so a root `cargo` command never sees it), and code under `#[cfg(unix)]` has its non-Unix side compiled in your head, since the Windows job is the only place it is built. **After pushing:** watch the run (`gh run watch`) and report it; a red `main` is fixed before anything else is merged on top of it. `main` was red for nine days once, from the commit that added the Windows jobs on, and every push after it hid behind that red.
 
 ## Execution pipeline
 
