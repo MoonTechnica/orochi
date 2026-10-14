@@ -502,6 +502,83 @@ fn classifier_sees_the_task_but_caches_only_a_hash_of_it() {
     assert!(!String::from_utf8_lossy(&raw).contains("PRIVATE TASK SECRET"));
 }
 
+/// ACP has no field for a system prompt, so a session that is to open with nothing but a
+/// question has to be told so in each agent's own words. Orochi knows the words of the
+/// commands it ships, a user can write any other agent's into `[agents.lean]`, and an empty
+/// table asks that agent as it is.
+#[test]
+fn a_lean_session_is_said_in_each_agents_own_words() {
+    use orochi::{config::LeanConfig, discovery};
+    let known =
+        |command: &str| AgentConfig::preset("a", Provider::OPENAI, command, &[]).lean_session();
+    assert!(known("claude-agent-acp").meta.is_some());
+    assert!(
+        known("/data/adapters/x/node_modules/.bin/claude-agent-acp")
+            .meta
+            .is_some()
+    );
+    assert!(known("claude").meta.is_some());
+    assert_eq!(
+        known("codex-acp").env.keys().collect::<Vec<_>>(),
+        ["CODEX_CONFIG"]
+    );
+    assert_eq!(
+        known("gemini").env.keys().collect::<Vec<_>>(),
+        ["GEMINI_SYSTEM_MD"]
+    );
+    assert!(known("agy_acp_server.par").is_empty());
+    assert!(known("some-other-acp").is_empty());
+
+    // The words are templates: the instruction goes into `_meta` strings wherever
+    // `{instruction}` stands, and into a file wherever `{instruction_file}` stands.
+    let dir = tempfile::tempdir().unwrap();
+    let lean: LeanConfig = toml::from_str(
+        r#"
+        meta = { prompt = { system = "{instruction}", keep = ["{instruction}", 1] }, turns = 1 }
+        env = { ACME_CONFIG = '{"instructions_file":"{instruction_file}"}', ACME_LEAN = "1" }
+        "#,
+    )
+    .unwrap();
+    let mut launch = AgentConfig::preset("acme", Provider::new("acme").unwrap(), "acme-acp", &[]);
+    launch.env.insert(
+        "ACME_CONFIG".into(),
+        r#"{"model":"fast","instructions_file":"old"}"#.into(),
+    );
+    let meta = discovery::lean(&mut launch, dir.path(), "Answer briefly.", &lean).unwrap();
+    assert_eq!(meta["prompt"]["system"], json!("Answer briefly."));
+    assert_eq!(meta["prompt"]["keep"], json!(["Answer briefly.", 1]));
+    assert_eq!(meta["turns"], json!(1));
+    let file = dir.path().join("instructions.md");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "Answer briefly.");
+    // A JSON object is merged into the JSON object the variable already held.
+    let config: serde_json::Value = serde_json::from_str(&launch.env["ACME_CONFIG"]).unwrap();
+    assert_eq!(config["model"], json!("fast"));
+    assert_eq!(config["instructions_file"], json!(file.to_string_lossy()));
+    assert_eq!(launch.env["ACME_LEAN"], "1");
+
+    // Written empty, the entry means: ask this agent as it is.
+    let mut agent = AgentConfig::preset("claude", Provider::ANTHROPIC, "claude-agent-acp", &[]);
+    agent.lean = Some(LeanConfig::default());
+    assert!(agent.lean_session().is_empty());
+    let mut launch = agent.clone();
+    assert_eq!(
+        discovery::lean(&mut launch, dir.path(), "x", &agent.lean_session()),
+        None
+    );
+    assert!(launch.env.is_empty());
+
+    // And it survives the configuration file, nested table and all.
+    agent.lean = Some(lean.clone());
+    let config = Config {
+        agents: vec![agent],
+        ..Config::default()
+    };
+    let text = toml::to_string(&config).unwrap();
+    let back: Config = toml::from_str(&text).unwrap();
+    assert_eq!(back.agents[0].lean, Some(lean));
+    assert_eq!(Config::default().agents[0].lean, None);
+}
+
 #[test]
 fn router_payload_excludes_task_text_and_filenames() {
     let dir = tempfile::tempdir().unwrap();

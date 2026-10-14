@@ -462,6 +462,7 @@ async fn consult(
             .classifier
             .lean
             .then(|| ledger.instruction.to_owned()),
+        timed: Some(ledger.purpose),
     };
     // Timed from before the session starts: starting it is most of the wait, and the wait is
     // what `agents` orders the answerers by.

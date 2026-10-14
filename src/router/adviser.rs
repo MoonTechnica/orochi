@@ -61,6 +61,11 @@ pub struct Selection<'a> {
     /// prompt and nothing else of the agent's is loaded (`discovery::lean`); the question then
     /// costs what the question costs, not what a coding session opens with.
     pub lean: Option<String>,
+    /// The purpose whose recorded answers say which of the agent's models has answered
+    /// fastest here. Given, a model measured faster than the scorer's first choice is taken
+    /// instead of it, so an agent from any vendor — one no policy tells apart — still settles
+    /// on its fastest model. Untimed models keep the scorer's order: it is how they get timed.
+    pub timed: Option<&'static str>,
 }
 
 /// Without an explicit model, score the agent's advertised models like execution candidates
@@ -119,8 +124,30 @@ fn choose(
         },
     )?;
     let models = &client.capabilities.models;
-    match ranked.into_iter().next() {
-        Some(best) => Ok((best.model, best.reasoning_level)),
+    let mut ranked = ranked.into_iter();
+    match ranked.next() {
+        Some(mut best) => {
+            let took = selection
+                .timed
+                .and_then(|purpose| {
+                    selection
+                        .store
+                        .advice_latency_models(purpose, &agent.id, 64)
+                        .ok()
+                })
+                .unwrap_or_default();
+            if let Some(mut time) = took.get(&best.model).copied() {
+                for candidate in ranked {
+                    if let Some(faster) = took.get(&candidate.model).copied()
+                        && faster < time
+                    {
+                        time = faster;
+                        best = candidate;
+                    }
+                }
+            }
+            Ok((best.model, best.reasoning_level))
+        }
         // A single advertised model leaves nothing to choose.
         None if models.len() == 1 => Ok((models[0].model.clone(), choice.reasoning.clone())),
         None => Err(AgentError::new(
@@ -155,8 +182,9 @@ impl Session {
             )
             .await?;
             let workspace = tempfile::tempdir()?;
+            let lean = agent.lean_session();
             let meta = selection.lean.as_deref().and_then(|instruction| {
-                crate::discovery::lean(&mut launch, workspace.path(), instruction)
+                crate::discovery::lean(&mut launch, workspace.path(), instruction, &lean)
             });
             let (tx, events) = unbounded_channel();
             let client = Client::start_isolated(

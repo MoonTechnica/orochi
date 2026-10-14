@@ -319,6 +319,9 @@ args = []
 enabled = true
 browser = false
 web = false
+# [agents.lean]                                   # how a bare question (the classifier's) is asked of this agent;
+# meta = { systemPrompt = "{instruction}" }       #   unset: what Orochi knows about the command. `meta` goes on
+# env = { ACME_SYSTEM_MD = "{instruction_file}" } #   session/new as `_meta`, `env` on the launch (see docs/adaptive-routing.md)
 
 [scheduler]
 required_success = 0.7

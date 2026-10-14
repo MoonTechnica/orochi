@@ -400,9 +400,72 @@ pub struct AgentConfig {
     /// `orochi sandbox secret`, this entry's `env`, or this machine's environment.
     #[serde(default)]
     pub sandbox_env: Vec<String>,
+    /// How a session that only answers a question is told to open with nothing but the
+    /// question (`discovery::lean`). Unset, what Orochi knows about the command
+    /// (`LeanConfig::known`); an empty table asks this agent as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lean: Option<LeanConfig>,
 }
 fn yes() -> bool {
     true
+}
+
+/// What an agent takes in place of its own system prompt, tools and settings, in its own
+/// words — ACP has no field for a system prompt, so there is no other way to say it. `meta`
+/// is sent on `session/new` as `_meta`, `{instruction}` in any of its strings standing for the
+/// instruction; `env` is set on the launch, `{instruction_file}` standing for a file Orochi
+/// writes the instruction to. Any ACP agent whose adapter or CLI reads either can be given
+/// its words here.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LeanConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+impl LeanConfig {
+    /// What Orochi was read to know, by the command's name: `claude-agent-acp` 0.77.0 reads
+    /// `_meta.systemPrompt` and Claude Agent SDK options in `_meta.claudeCode.options`
+    /// (`dist/acp-agent.js`); `codex-acp` merges `CODEX_CONFIG` into the session configuration,
+    /// whose `model_instructions_file` replaces Codex's base instructions; Gemini CLI replaces
+    /// its system prompt with the file `GEMINI_SYSTEM_MD` names
+    /// (<https://geminicli.com/docs/cli/system-prompt/>). A command not listed takes nothing.
+    pub fn known(command: &str) -> Self {
+        let name = Path::new(command)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match name.as_str() {
+            "claude-agent-acp" | "claude" => Self {
+                meta: Some(serde_json::json!({
+                    "systemPrompt": "{instruction}",
+                    "claudeCode": {"options": {
+                        "settingSources": [],
+                        "strictMcpConfig": true,
+                        "disallowedTools": ["*"],
+                        "maxTurns": 1,
+                    }},
+                })),
+                env: BTreeMap::new(),
+            },
+            "codex-acp" | "codex" => Self {
+                meta: None,
+                env: BTreeMap::from([(
+                    "CODEX_CONFIG".into(),
+                    r#"{"model_instructions_file":"{instruction_file}"}"#.into(),
+                )]),
+            },
+            "gemini" => Self {
+                meta: None,
+                env: BTreeMap::from([("GEMINI_SYSTEM_MD".into(), "{instruction_file}".into())]),
+            },
+            _ => Self::default(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.meta.is_none() && self.env.is_empty()
+    }
 }
 const WEB: crate::types::Abilities = crate::types::Abilities {
     browser: false,
@@ -439,7 +502,15 @@ impl AgentConfig {
             sandboxed: false,
             sandbox_files: vec![],
             sandbox_env: vec![],
+            lean: None,
         }
+    }
+    /// How this agent is asked a bare question: what the user wrote, else what Orochi knows
+    /// about the command.
+    pub fn lean_session(&self) -> LeanConfig {
+        self.lean
+            .clone()
+            .unwrap_or_else(|| LeanConfig::known(&self.command))
     }
 }
 

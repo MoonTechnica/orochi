@@ -1,11 +1,11 @@
 //! Resolve installed coding CLIs to ACP transports without requiring global adapters.
 use crate::{
     agents::{AgentError, ErrorKind},
-    config::{AgentConfig, DiscoveryConfig},
+    config::{AgentConfig, DiscoveryConfig, LeanConfig},
     types::Provider,
 };
 use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -59,45 +59,68 @@ impl Bridge {
 /// What an isolated session that only answers a question is given so it costs like one.
 /// The coding agent's own system prompt, tools and settings are most of what such a session
 /// costs — measured 2026-10-15: 43,854 tokens against 815 through `claude-agent-acp` 0.77.0,
-/// and 20,587 against 14,645 on `codex` 0.160.1 with its base instructions replaced — so each
-/// bridge is told, in the words it reads, to load none of it. `claude-agent-acp` takes a
-/// `systemPrompt` and Claude Agent SDK options in `session/new`'s `_meta`; `codex-acp` takes
-/// Codex configuration in `CODEX_CONFIG`, whose `model_instructions_file` replaces the base
-/// instructions with a file. Another agent gets neither, and ignores `_meta` as ACP requires.
-/// The session's model is still chosen afterwards, by the scorer, as for any adviser.
-pub fn lean(launch: &mut AgentConfig, workspace: &Path, instruction: &str) -> Option<Meta> {
-    if launch.provider == Provider::ANTHROPIC {
-        let meta = json!({
-            "systemPrompt": instruction,
-            "claudeCode": {"options": {
-                "settingSources": [],
-                "strictMcpConfig": true,
-                "disallowedTools": ["*"],
-                "maxTurns": 1,
-            }},
-        });
-        match meta {
-            Value::Object(map) => Some(map),
-            _ => None,
-        }
-    } else if launch.provider == Provider::OPENAI {
-        let path = workspace.join("instructions.md");
-        std::fs::write(&path, instruction).ok()?;
-        let mut config = launch
-            .env
-            .get("CODEX_CONFIG")
-            .and_then(|text| serde_json::from_str::<Map<String, Value>>(text).ok())
-            .unwrap_or_default();
-        config.insert(
-            "model_instructions_file".into(),
-            Value::String(path.to_string_lossy().into_owned()),
-        );
-        launch
-            .env
-            .insert("CODEX_CONFIG".into(), Value::Object(config).to_string());
-        None
-    } else {
-        None
+/// and 20,587 against 14,645 on `codex` 0.160.1 with its base instructions replaced. ACP has
+/// no field for any of it, so each agent is told in its own words (`LeanConfig`): `meta` goes
+/// on `session/new` as `_meta`, with `{instruction}` filled in; `env` goes on the launch, with
+/// `{instruction_file}` the path of a file holding the instruction, and a value that is a JSON
+/// object merged into the JSON object already in that variable, so a session configuration
+/// the user set keeps its other keys. An agent that takes neither is asked as it is, and
+/// ignores a `_meta` it does not know, as ACP requires. The session's model is still chosen
+/// afterwards, by the scorer, as for any adviser.
+pub fn lean(
+    launch: &mut AgentConfig,
+    workspace: &Path,
+    instruction: &str,
+    lean: &LeanConfig,
+) -> Option<Meta> {
+    let mut file: Option<String> = None;
+    for (key, template) in &lean.env {
+        let value = if template.contains("{instruction_file}") {
+            let path = match &file {
+                Some(path) => path.clone(),
+                None => {
+                    let path = workspace.join("instructions.md");
+                    // Without the file the variable would point at nothing: better not set.
+                    if std::fs::write(&path, instruction).is_err() {
+                        continue;
+                    }
+                    file.insert(path.to_string_lossy().into_owned()).clone()
+                }
+            };
+            template.replace("{instruction_file}", &path)
+        } else {
+            template.clone()
+        };
+        let value = match (
+            launch
+                .env
+                .get(key)
+                .and_then(|text| serde_json::from_str::<Map<String, Value>>(text).ok()),
+            serde_json::from_str::<Map<String, Value>>(&value).ok(),
+        ) {
+            (Some(mut existing), Some(added)) => {
+                existing.extend(added);
+                Value::Object(existing).to_string()
+            }
+            _ => value,
+        };
+        launch.env.insert(key.clone(), value);
+    }
+    match lean.meta.as_ref().map(|meta| fill(meta, instruction))? {
+        Value::Object(map) => Some(map),
+        _ => None,
+    }
+}
+fn fill(value: &Value, instruction: &str) -> Value {
+    match value {
+        Value::String(text) => Value::String(text.replace("{instruction}", instruction)),
+        Value::Array(items) => Value::Array(items.iter().map(|v| fill(v, instruction)).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), fill(v, instruction)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 /// `_meta` on an ACP request: a JSON object.

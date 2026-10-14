@@ -376,6 +376,25 @@ impl Store {
     /// in an error is not an answer and is left out: a refusal is quick, and would make a spent
     /// account look like the fastest answerer.
     pub fn advice_latency(&self, purpose: &str, limit: usize) -> Result<BTreeMap<String, f64>> {
+        self.advice_latency_by(purpose, limit, |run| Some(run.candidate.agent.clone()))
+    }
+    /// The same, for one agent's models: which of them has answered fastest here.
+    pub fn advice_latency_models(
+        &self,
+        purpose: &str,
+        agent: &str,
+        limit: usize,
+    ) -> Result<BTreeMap<String, f64>> {
+        self.advice_latency_by(purpose, limit, |run| {
+            (run.candidate.agent == agent).then(|| run.candidate.model.clone())
+        })
+    }
+    fn advice_latency_by(
+        &self,
+        purpose: &str,
+        limit: usize,
+        key: impl Fn(&RunRecord) -> Option<String>,
+    ) -> Result<BTreeMap<String, f64>> {
         let mut statement = self.connection.prepare(
             "SELECT record FROM runs WHERE purpose=?1
              ORDER BY started_at DESC, rowid DESC LIMIT ?2",
@@ -391,13 +410,13 @@ impl Store {
             if run.error_kind.is_some() {
                 continue;
             }
-            took.entry(run.candidate.agent)
-                .or_default()
-                .push(run.duration_ms as f64);
+            if let Some(key) = key(&run) {
+                took.entry(key).or_default().push(run.duration_ms as f64);
+            }
         }
         Ok(took
             .into_iter()
-            .map(|(agent, mut times)| {
+            .map(|(key, mut times)| {
                 times.sort_by(f64::total_cmp);
                 let middle = times.len() / 2;
                 let median = if times.len().is_multiple_of(2) {
@@ -405,7 +424,7 @@ impl Store {
                 } else {
                     times[middle]
                 };
-                (agent, median)
+                (key, median)
             })
             .collect())
     }

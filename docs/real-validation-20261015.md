@@ -30,15 +30,20 @@ open and asked again would remove it; that is not implemented.
 
 ## What changed because of this
 
-- `discovery::lean` says the instruction in each bridge's words: `_meta` on `session/new`
-  for `claude-agent-acp`, `CODEX_CONFIG.model_instructions_file` for `codex-acp`. The
-  `_meta` keys are the adapter's (`params._meta.systemPrompt`, `params._meta.claudeCode.options`,
-  read from its `dist/acp-agent.js`); `CODEX_CONFIG` is documented by `codex-acp` as merged
-  into the session configuration and was measured here through `codex exec`, not through the
-  adapter, which was not installed on this machine.
+- `discovery::lean` says the instruction in each agent's own words, from `[agents.lean]`
+  (`LeanConfig`: `meta` templated into `_meta` on `session/new`, `env` onto the launch). ACP
+  has no field for a system prompt, so this is per agent by nature; Orochi fills it for the
+  commands it ships. The `_meta` keys for `claude-agent-acp` are the adapter's
+  (`params._meta.systemPrompt`, `params._meta.claudeCode.options`, read from its
+  `dist/acp-agent.js`); `CODEX_CONFIG` is documented by `codex-acp` as merged into the
+  session configuration and was measured here through `codex exec`, not through the adapter,
+  which was not installed on this machine; `GEMINI_SYSTEM_MD` is from Gemini CLI's
+  documentation and was not run here.
 - `classifier::agents` orders answerers by measured wall time (`storage::advice_latency`,
-  session start included, median, refusals excluded) instead of by tokens. A spent account is
-  in cooldown and not started, so the next fastest answers.
+  session start included, median, refusals excluded) instead of by tokens, and within an
+  agent a model measured faster than the scorer's cheapest is taken instead
+  (`storage::advice_latency_models`). A spent account is in cooldown and not started, so the
+  next fastest answers.
 
 ## Where a subscription stands (read 2026-10-15)
 
@@ -56,5 +61,6 @@ open and asked again would remove it; that is not implemented.
   Laya, GLiNER2.5-Decide) run on this Mac but are 2–10 GB on disk and not ACP agents; they
   were not run here, and their accuracy figures are their authors' own.
 
-Unverified: `CODEX_CONFIG` through `codex-acp` itself, and whether the replaced system
-prompt changes the classifier's answers on real tasks beyond the one measured.
+Unverified: `CODEX_CONFIG` through `codex-acp` itself, `GEMINI_SYSTEM_MD` through
+`gemini --acp`, and whether the replaced system prompt changes the classifier's answers on
+real tasks beyond the one measured.

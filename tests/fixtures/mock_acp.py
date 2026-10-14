@@ -428,9 +428,11 @@ def finish(request):
 
 if log_path:
     # What an agent host would see of this launch: its hook variables and its pane key. And
-    # what codex-acp would read of it: the session configuration a lean session is given.
+    # whatever else a test asks to see of the launch, by name (`MOCK_LOG_ENV`): the variables
+    # a lean session is given, say.
+    named = os.environ.get("MOCK_LOG_ENV", "").split(",")
     with open(log_path + ".env", "a") as out:
-        out.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith("ORCA_") or k == "CODEX_CONFIG"}) + "\n")
+        out.write(json.dumps({k: v for k, v in os.environ.items() if k.startswith("ORCA_") or k in named}) + "\n")
 
 for line in sys.stdin:
     request = json.loads(line)

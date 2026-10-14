@@ -1,5 +1,5 @@
 use orochi::{
-    config::{AgentConfig, CheckCommand, Config},
+    config::{AgentConfig, CheckCommand, Config, LeanConfig},
     storage::Store,
     types::{Outcome, Provider},
 };
@@ -888,8 +888,9 @@ fn what_the_classifier_spent_is_recorded_beside_the_run_it_decided() {
 
 /// Asking what a request is must not cost what a coding session costs. The classifier's
 /// session opens with the classifier's instruction and nothing of the agent's own, said in the
-/// words each bridge reads: `codex-acp` through `CODEX_CONFIG`, `claude-agent-acp` through
-/// `_meta` on `session/new`. The session that does the work is given neither, and
+/// words each agent reads: `codex-acp` through `CODEX_CONFIG`, `claude-agent-acp` through
+/// `_meta` on `session/new`, and an agent Orochi knows nothing about through whatever its
+/// owner wrote in `[agents.lean]`. The session that does the work is given none of it, and
 /// `lean = false` asks the old way.
 #[test]
 fn the_classifier_asks_in_a_session_that_opens_with_nothing_but_its_instruction() {
@@ -899,6 +900,11 @@ fn the_classifier_asks_in_a_session_that_opens_with_nothing_but_its_instruction(
     w.config.agents[0]
         .env
         .insert("MOCK_CLASSIFICATION".into(), classification.into());
+    w.config.agents[0]
+        .env
+        .insert("MOCK_LOG_ENV".into(), "CODEX_CONFIG".into());
+    // The fixture is `python3`, which Orochi knows no words for: it is given Codex's.
+    w.config.agents[0].lean = Some(LeanConfig::known("codex-acp"));
     success(&w.run(&["Implement the endpoint"]));
     let launches = std::fs::read_to_string(w.dir.path().join("agent.jsonl.env")).unwrap();
     let configured: Vec<_> = launches
@@ -927,6 +933,7 @@ fn the_classifier_asks_in_a_session_that_opens_with_nothing_but_its_instruction(
     let mut w = Workspace::new();
     w.config.classifier.enabled = true;
     w.config.agents[0].provider = Provider::ANTHROPIC;
+    w.config.agents[0].lean = Some(LeanConfig::known("claude-agent-acp"));
     w.config.agents[0]
         .env
         .insert("MOCK_CLASSIFICATION".into(), classification.into());
@@ -963,6 +970,55 @@ fn the_classifier_asks_in_a_session_that_opens_with_nothing_but_its_instruction(
     let launches = std::fs::read_to_string(w.dir.path().join("agent.jsonl.env")).unwrap();
     assert!(!launches.contains("CODEX_CONFIG"), "{launches}");
 
+    let mut w = Workspace::new();
+    w.config.classifier.enabled = true;
+    w.config.agents[0].provider = Provider::new("acme").unwrap();
+    w.config.agents[0].lean = Some(
+        toml::from_str(
+            r#"
+            meta = { instructions = "{instruction}" }
+            env = { ACME_SYSTEM_MD = "{instruction_file}" }
+            "#,
+        )
+        .unwrap(),
+    );
+    w.config.agents[0]
+        .env
+        .insert("MOCK_CLASSIFICATION".into(), classification.into());
+    w.config.agents[0]
+        .env
+        .insert("MOCK_LOG_ENV".into(), "ACME_SYSTEM_MD".into());
+    success(&w.run(&["Implement the endpoint"]));
+    let sessions: Vec<serde_json::Value> = w
+        .log()
+        .lines()
+        .filter(|line| line.contains("\"session/new\""))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let lean: Vec<_> = sessions
+        .iter()
+        .filter(|s| s["params"].get("_meta").is_some())
+        .collect();
+    assert_eq!((sessions.len(), lean.len()), (2, 1), "{sessions:?}");
+    assert!(
+        lean[0]["params"]["_meta"]["instructions"]
+            .as_str()
+            .unwrap()
+            .starts_with("You are a task classifier"),
+        "{sessions:?}"
+    );
+    let launches = std::fs::read_to_string(w.dir.path().join("agent.jsonl.env")).unwrap();
+    let named: Vec<_> = launches
+        .lines()
+        .filter(|line| line.contains("ACME_SYSTEM_MD"))
+        .collect();
+    assert_eq!(
+        (launches.lines().count(), named.len()),
+        (2, 1),
+        "{launches}"
+    );
+    assert!(named[0].contains("instructions.md"), "{launches}");
+
     w.config.classifier.lean = false;
     success(&w.run(&["Implement the other endpoint"]));
     let log = w.log();
@@ -975,6 +1031,52 @@ fn the_classifier_asks_in_a_session_that_opens_with_nothing_but_its_instruction(
         sessions[2..].iter().all(|line| !line.contains("_meta")),
         "{sessions:?}"
     );
+}
+
+/// Which of an agent's models answers fastest is measured, not assumed: once a model has
+/// answered faster than the scorer's first choice, the classifier takes it, whatever the policy
+/// says the two cost — so an agent from any vendor settles on its fastest model.
+#[test]
+fn the_classifier_takes_the_model_that_has_answered_fastest() {
+    let mut w = Workspace::new();
+    w.config.classifier.enabled = true;
+    w.config.agents[0]
+        .env
+        .insert("MOCK_MODELS".into(), "luna-test,sol-test".into());
+    w.config.agents[0].env.insert(
+        "MOCK_CLASSIFICATION".into(),
+        r#"{"task_type":"implementation","complexity":"normal"}"#.into(),
+    );
+    success(&w.run(&["Implement the endpoint"]));
+    let classified = |w: &Workspace| {
+        w.store()
+            .recent_runs(20)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.purpose == "classification")
+            .unwrap()
+    };
+    let first = classified(&w);
+    assert_eq!(first.candidate.model, "luna-test");
+    // Measured: the model the policy prices higher answers in a fraction of the time.
+    let store = w.store();
+    for n in 0..3 {
+        let mut slow = first.clone();
+        slow.id = format!("slow-{n}");
+        slow.duration_ms = 30_000;
+        slow.started_at += 1;
+        store.record(&slow).unwrap();
+        let mut fast = first.clone();
+        fast.id = format!("fast-{n}");
+        fast.candidate.model = "sol-test".into();
+        fast.candidate.id = "test/sol-test".into();
+        fast.duration_ms = 500;
+        fast.started_at += 1;
+        store.record(&fast).unwrap();
+    }
+    drop(store);
+    success(&w.run(&["Implement the other endpoint"]));
+    assert_eq!(classified(&w).candidate.model, "sol-test");
 }
 
 /// Asking an agent what a request is costs a session of its own. Once Orochi has measured
