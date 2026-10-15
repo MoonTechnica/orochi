@@ -90,7 +90,7 @@ fn executable(metadata: &std::fs::Metadata) -> bool {
     }
 }
 
-fn entry(path: &Path) -> Result<Option<Entry>> {
+pub fn entry(path: &Path) -> Result<Option<Entry>> {
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

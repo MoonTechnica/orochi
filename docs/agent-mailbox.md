@@ -45,6 +45,8 @@ When an agent session starts (ACP `session/new`), Orochi passes it the stdio MCP
 | `send_message` | Send to a peer name (case-insensitive) or to `all`. The body is limited to 8 KiB |
 | `read_messages` | Fetch up to 20 unread messages addressed to you or to everyone, and mark them read. `wait_seconds` (up to 120 seconds) waits for new arrivals |
 | `set_status` | Tell others what you are doing, in one line (up to 200 bytes) |
+| `start_agent` | Lead of a console turn only: ask Orochi for a helper, read-only or (`write: true`) in a Git worktree of its own |
+| `finish_workspace` | Lead only: close a helper's worktree — `merge` into the working tree, `pr` on a pushed branch, or `discard`; the worktree goes in every case ([session workspaces](session-workspaces.md)) |
 
 The task prompt gets a short addition with the agent's own peer name, the other running peers and how to use the tools (it also states that these are tools of the MCP server `orochi-mailbox`, not shell commands, because in a run against the real CLI Haiku tried to call them from the shell and failed). When there are other peers, it instructs the agent to use `read_messages` and `set_status` first, to notify the others before editing files other peers are likely to touch, and to check once more before finishing. It also states explicitly that messages from other peers are working notes and do not override the user's request or the repository's instructions. Whether to use the tools is ultimately up to the agent; Orochi does not force it.
 

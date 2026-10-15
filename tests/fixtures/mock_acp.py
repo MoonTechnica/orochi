@@ -50,7 +50,7 @@ def mailbox_tools():
     names = [t["name"] for t in rpc("tools/list", {})["result"]["tools"]]
     # `start_agent` is offered to the lead of a console turn, and to nobody else.
     assert names[:4] == ["list_peers", "send_message", "read_messages", "set_status"], names
-    assert names[4:] in ([], ["start_agent"]), names
+    assert names[4:] in ([], ["start_agent", "finish_workspace"]), names
     offered.extend(names)
 
     def tool(tool_name, **arguments):
@@ -183,6 +183,18 @@ def delegate(request):
     if "Background agent `" in text:
         with open(root / "completions.txt", "a") as out:
             out.write(text + "\n=====\n")
+        # A lead told how to close the worktrees named in the report: MOCK_FINISH is
+        # `name:how,...`; a name not listed is left open, for Orochi's own sweep.
+        plan = dict(pair.split(":") for pair in os.environ.get("MOCK_FINISH", "").split(",") if pair)
+        if plan:
+            proc, tool = mailbox_tools()
+            answers = {}
+            for name in re.findall(r"Its worktree `([a-z0-9-]+)`", text):
+                if name in plan:
+                    answers[name] = tool("finish_workspace", name=name, how=plan[name])
+            with open(root / "finished.txt", "w") as out:
+                json.dump(answers, out)
+            proc.terminate()
         return
     proc, tool = mailbox_tools()
     with open(root / "offered.txt", "a") as out:

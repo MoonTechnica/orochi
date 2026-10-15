@@ -57,7 +57,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 14] = [
+const COMMANDS: [Command; 15] = [
     Command {
         name: "help",
         aliases: &[],
@@ -132,8 +132,15 @@ const COMMANDS: [Command; 14] = [
         name: "workspaces",
         aliases: &[],
         usage: "",
-        about: "Show retained worktrees owned by this conversation",
+        about: "Show the worktrees still open in this conversation, and the patches of closed ones",
         anytime: false,
+    },
+    Command {
+        name: "worktrees",
+        aliases: &[],
+        usage: "[on|off]",
+        about: "Whether writing helpers get a Git worktree of their own in this conversation",
+        anytime: true,
     },
     Command {
         name: "memory",
@@ -331,6 +338,10 @@ struct Session<'a> {
     accounts: Option<(Instant, Option<String>)>,
     /// Helpers the lead started, working past the turn that started them.
     background: background::Background<'a>,
+    /// Whether writing helpers get worktrees here: the config's default until `/worktrees`.
+    worktrees: bool,
+    /// Shared with each helper's `Env`: the hold on the session directory (`workspaces::hold`).
+    live: std::sync::Arc<std::sync::Mutex<Option<crate::workspaces::Live>>>,
     /// Helpers that have ended and whose results the lead has not been given yet.
     results: Vec<background::Finished>,
     /// What the current (or last) turn was classified as: a helper is routed by it.
@@ -543,6 +554,8 @@ pub async fn run_with(
         headless,
         accounts: None,
         background: background::Background::default(),
+        worktrees: config.workspaces.enabled,
+        live: std::sync::Arc::default(),
         results: vec![],
         descriptor: None,
         listening: true,
@@ -564,9 +577,14 @@ pub async fn run_with(
         session.view.welcome(config, data, root, &session.feed);
     }
     session.refresh_status(None);
+    // A conversation picked back up may have been left with worktrees open (a crash, a kill):
+    // they are closed now, as its end would have closed them.
+    session.sweep_workspaces("left open by an earlier run");
     // The host learns who is in the pane before the first message, not with it.
     session.view.report();
     let code = session.serve().await;
+    // Whatever the lead did not close, the conversation's end closes: no worktree outlives it.
+    session.sweep_workspaces("still open");
     session.distill().await;
     session.view.term.restore();
     code
@@ -776,6 +794,23 @@ impl<'a> Session<'a> {
                 let status = self.view.session_status(&self.conversation, self.root);
                 self.view.rows(status);
             }
+            "worktrees" => {
+                match argument.trim() {
+                    "on" => self.worktrees = true,
+                    "off" => self.worktrees = false,
+                    "" => {}
+                    other => {
+                        self.view
+                            .result(WARN, &format!("/worktrees takes on or off, not {other}"));
+                        return None;
+                    }
+                }
+                self.view.note(&format!(
+                    "worktrees for writing helpers: {} (closed as `{}` unless the lead says otherwise)",
+                    if self.worktrees { "on" } else { "off" },
+                    self.config.workspaces.finish
+                ));
+            }
             "workspaces" => {
                 let directory = self.env().workspace;
                 let rows = (|| -> Result<Vec<String>> {
@@ -787,8 +822,16 @@ impl<'a> Session<'a> {
                     rows.extend(
                         work.workspaces
                             .iter()
-                            .map(|w| format!("{} · {}", w.name, w.root.display())),
+                            .map(|w| format!("{} · {} (open)", w.name, w.root.display())),
                     );
+                    let mut patches: Vec<String> = std::fs::read_dir(&directory)?
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().is_some_and(|x| x == "patch"))
+                        .map(|p| format!("patch · {}", p.display()))
+                        .collect();
+                    patches.sort();
+                    rows.extend(patches);
                     Ok(rows)
                 })();
                 match rows {
@@ -803,6 +846,7 @@ impl<'a> Session<'a> {
                 self.awaiting = None;
                 // What the helpers were doing belonged to the conversation being left.
                 let stopped = self.background.abandon();
+                self.sweep_workspaces("still open");
                 self.results.clear();
                 self.stopped.clear();
                 self.asks.clear();
@@ -956,6 +1000,49 @@ impl<'a> Session<'a> {
                     .and_then(|r| r.thread.as_deref())
                     .unwrap_or(&self.workspace_id),
             ),
+            worktrees: self.worktrees,
+            live: self.live.clone(),
+        }
+    }
+
+    /// Closes every worktree this conversation still has open, keeping each one's changes as
+    /// a patch, and says so. `why` is the reason given in the note.
+    fn sweep_workspaces(&mut self, why: &str) {
+        let directory = self.env().workspace;
+        if !directory.join("workspaces.json").exists() {
+            return;
+        }
+        // Held elsewhere means another process is hosting this very thread: its worktrees
+        // are its own to close.
+        let held = match self.live.lock().expect("live").take() {
+            Some(live) => Some(live),
+            None => match crate::workspaces::hold(&directory) {
+                Ok(Some(live)) => Some(live),
+                _ => return,
+            },
+        };
+        let tools = tools(self.config, self.data);
+        let closed = crate::workspaces::Workspaces::open(self.root, &directory)
+            .and_then(|mut work| work.close_all(&tools));
+        drop(held);
+        match closed {
+            Ok(closed) if closed.is_empty() => {}
+            Ok(closed) => {
+                self.view.note(&format!(
+                    "closed {} {why}",
+                    if closed.len() == 1 {
+                        "1 worktree".to_owned()
+                    } else {
+                        format!("{} worktrees", closed.len())
+                    }
+                ));
+                for item in closed {
+                    self.view.note(&item.describe());
+                }
+            }
+            Err(error) => self
+                .view
+                .result(WARN, &format!("could not close worktrees: {error:#}")),
         }
     }
 
@@ -3545,6 +3632,11 @@ fn grant<'a>(
                 .mailbox
                 .answer_request(&request.id, "refused", Some(reason), None, None);
         };
+        // Closing a worktree is not seating anyone: none of the gates below apply.
+        if request.finish {
+            finish(feed, background, &env, &request);
+            continue;
+        }
         let Some(descriptor) = descriptor else {
             refuse("only the agent leading a conversation can start helpers");
             continue;
@@ -3562,11 +3654,21 @@ fn grant<'a>(
             refuse("work like this has cost less than a helper session costs here; do it yourself");
             continue;
         }
+        if request.write && !env.worktrees {
+            refuse(
+                "worktrees are off for this conversation (/worktrees on), so do the work yourself",
+            );
+            continue;
+        }
         let taken = crate::mailbox::our_names();
         let name = background.free_name(&request.name, &|name| taken.contains(name));
         let workspace = if request.write {
+            if let Err(error) = hold_live(&env) {
+                refuse(&format!("cannot hold the session directory: {error:#}"));
+                continue;
+            }
             match crate::workspaces::Workspaces::open(env.root, &env.workspace)
-                .and_then(|mut work| work.create(&name))
+                .and_then(|mut work| work.create_titled(&name, &request.title))
             {
                 Ok(root) => Some(root),
                 Err(error) => {
@@ -3634,6 +3736,71 @@ fn grant<'a>(
         started.push((name, request.title));
     }
     started
+}
+
+/// Takes the conversation's hold on its session directory, once.
+fn hold_live(env: &background::Env<'_>) -> Result<()> {
+    let mut live = env.live.lock().expect("live");
+    if live.is_none() {
+        *live = Some(
+            crate::workspaces::hold(&env.workspace)?
+                .ok_or_else(|| anyhow::anyhow!("another process is hosting this conversation"))?,
+        );
+    }
+    Ok(())
+}
+
+/// What closing a worktree needs from outside the repository.
+fn tools(config: &Config, data: &Path) -> crate::workspaces::Tools {
+    crate::workspaces::Tools {
+        gh: crate::discovery::find_in("gh", &crate::setup::search_path(Some(data))),
+        branch_prefix: config.workspaces.branch_prefix.clone(),
+    }
+}
+
+/// A lead's `finish_workspace`: the worktree is closed as asked and the answer carries what
+/// became of it. A helper still working in it is not closed under its feet.
+fn finish(
+    feed: &Feed,
+    background: &background::Background<'_>,
+    env: &background::Env<'_>,
+    request: &crate::mailbox::AgentRequest,
+) {
+    let answer = |state: &str, reason: &str| {
+        let _ = feed
+            .mailbox
+            .answer_request(&request.id, state, Some(reason), None, None);
+    };
+    if background.helpers.iter().any(|h| h.name == request.name) {
+        answer(
+            "refused",
+            &format!(
+                "`{}` is still working; wait for its report, or stop it first",
+                request.name
+            ),
+        );
+        return;
+    }
+    let how = match request.task.trim() {
+        "" => crate::workspaces::Finish::parse(&env.config.workspaces.finish),
+        word => crate::workspaces::Finish::parse(word),
+    }
+    .unwrap_or(crate::workspaces::Finish::Merge);
+    let closed = crate::workspaces::Workspaces::open(env.root, &env.workspace)
+        .and_then(|mut work| work.close(&request.name, how, &tools(env.config, env.data), ""));
+    match closed {
+        Ok(closed) => {
+            let mut result = serde_json::to_value(&closed).unwrap_or_default();
+            if let Some(object) = result.as_object_mut() {
+                object.insert("summary".into(), closed.describe().into());
+            }
+            // `started` is the one positive state the request table allows (its CHECK
+            // predates closing); for a finish it reads as closed, and the result rides in
+            // `reason`.
+            answer("started", &result.to_string());
+        }
+        Err(error) => answer("refused", &format!("{error:#}")),
+    }
 }
 
 /// What happened to a helper, as the transcript lines to show; its results are kept for the
