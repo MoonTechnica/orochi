@@ -91,6 +91,16 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Check what this machine has of what Orochi needs and put in what it lacks, under
+    /// Orochi's own data directory: Node.js, the ACP adapters, and with --install an agent's CLI.
+    Setup {
+        /// Only report; install nothing.
+        #[arg(long)]
+        check: bool,
+        /// Install this agent's CLI (claude, codex or gemini) from the npm registry.
+        #[arg(long, value_name = "AGENT")]
+        install: Vec<String>,
+    },
     /// Initialize the sandbox environment: install Lima, prepare Incus and the container image.
     Init {
         /// Prepare just the host; defer the golden image's downloads.
@@ -569,6 +579,25 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     config.sandbox.force = cli.sandbox;
     if let Some(Command::Init { host_only }) = cli.command {
         crate::sandbox::setup::run(&config.sandbox, &paths.data, host_only)?;
+        return Ok(0);
+    }
+    if let Some(Command::Setup { check, install }) = cli.command {
+        let status = if check {
+            crate::setup::status(&config, &paths.config, &paths.data)
+        } else {
+            let dist = std::env::var("OROCHI_NODE_DIST")
+                .unwrap_or_else(|_| crate::setup::NODE_DIST.to_owned());
+            let plan = crate::setup::Plan { install };
+            tokio::select! {
+                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist) => status?,
+                _ = tokio::signal::ctrl_c() => return Ok(130),
+            }
+        };
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        } else if check {
+            print!("{}", crate::setup::describe(&status));
+        }
         return Ok(0);
     }
     if let Some(Command::Sandbox(command)) = cli.command {
@@ -1398,7 +1427,11 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             );
         }
         Some(
-            Command::Config(_) | Command::Policy(_) | Command::Sandbox(_) | Command::Init { .. },
+            Command::Config(_)
+            | Command::Policy(_)
+            | Command::Sandbox(_)
+            | Command::Init { .. }
+            | Command::Setup { .. },
         ) => unreachable!(),
         None => {
             let Some(task) = cli.task else {

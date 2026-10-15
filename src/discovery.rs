@@ -140,13 +140,15 @@ fn bridge(agent: &AgentConfig) -> Option<Bridge> {
     })
 }
 
-fn effective_path(agent: &AgentConfig) -> OsString {
+/// Where this agent's executables are looked for: a `PATH` it was configured with, else
+/// `setup::search_path` — Orochi's own toolchain, the process's `PATH`, and what a window
+/// opened from Finder was never given.
+fn effective_path(agent: &AgentConfig, data: &Path) -> OsString {
     agent
         .env
         .get("PATH")
         .map(OsString::from)
-        .or_else(|| std::env::var_os("PATH"))
-        .unwrap_or_default()
+        .unwrap_or_else(|| crate::setup::search_path(Some(data)))
 }
 fn executable(path: &Path) -> bool {
     if !path.is_file() {
@@ -200,7 +202,11 @@ pub fn bridge_packages() -> Vec<String> {
 /// An MCP server's command, resolved the way an agent's is: an absolute path as given, a bare
 /// name from an absolute `PATH` entry, nothing else. ACP asks for an absolute path.
 pub fn locate(command: &str) -> Option<PathBuf> {
-    find(command, &std::env::var_os("PATH").unwrap_or_default())
+    find(command, &crate::setup::search_path(None))
+}
+/// The same lookup on a given `PATH`.
+pub fn find_in(command: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+    find(command, path)
 }
 
 #[derive(Debug, Serialize)]
@@ -216,7 +222,7 @@ pub struct Availability {
 }
 
 pub fn inspect(agent: &AgentConfig, config: &DiscoveryConfig, data: &Path) -> Availability {
-    let path = effective_path(agent);
+    let path = effective_path(agent, data);
     let bridge = bridge(agent);
     let native_cli = bridge.and_then(|b| {
         let command = agent
@@ -277,6 +283,12 @@ pub fn inspect(agent: &AgentConfig, config: &DiscoveryConfig, data: &Path) -> Av
     let launch = resolved.as_ref().map(|executable| {
         let mut launch = agent.clone();
         launch.command = executable.to_string_lossy().into_owned();
+        // The bridges are `#!/usr/bin/env node` scripts: the process that runs one has to find
+        // node where this lookup found it, which a window opened from Finder cannot otherwise.
+        launch
+            .env
+            .entry("PATH".into())
+            .or_insert_with(|| path.to_string_lossy().into_owned());
         if let (Some(b), Some(native)) = (bridge, &native_cli) {
             launch
                 .env
@@ -385,8 +397,8 @@ async fn install(bridge: Bridge, agent: &AgentConfig, data: &Path) -> anyhow::Re
     let stage = tempfile::Builder::new()
         .prefix(".setup-")
         .tempdir_in(&adapters)?;
-    let npm =
-        find("npm", &effective_path(agent)).ok_or_else(|| anyhow::anyhow!("npm not found"))?;
+    let npm = find("npm", &effective_path(agent, data))
+        .ok_or_else(|| anyhow::anyhow!("npm not found"))?;
     let mut command = tokio::process::Command::new(npm);
     command
         .args(["install", "--prefix"])
@@ -403,7 +415,7 @@ async fn install(bridge: Bridge, agent: &AgentConfig, data: &Path) -> anyhow::Re
         ])
         .arg(bridge.spec())
         .current_dir(stage.path())
-        .env("PATH", effective_path(agent))
+        .env("PATH", effective_path(agent, data))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

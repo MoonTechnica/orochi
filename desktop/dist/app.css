@@ -1168,3 +1168,52 @@ details[open] > summary .icon { transform: rotate(90deg); }
   font: inherit; color: inherit; background: var(--raised);
   border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; min-width: 0; flex: 1 1 140px;
 }
+
+/* Setup: what the window asks first, when nothing here can be routed to. */
+#setup {
+  width: min(560px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 64px rgb(0 0 0 / .5);
+}
+#setup::backdrop { background: rgb(0 0 0 / .45); }
+#setup-head { display: flex; align-items: center; padding: 14px var(--gutter) 6px; }
+#setup-title { margin: 0; font-size: 15px; }
+#setup-close { margin-left: auto; border: 0; color: var(--muted); padding: 2px 8px; }
+#setup-body { padding: 4px var(--gutter) 8px; display: grid; gap: 8px; }
+#setup-body .where { color: var(--muted); font-size: 12px; margin: 0; }
+.setup-rows { display: grid; gap: 4px; }
+.setup-row {
+  display: grid;
+  grid-template-columns: 18px 110px 1fr auto;
+  column-gap: 10px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.setup-row .mark { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); justify-self: center; }
+.setup-row .mark.ok { background: var(--ok); }
+.setup-row .mark.todo { background: var(--brand); }
+.setup-row .name { font-weight: 600; }
+.setup-row .note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.setup-row label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.setup-row input[type="checkbox"] { accent-color: var(--brand); width: 14px; height: 14px; margin: 0; }
+.setup-row a { color: var(--brand); font-size: 12px; }
+#setup-log {
+  margin: 0;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--raised);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#setup-log.failed { border: 1px solid var(--danger); }
+#setup-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 6px var(--gutter) 14px; }
+#setup-go:disabled { opacity: .5; cursor: default; }

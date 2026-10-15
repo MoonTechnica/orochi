@@ -37,6 +37,7 @@ pub mod quota_sources;
 pub mod router;
 pub mod sandbox;
 pub mod scheduler;
+pub mod setup;
 pub mod storage;
 pub mod types;
 

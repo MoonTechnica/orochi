@@ -258,6 +258,71 @@ pub fn sandboxes(config: &Path, data: &Path) -> Result<Sandboxes> {
     })
 }
 
+/// The Setup screen: what this machine has of what Orochi needs, and what was last asked to
+/// be put in. Asked when the window opens, so a window that can route to nothing says so
+/// first, and offers to install what is missing rather than showing an empty list.
+#[derive(Debug, Clone, Serialize)]
+pub struct Setup {
+    #[serde(flatten)]
+    pub status: orochi::setup::Status,
+    /// Setup jobs, newest first: the one running, and what the last ones said.
+    pub jobs: Vec<orochi::sandbox::jobs::Job>,
+}
+
+/// Reads the Setup screen. It runs `node --version` and looks for sign-ins, so it runs off
+/// the window's connection.
+pub fn setup(config: &Path, data: &Path) -> Result<Setup> {
+    let loaded = orochi::config::Config::load(config).unwrap_or_default();
+    let status = orochi::setup::status(&loaded, config, data);
+    let jobs = orochi::sandbox::jobs::list(data, 20)?
+        .into_iter()
+        .filter(|j| matches!(j.request, orochi::sandbox::jobs::Request::Prepare { .. }))
+        .take(3)
+        .collect();
+    Ok(Setup { status, jobs })
+}
+
+/// The command that signs an agent in, for a terminal to run: every CLI's sign-in opens a
+/// browser and takes something back at the keyboard, which a window cannot.
+pub fn setup_login_command(config: &Path, data: &Path, agent: &str) -> Result<String> {
+    ensure!(
+        !agent.is_empty()
+            && agent
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "no such agent: {agent}"
+    );
+    let loaded = orochi::config::Config::load(config).unwrap_or_default();
+    orochi::setup::login_command(&loaded, data, agent)
+}
+
+/// Opens a vendor's install instructions in the browser. Only an `https` page of the ones the
+/// Setup screen names is opened: a window never gets to run `open` on anything it likes.
+pub fn open_docs(config: &Path, url: &str) -> Result<()> {
+    let loaded = orochi::config::Config::load(config).unwrap_or_default();
+    let known = orochi::setup::status_with(&loaded, config, Path::new("/nonexistent"), false)
+        .agents
+        .iter()
+        .any(|a| a.docs.as_deref() == Some(url));
+    ensure!(
+        url.starts_with("https://") && known,
+        "not a page this window opens"
+    );
+    let mut command = if cfg!(target_os = "macos") {
+        std::process::Command::new("/usr/bin/open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("could not open the browser")?;
+    Ok(())
+}
+
 /// Stores a value agents in sandboxes read (an API key), in this machine's keychain.
 pub fn sandbox_secret(config: &Path, data: &Path, name: &str, value: &str) -> Result<()> {
     let config = orochi::config::Config::load(config).unwrap_or_default();

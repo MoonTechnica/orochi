@@ -38,6 +38,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
+    "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-later", "setup-go",
     "place", "place-head", "place-title", "place-close", "place-body", "place-root-label",
     "place-root", "place-modes-label", "place-modes", "place-note", "place-more",
     "place-advanced", "place-docker", "place-error", "place-foot", "place-cancel", "place-go",
@@ -81,6 +82,9 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
               { name: "web-app", root: "/work/web-app", threads: 1, updated_at: 1 },
             ],
             open_prompts: [],
+            // A machine with something to route to: the setup dialog stays closed unless a
+            // test asks for it.
+            setup_status: { ...SETUP, ready: true },
             thread: recorded.thread,
             changed: [],
             patch: "--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new\n",
@@ -114,6 +118,25 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
   };
   return { calls, tick, window, localStorage, el: (id) => document.getElementById(id) };
 }
+
+/// What `orochi setup --check` says on a machine with Node but no usable agent.
+const SETUP = {
+  node: { path: "/opt/homebrew/bin/node", version: "v24.22.0", ok: true, managed: false },
+  npm: { path: "/opt/homebrew/bin/npm", version: "11.19.1", ok: true, managed: false },
+  git: { path: "/usr/bin/git", version: "git version 2.54.0", ok: true, managed: false },
+  config_file: false,
+  agents: [
+    { id: "codex", provider: "openai", status: "adapter_required", native: "/usr/local/bin/codex", installable: true,
+      package: "@openai/codex", docs: "https://developers.openai.com/codex/cli", signed_in: false, login: "codex login", usable: false, detail: null },
+    { id: "claude", provider: "anthropic", status: "not_installed", native: null, installable: true,
+      package: "@anthropic-ai/claude-code", docs: "https://code.claude.com/docs/en/setup", signed_in: false, login: "claude", usable: false, detail: null },
+    { id: "antigravity", provider: "google", status: "not_installed", native: null, installable: false,
+      package: null, docs: "https://antigravity.google/docs/cli/install", signed_in: false, login: null, usable: false, detail: null },
+  ],
+  ready: false,
+  toolchain: "/home/me/.local/share/orochi/toolchain",
+  jobs: [],
+};
 
 /// Every test here builds rows by hand, and a name invented in one of them is a name the page
 /// can then read for ever without anything failing: `seats[].turn_id` did not exist, the page
@@ -1248,8 +1271,8 @@ test("everything that is not a conversation lives behind the row at the foot", a
     .map((b) => b.textContent.replace("✓", ""));
   assert.deepEqual(
     items,
-    ["Agents", "Insights", "Sandboxes", "Settings"],
-    "with settings kept apart from the two above it",
+    ["Setup", "Agents", "Insights", "Sandboxes", "Settings"],
+    "with settings kept apart from the ones above it",
   );
 
   el("account-menu").querySelectorAll("button")
@@ -2225,4 +2248,83 @@ test("file links open Files and preserve root-file line positions and encoded sp
   links[2].dispatch("click");
   await settle();
   assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "reports/my report.pdf"));
+});
+
+test("a window that can route to nothing asks to set up first, and installs what was chosen", async () => {
+  const { el, calls } = await open({ setup_status: SETUP, sandbox_job: "job-1" });
+  assert.equal(el("setup").open, true);
+  const drawn = el("setup-body").render();
+  assert.match(drawn, /Nothing here can be used yet/);
+  assert.match(drawn, /span.name Node.js\n\s+span.note v24.22.0/);
+  assert.match(drawn, /span.name claude\n\s+span.note not installed/);
+  // What Orochi cannot install points at where to get it instead of a box to tick.
+  const rows = el("setup-body").querySelectorAll("div").filter((d) => d.className === "setup-row");
+  const antigravity = rows.find((r) => r.dataset.name === "antigravity");
+  assert.equal(antigravity.querySelectorAll("input").length, 0);
+  const docs = antigravity.querySelectorAll("a")[0];
+  assert.equal(docs.href, "https://antigravity.google/docs/cli/install");
+  docs.dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([name]) => name === "open_docs").map(([, a]) => a), [{ url: docs.href }]);
+  const claude = rows.find((r) => r.dataset.name === "claude");
+  const box = claude.querySelectorAll("input")[0];
+  box.checked = true;
+  box.dispatch("change");
+  await settle();
+  assert.equal(el("setup-go").textContent, "Install");
+  el("setup-go").dispatch("click");
+  await settle();
+  const asked = calls.filter(([name]) => name === "sandbox_job").map(([, a]) => a.request);
+  assert.deepEqual(asked, [{ op: "prepare", install: ["claude"] }]);
+  // Nothing on the conversation side is touched by the dialog.
+  assert.equal(calls.some(([name]) => name === "send"), false);
+});
+
+test("an installed agent that is not signed in offers a sign-in that opens Terminal", async () => {
+  const { el, calls } = await open({ setup_status: SETUP });
+  const rows = el("setup-body").querySelectorAll("div").filter((d) => d.className === "setup-row");
+  const codex = rows.find((r) => r.dataset.name === "codex");
+  assert.match(codex.render(), /not signed in/);
+  codex.querySelectorAll("button").find((b) => b.textContent === "Sign in…").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([name]) => name === "setup_login").map(([, a]) => a), [{ agent: "codex" }]);
+});
+
+test("while setup runs the dialog follows its log, and says so when it failed", async () => {
+  const running = { ...SETUP, jobs: [{ id: "1", request: { op: "prepare", install: ["claude"] }, started_at: 1, exit: null, tail: "Downloading Node.js v24.22.0" }] };
+  let { el, tick } = await open({ setup_status: running });
+  assert.equal(el("setup-go").disabled, true);
+  assert.equal(el("setup-go").textContent, "Installing…");
+  assert.match(el("setup-body").render(), /Downloading Node.js/);
+  // The log is re-read on the window's own tick, once enough time has passed.
+  await tick();
+
+  const failed = { ...SETUP, jobs: [{ ...running.jobs[0], exit: 1, tail: "npm install of @anthropic-ai/claude-code failed" }] };
+  ({ el } = await open({ setup_status: failed }));
+  assert.equal(el("setup-go").disabled, false);
+  assert.match(el("setup-body").render(), /Setup failed/);
+  assert.match(el("setup-body").render(), /npm install of/);
+});
+
+test("a window with a usable agent is not asked to set up, and Setup stays in the menu", async () => {
+  const ready = { ...SETUP, ready: true, agents: [{ ...SETUP.agents[0], status: "ready", signed_in: true, usable: true }] };
+  const { el } = await open({ setup_status: ready });
+  assert.equal(el("setup").open, false);
+  el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button").find((b) => b.dataset.screen === "setup").dispatch("click");
+  await settle();
+  assert.equal(el("setup").open, true);
+  assert.match(el("setup-body").render(), /At least one agent is ready/);
+  assert.match(el("setup-body").render(), /span.name codex\n\s+span.note installed · signed in/);
+  assert.equal(el("setup-go").textContent, "Done");
+  el("setup-go").dispatch("click");
+  assert.equal(el("setup").open, false);
+});
+
+test("later closes the setup dialog and the window carries on", async () => {
+  const { el } = await open({ setup_status: SETUP });
+  assert.equal(el("setup").open, true);
+  el("setup-later").dispatch("click");
+  assert.equal(el("setup").open, false);
+  assert.notEqual(el("thread-title").textContent, "");
 });

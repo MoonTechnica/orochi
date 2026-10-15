@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Setup,
+    /// `orochi setup --install …`: Node.js, the CLIs named and the adapters (`crate::setup`).
+    Prepare {
+        #[serde(default)]
+        install: Vec<String>,
+    },
     Up,
     Down,
     Image {
@@ -46,10 +51,17 @@ impl Request {
         if matches!(self, Request::Setup) {
             return vec!["init".into()];
         }
+        if let Request::Prepare { install } = self {
+            let mut args = vec!["setup".to_owned()];
+            for agent in install {
+                args.extend(["--install".to_owned(), agent.clone()]);
+            }
+            return args;
+        }
         let path = |p: &PathBuf| p.to_string_lossy().into_owned();
         let mut args = vec!["sandbox".to_owned()];
         match self {
-            Request::Setup => unreachable!(),
+            Request::Setup | Request::Prepare { .. } => unreachable!(),
             Request::Up => args.push("up".into()),
             Request::Down => args.push("down".into()),
             Request::Image { vm } => {
@@ -151,6 +163,10 @@ pub fn start(binary: &Path, config: &Path, data: &Path, request: Request) -> Res
         .arg("--data-dir")
         .arg(data)
         .args(request.args())
+        // The window that starts this was opened from Finder, with no shell `PATH`, and the
+        // shell in between counts itself as one: given the full lookup here, the job finds the
+        // same Node and CLIs the window reported.
+        .env("PATH", crate::setup::search_path(Some(data)))
         .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

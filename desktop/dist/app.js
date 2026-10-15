@@ -47,6 +47,9 @@ const state = {
   archived: remembered("archived") === true,
   // A project or conversation whose name is being typed over, `{ kind, id }`.
   renaming: null,
+  // First-launch setup: what this machine has of what Orochi needs, asked once when the window
+  // opens and shown until something here can be routed to, or the person says later.
+  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set() },
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -149,6 +152,31 @@ const WORDS = {
     Create: "作成",
     "Creating the sandbox…": "サンドボックスを作成しています…",
     Sandboxes: "サンドボックス",
+    Setup: "初期設定",
+    "Set up Orochi": "Orochi の初期設定",
+    "Orochi drives the coding CLIs installed and signed in on this computer. Nothing here can be used yet: choose what to install, then sign in.":
+      "Orochi はこのコンピューターにインストールしてサインイン済みのコーディング CLI を動かします。まだ使えるものがありません。インストールするものを選び、サインインしてください。",
+    "At least one agent is ready. Anything else can be added here later.":
+      "使えるエージェントが少なくとも 1 つあります。ほかは後からここで追加できます。",
+    "Node.js": "Node.js",
+    "installed by Orochi": "Orochi がインストール",
+    "too old; Node.js 22 or later will be installed": "古すぎます。Node.js 22 以降をインストールします",
+    "will be installed under Orochi's data directory": "Orochi のデータディレクトリにインストールします",
+    "not installed": "未インストール",
+    "installed · not signed in": "インストール済み · 未サインイン",
+    "installed · signed in": "インストール済み · サインイン済み",
+    installed: "インストール済み",
+    Install: "インストール",
+    "How to install": "インストール方法",
+    "Sign in…": "サインイン…",
+    "Installing…": "インストール中…",
+    "Installing. Node.js and the CLIs chosen go under Orochi's data directory; nothing on the system is changed.":
+      "インストール中です。Node.js と選んだ CLI は Orochi のデータディレクトリに入り、システムには何も変更を加えません。",
+    "Setup failed. Fix what it says below and try again.": "初期設定に失敗しました。下の内容を確認して再試行してください。",
+    Later: "後で",
+    Done: "完了",
+    "Sign-in opens in Terminal: the CLI opens a browser and takes the result at the keyboard.":
+      "サインインはターミナルで開きます。CLI がブラウザを開き、結果をキーボードで受け取ります。",
     "Host VM": "ホスト VM",
     running: "稼働中",
     stopped: "停止中",
@@ -1567,6 +1595,160 @@ function askPlace(root, where) {
   });
 }
 
+// Setup ------------------------------------------------------------------------------
+// What the window asks first: whether anything here can be routed to. Orochi drives the CLIs
+// on this computer, and a window opened from Finder used to find none of them; so the window
+// reads `orochi setup --check` when it opens and, where nothing is usable, offers to put in
+// what is missing. Installing is `orochi setup` run in the background (`sandbox_job`, as the
+// Sandboxes screen runs its operations), and the dialog follows its log; a sign-in opens
+// Terminal, since every CLI's sign-in takes a browser and a keyboard.
+
+/// Once per window: read what is here, and open the dialog if nothing can be used.
+async function checkSetup() {
+  if (state.setup.asked) return;
+  state.setup.asked = true;
+  const view = await call("setup_status", {});
+  if (!view) return;
+  state.setup.view = view;
+  state.setup.at = Date.now();
+  if (!view.ready) await openSetup();
+}
+
+async function openSetup() {
+  state.setup.open = true;
+  el("setup-title").textContent = t("Set up Orochi");
+  el("setup-close").replaceChildren(drawn("x"));
+  el("setup-later").textContent = t("Later");
+  el("setup").showModal();
+  await drawSetup(true);
+}
+
+function closeSetup() {
+  state.setup.open = false;
+  el("setup").close();
+}
+
+el("setup-close").addEventListener("click", closeSetup);
+el("setup-later").addEventListener("click", closeSetup);
+el("setup").addEventListener("close", () => {
+  state.setup.open = false;
+});
+
+const INSTALLED = new Set(["ready", "adapter_required"]);
+
+function setupRow(name, note, done, action) {
+  const row = text("div", "setup-row");
+  row.dataset.name = name;
+  row.append(text("span", `mark ${done ? "ok" : "todo"}`), text("span", "name", name), text("span", "note", note));
+  row.append(action || text("span"));
+  return row;
+}
+
+async function drawSetup(fresh) {
+  if (fresh) {
+    const view = await call("setup_status", {});
+    if (view) state.setup.view = view;
+  }
+  state.setup.at = Date.now();
+  const view = state.setup.view;
+  if (!view) return;
+  const body = el("setup-body");
+  body.replaceChildren();
+  const running = view.jobs.some((j) => j.exit === null || j.exit === undefined);
+  const last = view.jobs[0];
+  body.append(text("p", "where", t(view.ready
+    ? "At least one agent is ready. Anything else can be added here later."
+    : "Orochi drives the coding CLIs installed and signed in on this computer. Nothing here can be used yet: choose what to install, then sign in.")));
+
+  const rows = text("div", "setup-rows");
+  rows.append(setupRow(
+    t("Node.js"),
+    view.node.ok
+      ? `${view.node.version || ""}${view.node.managed ? ` · ${t("installed by Orochi")}` : ""}`
+      : t(view.node.path ? "too old; Node.js 22 or later will be installed" : "will be installed under Orochi's data directory"),
+    view.node.ok,
+  ));
+  for (const agent of view.agents) {
+    const installed = INSTALLED.has(agent.status);
+    let note;
+    let action = null;
+    let done = false;
+    if (!installed && agent.installable) {
+      note = t("not installed");
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = state.setup.chosen.has(agent.id);
+      box.disabled = running;
+      box.addEventListener("change", () => {
+        if (box.checked) state.setup.chosen.add(agent.id);
+        else state.setup.chosen.delete(agent.id);
+        drawSetup(false);
+      });
+      label.append(box, text("span", null, t("Install")));
+      action = label;
+    } else if (!installed) {
+      note = t("not installed");
+      if (agent.docs) {
+        const link = document.createElement("a");
+        link.href = agent.docs;
+        link.textContent = t("How to install");
+        // In the browser, not in this window: a page the webview navigated to would be the
+        // whole app until it was closed.
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          call("open_docs", { url: agent.docs });
+        });
+        action = link;
+      }
+    } else if (agent.signed_in === false) {
+      note = t("installed · not signed in");
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = t("Sign in…");
+      button.title = t("Sign-in opens in Terminal: the CLI opens a browser and takes the result at the keyboard.");
+      button.addEventListener("click", () => call("setup_login", { agent: agent.id }));
+      action = button;
+    } else {
+      note = t(agent.signed_in ? "installed · signed in" : "installed");
+      done = true;
+    }
+    rows.append(setupRow(agent.id, note, done, action));
+  }
+  body.append(rows);
+
+  if (last) {
+    const failed = !running && last.exit !== 0;
+    body.append(text("p", "where", t(running
+      ? "Installing. Node.js and the CLIs chosen go under Orochi's data directory; nothing on the system is changed."
+      : failed ? "Setup failed. Fix what it says below and try again." : "")));
+    const log = text("pre", null, last.tail);
+    log.id = "setup-log";
+    if (failed) log.className = "failed";
+    body.append(log);
+  }
+
+  const go = el("setup-go");
+  go.textContent = t(running ? "Installing…" : setupFinished() ? "Done" : "Install");
+  go.disabled = running;
+}
+
+/// Nothing is left to ask for: something here is usable and nothing more was chosen.
+function setupFinished() {
+  return Boolean(state.setup.view?.ready) && state.setup.chosen.size === 0;
+}
+
+el("setup-go").addEventListener("click", async () => {
+  if (setupFinished()) {
+    closeSetup();
+    return;
+  }
+  const install = [...state.setup.chosen];
+  state.setup.chosen.clear();
+  await call("sandbox_job", { request: { op: "prepare", install } });
+  await drawSetup(true);
+});
+
 // Sandboxes ------------------------------------------------------------------------
 // Everything `orochi sandbox` does, from the window. An operation is the same command run in
 // the background (`sandbox_job`), and this screen follows its output, so a long image build
@@ -2686,6 +2868,8 @@ function gauge(fraction) {
 /// Opens one of the panels over the conversation. Esc and the backdrop close it, as a dialog
 /// does; the conversation underneath is never replaced.
 async function openPanel(panel) {
+  // Setup is a dialog of its own: it is what the window asks first, not a screen over it.
+  if (panel === "setup") return openSetup();
   state.panel = panel;
   el("panel-title").textContent =
     panel === "activity"
@@ -2854,6 +3038,7 @@ async function drawScreen() {
 // Everything that is not a conversation lives behind the row at the foot of the sidebar,
 // rather than as a row of buttons competing with the threads for attention.
 const PANELS = [
+  ["setup", "Setup"],
   ["agents", "Agents"],
   ["insights", "Insights"],
   ["sandboxes", "Sandboxes"],
@@ -3517,6 +3702,9 @@ async function refresh(full) {
   }
   drawStatus();
   drawRoute();
+  // Not awaited: the check runs `node --version` and asks the login shell, and the
+  // conversation should not wait a second for it. The dialog opens over whatever is drawn.
+  checkSetup();
   if (!state.thread) {
     state.thread = state.projects.flatMap((p) => p.threads)[0]?.id || null;
     // A thread chosen here was not on screen a moment ago, whatever the feed said moved:
@@ -3607,6 +3795,11 @@ el("interrupt").addEventListener("click", () => call("interrupt", { thread: stat
 // A quiet tick costs one query over the change feed; the conversation is re-read only when
 // the feed says this thread moved.
 setInterval(async () => {
+  // A setup job writes a log, not rows: while one runs, the dialog re-reads it now and then.
+  if (state.setup.open && Date.now() - state.setup.at > 1500
+    && state.setup.view?.jobs.some((j) => j.exit === null || j.exit === undefined)) {
+    await drawSetup(true);
+  }
   const changed = await call("changed", {});
   if (!changed) return;
   if (changed.length === 0) return;

@@ -59,6 +59,32 @@ async fn sandboxes(open: State<'_, Open>) -> Result<orochi_desktop::view::Sandbo
         .map_err(fail)
 }
 
+/// The Setup screen: what is installed and signed in, and what a window should offer first.
+#[tauri::command]
+async fn setup_status(open: State<'_, Open>) -> Result<orochi_desktop::view::Setup, String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    tauri::async_runtime::spawn_blocking(move || orochi_desktop::view::setup(&config, &data))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(fail)
+}
+
+/// Opens Terminal on an agent's own sign-in command, with Orochi's toolchain in front.
+#[tauri::command]
+fn setup_login(open: State<'_, Open>, agent: String) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    let command =
+        orochi_desktop::view::setup_login_command(&config, &data, &agent).map_err(fail)?;
+    in_terminal(&command)
+}
+
+/// Opens an agent's install instructions in the browser, from the Setup screen.
+#[tauri::command]
+fn open_docs(open: State<'_, Open>, url: String) -> Result<(), String> {
+    let (config, _) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::open_docs(&config, &url).map_err(fail)
+}
+
 /// Stores an API key for agents in sandboxes; the value goes straight to the keychain.
 #[tauri::command]
 fn sandbox_secret(open: State<'_, Open>, name: String, value: String) -> Result<(), String> {
@@ -573,6 +599,9 @@ fn main() {
             place,
             sandboxes,
             sandbox_job,
+            setup_status,
+            setup_login,
+            open_docs,
             sandbox_secret,
             sandbox_login,
             rename_thread,

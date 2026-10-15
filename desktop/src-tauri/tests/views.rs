@@ -1152,3 +1152,19 @@ fn opening_a_conversation_in_a_terminal_is_a_command_naming_its_folder_and_its_t
         );
     }
 }
+
+#[test]
+fn the_setup_sign_in_opens_the_agents_own_login_and_refuses_a_name_that_is_not_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let command = view::setup_login_command(&config, dir.path(), "codex").unwrap();
+    assert!(command.ends_with(" codex login"), "{command}");
+    assert!(command.contains(&dir.path().join("toolchain/bin").display().to_string()));
+    // Nothing a window sends becomes shell: a name is letters, digits and dashes or nothing.
+    assert!(view::setup_login_command(&config, dir.path(), "codex; rm -rf /").is_err());
+    assert!(view::setup_login_command(&config, dir.path(), "").is_err());
+    assert!(view::setup_login_command(&config, dir.path(), "antigravity").is_err());
+    // And only the vendors' own pages are opened in the browser, never a URL the page made up.
+    assert!(view::open_docs(&config, "https://example.com/anything").is_err());
+    assert!(view::open_docs(&config, "file:///etc/passwd").is_err());
+}
