@@ -130,8 +130,10 @@ const SETUP = {
       package: "@openai/codex", docs: "https://developers.openai.com/codex/cli", signed_in: false, login: "codex login", usable: false, detail: null },
     { id: "claude", provider: "anthropic", status: "not_installed", native: null, installable: true,
       package: "@anthropic-ai/claude-code", docs: "https://code.claude.com/docs/en/setup", signed_in: false, login: "claude", usable: false, detail: null },
-    { id: "antigravity", provider: "google", status: "not_installed", native: null, installable: false,
-      package: null, docs: "https://antigravity.google/docs/cli/install", signed_in: false, login: null, usable: false, detail: null },
+    { id: "antigravity", provider: "google", status: "not_installed", native: null, installable: true,
+      package: "Antigravity CLI and its ACP server 1.4.0", docs: "https://antigravity.google/docs/install?tab=cli", signed_in: false, login: "agy", usable: false, detail: null },
+    { id: "gemini", provider: "google", status: "not_installed", native: null, installable: false,
+      package: null, docs: "https://geminicli.com/docs/get-started/installation", signed_in: false, login: null, usable: false, detail: null },
   ],
   sandbox: { client: "lima", supported: true, limactl: null, managed: false, vm: null, ready: false },
   ready: false,
@@ -2261,10 +2263,12 @@ test("a window that can route to nothing asks to set up first, and installs what
   assert.match(drawn, /span.name claude\n\s+span.note not installed/);
   // What Orochi cannot install points at where to get it instead of a box to tick.
   const rows = el("setup-body").querySelectorAll("div").filter((d) => d.className === "setup-row");
-  const antigravity = rows.find((r) => r.dataset.name === "antigravity");
-  assert.equal(antigravity.querySelectorAll("input").length, 0);
-  const docs = antigravity.querySelectorAll("a")[0];
-  assert.equal(docs.href, "https://antigravity.google/docs/cli/install");
+  const gemini = rows.find((r) => r.dataset.name === "gemini");
+  assert.equal(gemini.querySelectorAll("input").length, 0);
+  const docs = gemini.querySelectorAll("a")[0];
+  assert.equal(docs.href, "https://geminicli.com/docs/get-started/installation");
+  // Antigravity, Gemini CLI's successor, is one Orochi installs itself.
+  assert.equal(rows.find((r) => r.dataset.name === "antigravity").querySelectorAll("input").length, 1);
   docs.dispatch("click");
   await settle();
   assert.deepEqual(calls.filter(([name]) => name === "open_docs").map(([, a]) => a), [{ url: docs.href }]);
@@ -2342,6 +2346,11 @@ test("while setup runs the dialog lists every step, marks the one under way, tim
   const drawn = el("setup-body").render();
   assert.match(drawn, /span.current Installing claude/);
   assert.match(drawn, /span.count 3 of 7 steps/);
+  // While it runs, the steps are the dialog: the list of what is installed waits, and what a
+  // skipped step found (a path) is for the log, not the list.
+  assert.doesNotMatch(drawn, /span.name Node.js\n/);
+  assert.doesNotMatch(drawn, /Nothing here can be used yet/);
+  assert.doesNotMatch(drawn, /config.toml exists/);
   const steps = el("setup-body").querySelectorAll("div").filter((d) => d.dataset.state);
   assert.deepEqual(steps.map((s) => s.dataset.state), ["skipped", "done", "running", "pending", "pending", "pending", "pending"]);
   assert.match(steps[1].render(), /span.took 15.4s/);
@@ -2369,6 +2378,21 @@ test("while setup runs the dialog lists every step, marks the one under way, tim
   const after = el("setup-body").render();
   assert.match(after, /Setup failed/);
   assert.match(after, /span.detail npm install of @anthropic-ai\/claude-code failed: E404/);
+
+  // Once it has finished, what is installed and signed in is what is shown; the steps are
+  // behind the details, with what each found.
+  const done = { ...SETUP, jobs: [{ ...job, exit: 0 }], progress: { ...PROGRESS, finished_at: 30000,
+    steps: PROGRESS.steps.map((s) => ({ ...s, state: s.state === "pending" || s.state === "running" ? "done" : s.state, finished_at: s.finished_at ?? 30000, started_at: s.started_at ?? 29000 })) } };
+  ({ el } = await open({ setup_status: done }));
+  let finished = el("setup-body").render();
+  assert.match(finished, /span.name Node.js\n/);
+  assert.match(finished, /Setup finished/);
+  assert.doesNotMatch(finished, /span.count/);
+  el("setup-details").dispatch("click");
+  await settle();
+  finished = el("setup-body").render();
+  assert.match(finished, /span.count 7 of 7 steps/);
+  assert.match(finished, /config.toml exists/);
 
   const cancelled = { ...SETUP, jobs: [{ ...job, exit: 130 }], progress: PROGRESS };
   ({ el } = await open({ setup_status: cancelled }));

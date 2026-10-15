@@ -207,19 +207,19 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     assert_eq!(before["node"]["ok"], false);
     assert_eq!(before["ready"], false);
     assert_eq!(before["config_file"], false);
-    let gemini = before["agents"]
+    let claude = before["agents"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["id"] == "gemini")
+        .find(|a| a["id"] == "claude")
         .unwrap();
-    assert_eq!(gemini["status"], "not_installed");
-    assert_eq!(gemini["installable"], true);
-    assert_eq!(gemini["package"], "@google/gemini-cli");
+    assert_eq!(claude["status"], "not_installed");
+    assert_eq!(claude["installable"], true);
+    assert_eq!(claude["package"], "@anthropic-ai/claude-code");
 
     let out = machine
         .orochi(&served.url)
-        .args(["setup", "--install", "gemini"])
+        .args(["setup", "--install", "claude"])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -229,12 +229,12 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("Node.js v24.0.0 installed"), "{stdout}");
-    assert!(stdout.contains("@google/gemini-cli at"), "{stdout}");
+    assert!(stdout.contains("@anthropic-ai/claude-code at"), "{stdout}");
     assert!(stdout.contains(&format!("wrote {}", machine.config().display())));
     let toolchain = machine.data().join("toolchain");
     assert!(toolchain.join("node/current/bin/node").is_file());
     assert!(toolchain.join("node/v24.0.0/bin/node").is_file());
-    let shim = toolchain.join("bin/gemini");
+    let shim = toolchain.join("bin/claude");
     assert!(shim.symlink_metadata().unwrap().file_type().is_symlink());
     assert!(shim.is_file());
     assert_eq!(
@@ -242,18 +242,25 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
         0o600
     );
     // The CLI came from the registry with install scripts disabled, into the toolchain.
-    // `npm --version` is asked on every check; one install is what was run.
+    // `npm --version` is asked on every check; two installs were run, the CLI and then its
+    // adapter, both from the registry with install scripts disabled.
     let installs: String = std::fs::read_to_string(&log)
         .unwrap()
         .lines()
         .filter(|l| l.contains("\"install\""))
         .map(|l| format!("{l}\n"))
         .collect();
-    assert_eq!(installs.lines().count(), 1, "{installs}");
-    assert!(installs.contains("@google/gemini-cli@latest"));
-    assert!(installs.contains("--ignore-scripts"));
-    assert!(installs.contains("--registry=https://registry.npmjs.org"));
+    assert_eq!(installs.lines().count(), 2, "{installs}");
+    assert!(installs.contains("@anthropic-ai/claude-code@latest"));
+    assert!(installs.contains("@agentclientprotocol/claude-agent-acp@"));
+    assert!(installs.lines().all(|l| l.contains("--ignore-scripts")));
+    assert!(
+        installs
+            .lines()
+            .all(|l| l.contains("--registry=https://registry.npmjs.org"))
+    );
     assert!(installs.contains(&toolchain.join("cli").display().to_string()));
+    assert!(toolchain.join("bin/claude").is_file());
     // And nothing landed anywhere else.
     assert!(!machine.home().join(".npm").exists());
     assert_eq!(
@@ -265,8 +272,8 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     );
 
     // The run reported itself step by step, as a window follows it: decided up front, each
-    // timed, the config written, Node put in, gemini installed, and no adapter step for an
-    // agent that has no bridge.
+    // timed, the config written, Node put in, claude installed and, since claude is driven
+    // through a bridge, its adapter prepared right after.
     let progress = setup::Progress::read(&machine.data()).unwrap();
     assert!(progress.finished_at.is_some());
     let steps: Vec<(&str, &str)> = progress
@@ -279,7 +286,8 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
         [
             ("Writing the configuration file", "done"),
             ("Installing Node.js", "done"),
-            ("Installing gemini", "done"),
+            ("Installing claude", "done"),
+            ("Preparing the ACP adapter for claude", "done"),
         ]
     );
     for step in &progress.steps {
@@ -293,31 +301,32 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
             .contains("v24.0.0")
     );
 
-    // After: the Node Orochi put in is the one found, and Gemini is installed but not yet
-    // signed in; its own sign-in leaves a file, and that file is what makes it usable.
+    // After: the Node Orochi put in is the one found, and claude is ready (its adapter was
+    // prepared) but has no credentials file under this home; its own sign-in leaves one, and
+    // that file is what makes it usable.
     let after = machine.check(&served.url);
     assert_eq!(after["node"]["ok"], true);
     assert_eq!(after["node"]["managed"], true);
     assert_eq!(after["node"]["version"], "v24.0.0");
     assert_eq!(after["config_file"], true);
-    let gemini = |status: &serde_json::Value| {
+    let claude = |status: &serde_json::Value| {
         status["agents"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|a| a["id"] == "gemini")
+            .find(|a| a["id"] == "claude")
             .unwrap()
             .clone()
     };
-    assert_eq!(gemini(&after)["status"], "ready");
-    assert_eq!(gemini(&after)["signed_in"], false);
-    assert_eq!(gemini(&after)["login"], "gemini");
+    assert_eq!(claude(&after)["status"], "ready");
+    assert_eq!(claude(&after)["signed_in"], false);
+    assert_eq!(claude(&after)["login"], "claude");
     assert_eq!(after["ready"], false);
-    std::fs::create_dir_all(machine.home().join(".gemini")).unwrap();
-    std::fs::write(machine.home().join(".gemini/oauth_creds.json"), "{}").unwrap();
+    std::fs::create_dir_all(machine.home().join(".claude")).unwrap();
+    std::fs::write(machine.home().join(".claude/.credentials.json"), "{}").unwrap();
     let signed = machine.check(&served.url);
-    assert_eq!(gemini(&signed)["signed_in"], true);
-    assert_eq!(gemini(&signed)["usable"], true);
+    assert_eq!(claude(&signed)["signed_in"], true);
+    assert_eq!(claude(&signed)["usable"], true);
     assert_eq!(signed["ready"], true);
 
     // Running it again changes nothing and downloads nothing.
@@ -338,7 +347,8 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
             .lines()
             .filter(|l| l.contains("\"install\""))
             .count(),
-        1
+        2,
+        "nothing was installed again"
     );
 }
 
@@ -446,8 +456,21 @@ fn the_sign_in_command_is_the_agents_own_login_with_the_toolchain_in_front() {
             .ends_with(" claude")
     );
     // An agent Orochi cannot sign in says where its own instructions are.
-    let error = setup::login_command(&config, data.path(), "antigravity").unwrap_err();
-    assert!(error.to_string().contains("antigravity.google"), "{error}");
+    assert!(
+        setup::login_command(&config, data.path(), "antigravity")
+            .unwrap()
+            .ends_with(" agy")
+    );
+    // Gemini CLI is no preset; written in, it signs in its own way, and that way is named.
+    let mut with_gemini = config.clone();
+    with_gemini.agents.push(AgentConfig::preset(
+        "gemini",
+        Provider::GOOGLE,
+        "gemini",
+        &["--acp"],
+    ));
+    let error = setup::login_command(&with_gemini, data.path(), "gemini").unwrap_err();
+    assert!(error.to_string().contains("geminicli.com"), "{error}");
     assert!(
         setup::login_command(&config, data.path(), "nobody")
             .unwrap_err()
@@ -483,11 +506,12 @@ fn the_report_names_what_can_be_installed_and_where_the_rest_comes_from() {
     assert!(!status.config_file);
     // An adviser is never offered: it runs no work.
     assert_eq!(status.agents.len(), 2);
+    // Gemini CLI is not offered: Antigravity is its successor. It still says where it is.
     let gemini = &status.agents[0];
     assert_eq!(gemini.status, "not_installed");
-    assert!(gemini.installable);
-    assert_eq!(gemini.package.as_deref(), Some("@google/gemini-cli"));
-    assert_eq!(gemini.login.as_deref(), Some("gemini"));
+    assert!(!gemini.installable);
+    assert_eq!(gemini.package, None);
+    assert!(gemini.docs.as_deref().unwrap().contains("geminicli.com"));
     assert!(!gemini.usable);
     let custom = &status.agents[1];
     assert!(!custom.installable);
@@ -497,8 +521,21 @@ fn the_report_names_what_can_be_installed_and_where_the_rest_comes_from() {
     assert_eq!(custom.signed_in, None);
     assert!(!status.ready);
     let text = setup::describe(&status);
-    assert!(text.contains("orochi setup --install gemini"), "{text}");
+    assert!(
+        text.contains("install by hand: https://geminicli.com"),
+        "{text}"
+    );
     assert!(text.contains("Not ready"), "{text}");
+    // And Antigravity is what Orochi offers to put in, with the CLI that signs it in.
+    let mut agy = AgentConfig::preset("antigravity", Provider::GOOGLE, "agy_acp_server.par", &[]);
+    agy.env.insert("PATH".into(), empty.display().to_string());
+    config.agents = vec![agy];
+    let status = setup::status_with(&config, &dir.path().join("config.toml"), dir.path(), false);
+    let agy = &status.agents[0];
+    assert!(agy.installable);
+    assert!(agy.package.as_deref().unwrap().contains("ACP server"));
+    assert_eq!(agy.login.as_deref(), Some("agy"));
+    assert!(setup::describe(&status).contains("orochi setup --install antigravity"));
     // The sandbox host is reported beside them: nothing is created by looking.
     assert_eq!(status.sandbox.client, "lima");
     assert!(!status.sandbox.ready);
@@ -623,4 +660,159 @@ fn a_running_setup_job_can_be_stopped_and_is_written_down_as_interrupted() {
     orochi::sandbox::jobs::cancel(&data, &id).unwrap();
     assert!(orochi::sandbox::jobs::cancel(&data, "../../etc").is_err());
     assert!(orochi::sandbox::jobs::cancel(&data, "nope").is_err());
+}
+
+/// A stand-in for Antigravity's two sources: the ACP server's zip as the ACP registry lists
+/// it, and the CLI's manifest and archive as its install script reads them.
+fn antigravity_release(dir: &Path, tamper: bool) -> (PathBuf, String) {
+    let (archive, _, manifest) = setup::antigravity_build().expect("a build for this machine");
+    let acp = dir.join("acp");
+    std::fs::create_dir_all(&acp).unwrap();
+    executable(
+        &acp.join("agy_acp_server.par"),
+        "#!/bin/sh\necho acp-server-fixture \"$@\"\n",
+    );
+    std::fs::write(acp.join("localharness_external"), "harness").unwrap();
+    let zip = dir.join("releases").join(archive);
+    std::fs::create_dir_all(zip.parent().unwrap()).unwrap();
+    assert!(
+        Command::new("python3")
+            .args(["-c", "import sys,zipfile\nz=zipfile.ZipFile(sys.argv[1],'w')\nfor f in sys.argv[2:]:\n    z.write(f, f.rsplit('/',1)[-1])\nz.close()"])
+            .arg(&zip)
+            .arg(acp.join("agy_acp_server.par"))
+            .arg(acp.join("localharness_external"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sha256 = {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(std::fs::read(&zip).unwrap()))
+    };
+    let cli = dir.join("cli");
+    std::fs::create_dir_all(&cli).unwrap();
+    executable(&cli.join("antigravity"), "#!/bin/sh\necho 1.3.6-fixture\n");
+    let tarball = dir.join("releases/cli.tar.gz");
+    assert!(
+        Command::new("tar")
+            .arg("-czf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&cli)
+            .arg("antigravity")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sha512 = {
+        use sha2::Digest;
+        format!(
+            "{:x}",
+            sha2::Sha512::digest(std::fs::read(&tarball).unwrap())
+        )
+    };
+    let sha512 = if tamper {
+        sha512.replace(|c: char| c.is_ascii_hexdigit(), "0")
+    } else {
+        sha512
+    };
+    let manifests = dir.join("releases/manifests");
+    std::fs::create_dir_all(&manifests).unwrap();
+    // The manifest names the archive by URL, which is filled in once the server has a port.
+    std::fs::write(
+        manifests.join(format!("{manifest}.json")),
+        format!(r#"{{"version":"1.3.6","url":"__BASE__/cli.tar.gz","sha512":"{sha512}"}}"#),
+    )
+    .unwrap();
+    (dir.join("releases"), sha256)
+}
+
+fn antigravity_source(
+    releases: &Path,
+    served: &Served,
+    sha256: String,
+) -> setup::AntigravitySource {
+    let (_, _, manifest) = setup::antigravity_build().unwrap();
+    let path = releases.join(format!("manifests/{manifest}.json"));
+    let text = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("__BASE__", &served.url);
+    std::fs::write(&path, text).unwrap();
+    setup::AntigravitySource {
+        acp_releases: served.url.clone(),
+        cli_manifests: format!("{}/manifests", served.url),
+        acp_sha256: Some(sha256),
+    }
+}
+
+#[tokio::test]
+async fn antigravity_is_put_under_the_toolchain_from_its_vendors_checked_downloads() {
+    let fixture = tempfile::tempdir().unwrap();
+    let (releases, sha256) = antigravity_release(fixture.path(), false);
+    let served = Served::new(&releases);
+    let source = antigravity_source(&releases, &served, sha256);
+    let data = tempfile::tempdir().unwrap();
+    setup::install_antigravity(data.path(), &source)
+        .await
+        .unwrap();
+    let bin = data.path().join("toolchain/bin");
+    // The server runs in place, beside the second executable it keeps, through the wrapper.
+    let out = Command::new(bin.join("agy_acp_server.par"))
+        .arg("--x")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(said.starts_with("acp-server-fixture"), "{said}");
+    assert!(said.trim().ends_with("--x"), "{said}");
+    assert!(
+        data.path()
+            .join("toolchain/antigravity/current/localharness_external")
+            .is_file()
+    );
+    let out = Command::new(bin.join("agy")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "1.3.6-fixture");
+    // What the lookup finds is what the preset launches, and the report says it is there.
+    let mut config = Config::default();
+    config.discovery.auto_add = false;
+    config.agents = vec![AgentConfig::preset(
+        "antigravity",
+        Provider::GOOGLE,
+        "agy_acp_server.par",
+        &[],
+    )];
+    let status = setup::status_with(&config, &data.path().join("c.toml"), data.path(), false);
+    assert_eq!(status.agents[0].status, "ready");
+    assert_eq!(
+        status.agents[0].native,
+        Some(bin.join("agy_acp_server.par"))
+    );
+
+    // The pinned checksum is what guards the ACP server: a different archive is refused.
+    let other = tempfile::tempdir().unwrap();
+    let wrong = setup::AntigravitySource {
+        acp_sha256: Some("00".repeat(32)),
+        ..source.clone()
+    };
+    let error = setup::install_antigravity(other.path(), &wrong)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
+    assert!(
+        !other
+            .path()
+            .join("toolchain/bin/agy_acp_server.par")
+            .exists()
+    );
+
+    // And the manifest's SHA-512 guards the CLI.
+    let tampered = tempfile::tempdir().unwrap();
+    let (releases, sha256) = antigravity_release(tampered.path(), true);
+    let served = Served::new(&releases);
+    let source = antigravity_source(&releases, &served, sha256);
+    let fresh = tempfile::tempdir().unwrap();
+    let error = setup::install_antigravity(fresh.path(), &source)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("manifest's checksum"), "{error}");
+    assert!(!fresh.path().join("toolchain/bin/agy").exists());
 }

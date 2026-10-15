@@ -1100,7 +1100,14 @@ fn each_agent_is_given_what_its_own_documentation_says_a_headless_one_needs() {
         by("claude").files.is_empty(),
         "a keychain login is not a file to carry"
     );
-    assert!(by("gemini").env.contains(&"GEMINI_API_KEY".to_owned()));
+    // Gemini CLI is no preset any more, but one written in gets its own recipe.
+    let gemini = orochi::config::AgentConfig::preset(
+        "gemini",
+        orochi::types::Provider::GOOGLE,
+        "gemini",
+        &["--acp"],
+    );
+    assert!(recipe(&gemini).env.contains(&"GEMINI_API_KEY".to_owned()));
     assert!(by("antigravity").env.contains(&"GEMINI_API_KEY".to_owned()));
     assert!(by("antigravity").hint.unwrap().contains("keychain"));
     // Anything else says what it needs in its own entry.

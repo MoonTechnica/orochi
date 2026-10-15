@@ -1163,7 +1163,7 @@ fn the_setup_sign_in_opens_the_agents_own_login_and_refuses_a_name_that_is_not_o
     // Nothing a window sends becomes shell: a name is letters, digits and dashes or nothing.
     assert!(view::setup_login_command(&config, dir.path(), "codex; rm -rf /").is_err());
     assert!(view::setup_login_command(&config, dir.path(), "").is_err());
-    assert!(view::setup_login_command(&config, dir.path(), "antigravity").is_err());
+    assert!(view::setup_login_command(&config, dir.path(), "gemini").is_err());
     // And only the vendors' own pages are opened in the browser, never a URL the page made up.
     assert!(view::open_docs(&config, "https://example.com/anything").is_err());
     assert!(view::open_docs(&config, "file:///etc/passwd").is_err());

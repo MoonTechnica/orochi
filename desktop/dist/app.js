@@ -1677,9 +1677,18 @@ async function drawSetup(fresh) {
   body.replaceChildren();
   const running = view.jobs.some((j) => j.exit === null || j.exit === undefined);
   const last = view.jobs[0];
-  body.append(text("p", "where", t(view.ready
-    ? "At least one agent is ready. Anything else can be added here later."
-    : "Orochi drives the coding CLIs installed and signed in on this computer. Nothing here can be used yet: choose what to install, then sign in.")));
+  // The run's steps, as `orochi setup` reports them: decided before the first one starts, so
+  // what is still to come is listed from the beginning, each marked as it goes and timed.
+  const progress = view.progress && last && view.progress.job === last.id ? view.progress : null;
+  const failed = Boolean(last) && !running && last.exit !== 0;
+  // While a run is under way, or when one failed, the steps are the whole dialog, as an
+  // installer's are; what is installed and signed in is shown once it has finished.
+  const live = Boolean(progress) && (running || failed);
+  if (!live) {
+    body.append(text("p", "where", t(view.ready
+      ? "At least one agent is ready. Anything else can be added here later."
+      : "Orochi drives the coding CLIs installed and signed in on this computer. Nothing here can be used yet: choose what to install, then sign in.")));
+  }
 
   const rows = text("div", "setup-rows");
   rows.append(setupRow(
@@ -1764,13 +1773,9 @@ async function drawSetup(fresh) {
       action,
     ));
   }
-  body.append(rows);
+  if (!live) body.append(rows);
 
-  // The run's steps, as `orochi setup` reports them: decided before the first one starts, so
-  // what is still to come is listed from the beginning, each marked as it goes and timed.
-  const progress = view.progress && last && view.progress.job === last.id ? view.progress : null;
-  if (last && progress) {
-    const failed = !running && last.exit !== 0;
+  if (last && progress && (live || state.setup.details)) {
     const cancelled = !running && last.exit === 130;
     const steps = progress.steps;
     const finished = steps.filter((s) => s.state === "done" || s.state === "skipped").length;
@@ -1798,14 +1803,15 @@ async function drawSetup(fresh) {
       if (shown === "failed") mark.append(drawn("x", "icon"));
       row.append(mark, text("span", "name", stepName(step.name)));
       row.append(text("span", "took", step.started_at && step.finished_at ? `${((step.finished_at - step.started_at) / 1000).toFixed(1)}s` : ""));
-      if (step.detail && (shown === "failed" || shown === "skipped" || state.setup.details)) {
+      // What a step came to is for the log, except why one failed, which is the point.
+      if (step.detail && (shown === "failed" || state.setup.details)) {
         row.append(text("span", "detail", step.detail));
       }
       list.append(row);
     }
     section.append(list);
     body.append(section);
-  } else if (last) {
+  } else if (last && (running || failed || !state.setup.details)) {
     body.append(text("p", "where", t(running
       ? "Installing. Node.js and the CLIs chosen go under Orochi's data directory; nothing on the system is changed."
       : last.exit === 0 ? "Setup finished." : last.exit === 130 ? "Setup was cancelled." : "Setup failed. Fix what it says below and try again.")));

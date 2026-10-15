@@ -44,37 +44,56 @@ pub fn register_data(data: &Path) {
     let _ = DATA.set(data.to_path_buf());
 }
 
-/// What Orochi can put in for an agent: the package its vendor publishes the CLI as, and the
-/// command that signs it in, which only a terminal can run.
+/// Where an agent's CLI comes from: the package its vendor publishes on npm, or Antigravity's
+/// own two downloads (`install_antigravity`).
+#[derive(Clone, Copy)]
+enum Source {
+    Npm(&'static str),
+    Antigravity,
+}
+/// What Orochi can put in for an agent, and the command that signs it in, which only a
+/// terminal can run. Gemini CLI is not here: Antigravity is its successor, and that is the one
+/// offered.
 #[derive(Clone, Copy)]
 struct Package {
     agent: &'static str,
+    /// The command the agent is driven through, as the preset names it.
     native: &'static str,
-    package: &'static str,
+    source: Source,
     docs: &'static str,
     login: &'static str,
+}
+impl Package {
+    fn describe(self) -> String {
+        match self.source {
+            Source::Npm(package) => package.to_owned(),
+            Source::Antigravity => {
+                format!("Antigravity CLI and its ACP server {ANTIGRAVITY_ACP_VERSION}")
+            }
+        }
+    }
 }
 const PACKAGES: [Package; 3] = [
     Package {
         agent: "claude",
         native: "claude",
-        package: "@anthropic-ai/claude-code",
+        source: Source::Npm("@anthropic-ai/claude-code"),
         docs: "https://code.claude.com/docs/en/setup",
         login: "claude",
     },
     Package {
         agent: "codex",
         native: "codex",
-        package: "@openai/codex",
+        source: Source::Npm("@openai/codex"),
         docs: "https://developers.openai.com/codex/cli",
         login: "codex login",
     },
     Package {
-        agent: "gemini",
-        native: "gemini",
-        package: "@google/gemini-cli",
-        docs: "https://geminicli.com/docs/get-started/installation",
-        login: "gemini",
+        agent: "antigravity",
+        native: "agy_acp_server.par",
+        source: Source::Antigravity,
+        docs: "https://antigravity.google/docs/install?tab=cli",
+        login: "agy",
     },
 ];
 /// An agent Orochi knows the install of, by its preset id or the name of its command.
@@ -87,12 +106,78 @@ fn package(agent: &AgentConfig) -> Option<Package> {
         p.agent == agent.id || command == p.native || command == format!("{}-acp", p.native)
     })
 }
-/// Where an agent Orochi cannot install is installed from.
+/// Where an agent is installed from by hand.
 fn docs(agent: &AgentConfig) -> Option<&'static str> {
-    if agent.id == "antigravity" || agent.command.contains("agy") {
-        return Some("https://antigravity.google/docs/cli/install");
+    if agent.id == "gemini" || agent.command.contains("gemini") {
+        return Some("https://geminicli.com/docs/get-started/installation");
     }
     package(agent).map(|p| p.docs)
+}
+
+/// Antigravity, as its vendor ships it: the ACP server the ACP registry lists
+/// (`antigravity-acp/agent.json`, a zip per platform under dl.google.com, pinned here with the
+/// checksum of each as read on 2026-10-16, since the registry publishes none), and the `agy`
+/// CLI its install script fetches (a manifest per platform naming the archive and its SHA-512,
+/// which is what the script checks).
+pub const ANTIGRAVITY_ACP_VERSION: &str = "1.4.0";
+pub const ANTIGRAVITY_ACP_RELEASES: &str = "https://dl.google.com/agy-extensions/releases";
+pub const ANTIGRAVITY_CLI_MANIFESTS: &str =
+    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";
+/// (os, arch) → the ACP archive's path under the releases, its SHA-256, and the CLI manifest.
+const ANTIGRAVITY_BUILDS: [(&str, &str, &str, &str, &str); 4] = [
+    (
+        "macos",
+        "aarch64",
+        "macos/agy-acp-server-1.4.0-darwin-arm64.zip",
+        "21a32eeab85b394a515510c84539bda4b2504bf2917e0a201f5c4130b13581a5",
+        "darwin_arm64",
+    ),
+    (
+        "macos",
+        "x86_64",
+        "macos/agy-acp-server-1.4.0-darwin-x86_64.zip",
+        "407b6b8ef167bb207d1effdbd488bacf63ba7dab2b47d4a47d8ea3710a8c0f55",
+        "darwin_amd64",
+    ),
+    (
+        "linux",
+        "x86_64",
+        "linux/agy-acp-server-1.4.0-linux-x86_64.zip",
+        "fbb2d54dd94fb897845308d3b6b46187c627f1c60078ded81adeeaf8b90c5d7a",
+        "linux_amd64",
+    ),
+    (
+        "linux",
+        "aarch64",
+        "linux/agy-acp-server-1.4.0-linux-arm64.zip",
+        "3dc43a21f5402b23a4dba7b320a6745e9dbf4b6ead912ce9fc76011ea3a08a7e",
+        "linux_arm64",
+    ),
+];
+/// Where Antigravity is read from, and what its ACP archive must hash to; a test points
+/// these at a server of its own.
+#[derive(Debug, Clone)]
+pub struct AntigravitySource {
+    pub acp_releases: String,
+    pub cli_manifests: String,
+    /// The ACP archive's SHA-256 for this machine; `None` takes the pinned one.
+    pub acp_sha256: Option<String>,
+}
+impl Default for AntigravitySource {
+    fn default() -> Self {
+        Self {
+            acp_releases: ANTIGRAVITY_ACP_RELEASES.into(),
+            cli_manifests: ANTIGRAVITY_CLI_MANIFESTS.into(),
+            acp_sha256: None,
+        }
+    }
+}
+/// This machine's build: the ACP archive's path, its pinned SHA-256, the CLI manifest's name.
+pub fn antigravity_build() -> Option<(&'static str, &'static str, &'static str)> {
+    ANTIGRAVITY_BUILDS
+        .iter()
+        .find(|(os, arch, ..)| *os == std::env::consts::OS && *arch == std::env::consts::ARCH)
+        .map(|(_, _, archive, sha, manifest)| (*archive, *sha, *manifest))
 }
 
 // --- Where things are looked for ---------------------------------------------------------------
@@ -289,7 +374,7 @@ pub fn status_with(config: &Config, config_path: &Path, data: &Path, keychain: b
                 status: availability.status.into(),
                 native: availability.native_cli.or(availability.executable),
                 installable: package.is_some(),
-                package: package.map(|p| p.package.to_owned()),
+                package: package.map(Package::describe),
                 docs: docs(agent).map(str::to_owned),
                 signed_in,
                 login: package.map(|p| p.login.to_owned()),
@@ -548,6 +633,7 @@ pub async fn run(
     plan: &Plan,
     node_dist: &str,
     lima_releases: &str,
+    antigravity: &AntigravitySource,
 ) -> Result<Status> {
     std::fs::create_dir_all(toolchain(data))?;
     let before = status_with(config, config_path, data, false);
@@ -651,10 +737,14 @@ pub async fn run(
             Todo::Cli(id) => {
                 let agent = config.agents.iter().find(|a| &a.id == id).expect("checked");
                 let package = package(agent).expect("checked");
-                install_cli(data, package).await.map(|()| {
+                match package.source {
+                    Source::Npm(_) => install_cli(data, package).await,
+                    Source::Antigravity => install_antigravity(data, antigravity).await,
+                }
+                .map(|()| {
                     Outcome::Done(format!(
                         "{} at {}",
-                        package.package,
+                        package.describe(),
                         bin(data).join(package.native).display()
                     ))
                 })
@@ -983,6 +1073,9 @@ fn point(link: &Path, target: &Path) -> Result<()> {
 async fn install_cli(data: &Path, package: Package) -> Result<()> {
     let path = search_path(Some(data));
     let npm = discovery::find_in("npm", &path).context("npm was not found")?;
+    let Source::Npm(spec) = package.source else {
+        unreachable!("npm installs npm packages")
+    };
     let cli = toolchain(data).join("cli");
     std::fs::create_dir_all(&cli)?;
     std::fs::create_dir_all(bin(data))?;
@@ -1000,7 +1093,7 @@ async fn install_cli(data: &Path, package: Package) -> Result<()> {
             "--no-audit",
             "--no-fund",
         ])
-        .arg(format!("{}@latest", package.package))
+        .arg(format!("{spec}@latest"))
         .current_dir(stage.path())
         .env("PATH", &path)
         .stdin(Stdio::null())
@@ -1011,15 +1104,13 @@ async fn install_cli(data: &Path, package: Package) -> Result<()> {
         .await?;
     ensure!(
         output.status.success(),
-        "npm install of {} failed: {}",
-        package.package,
+        "npm install of {spec} failed: {}",
         crate::context::bounded(&String::from_utf8_lossy(&output.stderr), 2000)
     );
     let installed = stage.path().join("node_modules/.bin").join(package.native);
     ensure!(
         installed.exists(),
-        "{} installed no `{}` command",
-        package.package,
+        "{spec} installed no `{}` command",
         package.native
     );
     let destination = cli.join(package.agent);
@@ -1031,6 +1122,168 @@ async fn install_cli(data: &Path, package: Package) -> Result<()> {
         &bin(data).join(package.native),
         &destination.join("node_modules/.bin").join(package.native),
     )?;
+    Ok(())
+}
+
+/// Antigravity into `<data>/toolchain/antigravity/`: the ACP server's archive, checked against
+/// the pinned SHA-256 before `unzip` touches it, unpacked whole (the server keeps a second
+/// executable beside itself) and reached through a wrapper at `toolchain/bin/agy_acp_server.par`
+/// that runs it in place — on Linux with the `--uid=` the registry lists; and the `agy` CLI
+/// as its install script fetches it, the manifest's SHA-512 checked, placed at
+/// `toolchain/bin/agy`. The script's shell-profile edits are left out: Orochi's own lookup
+/// finds both.
+pub async fn install_antigravity(data: &Path, source: &AntigravitySource) -> Result<()> {
+    let (archive, pinned, manifest) =
+        antigravity_build().context("Antigravity publishes no build for this machine")?;
+    let expected = source.acp_sha256.as_deref().unwrap_or(pinned);
+    let client = reqwest::Client::builder()
+        .user_agent(format!("orochi/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let root = toolchain(data).join("antigravity");
+    std::fs::create_dir_all(&root)?;
+    std::fs::create_dir_all(bin(data))?;
+    let stage = tempfile::Builder::new()
+        .prefix(".antigravity-")
+        .tempdir_in(&root)?;
+
+    println!("  downloading the ACP server {ANTIGRAVITY_ACP_VERSION}");
+    let bytes = client
+        .get(format!("{}/{archive}", source.acp_releases))
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    {
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+        ensure!(
+            actual == expected,
+            "the Antigravity ACP server download does not match the checksum Orochi was built with; a newer Orochi may know the newer release"
+        );
+    }
+    let zip = stage.path().join("acp.zip");
+    std::fs::write(&zip, &bytes)?;
+    drop(bytes);
+    let unpacked = stage.path().join("acp");
+    std::fs::create_dir_all(&unpacked)?;
+    let output = tokio::process::Command::new("unzip")
+        .arg("-q")
+        .arg(&zip)
+        .arg("-d")
+        .arg(&unpacked)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .context("unpacking needs `unzip`")?;
+    ensure!(
+        output.status.success(),
+        "unpacking the Antigravity ACP server failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let server = unpacked.join("agy_acp_server.par");
+    ensure!(
+        server.is_file(),
+        "the Antigravity ACP server archive did not contain agy_acp_server.par"
+    );
+    let destination = root.join(ANTIGRAVITY_ACP_VERSION);
+    if destination.exists() {
+        std::fs::remove_dir_all(&destination)?;
+    }
+    std::fs::rename(&unpacked, &destination)?;
+    point(&root.join("current"), Path::new(ANTIGRAVITY_ACP_VERSION))?;
+    let uid = if cfg!(target_os = "linux") {
+        " --uid="
+    } else {
+        ""
+    };
+    let wrapper = bin(data).join("agy_acp_server.par");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n# Written by orochi setup: runs the Antigravity ACP server where its files are.\nexec '{}'{uid} \"$@\"\n",
+            root.join("current/agy_acp_server.par")
+                .display()
+                .to_string()
+                .replace('\'', "'\\''")
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    println!("  downloading the agy CLI");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &client
+            .get(format!("{}/{manifest}.json", source.cli_manifests))
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?,
+    )
+    .context("reading the Antigravity CLI manifest")?;
+    let url = manifest["url"]
+        .as_str()
+        .context("the Antigravity CLI manifest names no archive")?;
+    let sha512 = manifest["sha512"]
+        .as_str()
+        .context("the Antigravity CLI manifest carries no checksum; refusing to install it")?;
+    let bytes = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    {
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha512::digest(&bytes));
+        ensure!(
+            actual == sha512,
+            "the Antigravity CLI download does not match its manifest's checksum"
+        );
+    }
+    let cli = stage.path().join("cli");
+    std::fs::create_dir_all(&cli)?;
+    let agy = if url.contains(".tar.gz") {
+        let tarball = stage.path().join("cli.tar.gz");
+        std::fs::write(&tarball, &bytes)?;
+        let output = tokio::process::Command::new("tar")
+            .arg("-xzf")
+            .arg(&tarball)
+            .arg("-C")
+            .arg(&cli)
+            .arg("antigravity")
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .context("unpacking needs `tar`")?;
+        ensure!(
+            output.status.success(),
+            "unpacking the Antigravity CLI failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        cli.join("antigravity")
+    } else {
+        let file = cli.join("agy");
+        std::fs::write(&file, &bytes)?;
+        file
+    };
+    ensure!(
+        agy.is_file(),
+        "the Antigravity CLI archive did not contain `antigravity`"
+    );
+    let placed = bin(data).join("agy.new");
+    std::fs::copy(&agy, &placed)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&placed, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&placed, bin(data).join("agy"))?;
     Ok(())
 }
 

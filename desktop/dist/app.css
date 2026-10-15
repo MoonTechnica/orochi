@@ -1183,7 +1183,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 #setup-head { display: flex; align-items: center; padding: 14px var(--gutter) 6px; }
 #setup-title { margin: 0; font-size: 15px; }
 #setup-close { margin-left: auto; border: 0; color: var(--muted); padding: 2px 8px; }
-#setup-body { padding: 4px var(--gutter) 8px; display: grid; gap: 8px; }
+#setup-body { padding: 4px var(--gutter) 8px; display: grid; gap: 8px; max-height: calc(85vh - 120px); overflow: auto; }
 #setup-body .where { color: var(--muted); font-size: 12px; margin: 0; }
 .setup-rows { display: grid; gap: 4px; }
 .setup-row {
@@ -1253,5 +1253,6 @@ details[open] > summary .icon { transform: rotate(90deg); }
 }
 @keyframes setup-spin { to { transform: rotate(360deg); } }
 .setup-step .took { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.setup-step .detail { grid-column: 2 / 4; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.setup-step .detail { grid-column: 2 / 4; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-step.failed .detail { white-space: normal; overflow-wrap: anywhere; }
 .setup-step.failed .detail { color: var(--danger); }

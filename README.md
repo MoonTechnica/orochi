@@ -96,7 +96,6 @@ Install the CLIs you will use, and authenticate with **each Agent's own official
 |---|---|---|
 | `codex` | The `codex` CLI itself, or `codex-acp`. A missing adapter is installed automatically | [Codex ACP](https://github.com/agentclientprotocol/codex-acp) |
 | `claude` | The `claude` CLI itself, or `claude-agent-acp`. A missing adapter is installed automatically | [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp) |
-| `gemini` | `gemini --acp` | [Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/) |
 | `antigravity` | `agy_acp_server.par` | [Antigravity ACP Registry listing](https://zed.dev/acp/agent/antigravity-acp) |
 
 Claude/Codex are detected even when only the CLI itself is installed. If the adapter is missing, it is prepared at the first discovery using Node.js 22 or later and npm.
@@ -104,18 +103,20 @@ Claude/Codex are detected even when only the CLI itself is installed. If the ada
 ```sh
 orochi setup --check          # what this machine has: Node.js, each CLI, whether it is signed in
 orochi setup                  # the config file, Node.js if there is none, and the adapters
-orochi setup --install claude # also a CLI itself (claude, codex or gemini), from the npm registry
+orochi setup --install claude # also a CLI itself (claude, codex or antigravity)
 orochi setup --sandbox        # also the sandbox host: Lima if missing, then the VM, Incus and the image
 orochi agents --discover
 ```
 
-`orochi setup` is first-run setup, and it changes nothing on the system: Node.js goes under `<data>/toolchain/node/` from nodejs.org, checked against the release's `SHASUMS256.txt` before it is unpacked; a CLI goes under `<data>/toolchain/cli/<agent>/` with install scripts disabled, as the adapters are, and is reached through `<data>/toolchain/bin/`. Signing in stays each CLI's own (`claude`, `codex login`, `gemini`): it opens a browser and takes the result at the keyboard, so `setup` says which agents are not signed in and leaves that to you. Antigravity is installed by hand ([its instructions](https://antigravity.google/docs/cli/install)). `--sandbox` is `orochi init` with Lima taken care of first: Lima comes from [its release](https://github.com/lima-vm/lima/releases) (pinned, checked against the release's `SHA256SUMS`) under `<data>/toolchain/lima/`, so Homebrew is no longer needed for it; the VM, Incus and the container image follow as `init` makes them. Everything Orochi starts is looked up on its own toolchain, the process's `PATH`, the login shell's `PATH` where the process was started by no shell (a window opened from Finder has none), and `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`; an agent's own `env.PATH` still replaces all of that.
+`orochi setup` is first-run setup, and it changes nothing on the system: Node.js goes under `<data>/toolchain/node/` from nodejs.org, checked against the release's `SHASUMS256.txt` before it is unpacked; Claude Code and Codex go under `<data>/toolchain/cli/<agent>/` from the npm registry with install scripts disabled, as the adapters are, and are reached through `<data>/toolchain/bin/`. Antigravity comes from its vendor's own two downloads: the ACP server the [ACP registry](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json) lists (pinned, the archive's checksum pinned with it, since the registry publishes none) and the `agy` CLI its [install script](https://antigravity.google/docs/install?tab=cli) fetches (the manifest's SHA-512 checked, as the script checks it), with the script's shell-profile edits left out. Gemini CLI is not offered — Antigravity is its successor — but one already installed is still found. Signing in stays each CLI's own (`claude`, `codex login`, `agy`): it opens a browser and takes the result at the keyboard, so `setup` says which agents are not signed in and leaves that to you. `--sandbox` is `orochi init` with Lima taken care of first: Lima comes from [its release](https://github.com/lima-vm/lima/releases) (pinned, checked against the release's `SHA256SUMS`) under `<data>/toolchain/lima/`, so Homebrew is no longer needed for it; the VM, Incus and the container image follow as `init` makes them. Everything Orochi starts is looked up on its own toolchain, the process's `PATH`, the login shell's `PATH` where the process was started by no shell (a window opened from Finder has none), and `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`; an agent's own `env.PATH` still replaces all of that.
 
 The presets detect executables on PATH. An existing ACP command takes precedence, and whatever is missing is installed into `adapters/` in the data directory at pinned versions (Codex ACP 1.10.0, Claude Agent ACP 0.77.0). Global installations and the target repository's dependencies are not modified. Installation is from the official npm registry with install scripts disabled, and a completed cache is reused. The CLI itself is passed to the adapter via `CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE`. Explicitly configured env settings are kept.
 
 If a CLI is not on PATH, you can set an absolute path in `command`. The native Claude/Codex executables are identified by the file names `claude` / `codex`. A custom ACP command and arguments are used as-is. Gemini uses its native ACP, and Antigravity uses its ACP executable. For any other Agent, register an ACP command in `[[agents]]`.
 
-The four known presets are filled in even when omitted from the configuration file. An explicit entry with the same ID takes precedence, so `enabled = false` excludes one. To control the automatic fill-in and downloads:
+Gemini CLI is no longer a preset — Antigravity is its successor — but one still in use works as an entry of its own: `[[agents]]` with `id = "gemini"`, `provider = "google"`, `command = "gemini"`, `args = ["--acp"]` ([Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)).
+
+The three known presets are filled in even when omitted from the configuration file. An explicit entry with the same ID takes precedence, so `enabled = false` excludes one. To control the automatic fill-in and downloads:
 
 ```toml
 [discovery]

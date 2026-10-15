@@ -599,8 +599,15 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             let lima = std::env::var("OROCHI_LIMA_RELEASES")
                 .unwrap_or_else(|_| crate::setup::LIMA_RELEASES.to_owned());
             let plan = crate::setup::Plan { install, sandbox };
+            let mut antigravity = crate::setup::AntigravitySource::default();
+            if let Ok(releases) = std::env::var("OROCHI_ANTIGRAVITY_RELEASES") {
+                antigravity.acp_releases = releases;
+            }
+            if let Ok(manifests) = std::env::var("OROCHI_ANTIGRAVITY_MANIFESTS") {
+                antigravity.cli_manifests = manifests;
+            }
             tokio::select! {
-                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist, &lima) => status?,
+                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist, &lima, &antigravity) => status?,
                 _ = tokio::signal::ctrl_c() => return Ok(130),
             }
         };

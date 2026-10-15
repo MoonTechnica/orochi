@@ -33,12 +33,13 @@ impl Default for Config {
             // What a preset can do is read from the CLI it drives, never assumed: `codex`
             // carries `web_search` and `claude` carries `WebSearch`/`WebFetch` (read from the
             // installed binaries, 2026-09-25). The CLIs not installed here claim nothing, and a
-            // capability nobody claims is not a capability anybody is excluded over.
+            // capability nobody claims is not a capability anybody is excluded over. Gemini
+            // CLI is no preset since 2026-10-16: Antigravity is its successor, and one still
+            // in use is written in as `command = "gemini"`, `args = ["--acp"]`.
             agents: vec![
                 AgentConfig::preset("codex", Provider::OPENAI, "codex-acp", &[]).able(WEB),
                 AgentConfig::preset("claude", Provider::ANTHROPIC, "claude-agent-acp", &[])
                     .able(WEB),
-                AgentConfig::preset("gemini", Provider::GOOGLE, "gemini", &["--acp"]),
                 AgentConfig::preset("antigravity", Provider::GOOGLE, "agy_acp_server.par", &[]),
             ],
             discovery: DiscoveryConfig::default(),

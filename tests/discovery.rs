@@ -47,7 +47,7 @@ fn explicit_agent_settings_and_disables_survive_automatic_registration() {
     )
     .unwrap();
     let config = Config::load(&path).unwrap();
-    assert_eq!(config.agents.len(), 4);
+    assert_eq!(config.agents.len(), 3);
     assert_eq!(config.agents.iter().filter(|a| a.id == "claude").count(), 1);
     assert!(!config.agents[0].enabled);
     assert_eq!(config.agents[0].command, "/custom/bridge");
