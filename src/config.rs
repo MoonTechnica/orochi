@@ -16,6 +16,7 @@ pub struct Config {
     pub router: Option<RouterConfig>,
     pub classifier: ClassifierConfig,
     pub roles: RolesConfig,
+    pub manager: ManagerConfig,
     pub memory: MemoryConfig,
     pub learning: LearningConfig,
     pub frontier: Option<RouterConfig>,
@@ -48,6 +49,7 @@ impl Default for Config {
             router: None,
             classifier: ClassifierConfig::default(),
             roles: RolesConfig::default(),
+            manager: ManagerConfig::default(),
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
             frontier: None,
@@ -728,6 +730,27 @@ impl ClassifierConfig {
 
 /// What Orochi remembers between sessions (`memory.rs`). The budgets bound what is put in
 /// front of every fresh agent session, which is paid for on every one of them.
+/// The lead of a console conversation as its manager (`docs/manager-design.md`): it keeps a
+/// plan, hears its helpers between turns, and asks Orochi to merge their worktrees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManagerConfig {
+    /// Off: the lead keeps `start_agent` alone and nothing but a finished helper wakes it.
+    pub enabled: bool,
+    /// Who approves a merge into the working tree: `ask` puts the question to the user; `auto`
+    /// lets the lead's `apply_merge` apply a clean trial whose real checks passed, and asks
+    /// about anything else.
+    pub apply: String,
+}
+impl Default for ManagerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            apply: "ask".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
@@ -837,6 +860,10 @@ impl Config {
         ensure!(
             self.roles.min_work_tokens > 0,
             "roles.min_work_tokens must be above zero"
+        );
+        ensure!(
+            matches!(self.manager.apply.as_str(), "ask" | "auto"),
+            "manager.apply must be \"ask\" or \"auto\""
         );
         for check in &self.evaluator.checks {
             ensure!(

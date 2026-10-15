@@ -3446,3 +3446,240 @@ fn writable_helpers_run_concurrently_in_dedicated_retained_worktrees() {
     let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap();
     assert!(completions.contains("workspace:") && completions.contains("integrate explicitly"));
 }
+
+/// A repository with one commit at the workspace's `repo`, which writable helpers need.
+fn committed_repository(w: &Workspace) -> std::path::PathBuf {
+    let root = w.dir.path().join("repo");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@localhost"]);
+    std::fs::write(root.join("tracked"), "a\nb\nc\n").unwrap();
+    std::fs::write(root.join(".gitignore"), ".orochi/\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    root
+}
+
+/// The lead keeps a plan, hands implementation to a helper in its own worktree, and when the
+/// helper reports asks Orochi to try the merge; the trial's report wakes the lead, which asks
+/// for the apply; under `manager.apply = "auto"` a clean trial whose checks passed is written
+/// into the working tree once the lead's turn ends, and the lead hears that too. The lead never
+/// ran git in the user's tree; HEAD and the index are untouched; the worktree is retained.
+#[test]
+fn a_lead_merges_a_helpers_worktree_through_a_trial_and_an_apply_orochi_performs() {
+    let mut w = Workspace::new();
+    let root = committed_repository(&w);
+    let head = Command::new("git")
+        .current_dir(&root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    w.config.mailbox.enabled = true;
+    w.config.manager.apply = "auto".into();
+    w.config.evaluator.checks = vec![CheckCommand {
+        name: "smoke".into(),
+        command: "true".into(),
+        args: vec![],
+    }];
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert(
+        "MOCK_HELPERS".into(),
+        "backend:Implement the feature".into(),
+    );
+    env.insert("MOCK_WRITERS".into(), "backend".into());
+    env.insert("MOCK_MERGE".into(), "backend".into());
+    env.insert("MOCK_PLAN".into(), "1".into());
+    env.insert("MOCK_HELPER_DELAYS".into(), "backend:0.5".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Implement the feature and merge it\n");
+    success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let started = std::fs::read_to_string(root.join("started.txt")).unwrap();
+    assert!(started.contains(r#""saved": true"#), "set_plan: {started}");
+    assert!(
+        started.contains(r#""plan": {"#) && started.contains(r#""helpers": []"#),
+        "list_work before any helper: {started}"
+    );
+    let merge = std::fs::read_to_string(root.join("merge.txt")).unwrap();
+    assert!(
+        merge.contains(r#""started": "backend-1""#),
+        "merge_trial: {merge}\n{stderr}"
+    );
+    assert!(
+        merge.contains(r#""approved": "auto""#),
+        "apply_merge: {merge}\n{stderr}"
+    );
+    let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap();
+    for expected in [
+        "Background agent `backend` (Implement the feature)",
+        "Merge trial of `backend` (trial backend-1) finished: clean",
+        "checks passed (smoke)",
+        // The lead's own turn moved the tree after the trial, so the apply tried once more on
+        // the tree as it was then and wrote that.
+        "Applied `backend` (trial backend-2): 2 files written.",
+    ] {
+        assert!(
+            completions.contains(expected),
+            "missing {expected:?} in {completions}\n{stderr}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(root.join("feature.txt")).unwrap(),
+        "written by backend\n",
+        "the helper's work reached the user's tree"
+    );
+    assert_eq!(
+        Command::new("git")
+            .current_dir(&root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+        head,
+        "HEAD untouched"
+    );
+    for expected in [
+        "merge trial · `backend` trial backend-1 · clean",
+        "applied `backend` · 2 written",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected:?} in {stderr}"
+        );
+    }
+    // The plan and the trial are rows of the thread, which is how a restarted host and a
+    // client read them; none of it is in telemetry.
+    let data = w.dir.path().join("data");
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let (plan, merges, origins): (String, i64, String) = activity
+        .connection()
+        .query_row(
+            "SELECT t.management, (SELECT count(*) FROM v_merges m WHERE m.state='applied'),
+                    (SELECT group_concat(origin) FROM turns WHERE origin IS NOT NULL ORDER BY ordinal)
+             FROM threads t",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(plan.contains("start backend"), "{plan}");
+    assert_eq!(merges, 1, "backend-1 went stale, backend-2 was applied");
+    assert!(
+        origins.contains("background") && origins.contains("merge"),
+        "{origins}"
+    );
+    let telemetry = std::fs::read(data.join("telemetry.sqlite3")).unwrap();
+    for word in [b"start backend".as_slice(), b"feature.txt", b"backend-1"] {
+        assert!(
+            !telemetry.windows(word.len()).any(|w| w == word),
+            "telemetry holds content"
+        );
+    }
+}
+
+/// A helper's question written while the lead is between turns reaches the lead without the
+/// user typing anything: the lead's name stays in the room as an inbox the console reads, and
+/// what arrived goes back with the next turn Orochi writes.
+#[test]
+fn a_helpers_message_to_the_idle_lead_wakes_it() {
+    let mut w = Workspace::new();
+    w.config.mailbox.enabled = true;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert("MOCK_HELPERS".into(), "spec:Research the API".into());
+    env.insert("MOCK_HELPER_MAIL".into(), "spec".into());
+    env.insert("MOCK_HELPER_MAIL_DELAY".into(), "3".into());
+    env.insert("MOCK_HELPER_DELAYS".into(), "spec:1".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Find out which models the API takes\n");
+    success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let root = w.dir.path().join("repo");
+    let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap();
+    assert!(
+        completions
+            .contains("Message from `spec` while you were between turns:\nQUESTION from spec"),
+        "{completions}\n{stderr}"
+    );
+    assert!(
+        completions.contains("Background agent `spec` (Research the API) finished"),
+        "the report and the message go back together: {completions}"
+    );
+    assert_eq!(completions.matches("=====").count(), 1, "{completions}");
+}
+
+/// A host restarted on a thread picks the conversation up where the last one left it: the
+/// recorded session is resumed rather than a new one opened cold.
+#[test]
+fn a_restarted_host_resumes_the_threads_recorded_session() {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let new = workspace.run(&["threads", "new", "--json"]);
+    success(&new);
+    let thread = serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (n, text) in ["Implement endpoint", "Now document it"]
+        .into_iter()
+        .enumerate()
+    {
+        success(&workspace.run(&["threads", "send", &thread, text]));
+        let host = workspace
+            .command()
+            .args(["host", "--thread", &thread])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        until("the turn did not complete", || {
+            orochi::activity::Activity::attach(&data, 30)
+                .unwrap()
+                .connection()
+                .query_row(
+                    "SELECT count(*) FROM turns WHERE state='completed'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                == n as i64 + 1
+        });
+        success(&workspace.run(&["threads", "stop", &thread]));
+        let output = host.wait_with_output().unwrap();
+        success(&output);
+    }
+    // The first host opened a throwaway session to read the agent's models and one for the
+    // conversation; the second found the models cached and loaded the conversation's.
+    let log = workspace.log();
+    assert_eq!(
+        log.matches(r#""method": "session/new""#).count(),
+        2,
+        "{log}"
+    );
+    assert_eq!(
+        log.matches(r#""method": "session/load""#).count(),
+        1,
+        "the second host loaded the first one's session: {log}"
+    );
+    assert!(
+        log.contains("Now document it") && !log.contains("Previous conversation (context)"),
+        "a loaded session is not also told the transcript: {log}"
+    );
+}

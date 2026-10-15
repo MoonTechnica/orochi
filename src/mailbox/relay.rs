@@ -33,7 +33,7 @@ impl Relay {
         let data = active.data.clone();
         let config = active.config.clone();
         let id = peer.id.clone();
-        let delegate = peer.delegate;
+        let offer = super::Offer::of(peer);
         std::thread::Builder::new()
             .name("mailbox-relay".into())
             .spawn(move || {
@@ -61,7 +61,7 @@ impl Relay {
                         else {
                             continue;
                         };
-                        if let Some(reply) = super::rpc(&mailbox, &id, delegate, &request) {
+                        if let Some(reply) = super::rpc(&mailbox, &id, offer, &request) {
                             let result = (|| -> Result<()> {
                                 let mut temporary =
                                     tempfile::NamedTempFile::new_in(directory.path())?;

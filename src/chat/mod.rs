@@ -9,6 +9,7 @@
 mod background;
 mod banner;
 pub mod host;
+mod manager;
 pub mod term;
 mod workflow;
 
@@ -28,7 +29,7 @@ use crate::{
 };
 use anyhow::Result;
 use futures::StreamExt;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io::IsTerminal,
@@ -57,7 +58,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 14] = [
+const COMMANDS: [Command; 15] = [
     Command {
         name: "help",
         aliases: &[],
@@ -136,6 +137,13 @@ const COMMANDS: [Command; 14] = [
         anytime: false,
     },
     Command {
+        name: "work",
+        aliases: &[],
+        usage: "",
+        about: "Show the lead's plan, its helpers, their worktrees and the merge trials",
+        anytime: true,
+    },
+    Command {
         name: "memory",
         aliases: &[],
         usage: "[forget <id>]",
@@ -198,6 +206,8 @@ struct Message {
     steps: Steps,
     /// Written by Orochi to hand background agents' results back to the lead, not typed.
     from_helpers: bool,
+    /// Which of Orochi's own turns it is: `background`, `merge` or `mail`.
+    origin: Option<&'static str>,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -352,6 +362,10 @@ struct Session<'a> {
     chord: StopChord,
     /// The background agents' list, while it is open.
     managing: Option<Manage>,
+    /// The lead as this conversation's manager: its plan, its merge trials, its inbox.
+    manager: manager::Manager<'a>,
+    /// The name the lead's session takes in the room, which its helpers write to.
+    lead_name: Option<String>,
 }
 
 /// The conversation store for one console session. The thread is opened by the first message
@@ -553,6 +567,8 @@ pub async fn run_with(
         announced: Announced::default(),
         chord: StopChord::default(),
         managing: None,
+        manager: manager::Manager::default(),
+        lead_name: None,
         recorded: Recorded::open(config, store, root, options_thread.as_ref(), headless).map(
             |mut recorded| {
                 recorded.host = options_host;
@@ -560,6 +576,9 @@ pub async fn run_with(
             },
         ),
     };
+    if let Some(thread) = options_thread.as_deref() {
+        session.restore(thread);
+    }
     if tty {
         session.view.welcome(config, data, root, &session.feed);
     }
@@ -613,21 +632,34 @@ impl<'a> Session<'a> {
                     .map(|f| f.ended)
                     .min()
                     .is_some_and(|ended| ended.elapsed() >= background::HOLD);
-                if !self.results.is_empty() && (self.background.is_empty() || held) {
+                let idle_team = self.background.is_empty() && !self.manager.is_busy();
+                let results_due = !self.results.is_empty() && (self.background.is_empty() || held);
+                if results_due || self.manager.due(idle_team) {
                     break Some(self.completion_message());
                 }
-                if !self.listening && self.background.is_empty() {
+                // An approved merge is written while no turn holds the tree: here.
+                if let Some(id) = self.manager.approved.pop_front() {
+                    let env = self.env();
+                    self.manager.run_apply(env, &id);
+                    continue;
+                }
+                if !self.listening && idle_team && !self.manager.has_pending() {
                     break None;
                 }
                 let key = tokio::select! {
                     key = self.keyboard.next(), if self.listening => key,
                     _ = mail.tick(), if self.feed.is_some() => {
                         self.deliver();
+                        self.manager.poll_inbox();
                         self.grant_idle();
                         continue
                     }
                     event = self.background.next(), if !self.background.is_empty() => {
                         self.helper_event(event);
+                        continue
+                    }
+                    done = self.manager.next(), if self.manager.is_busy() => {
+                        self.settled(done);
                         continue
                     }
                     _ = resized.recv() => { self.view.term.resized(); continue }
@@ -796,6 +828,10 @@ impl<'a> Session<'a> {
                     Err(error) => self.view.result(WARN, &format!("{error:#}")),
                 }
             }
+            "work" => {
+                let rows = self.team_rows();
+                self.view.rows(rows);
+            }
             "memory" => self.memory(argument),
             "mcp" => self.mcp = Some(argument.to_owned()),
             "new" | "clear" => {
@@ -806,6 +842,8 @@ impl<'a> Session<'a> {
                 self.results.clear();
                 self.stopped.clear();
                 self.asks.clear();
+                self.manager.reset();
+                self.lead_name = None;
                 sync_pane(&mut self.view, &self.background);
                 if stopped > 0 {
                     self.view
@@ -855,6 +893,7 @@ impl<'a> Session<'a> {
                             Steps::Team
                         },
                         from_helpers: false,
+                        origin: None,
                     });
                 }
             }
@@ -961,6 +1000,10 @@ impl<'a> Session<'a> {
 
     /// Runs what the idle loop hears from a helper, and says it.
     fn helper_event(&mut self, event: background::Event) {
+        if let background::Event::Ended(name, _) = &event {
+            let env = self.env();
+            self.manager.helper_ended(name, env);
+        }
         let lines = on_helper(
             event,
             &mut self.background,
@@ -1113,16 +1156,152 @@ impl<'a> Session<'a> {
             return;
         };
         let env = self.env();
+        let decide = Decide {
+            manager: &mut self.manager,
+            asks: &mut self.asks,
+            tty: self.tty,
+            headless: self.headless,
+            lead: self.lead_name.clone().unwrap_or_default(),
+        };
         grant(
             feed,
             &mut self.background,
             env,
             self.recorded.as_ref(),
             None,
-            "",
             0,
             false,
+            decide,
         );
+    }
+
+    /// What a finished trial or apply means, said and acted on.
+    fn settled(&mut self, done: manager::Done) {
+        let env = self.env();
+        let descriptor = self.descriptor.clone();
+        let lines = settle(
+            done,
+            &mut self.manager,
+            &mut self.background,
+            env,
+            self.recorded.as_ref(),
+            self.lead_name.as_deref().unwrap_or(""),
+            descriptor,
+            &self.view,
+        );
+        for line in lines {
+            self.view.line(&line);
+        }
+        self.refresh_status(None);
+    }
+
+    /// `/work`: the plan, the helpers, the worktrees and the merge trials.
+    fn team_rows(&self) -> Vec<String> {
+        let mut rows = vec![];
+        if let Some(plan) = &self.manager.plan {
+            for (index, step) in plan.plan.iter().enumerate() {
+                rows.push(format!("plan {}. {step}", index + 1));
+            }
+            if !plan.next_step.is_empty() {
+                rows.push(format!("next · {}", plan.next_step));
+            }
+        }
+        for helper in &self.background.helpers {
+            rows.push(format!(
+                "{} ({}) · working · {}{}",
+                helper.name,
+                helper.title,
+                span(helper.started.elapsed()),
+                helper
+                    .workspace
+                    .as_ref()
+                    .map(|w| format!(" · {}", w.display()))
+                    .unwrap_or_default()
+            ));
+        }
+        let directory = self.env().workspace;
+        if let Ok(work) = crate::workspaces::Workspaces::open(self.root, &directory) {
+            for workspace in &work.workspaces {
+                if self
+                    .background
+                    .helpers
+                    .iter()
+                    .any(|h| h.name == workspace.name)
+                {
+                    continue;
+                }
+                rows.push(format!(
+                    "{} · worktree {}",
+                    workspace.name,
+                    workspace.root.display()
+                ));
+            }
+        }
+        for trial in &self.manager.trials {
+            rows.push(manager::summary(trial));
+        }
+        if rows.is_empty() {
+            rows.push("No plan, helpers or merge trials in this conversation".into());
+        }
+        rows
+    }
+
+    /// What a thread was left as, for a conversation picked up where another process left it:
+    /// the route to resume, what was said (for an agent that cannot load its session), the
+    /// lead's plan and its merge trials.
+    fn restore(&mut self, thread: &str) {
+        let Some(recorded) = &self.recorded else {
+            return;
+        };
+        let store = recorded.store();
+        if self.conversation.current.is_none()
+            && self.conversation.resume.is_none()
+            && let Ok(Some(value)) = store.continuation(thread)
+            && let (Some(agent), Some(model), Some(session_id)) = (
+                value["agent"].as_str(),
+                value["model"].as_str(),
+                value["session_id"].as_str(),
+            )
+        {
+            self.conversation.current = Some(Continuation {
+                session: crate::types::SessionRecord {
+                    session_id: session_id.to_owned(),
+                    repository_id: recorded.repository_id.clone(),
+                    agent: agent.to_owned(),
+                    model: model.to_owned(),
+                    reasoning: value["reasoning"].as_str().map(str::to_owned),
+                    mode: value["mode"].as_str().map(str::to_owned),
+                    cache_key: String::new(),
+                    updated_at: crate::types::now(),
+                    outcome: crate::types::Outcome::PartialSuccess,
+                },
+                run_id: value["run_id"].as_str().unwrap_or("").to_owned(),
+                loadable: value["loadable"].as_bool().unwrap_or(false),
+                modes: value["modes"]
+                    .as_array()
+                    .map(|m| {
+                        m.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            });
+        }
+        if self.conversation.turns.is_empty()
+            && let Ok(turns) = store.transcript(thread)
+        {
+            for (user, agent) in turns {
+                self.conversation.remember(&user, &agent);
+            }
+        }
+        if let Ok(Some(plan)) = store.management(thread)
+            && let Ok(plan) = serde_json::from_str(&plan)
+        {
+            self.manager.plan = Some(plan);
+        }
+        if let Ok(trials) = store.merges(thread) {
+            self.manager.trials = trials;
+        }
     }
 
     /// The results the helpers left, as one message the lead gets next.
@@ -1131,11 +1310,22 @@ impl<'a> Session<'a> {
         let stopped = std::mem::take(&mut self.stopped);
         self.helper_descriptor = finished.first().map(|f| f.descriptor.clone());
         let names: Vec<&str> = finished.iter().map(|f| f.name.as_str()).collect();
-        self.view
-            .note(&format!("handing back what {} reported", names.join(", ")));
+        self.view.note(&if names.is_empty() {
+            "waking the lead with what arrived".to_owned()
+        } else {
+            format!("handing back what {} reported", names.join(", "))
+        });
         let mut text = background::completion(&finished);
         for note in stopped {
             text = format!("{text}\n\n{note}");
+        }
+        let (parts, origin) = self.manager.take();
+        for part in parts {
+            text = if text.is_empty() {
+                part
+            } else {
+                format!("{text}\n\n{part}")
+            };
         }
         Message {
             text,
@@ -1143,6 +1333,11 @@ impl<'a> Session<'a> {
             queued: None,
             steps: Steps::Solo,
             from_helpers: true,
+            origin: Some(if finished.is_empty() {
+                origin
+            } else {
+                "background"
+            }),
         }
     }
 
@@ -1260,6 +1455,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                 attachments,
                 steps: Steps::Auto,
                 from_helpers: false,
+                origin: None,
             });
         }
         Key::Char(c) => term.prompt.insert(&c.to_string()),
@@ -1289,6 +1485,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                     attachments,
                     steps: Steps::Auto,
                     from_helpers: false,
+                    origin: None,
                 });
             }
         }
@@ -1565,6 +1762,7 @@ impl Session<'_> {
             self.awaiting = None;
             self.helper_descriptor
                 .take()
+                .or_else(|| self.descriptor.clone())
                 .unwrap_or_else(|| crate::router::profiler::profile(&message.text, self.root))
         } else {
             if let Some(Awaiting {
@@ -1658,7 +1856,9 @@ impl Session<'_> {
                 serde_json::to_string(task).ok().as_deref(),
             )?;
             if message.from_helpers {
-                recorded.store().turn_origin(&turn, "background")?;
+                recorded
+                    .store()
+                    .turn_origin(&turn, message.origin.unwrap_or("background"))?;
             }
             recorded.turn = Some(turn);
             Ok(())
@@ -1713,7 +1913,7 @@ impl Session<'_> {
             serde_json::json!({
                 "agent": c.session.agent, "model": c.session.model,
                 "reasoning": c.session.reasoning, "mode": c.session.mode,
-                "session_id": c.session.session_id,
+                "session_id": c.session.session_id, "run_id": c.run_id,
                 "loadable": c.loadable, "modes": c.modes,
             })
             .to_string()
@@ -2421,6 +2621,7 @@ impl Session<'_> {
                 },
                 steps: Steps::Solo,
                 from_helpers: false,
+                origin: None,
             };
             let implementing = steps[index] == IMPLEMENT;
             let reviewing = steps[index] == REVIEW && index + 1 == steps.len();
@@ -2468,6 +2669,7 @@ impl Session<'_> {
                             attachments: vec![],
                             steps: Steps::Solo,
                             from_helpers: false,
+                            origin: None,
                         };
                         return self.collaborate(team, plan).await;
                     }
@@ -2709,6 +2911,39 @@ impl Session<'_> {
         self.descriptor = Some(profile.clone());
         // Inside a plan the seat keeps the step's name; on its own it takes the task's.
         let lead = phase.map_or(seats[0].name, |p| p.name);
+        // The name the lead's session takes in the room, which its helpers are told to write
+        // to: the step's or the task's when it is one of several, else the process's own.
+        let named = !beside.is_empty() || phase.is_some();
+        let lead_name = if named {
+            lead.to_owned()
+        } else {
+            crate::mailbox::name_prefix().unwrap_or_else(|| lead.to_owned())
+        };
+        if own_session {
+            self.lead_name = Some(lead_name.clone());
+            // The lead's session takes its name back from the inbox that held it.
+            self.manager.release_inbox();
+        }
+        // A session that cannot pick up where the last one left off is told where things
+        // stand, from Orochi's rows: the plan, the team, the merges.
+        if resume.is_none() && own_session {
+            let helpers: Vec<(String, String, String)> = self
+                .background
+                .helpers
+                .iter()
+                .map(|h| {
+                    (
+                        h.name.clone(),
+                        h.title.clone(),
+                        format!("working {}", span(h.started.elapsed())),
+                    )
+                })
+                .collect();
+            let directory = self.env().workspace;
+            if let Some(block) = self.manager.standing(&helpers, self.root, &directory) {
+                task = format!("{block}\n\n{task}");
+            }
+        }
         // First, not last. Appending it changes what a prompt ends with, which several tests
         // pin for their own reasons; and a small model told at the end to match the user's
         // language, after pages of English instructions, answered in English anyway.
@@ -2770,16 +3005,21 @@ impl Session<'_> {
         // beside it, a guest turn and a discussion may not.
         let _delegation = (seats[0].writes && !guest)
             .then(|| {
-                crate::mailbox::delegate((!beside.is_empty() || phase.is_some()).then_some(lead))
+                crate::mailbox::delegate(
+                    named.then_some(lead),
+                    self.config.manager.enabled && own_session,
+                )
             })
             .flatten();
         let env = self.env();
         let descriptor = profile.clone();
         let lead_read_only = !seats[0].writes;
         let helpers = &mut self.background;
+        let manager = &mut self.manager;
         let results = &mut self.results;
         let asks = &mut self.asks;
         let trusted = &mut self.trusted;
+        let (tty, is_headless) = (self.tty, self.headless);
         let chord = &mut self.chord;
         let announced = &mut self.announced;
         let recorded = self.recorded.as_ref();
@@ -2999,9 +3239,9 @@ impl Session<'_> {
                             env.clone(),
                             recorded,
                             Some(&descriptor),
-                            lead,
                             beside.len(),
                             lead_read_only,
+                            Decide { manager, asks, tty, headless: is_headless, lead: lead_name.clone() },
                         );
                         if !started.is_empty() {
                             helpers.launched(started);
@@ -3013,7 +3253,18 @@ impl Session<'_> {
                         }
                     }
                     event = helpers.next(), if !helpers.is_empty() => {
+                        if let background::Event::Ended(name, _) = &event {
+                            manager.helper_ended(name, env.clone());
+                        }
                         for line in on_helper(event, helpers, results, asks, trusted, announced, screen.view) {
+                            screen.interject(line);
+                        }
+                        if pending.is_none() {
+                            show_ask(screen.view, asks);
+                        }
+                    }
+                    done = manager.next(), if manager.is_busy() => {
+                        for line in settle(done, manager, helpers, env.clone(), recorded, &lead_name, Some(descriptor.clone()), screen.view) {
                             screen.interject(line);
                         }
                         if pending.is_none() {
@@ -3110,6 +3361,11 @@ impl Session<'_> {
         }
         if !reply.is_empty() && phase.is_none() {
             self.conversation.remember(&message.text, &reply);
+        }
+        // Between turns the lead keeps its place in the room, so a helper's question reaches
+        // the console and wakes it rather than waiting for the user's next message.
+        if own_session && self.config.manager.enabled && self.feed.is_some() {
+            self.manager.hold_inbox(&lead_name, self.root);
         }
         if phase.is_none() {
             // Only a discussion keeps its table for the next message: work is seated per
@@ -3360,6 +3616,8 @@ struct Ask {
     allow: String,
     answer: tokio::sync::oneshot::Sender<Option<String>>,
     selected: usize,
+    /// An apply question rather than a tool call: what the merge trial found, one line each.
+    apply: Option<Vec<String>>,
 }
 
 /// Queues a seat's question, or answers it at once where the user already has.
@@ -3387,16 +3645,72 @@ fn queue_ask(
         allow,
         answer,
         selected: 0,
+        apply: None,
+    });
+}
+
+/// Queues the question whether a merge trial may be written into the working tree. Without a
+/// terminal nobody can be asked, and the apply is declined rather than left waiting.
+fn queue_apply(
+    asks: &mut VecDeque<Ask>,
+    tty: bool,
+    workspace: &str,
+    lines: Vec<String>,
+    answer: tokio::sync::oneshot::Sender<Option<String>>,
+) {
+    if !tty {
+        let _ = answer.send(None);
+        return;
+    }
+    asks.push_back(Ask {
+        who: workspace.to_owned(),
+        call: Value::Null,
+        allow: "yes".into(),
+        answer,
+        selected: 0,
+        apply: Some(lines),
     });
 }
 
 const ASK_CHOICES: [&str; 3] = ["Yes", "Yes, and don't ask again for", "No (esc)"];
+const APPLY_CHOICES: [&str; 2] = ["Yes, apply it to my working tree", "No (esc)"];
 
 /// Puts the first queued question where the input is, naming who asks and why.
 fn show_ask(view: &mut View, asks: &VecDeque<Ask>) {
     let Some(ask) = asks.front() else {
         return;
     };
+    if let Some(lines) = &ask.apply {
+        let limit = view.width().saturating_sub(4).max(20);
+        let heading = format!("Apply `{}` to your working tree?", ask.who);
+        let mut rows = vec![
+            view.paint(MUTED, &"─".repeat(view.width())),
+            format!(" {} {}", view.paint(BRAND, "◆"), view.paint(BOLD, &heading)),
+        ];
+        for line in lines {
+            rows.push(format!("   {}", view.paint(MUTED, &fit(line, limit))));
+        }
+        rows.push(String::new());
+        for (index, label) in APPLY_CHOICES.iter().enumerate() {
+            let label = format!("{}. {label}", index + 1);
+            rows.push(if index == ask.selected {
+                format!(
+                    " {} {}",
+                    view.paint(BRAND, "❯"),
+                    view.paint(&format!("1;{BRAND}"), &label)
+                )
+            } else {
+                format!("   {}", view.paint(MUTED, &label))
+            });
+        }
+        view.term.overlay = Some(rows);
+        view.term.status = view.paint(MUTED, " Enter to select · ↑↓ to navigate · Esc to decline");
+        view.term.render();
+        view.pane.report.state = crate::pane::State::Blocked;
+        view.pane.report.interactive_prompt = Some(heading);
+        view.report();
+        return;
+    }
     let mut state = ToolState::default();
     if let Some(update) = crate::acp::tool_update(&ask.call) {
         state.title = update.title;
@@ -3467,21 +3781,26 @@ fn answer_ask(
     view: &mut View,
 ) -> Option<String> {
     let ask = asks.front_mut()?;
+    let choices = if ask.apply.is_some() {
+        APPLY_CHOICES.len()
+    } else {
+        ASK_CHOICES.len()
+    };
     let choice = match key {
         Key::Up => {
-            ask.selected = (ask.selected + ASK_CHOICES.len() - 1) % ASK_CHOICES.len();
+            ask.selected = (ask.selected + choices - 1) % choices;
             None
         }
         Key::Down => {
-            ask.selected = (ask.selected + 1) % ASK_CHOICES.len();
+            ask.selected = (ask.selected + 1) % choices;
             None
         }
         Key::Enter => Some(ask.selected),
         Key::Char('1' | 'y' | 'Y') => Some(0),
         Key::Char('2' | 'a' | 'A') => Some(1),
-        Key::Char('3' | 'n' | 'N') => Some(2),
+        Key::Char('3' | 'n' | 'N') => Some(choices - 1),
         // A seat's question is the seat's: No refuses that one call and stops nothing else.
-        Key::Escape | Key::Interrupt => Some(2),
+        Key::Escape | Key::Interrupt => Some(choices - 1),
         _ => None,
     };
     let Some(choice) = choice else {
@@ -3491,6 +3810,22 @@ fn answer_ask(
     let ask = asks.pop_front()?;
     view.term.overlay = None;
     view.pane.report.interactive_prompt = None;
+    if ask.apply.is_some() {
+        let yes = choice == 0;
+        let _ = ask.answer.send(yes.then(|| ask.allow.clone()));
+        let (code, said) = if yes {
+            (OK, "applying to your working tree")
+        } else {
+            (WARN, "declined")
+        };
+        return Some(format!(
+            "{} {} {} {}",
+            view.paint(code, "⏺"),
+            view.paint(BOLD, &format!("Apply `{}`", ask.who)),
+            view.paint(MUTED, "→"),
+            view.paint(code, said)
+        ));
+    }
     view.pane
         .seat_state(&ask.who, crate::pane::SeatState::Working);
     let (code, said) = match choice {
@@ -3520,6 +3855,40 @@ fn answer_ask(
 /// sentence the lead can repeat to the user; a granted one starts at once, beside the turn, and
 /// its seat is recorded under the turn that asked. Returns what was started, for the launch
 /// block.
+/// What deciding the lead's other requests needs from the session.
+struct Decide<'d, 'a> {
+    manager: &'d mut manager::Manager<'a>,
+    asks: &'d mut VecDeque<Ask>,
+    tty: bool,
+    headless: bool,
+    /// The name the lead's session has in the room, for its helpers' prompts.
+    lead: String,
+}
+
+/// A seat row for a helper under the turn that is running, if one is recorded.
+fn helper_seat(
+    recorded: Option<&Recorded>,
+    ordinal: usize,
+    name: &str,
+    title: &str,
+    write: bool,
+) -> Option<crate::activity::SeatRef> {
+    recorded.and_then(|recorded| {
+        let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
+        let store = recorded.store();
+        let seat = store
+            .create_seat(&turn, ordinal, name, false, !write, None, None)
+            .ok()?;
+        let _ = store.seat_details(&seat, Some(title), true, "lead");
+        Some(crate::activity::SeatRef {
+            thread,
+            turn,
+            seat,
+            store: recorded.activity.clone(),
+        })
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn grant<'a>(
     feed: &Feed,
@@ -3527,9 +3896,9 @@ fn grant<'a>(
     env: background::Env<'a>,
     recorded: Option<&Recorded>,
     descriptor: Option<&TaskDescriptor>,
-    lead: &str,
     beside: usize,
     read_only: bool,
+    decide: Decide<'_, 'a>,
 ) -> Vec<(String, String)> {
     let ours: Vec<String> = crate::mailbox::ours()
         .into_iter()
@@ -3538,6 +3907,14 @@ fn grant<'a>(
     let Ok(requests) = feed.mailbox.open_requests(&ours) else {
         return vec![];
     };
+    let Decide {
+        manager,
+        asks,
+        tty,
+        headless,
+        lead,
+    } = decide;
+    let lead = lead.as_str();
     let mut started = vec![];
     for request in requests {
         let refuse = |reason: &str| {
@@ -3545,6 +3922,22 @@ fn grant<'a>(
                 .mailbox
                 .answer_request(&request.id, "refused", Some(reason), None, None);
         };
+        let answer = |value: Value| {
+            let _ = feed.mailbox.answer_request(
+                &request.id,
+                "started",
+                Some(&value.to_string()),
+                None,
+                None,
+            );
+        };
+        if request.kind != "start" {
+            decide_request(
+                &request, refuse, answer, manager, background, &env, recorded, feed, asks, tty,
+                headless,
+            );
+            continue;
+        }
         let Some(descriptor) = descriptor else {
             refuse("only the agent leading a conversation can start helpers");
             continue;
@@ -3584,20 +3977,7 @@ fn grant<'a>(
             continue;
         }
         let ordinal = 100 + started.len() + background.len();
-        let seat = recorded.and_then(|recorded| {
-            let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
-            let store = recorded.store();
-            let seat = store
-                .create_seat(&turn, ordinal, &name, false, !request.write, None, None)
-                .ok()?;
-            let _ = store.seat_details(&seat, Some(&request.title), true, "lead");
-            Some(crate::activity::SeatRef {
-                thread,
-                turn,
-                seat,
-                store: recorded.activity.clone(),
-            })
-        });
+        let seat = helper_seat(recorded, ordinal, &name, &request.title, request.write);
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
         // The lead's call may have given up waiting; then it does the work itself, and a
         // helper started anyway would do it twice.
@@ -3634,6 +4014,248 @@ fn grant<'a>(
         started.push((name, request.title));
     }
     started
+}
+
+/// Decides one of the manager's requests: a plan, a listing, a stop, a merge trial or an
+/// apply. Each refusal is a sentence the lead can repeat; an answer is JSON it reads.
+#[allow(clippy::too_many_arguments)]
+fn decide_request<'a>(
+    request: &crate::mailbox::AgentRequest,
+    refuse: impl Fn(&str),
+    answer: impl Fn(Value),
+    manager: &mut manager::Manager<'a>,
+    background: &mut background::Background<'a>,
+    env: &background::Env<'a>,
+    recorded: Option<&Recorded>,
+    feed: &Feed,
+    asks: &mut VecDeque<Ask>,
+    tty: bool,
+    headless: bool,
+) {
+    let thread = recorded.and_then(|r| r.thread.clone());
+    let text = |key: &str| {
+        request.payload[key]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_owned()
+    };
+    match request.kind.as_str() {
+        "plan" => match manager.set_plan(&request.payload) {
+            Ok(plan) => {
+                if let (Some(recorded), Some(thread)) = (recorded, &thread)
+                    && let Ok(json) = serde_json::to_string(&plan)
+                {
+                    let _ = recorded.store().set_management(thread, &json);
+                }
+                answer(json!({"saved": true}));
+            }
+            Err(error) => refuse(&format!("{error:#}")),
+        },
+        "work" => {
+            let helpers: Vec<Value> = background
+                .helpers
+                .iter()
+                .map(|h| {
+                    json!({
+                        "name": h.name, "title": h.title, "state": "working",
+                        "elapsed": span(h.started.elapsed()), "route": h.route,
+                        "doing": h.doing, "worktree": h.workspace,
+                    })
+                })
+                .collect();
+            let root = env.root.display().to_string();
+            let siblings: Vec<Value> = feed
+                .others()
+                .unwrap_or_default()
+                .into_values()
+                .filter(|p| p.worktree != root)
+                .map(|p| {
+                    json!({"name": p.name, "worktree": p.worktree, "branch": p.branch,
+                           "route": p.route, "status": p.status})
+                })
+                .collect();
+            answer(manager.listing(helpers, env.root, &env.workspace, siblings));
+        }
+        "stop" => {
+            let name = text("name");
+            if background.stop(&name) {
+                answer(json!({"stopped": name}));
+            } else {
+                refuse(&format!("no helper named `{name}` is running"));
+            }
+        }
+        "trial" => {
+            let workspace = text("workspace");
+            let resolve = request.payload["resolve"].as_bool().unwrap_or(false);
+            if background.helpers.iter().any(|h| h.name == workspace) {
+                refuse(&format!(
+                    "`{workspace}` is still working; stop it or wait for its report"
+                ));
+                return;
+            }
+            match manager.start_trial(env.clone(), &workspace, resolve) {
+                Ok(id) => answer(json!({"started": id,
+                    "note": "the result reaches you as a message of its own; answer the user now"})),
+                Err(error) => refuse(&format!("{error:#}")),
+            }
+        }
+        "apply" => {
+            let trial = text("trial");
+            let auto = env.config.manager.apply == "auto";
+            match manager.gate(&trial, auto) {
+                Err(error) => refuse(&format!("{error:#}")),
+                Ok((trial, manager::Gate::Auto)) => {
+                    manager.approved.push_back(trial.id.clone());
+                    answer(json!({"requested": trial.id, "approved": "auto",
+                        "note": "written once your turn ends; the outcome reaches you as a message of its own"}));
+                }
+                Ok((trial, manager::Gate::Ask(lines))) => {
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    if headless {
+                        // No terminal at either end: the question is a row the client answers.
+                        let opened = recorded.and_then(|recorded| {
+                            let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
+                            let request = json!({"apply": trial.id, "workspace": trial.workspace,
+                                "lines": lines, "files": trial.files, "overlap": trial.overlap});
+                            recorded
+                                .store()
+                                .open_prompt(
+                                    &thread,
+                                    &turn,
+                                    None,
+                                    None,
+                                    "apply",
+                                    &request.to_string(),
+                                )
+                                .ok()
+                                .map(|id| (id, recorded.activity.clone()))
+                        });
+                        match opened {
+                            Some((prompt, store)) => manager.await_prompt(&trial.id, store, prompt),
+                            None => {
+                                refuse(
+                                    "nobody here can approve the apply; set manager.apply = \"auto\" or run in a terminal",
+                                );
+                                return;
+                            }
+                        }
+                    } else {
+                        queue_apply(asks, tty, &trial.workspace, lines, sender);
+                        manager.await_decision(&trial.id, receiver);
+                    }
+                    answer(json!({"requested": trial.id, "approved": "asking the user",
+                        "note": "the outcome reaches you as a message of its own; answer the user now"}));
+                }
+            }
+        }
+        other => refuse(&format!("unknown request {other}")),
+    }
+}
+
+/// What a finished trial, apply or decision means: recorded, reported to the lead, and a
+/// resolution seat started where one was asked for. Returns the transcript lines to show.
+#[allow(clippy::too_many_arguments)]
+fn settle<'a>(
+    done: manager::Done,
+    manager: &mut manager::Manager<'a>,
+    background: &mut background::Background<'a>,
+    env: background::Env<'a>,
+    recorded: Option<&Recorded>,
+    lead: &str,
+    descriptor: Option<TaskDescriptor>,
+    view: &View,
+) -> Vec<String> {
+    let record = |trial: &crate::merge::Trial| {
+        if let Some(recorded) = recorded
+            && let Some(thread) = &recorded.thread
+        {
+            let _ = recorded.store().record_merge(thread, trial);
+        }
+    };
+    let mut lines = vec![];
+    match done {
+        manager::Done::Trial { trial, resolve } => {
+            record(&trial);
+            let summary = manager::summary(&trial);
+            lines.push(view.paint(MUTED, &format!("  ⎿ merge trial · {summary}")));
+            if let Some(trial) = manager.finished(trial, resolve) {
+                if 1 + background.len() >= crate::router::roles::MAX_SEATS {
+                    lines.push(view.paint(
+                        WARN,
+                        "  ⎿ no seat free to resolve the conflicts; stop a helper first",
+                    ));
+                    return lines;
+                }
+                let taken = crate::mailbox::our_names();
+                let name = background.free_name(&format!("resolve-{}", trial.workspace), &|n| {
+                    taken.contains(n)
+                });
+                let title = format!("Resolve merge conflicts of {}", trial.workspace);
+                let seat = helper_seat(recorded, 100 + background.len(), &name, &title, true);
+                let descriptor = descriptor.unwrap_or_else(|| {
+                    crate::router::profiler::profile("resolve merge conflicts", env.root)
+                });
+                background.start(
+                    env,
+                    lead,
+                    name.clone(),
+                    title.clone(),
+                    &manager::resolution_task(&trial),
+                    descriptor,
+                    seat,
+                    Some(trial.root.clone()),
+                );
+                manager.resolving(&name, &trial.id);
+                if let Some(t) = manager.trials.iter().find(|t| t.id == trial.id) {
+                    record(t);
+                }
+                lines.push(launch_line(view, vec![(name, title)]));
+            }
+        }
+        manager::Done::Applied {
+            trial,
+            result,
+            stale,
+        } => {
+            let stale_id = stale.as_ref().map(|t| t.id.clone());
+            manager.applied(trial.clone(), &result, stale);
+            for id in [Some(trial.id.clone()), stale_id].into_iter().flatten() {
+                if let Some(t) = manager.trials.iter().find(|t| t.id == id) {
+                    record(t);
+                }
+            }
+            lines.push(match &result {
+                Ok(files) => view.paint(
+                    OK,
+                    &format!(
+                        "  ⎿ applied `{}` · {} written",
+                        trial.workspace,
+                        files.len()
+                    ),
+                ),
+                Err(error) => view.paint(
+                    WARN,
+                    &format!(
+                        "  ⎿ apply of `{}` did not happen · {}",
+                        trial.workspace,
+                        first_sentence(&format!("{error:#}"))
+                    ),
+                ),
+            });
+        }
+        manager::Done::Decision { trial, yes } => {
+            if yes {
+                manager.approve(&trial);
+            } else {
+                manager.declined(&trial);
+                if let Some(t) = manager.trials.iter().find(|t| t.id == trial) {
+                    record(t);
+                }
+            }
+        }
+    }
+    lines
 }
 
 /// What happened to a helper, as the transcript lines to show; its results are kept for the
@@ -3808,7 +4430,8 @@ fn alongside(lead: &str, beside: &[Role]) -> String {
         "{count} other agent{plural} {} working beside you on this, right now, in this same \
          working tree:\n{}\n\nThey read everything and change nothing — every write tool is \
          refused for them — so they cannot collide with your work, and they are already \
-         running: never start another agent or another Orochi yourself. Reach them with the \
+         running: start helpers only with start_agent, never another agent or another Orochi \
+         yourself. Reach them with the \
          mailbox tools: send_message (to one name, or to \"all\") and read_messages, which \
          waits for a reply only if you pass wait_seconds. They are waiting on you, so tell them \
          what you are doing early rather than at the end. You are `{lead}` to them and you own \

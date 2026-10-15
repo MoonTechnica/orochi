@@ -1236,6 +1236,103 @@ impl Activity {
         Ok(())
     }
 
+    /// The lead's plan, as `set_plan` wrote it.
+    pub fn set_management(&self, thread: &str, management: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE threads SET management=?2, updated_at=?3 WHERE id=?1",
+            params![thread, management, millis()],
+        )?;
+        Ok(())
+    }
+    pub fn management(&self, thread: &str) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT management FROM threads WHERE id=?1 AND management IS NOT NULL",
+                [thread],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// A merge trial as it stands, written whole each time it changes.
+    pub fn record_merge(&self, thread: &str, trial: &crate::merge::Trial) -> Result<()> {
+        let state = serde_json::to_value(&trial.state)?;
+        self.connection.execute(
+            "INSERT INTO merges (id, thread_id, workspace, n, state, trial, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?7)
+             ON CONFLICT(id) DO UPDATE SET state=excluded.state, trial=excluded.trial,
+                updated_at=excluded.updated_at",
+            params![
+                trial.id,
+                thread,
+                trial.workspace,
+                trial.n as i64,
+                state.as_str().unwrap_or("unknown"),
+                serde_json::to_string(trial)?,
+                millis()
+            ],
+        )?;
+        Ok(())
+    }
+    pub fn merges(&self, thread: &str) -> Result<Vec<crate::merge::Trial>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT trial FROM merges WHERE thread_id=?1 ORDER BY created_at")?;
+        let rows = statement.query_map([thread], |r| r.get::<_, String>(0))?;
+        let mut trials = vec![];
+        for row in rows {
+            if let Ok(trial) = serde_json::from_str(&row?) {
+                trials.push(trial);
+            }
+        }
+        Ok(trials)
+    }
+
+    /// What was said in a thread, as (user, agent) pairs per turn, oldest first: what a fresh
+    /// session of an agent without `session/load` is told the conversation was.
+    pub fn transcript(&self, thread: &str) -> Result<Vec<(String, String)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT i.turn_id, i.kind, i.text FROM items i JOIN turns t ON t.id=i.turn_id
+             WHERE i.thread_id=?1 AND i.kind IN ('user_message','agent_message')
+               AND (i.kind='user_message' OR i.status='completed')
+             ORDER BY t.ordinal, i.id",
+        )?;
+        let rows = statement.query_map([thread], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut turns: Vec<(String, String, String)> = vec![];
+        for row in rows {
+            let (turn, kind, text) = row?;
+            match turns.last_mut() {
+                Some(last) if last.0 == turn => {
+                    if kind == "user_message" {
+                        last.1 = text;
+                    } else {
+                        last.2 = text;
+                    }
+                }
+                _ => {
+                    let (user, agent) = if kind == "user_message" {
+                        (text, String::new())
+                    } else {
+                        (String::new(), text)
+                    };
+                    turns.push((turn, user, agent));
+                }
+            }
+        }
+        Ok(turns
+            .into_iter()
+            .filter(|(_, user, agent)| !user.is_empty() && !agent.is_empty())
+            .map(|(_, user, agent)| (user, agent))
+            .collect())
+    }
+
     pub fn set_continuation(&self, thread: &str, continuation: Option<&str>) -> Result<()> {
         self.connection.execute(
             "UPDATE threads SET continuation=?2, updated_at=?3 WHERE id=?1",
@@ -2026,6 +2123,8 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("seats", "result", "TEXT"),
     // `background` for a turn Orochi wrote to hand results back; NULL for one someone typed.
     ("turns", "origin", "TEXT"),
+    // The lead's plan for the conversation, as it wrote it with `set_plan`; content, so here.
+    ("threads", "management", "TEXT"),
 ];
 
 /// Tables added since `USER_VERSION` 2, each created (and filled from what is already there)
@@ -2054,6 +2153,26 @@ CREATE TRIGGER IF NOT EXISTS ch_agent_requests_i AFTER INSERT ON agent_requests 
 CREATE TRIGGER IF NOT EXISTS ch_agent_requests_u AFTER UPDATE ON agent_requests BEGIN
   INSERT INTO changes (tbl,row,thread_id,at)
     VALUES ('agent_requests',new.id,new.thread_id,new.created_at); END;
+"#,
+    ),
+    // A merge trial of a helper's worktree and what it found, as `merge::Trial` serializes it:
+    // paths and check names, content, so here only (`docs/manager-design.md` §5).
+    (
+        "merges",
+        r#"
+CREATE TABLE IF NOT EXISTS merges (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  workspace TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  trial TEXT NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS merges_thread ON merges(thread_id, created_at);
+CREATE TRIGGER IF NOT EXISTS ch_merges_i AFTER INSERT ON merges BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.created_at); END;
+CREATE TRIGGER IF NOT EXISTS ch_merges_u AFTER UPDATE ON merges BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.updated_at); END;
 "#,
     ),
     // What was said, searchable: the user's messages and the agents' finished replies. An
@@ -2615,6 +2734,17 @@ SELECT pt.turn_id, tn.thread_id, pt.id, pt.brief, pt.paths, pt.after, pt.wave, p
 FROM parts pt JOIN turns tn ON tn.id=pt.turn_id;
 
 DROP VIEW IF EXISTS v_route;
+CREATE VIEW v_merges AS
+SELECT m.id AS merge_id, m.thread_id, m.workspace, m.n, m.state,
+       json_extract(m.trial,'$.root') AS root,
+       json_extract(m.trial,'$.files') AS files,
+       json_extract(m.trial,'$.overlap') AS overlap,
+       json_extract(m.trial,'$.conflicts') AS conflicts,
+       json_extract(m.trial,'$.checks') AS checks,
+       json_extract(m.trial,'$.error') AS error,
+       m.created_at, m.updated_at
+FROM merges m;
+
 CREATE VIEW v_route AS
 SELECT a.id AS attempt_id, tn.thread_id, s.turn_id, s.id AS seat_id, s.role,
        a.n, a.agent, a.provider, a.model, a.reasoning, a.mode, a.resumed,

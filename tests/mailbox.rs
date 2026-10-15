@@ -1620,3 +1620,75 @@ fn a_host_seats_a_heavy_turn_the_way_the_console_does() {
     );
     assert!(roles.len() >= 3, "{roles:?}");
 }
+
+/// The manager's tools are listed only beside `start_agent` for a session marked manager, each
+/// is one request the console decides, and the console's answer comes back as the tool's reply.
+#[test]
+fn the_managers_tools_are_requests_its_console_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mailbox = Mailbox::open(dir.path(), &MailboxConfig::default()).unwrap();
+    let lead = mailbox
+        .register("repo", "implement", dir.path(), None, me())
+        .unwrap();
+    let names = |server: &mut Server| -> Vec<String> {
+        server.rpc("tools/list", json!({}))["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let mut delegate = Server::start_with(dir.path(), &lead.id, &["delegate"]);
+    assert!(!names(&mut delegate).contains(&"merge_trial".to_owned()));
+    let (error, _) = delegate.tool("set_plan", json!({"plan": ["a"]}));
+    assert!(error, "a session not marked manager cannot call them");
+
+    let mut server = Server::start_with(dir.path(), &lead.id, &["delegate", "manager"]);
+    let listed = names(&mut server);
+    for tool in [
+        "set_plan",
+        "list_work",
+        "stop_agent",
+        "merge_trial",
+        "apply_merge",
+    ] {
+        assert!(listed.contains(&tool.to_owned()), "{listed:?}");
+    }
+    let console = {
+        let data = dir.path().to_owned();
+        let lead = lead.id.clone();
+        std::thread::spawn(move || {
+            let mailbox = Mailbox::open(&data, &MailboxConfig::default()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                let open = mailbox.open_requests(std::slice::from_ref(&lead)).unwrap();
+                if let Some(request) = open.first() {
+                    assert_eq!(request.kind, "trial");
+                    assert_eq!(request.payload["workspace"], "backend");
+                    assert_eq!(request.payload["resolve"], true);
+                    assert!(
+                        mailbox
+                            .answer_request(
+                                &request.id,
+                                "started",
+                                Some(r#"{"started":"backend-1"}"#),
+                                None,
+                                None
+                            )
+                            .unwrap()
+                    );
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "no request arrived");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        })
+    };
+    let (error, reply) = server.tool(
+        "merge_trial",
+        json!({"workspace": "backend", "resolve": true}),
+    );
+    console.join().unwrap();
+    assert!(!error, "{reply}");
+    assert_eq!(reply, json!({"started": "backend-1"}));
+}

@@ -48,9 +48,11 @@ def mailbox_tools():
     rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "mock", "version": "1"}})
     proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
     names = [t["name"] for t in rpc("tools/list", {})["result"]["tools"]]
-    # `start_agent` is offered to the lead of a console turn, and to nobody else.
+    # `start_agent` is offered to the lead of a console turn, and to nobody else; the manager's
+    # tools only beside it.
     assert names[:4] == ["list_peers", "send_message", "read_messages", "set_status"], names
-    assert names[4:] in ([], ["start_agent"]), names
+    manager = ["set_plan", "list_work", "stop_agent", "merge_trial", "apply_merge"]
+    assert names[4:] in ([], ["start_agent"], ["start_agent", *manager]), names
     offered.extend(names)
 
     def tool(tool_name, **arguments):
@@ -162,7 +164,18 @@ def delegate(request):
     text = request["params"]["prompt"][0]["text"]
     if "working in the background for" in text:
         name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
+        lead = re.search(r"working in the background for `([^`]+)`", text)[1]
         (root / f"helper-{name}.txt").write_text(text)
+        if name.split("-")[0] in os.environ.get("MOCK_WRITERS", "").split(","):
+            # A writable helper implements in its own worktree: `root` is that worktree.
+            (root / "feature.txt").write_text(f"written by {name}\n")
+            if os.environ.get("MOCK_WRITER_EDITS"):
+                (root / "tracked").write_text(os.environ["MOCK_WRITER_EDITS"])
+        if os.environ.get("MOCK_HELPER_MAIL") == name.split("-")[0]:
+            # A question for the lead while the lead is between turns: the inbox hears it.
+            time.sleep(float(os.environ.get("MOCK_HELPER_MAIL_DELAY", "3")))
+            _, mail = mailbox_tools()
+            mail("send_message", to=lead, body=f"QUESTION from {name}: which error type?")
         if os.environ.get("MOCK_HELPER_ASK") == name.split("-")[0]:
             # A helper reads only, but reading sometimes means running a command. It announces
             # the call first and then asks about it by id alone, as codex-acp does.
@@ -180,9 +193,22 @@ def delegate(request):
         send({"method": "session/update", "params": {"sessionId": session, "update": {
             "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: the flow goes through generate.ts. "}}}})
         return
-    if "Background agent `" in text:
+    if "Background agent `" in text or "Merge trial of `" in text or "Applied `" in text or "Message from `" in text:
         with open(root / "completions.txt", "a") as out:
             out.write(text + "\n=====\n")
+        merging = os.environ.get("MOCK_MERGE")
+        if merging and "Background agent `" in text and f"`{merging}`" in text:
+            # The lead judges the helper's worktree worth merging and asks Orochi to try.
+            _, tool = mailbox_tools()
+            reply = tool("merge_trial", workspace=merging, resolve=bool(os.environ.get("MOCK_RESOLVE")))
+            with open(root / "merge.txt", "a") as out:
+                out.write(json.dumps(reply) + "\n")
+        elif merging and "Merge trial of `" in text and "clean" in text:
+            trial = re.search(r"\(trial ([a-z0-9-]+)\)", text)[1]
+            _, tool = mailbox_tools()
+            reply = tool("apply_merge", trial=trial)
+            with open(root / "merge.txt", "a") as out:
+                out.write(json.dumps(reply) + "\n")
         return
     proc, tool = mailbox_tools()
     with open(root / "offered.txt", "a") as out:
@@ -191,6 +217,9 @@ def delegate(request):
         proc.terminate()
         return
     answers = []
+    if os.environ.get("MOCK_PLAN"):
+        answers.append(tool("set_plan", plan=["implement", "merge"], next_step="start backend"))
+        answers.append(tool("list_work"))
     for pair in os.environ.get("MOCK_HELPERS", "spec:Research the API,explorer:Map the flow").split(","):
         name, title = pair.split(":", 1)
         reply = tool("start_agent", name=name, title=title, task=f"Find out: {title}", write=name in os.environ.get("MOCK_WRITERS", "").split(","))

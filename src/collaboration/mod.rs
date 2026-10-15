@@ -3,7 +3,7 @@ mod apply;
 pub mod graph;
 pub mod plan;
 mod turn;
-mod workspace;
+pub mod workspace;
 
 pub use graph::{Part, Unit};
 pub use turn::{Coordination, Outbound, TurnKind};

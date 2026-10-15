@@ -33,7 +33,60 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     );
     Ok(String::from_utf8(output.stdout)?.trim().to_owned())
 }
+/// The tree at `source` as a commit: tracked edits and nonignored new files, staged or not,
+/// through a private index, so the user's HEAD, branch and index are untouched. Orochi's own
+/// session directory is left out. The commit's parent is HEAD, so history reads from it.
+pub fn snapshot(source: &Path) -> Result<String> {
+    let repository = PathBuf::from(git(source, &["rev-parse", "--show-toplevel"])?);
+    let head = git(source, &["rev-parse", "HEAD"])?;
+    // Anywhere outside the tree: a temporary directory inside it would be added to it.
+    let index_dir = tempfile::tempdir()?;
+    let index = index_dir.path().join("index");
+    let indexed = |args: &[&str]| -> Result<String> {
+        let output = Command::new("git")
+            .current_dir(&repository)
+            .env("GIT_INDEX_FILE", &index)
+            .args(args)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "cannot snapshot workspace: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    };
+    indexed(&["read-tree", &head])?;
+    indexed(&[
+        "add",
+        "-A",
+        "--",
+        ".",
+        ":(glob,exclude)**/.orochi",
+        ":(glob,exclude)**/.orochi/**",
+    ])?;
+    let tree = indexed(&["write-tree"])?;
+    git(
+        source,
+        &[
+            "-c",
+            "user.name=Orochi",
+            "-c",
+            "user.email=orochi@localhost",
+            "commit-tree",
+            &tree,
+            "-p",
+            &head,
+            "-m",
+            "Orochi workspace starting state",
+        ],
+    )
+}
+
 impl Workspaces {
+    /// The retained workspace of that name, if the conversation has one.
+    pub fn find(&self, name: &str) -> Option<&Workspace> {
+        self.workspaces.iter().find(|w| w.name == name)
+    }
     pub fn open(source: &Path, directory: &Path) -> Result<Self> {
         let source = source.canonicalize()?;
         std::fs::create_dir_all(directory)?;
@@ -87,48 +140,8 @@ impl Workspaces {
         };
         let repository = PathBuf::from(git(&self.source, &["rev-parse", "--show-toplevel"])?);
         let relative = self.source.strip_prefix(&repository)?;
-        let head = git(&self.source, &["rev-parse", "HEAD"])
+        let base = snapshot(&self.source)
             .context("writable helpers require a Git repository with a commit")?;
-        let index_dir = tempfile::tempdir_in(&self.directory)?;
-        let index = index_dir.path().join("index");
-        let indexed = |args: &[&str]| -> Result<String> {
-            let output = Command::new("git")
-                .current_dir(&repository)
-                .env("GIT_INDEX_FILE", &index)
-                .args(args)
-                .output()?;
-            ensure!(
-                output.status.success(),
-                "cannot snapshot workspace: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-        };
-        indexed(&["read-tree", &head])?;
-        indexed(&[
-            "add",
-            "-A",
-            "--",
-            ".",
-            ":(glob,exclude)**/.orochi",
-            ":(glob,exclude)**/.orochi/**",
-        ])?;
-        let tree = indexed(&["write-tree"])?;
-        let base = git(
-            &self.source,
-            &[
-                "-c",
-                "user.name=Orochi",
-                "-c",
-                "user.email=orochi@localhost",
-                "commit-tree",
-                &tree,
-                "-p",
-                &head,
-                "-m",
-                "Orochi workspace starting state",
-            ],
-        )?;
         git(
             &self.source,
             &[
