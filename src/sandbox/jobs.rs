@@ -16,6 +16,8 @@ pub enum Request {
     Prepare {
         #[serde(default)]
         install: Vec<String>,
+        #[serde(default)]
+        sandbox: bool,
     },
     Up,
     Down,
@@ -51,10 +53,13 @@ impl Request {
         if matches!(self, Request::Setup) {
             return vec!["init".into()];
         }
-        if let Request::Prepare { install } = self {
+        if let Request::Prepare { install, sandbox } = self {
             let mut args = vec!["setup".to_owned()];
             for agent in install {
                 args.extend(["--install".to_owned(), agent.clone()]);
+            }
+            if *sandbox {
+                args.push("--sandbox".into());
             }
             return args;
         }

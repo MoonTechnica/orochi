@@ -354,16 +354,25 @@ fn the_search_path_puts_orochis_own_toolchain_first_and_keeps_only_absolute_entr
 fn a_setup_job_is_the_setup_command_a_person_would_type() {
     let request = Request::Prepare {
         install: vec!["claude".into(), "gemini".into()],
+        sandbox: true,
     };
     assert_eq!(
         request.args(),
-        ["setup", "--install", "claude", "--install", "gemini"]
+        [
+            "setup",
+            "--install",
+            "claude",
+            "--install",
+            "gemini",
+            "--sandbox"
+        ]
     );
     assert_eq!(request.root(), None);
     assert_eq!(
         serde_json::from_str::<Request>(r#"{"op":"prepare","install":["claude"]}"#).unwrap(),
         Request::Prepare {
-            install: vec!["claude".into()]
+            install: vec!["claude".into()],
+            sandbox: false,
         }
     );
     assert_eq!(
@@ -444,4 +453,91 @@ fn the_report_names_what_can_be_installed_and_where_the_rest_comes_from() {
     let text = setup::describe(&status);
     assert!(text.contains("orochi setup --install gemini"), "{text}");
     assert!(text.contains("Not ready"), "{text}");
+    // The sandbox host is reported beside them: nothing is created by looking.
+    assert_eq!(status.sandbox.client, "lima");
+    assert!(!status.sandbox.ready);
+    assert!(!status.sandbox.managed);
+    assert!(text.contains("sandbox"), "{text}");
+}
+
+/// A stand-in for Lima's GitHub release: `SHA256SUMS` and the archive for this machine,
+/// which unpacks as `bin/` and `share/` with no directory above them, as the real one does.
+fn lima_release(dir: &Path, tamper: bool) -> PathBuf {
+    let platform = setup::lima_platform().expect("a platform Lima publishes for");
+    let build = dir.join("build");
+    std::fs::create_dir_all(build.join("bin")).unwrap();
+    std::fs::create_dir_all(build.join("share/lima")).unwrap();
+    executable(
+        &build.join("bin/limactl"),
+        "#!/bin/sh\ncase $1 in --version) echo limactl version fixture;; list) ;; esac\n",
+    );
+    std::fs::write(build.join("share/lima/README"), "templates").unwrap();
+    let release = dir.join(format!("releases/v{}", setup::LIMA_VERSION));
+    std::fs::create_dir_all(&release).unwrap();
+    let name = format!("lima-{}-{platform}.tar.gz", setup::LIMA_VERSION);
+    assert!(
+        Command::new("tar")
+            .arg("-czf")
+            .arg(release.join(&name))
+            .arg("-C")
+            .arg(&build)
+            .arg(".")
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sum = {
+        use sha2::Digest;
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(std::fs::read(release.join(&name)).unwrap())
+        )
+    };
+    let sum = if tamper {
+        sum.replace(|c: char| c.is_ascii_hexdigit(), "0")
+    } else {
+        sum
+    };
+    std::fs::write(release.join("SHA256SUMS"), format!("{sum}  {name}\n")).unwrap();
+    dir.join("releases")
+}
+
+#[tokio::test]
+async fn lima_is_put_under_the_toolchain_from_a_checked_release_and_found_from_there() {
+    let fixture = tempfile::tempdir().unwrap();
+    let releases = lima_release(fixture.path(), false);
+    let served = Served::new(&releases);
+    let data = tempfile::tempdir().unwrap();
+    setup::install_lima(data.path(), &served.url).await.unwrap();
+    let toolchain = data.path().join("toolchain");
+    assert!(
+        toolchain
+            .join(format!("lima/{}/bin/limactl", setup::LIMA_VERSION))
+            .is_file()
+    );
+    assert!(toolchain.join("lima/current/share/lima/README").is_file());
+    let shim = toolchain.join("bin/limactl");
+    assert!(shim.symlink_metadata().unwrap().file_type().is_symlink());
+    // The lookup everything Orochi starts uses finds it, so the sandbox code's bare
+    // `limactl` resolves to this one and the report says it is Orochi's.
+    let found = orochi::discovery::find_in("limactl", &setup::search_path(Some(data.path())));
+    assert_eq!(found, Some(shim));
+    let mut config = Config::default();
+    config.discovery.auto_add = false;
+    let status = setup::status_with(&config, &data.path().join("c.toml"), data.path(), false);
+    assert_eq!(status.sandbox.limactl, Some(toolchain.join("bin/limactl")));
+    assert!(status.sandbox.managed);
+    assert_eq!(status.sandbox.vm, None, "the fixture lists no VM");
+    assert!(!status.sandbox.ready);
+
+    // A release whose checksum does not match is refused before anything is unpacked.
+    let tampered = tempfile::tempdir().unwrap();
+    let releases = lima_release(tampered.path(), true);
+    let served = Served::new(&releases);
+    let fresh = tempfile::tempdir().unwrap();
+    let error = setup::install_lima(fresh.path(), &served.url)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
+    assert!(!fresh.path().join("toolchain/lima/current").exists());
 }

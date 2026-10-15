@@ -472,6 +472,7 @@ pub struct Remembered {
 
 impl Client {
     pub fn open(data: &Path) -> Result<Self> {
+        orochi::setup::register_data(data);
         // The window is a front door as much as the CLI is: someone may install it before
         // ever running `orochi`, and an interrupted first run leaves a file that is not yet a
         // store. `open` sets either up. The version gate below is still the one a reader

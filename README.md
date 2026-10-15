@@ -105,10 +105,11 @@ Claude/Codex are detected even when only the CLI itself is installed. If the ada
 orochi setup --check          # what this machine has: Node.js, each CLI, whether it is signed in
 orochi setup                  # the config file, Node.js if there is none, and the adapters
 orochi setup --install claude # also a CLI itself (claude, codex or gemini), from the npm registry
+orochi setup --sandbox        # also the sandbox host: Lima if missing, then the VM, Incus and the image
 orochi agents --discover
 ```
 
-`orochi setup` is first-run setup, and it changes nothing on the system: Node.js goes under `<data>/toolchain/node/` from nodejs.org, checked against the release's `SHASUMS256.txt` before it is unpacked; a CLI goes under `<data>/toolchain/cli/<agent>/` with install scripts disabled, as the adapters are, and is reached through `<data>/toolchain/bin/`. Signing in stays each CLI's own (`claude`, `codex login`, `gemini`): it opens a browser and takes the result at the keyboard, so `setup` says which agents are not signed in and leaves that to you. Antigravity is installed by hand ([its instructions](https://antigravity.google/docs/cli/install)). Everything Orochi starts is looked up on its own toolchain, the process's `PATH`, the login shell's `PATH` where the process was started by no shell (a window opened from Finder has none), and `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`; an agent's own `env.PATH` still replaces all of that.
+`orochi setup` is first-run setup, and it changes nothing on the system: Node.js goes under `<data>/toolchain/node/` from nodejs.org, checked against the release's `SHASUMS256.txt` before it is unpacked; a CLI goes under `<data>/toolchain/cli/<agent>/` with install scripts disabled, as the adapters are, and is reached through `<data>/toolchain/bin/`. Signing in stays each CLI's own (`claude`, `codex login`, `gemini`): it opens a browser and takes the result at the keyboard, so `setup` says which agents are not signed in and leaves that to you. Antigravity is installed by hand ([its instructions](https://antigravity.google/docs/cli/install)). `--sandbox` is `orochi init` with Lima taken care of first: Lima comes from [its release](https://github.com/lima-vm/lima/releases) (pinned, checked against the release's `SHA256SUMS`) under `<data>/toolchain/lima/`, so Homebrew is no longer needed for it; the VM, Incus and the container image follow as `init` makes them. Everything Orochi starts is looked up on its own toolchain, the process's `PATH`, the login shell's `PATH` where the process was started by no shell (a window opened from Finder has none), and `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`; an agent's own `env.PATH` still replaces all of that.
 
 The presets detect executables on PATH. An existing ACP command takes precedence, and whatever is missing is installed into `adapters/` in the data directory at pinned versions (Codex ACP 1.10.0, Claude Agent ACP 0.77.0). Global installations and the target repository's dependencies are not modified. Installation is from the official npm registry with install scripts disabled, and a completed cache is reused. The CLI itself is passed to the adapter via `CODEX_PATH` / `CLAUDE_CODE_EXECUTABLE`. Explicitly configured env settings are kept.
 
@@ -371,8 +372,9 @@ orochi sandbox enter | status | snapshot | restore <name> | reset | rm | gc
 The desktop's **Sandboxes → Initialize sandbox environment** runs the same `orochi init`
 in a background job, with its progress and errors shown in the window. On macOS, missing
 Lima is installed using Homebrew ([Lima's installation instructions](https://lima-vm.io/docs/installation/));
-Incus is installed inside the Lima VM, using the existing host setup script. Homebrew must
-already be installed; otherwise setup reports how to install it and retry. Existing Lima
+Incus is installed inside the Lima VM, using the existing host setup script. `orochi setup
+--sandbox` (and the desktop's Setup) installs Lima itself under Orochi's data directory; `orochi
+init` alone falls back to Homebrew for it and reports how to install that if neither is there. Existing Lima
 and golden images are reused, and an incomplete setup can be retried. `config init` only
 writes configuration; ordinary CLI or desktop launches do not install dependencies.
 On Linux, initialization installs and prepares local Incus using administrator authorization.
@@ -634,7 +636,7 @@ cargo test --manifest-path desktop/src-tauri/Cargo.toml    # its tests (needs no
 
 The first line is not optional. The window looks for `orochi` beside its own executable, because one opened from Finder has no shell `PATH`; Tauri's `externalBin` is what puts it there, and the build script refuses to run without it. `scripts/sidecar.sh --release --target <triple>` is what the release workflow calls, and it makes a universal binary for `universal-apple-darwin`.
 
-**When the window opens it asks what is here** (`orochi setup --check`): Node.js, each agent's CLI and whether it is signed in. If nothing can be routed to, it opens Setup first — a list of what is missing, a box to tick for each CLI Orochi can install, a link for the one it cannot, and a Sign in… button that opens Terminal on the CLI's own login. Install runs `orochi setup` in the background and the dialog follows its log; Later closes it, and Setup stays in the account menu. Nothing is installed outside Orochi's data directory and nothing asks for an administrator.
+**When the window opens it asks what is here** (`orochi setup --check`): Node.js, each agent's CLI and whether it is signed in, and whether the sandbox host exists. If nothing can be routed to, it opens Setup first — a list of what is missing, a box to tick for each CLI Orochi can install, a link for the one it cannot, a Sign in… button that opens Terminal on the CLI's own login, and the sandbox host (Lima, the VM, Incus, the image), ticked where this machine can have one and does not yet. Install runs `orochi setup` in the background and the dialog follows its log; Later closes it, and Setup stays in the account menu. Nothing is installed outside Orochi's data directory and nothing asks for an administrator.
 
 It is its own Cargo workspace, so the binary's `cargo test`, `clippy` and `fmt` never build a
 webview. Its appearance has not been verified against a screen; its behavior is covered by

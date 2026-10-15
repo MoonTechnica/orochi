@@ -7,9 +7,12 @@
 //! the places a user's tools go), and a toolchain of its own under `<data>/toolchain/`:
 //! Node.js from nodejs.org, checked against the release's `SHASUMS256.txt`, and an agent's CLI
 //! from the npm registry with install scripts disabled, reached through `<data>/toolchain/bin`.
-//! Nothing is written outside the data directory and nothing asks for root. `orochi setup` is
-//! the command; the desktop asks `--check --json` when it opens and runs the same command in
-//! the background (`sandbox::jobs::Request::Prepare`).
+//! The sandbox host is the other half: Lima from its GitHub release, checked against the
+//! release's `SHA256SUMS`, under the same toolchain, and then `sandbox::setup::run` (what
+//! `orochi init` does) for the VM, Incus and the image. Nothing is written outside the data
+//! directory and nothing asks for root. `orochi setup` is the command; the desktop asks
+//! `--check --json` when it opens and runs the same command in the background
+//! (`sandbox::jobs::Request::Prepare`).
 use crate::{
     config::{AgentConfig, Config},
     discovery,
@@ -29,6 +32,17 @@ use std::{
 pub const NODE_MAJOR: u64 = 24;
 pub const NODE_MINIMUM: u64 = 22;
 pub const NODE_DIST: &str = "https://nodejs.org/dist";
+/// The Lima put in for the sandbox VM, pinned as the adapters are; `SHA256SUMS` beside the
+/// release is what the archive is checked against.
+pub const LIMA_VERSION: &str = "2.2.1";
+pub const LIMA_RELEASES: &str = "https://github.com/lima-vm/lima/releases/download";
+
+/// The data directory this process works in, so a lookup that is given none (`locate`) still
+/// finds the toolchain under it. Set once, by whoever resolved the paths.
+static DATA: OnceLock<PathBuf> = OnceLock::new();
+pub fn register_data(data: &Path) {
+    let _ = DATA.set(data.to_path_buf());
+}
 
 /// What Orochi can put in for an agent: the package its vendor publishes the CLI as, and the
 /// command that signs it in, which only a terminal can run.
@@ -103,7 +117,7 @@ pub fn node_bin(data: &Path) -> PathBuf {
 /// of this.
 pub fn search_path(data: Option<&Path>) -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(data) = data {
+    if let Some(data) = data.or_else(|| DATA.get().map(PathBuf::as_path)) {
         dirs.push(bin(data));
         dirs.push(node_bin(data));
     }
@@ -216,6 +230,22 @@ pub struct AgentState {
     pub detail: Option<String>,
 }
 
+/// The sandbox host: what a project's agents, tests and servers can be put in.
+#[derive(Debug, Clone, Serialize)]
+pub struct SandboxState {
+    /// `lima` (a VM on this machine) or `incus` (a client for an Incus host).
+    pub client: String,
+    /// Orochi can set it up on this machine: Lima on macOS or Linux, local Incus on Linux.
+    pub supported: bool,
+    pub limactl: Option<PathBuf>,
+    /// The Lima Orochi installed, under its own toolchain.
+    pub managed: bool,
+    /// The VM's state (`Running`, `Stopped`), `None` where it was never created.
+    pub vm: Option<String>,
+    /// The host exists: `orochi init` has been through once.
+    pub ready: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub node: Tool,
@@ -223,6 +253,7 @@ pub struct Status {
     pub git: Tool,
     pub config_file: bool,
     pub agents: Vec<AgentState>,
+    pub sandbox: SandboxState,
     /// Some agent could be routed to, and what it runs on is there.
     pub ready: bool,
     pub toolchain: PathBuf,
@@ -274,8 +305,34 @@ pub fn status_with(config: &Config, config_path: &Path, data: &Path, keychain: b
         git,
         config_file: config_path.is_file(),
         agents,
+        sandbox: sandbox_state(config, &path, data),
         ready,
         toolchain: toolchain(data),
+    }
+}
+
+fn sandbox_state(config: &Config, path: &OsString, data: &Path) -> SandboxState {
+    use crate::config::SandboxClient;
+    let sandbox = &config.sandbox;
+    let lima = sandbox.client == SandboxClient::Lima;
+    let limactl = lima
+        .then(|| discovery::find_in(&sandbox.limactl, path))
+        .flatten();
+    let vm = limactl
+        .is_some()
+        .then(|| crate::sandbox::ops::vm_status(sandbox).ok().flatten())
+        .flatten();
+    let local_incus = !lima && sandbox.remote.is_empty() && sandbox.incus == "incus";
+    SandboxState {
+        client: if lima { "lima" } else { "incus" }.into(),
+        supported: (lima && cfg!(any(target_os = "macos", target_os = "linux")))
+            || (local_incus && cfg!(target_os = "linux")),
+        managed: limactl
+            .as_ref()
+            .is_some_and(|p| p.starts_with(toolchain(data))),
+        limactl,
+        ready: vm.is_some(),
+        vm,
     }
 }
 
@@ -378,18 +435,22 @@ pub fn login_command(config: &Config, data: &Path, agent: &str) -> Result<String
 pub struct Plan {
     /// Agents whose CLI to install, by id.
     pub install: Vec<String>,
+    /// Set up the sandbox host too: Lima, the VM, Incus and the image (`orochi init`).
+    pub sandbox: bool,
 }
 
 /// Puts in what is missing: the config file, Node.js where there is none or an old one, the
-/// CLIs asked for, and the ACP adapters of every CLI that is there. Says what it does on
-/// stdout, one line each, since a background job's log is all a window sees of it. `node_dist`
-/// is where Node.js releases are read from (`NODE_DIST`, or a mirror).
+/// CLIs asked for, the ACP adapters of every CLI that is there, and with `plan.sandbox` the
+/// sandbox host. Says what it does on stdout, one line each, since a background job's log is
+/// all a window sees of it. `node_dist` is where Node.js releases are read from (`NODE_DIST`,
+/// or a mirror), `lima_releases` where Lima's are.
 pub async fn run(
     config: &Config,
     config_path: &Path,
     data: &Path,
     plan: &Plan,
     node_dist: &str,
+    lima_releases: &str,
 ) -> Result<Status> {
     std::fs::create_dir_all(toolchain(data))?;
     if !config_path.is_file() {
@@ -448,6 +509,26 @@ pub async fn run(
             .await
             .map_err(|e| anyhow::anyhow!("{}", e.message))?;
     }
+    if plan.sandbox {
+        let state = sandbox_state(config, &search_path(Some(data)), data);
+        if state.client == "lima" && state.limactl.is_none() {
+            ensure!(
+                state.supported,
+                "Lima runs on macOS and Linux; on Windows use tools/windows/orochi.ps1 -Setup"
+            );
+            install_lima(data, lima_releases).await?;
+            println!(
+                "Lima {LIMA_VERSION} installed under {}",
+                toolchain(data).join("lima").display()
+            );
+        } else if let Some(limactl) = &state.limactl {
+            println!("Lima at {}", limactl.display());
+        }
+        println!("Setting up the sandbox host (the VM, Incus and the image)…");
+        let (sandbox, data) = (config.sandbox.clone(), data.to_path_buf());
+        tokio::task::spawn_blocking(move || crate::sandbox::setup::run(&sandbox, &data, false))
+            .await??;
+    }
     let after = status_with(config, config_path, data, cfg!(target_os = "macos"));
     for agent in &after.agents {
         println!(
@@ -462,6 +543,13 @@ pub async fn run(
         );
     }
     println!(
+        "sandbox      {}",
+        match &after.sandbox.vm {
+            Some(state) => format!("VM {}", state.to_lowercase()),
+            None => "not set up".to_owned(),
+        }
+    );
+    println!(
         "{}",
         if after.ready {
             "Ready."
@@ -470,6 +558,104 @@ pub async fn run(
         }
     );
     Ok(after)
+}
+
+/// The name Lima publishes this machine's build under.
+pub fn lima_platform() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("Darwin-arm64"),
+        ("macos", "x86_64") => Some("Darwin-x86_64"),
+        ("linux", "x86_64") => Some("Linux-x86_64"),
+        ("linux", "aarch64") => Some("Linux-aarch64"),
+        _ => None,
+    }
+}
+
+/// Lima into `<data>/toolchain/lima/<version>/` (its archive unpacks as `bin/` and `share/`,
+/// which `limactl` finds beside itself), `current` pointing at it and `limactl` linked into
+/// the toolchain's `bin`. The archive is checked against the release's SHA256SUMS before
+/// anything is unpacked. The release binaries carry the virtualization entitlement, so no
+/// Homebrew and no root.
+pub async fn install_lima(data: &Path, releases: &str) -> Result<()> {
+    let platform = lima_platform().context("no Lima build is published for this machine")?;
+    let client = reqwest::Client::builder()
+        .user_agent(format!("orochi/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let archive = format!("lima-{LIMA_VERSION}-{platform}.tar.gz");
+    let base = format!("{releases}/v{LIMA_VERSION}");
+    println!("Downloading Lima {LIMA_VERSION} for {platform}…");
+    let sums = client
+        .get(format!("{base}/SHA256SUMS"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let expected = sums
+        .lines()
+        .find_map(|line| {
+            let (sum, file) = line.split_once("  ")?;
+            (file.trim() == archive).then(|| sum.trim().to_owned())
+        })
+        .context("the release lists no checksum for this build; refusing to install it")?;
+    let bytes = client
+        .get(format!("{base}/{archive}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    {
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+        ensure!(
+            actual == expected,
+            "the Lima download does not match its published checksum"
+        );
+    }
+    let lima = toolchain(data).join("lima");
+    std::fs::create_dir_all(&lima)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".lima-")
+        .tempdir_in(&lima)?;
+    let file = stage.path().join(&archive);
+    std::fs::write(&file, &bytes)?;
+    let unpacked = stage.path().join("unpacked");
+    std::fs::create_dir_all(&unpacked)?;
+    let output = tokio::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(&file)
+        .arg("-C")
+        .arg(&unpacked)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .context("unpacking needs `tar`")?;
+    ensure!(
+        output.status.success(),
+        "unpacking Lima failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    ensure!(
+        unpacked.join("bin/limactl").is_file(),
+        "the Lima archive did not contain bin/limactl"
+    );
+    let destination = lima.join(LIMA_VERSION);
+    if destination.exists() {
+        std::fs::remove_dir_all(&destination)?;
+    }
+    std::fs::rename(&unpacked, &destination)?;
+    point(&lima.join("current"), Path::new(LIMA_VERSION))?;
+    std::fs::create_dir_all(bin(data))?;
+    for command in ["limactl", "lima"] {
+        if destination.join("bin").join(command).is_file() {
+            point(
+                &bin(data).join(command),
+                &lima.join("current/bin").join(command),
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// The default configuration, as `orochi config init` writes it.
@@ -726,6 +912,20 @@ pub fn describe(status: &Status) -> String {
             }
         }
     }
+    out.push_str(&format!(
+        "{:<12} {:<18} {}\n",
+        "sandbox",
+        match (&status.sandbox.vm, status.sandbox.supported) {
+            (Some(state), _) => format!("VM {}", state.to_lowercase()),
+            (None, true) => "not set up".to_owned(),
+            (None, false) => "unsupported here".to_owned(),
+        },
+        if status.sandbox.vm.is_none() && status.sandbox.supported {
+            "set up with `orochi setup --sandbox`"
+        } else {
+            ""
+        }
+    ));
     out.push_str(if status.ready {
         "Ready.\n"
     } else {

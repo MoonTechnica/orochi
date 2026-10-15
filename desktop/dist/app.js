@@ -49,7 +49,7 @@ const state = {
   renaming: null,
   // First-launch setup: what this machine has of what Orochi needs, asked once when the window
   // opens and shown until something here can be routed to, or the person says later.
-  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set() },
+  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set(), sandbox: null },
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -177,6 +177,13 @@ const WORDS = {
     Done: "完了",
     "Sign-in opens in Terminal: the CLI opens a browser and takes the result at the keyboard.":
       "サインインはターミナルで開きます。CLI がブラウザを開き、結果をキーボードで受け取ります。",
+    Sandbox: "サンドボックス",
+    "Set up": "セットアップ",
+    "not set up · Lima, a Linux VM, Incus and the container image; a download of a few hundred MB":
+      "未セットアップ · Lima・Linux VM・Incus・コンテナイメージを導入します（数百 MB のダウンロード）",
+    "VM running": "VM 稼働中",
+    "VM stopped": "VM 停止中",
+    "not available on this machine": "このマシンでは利用できません",
     "Host VM": "ホスト VM",
     running: "稼働中",
     stopped: "停止中",
@@ -1715,6 +1722,34 @@ async function drawSetup(fresh) {
     }
     rows.append(setupRow(agent.id, note, done, action));
   }
+  // The sandbox host is offered beside the agents: a project's tests, servers and Docker run
+  // in it. Ticked by default where this machine can have one and does not yet.
+  const sandbox = view.sandbox;
+  if (sandbox) {
+    if (state.setup.sandbox === null) state.setup.sandbox = sandbox.supported && !sandbox.ready;
+    let action = null;
+    if (!sandbox.ready && sandbox.supported) {
+      const label = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = state.setup.sandbox;
+      box.disabled = running;
+      box.addEventListener("change", () => {
+        state.setup.sandbox = box.checked;
+        drawSetup(false);
+      });
+      label.append(box, text("span", null, t("Set up")));
+      action = label;
+    }
+    rows.append(setupRow(
+      t("Sandbox"),
+      t(sandbox.vm ? (sandbox.vm === "Running" ? "VM running" : "VM stopped")
+        : sandbox.supported ? "not set up · Lima, a Linux VM, Incus and the container image; a download of a few hundred MB"
+          : "not available on this machine"),
+      sandbox.ready,
+      action,
+    ));
+  }
   body.append(rows);
 
   if (last) {
@@ -1735,7 +1770,9 @@ async function drawSetup(fresh) {
 
 /// Nothing is left to ask for: something here is usable and nothing more was chosen.
 function setupFinished() {
-  return Boolean(state.setup.view?.ready) && state.setup.chosen.size === 0;
+  const view = state.setup.view;
+  const sandbox = Boolean(state.setup.sandbox) && !view?.sandbox?.ready;
+  return Boolean(view?.ready) && state.setup.chosen.size === 0 && !sandbox;
 }
 
 el("setup-go").addEventListener("click", async () => {
@@ -1744,8 +1781,9 @@ el("setup-go").addEventListener("click", async () => {
     return;
   }
   const install = [...state.setup.chosen];
+  const sandbox = Boolean(state.setup.sandbox) && !state.setup.view?.sandbox?.ready;
   state.setup.chosen.clear();
-  await call("sandbox_job", { request: { op: "prepare", install } });
+  await call("sandbox_job", { request: { op: "prepare", install, sandbox } });
   await drawSetup(true);
 });
 

@@ -36,7 +36,7 @@ fn ensure_lima_with(
         config.limactl
     );
     let brew = locate("brew").context(
-        "Homebrew was not found. Install it from https://brew.sh, then retry `orochi init`; alternatively install Lima and set sandbox.limactl",
+        "Lima was not found. `orochi setup --sandbox` installs it under Orochi's data directory; otherwise install Homebrew from https://brew.sh and retry `orochi init`, or install Lima and set sandbox.limactl",
     )?;
     println!("Installing Lima with Homebrew…");
     let status = std::process::Command::new(brew)

@@ -100,6 +100,9 @@ pub enum Command {
         /// Install this agent's CLI (claude, codex or gemini) from the npm registry.
         #[arg(long, value_name = "AGENT")]
         install: Vec<String>,
+        /// Also set up the sandbox host: Lima if missing, then the VM, Incus and the image.
+        #[arg(long)]
+        sandbox: bool,
     },
     /// Initialize the sandbox environment: install Lima, prepare Incus and the container image.
     Init {
@@ -425,6 +428,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
         cli.command = Some(Command::Chat);
     }
     let paths = Paths::resolve(cli.config, cli.data_dir)?;
+    crate::setup::register_data(&paths.data);
     if let Some(Command::Config(command)) = &cli.command {
         match command {
             ConfigCommand::Path => println!("{}", paths.config.display()),
@@ -581,15 +585,22 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
         crate::sandbox::setup::run(&config.sandbox, &paths.data, host_only)?;
         return Ok(0);
     }
-    if let Some(Command::Setup { check, install }) = cli.command {
+    if let Some(Command::Setup {
+        check,
+        install,
+        sandbox,
+    }) = cli.command
+    {
         let status = if check {
             crate::setup::status(&config, &paths.config, &paths.data)
         } else {
             let dist = std::env::var("OROCHI_NODE_DIST")
                 .unwrap_or_else(|_| crate::setup::NODE_DIST.to_owned());
-            let plan = crate::setup::Plan { install };
+            let lima = std::env::var("OROCHI_LIMA_RELEASES")
+                .unwrap_or_else(|_| crate::setup::LIMA_RELEASES.to_owned());
+            let plan = crate::setup::Plan { install, sandbox };
             tokio::select! {
-                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist) => status?,
+                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist, &lima) => status?,
                 _ = tokio::signal::ctrl_c() => return Ok(130),
             }
         };

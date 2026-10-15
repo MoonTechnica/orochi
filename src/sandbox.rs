@@ -272,7 +272,7 @@ impl<'a> Incus<'a> {
         .or_else(|| setup::locate(program))
         .with_context(|| match self.config.client {
             SandboxClient::Lima => format!(
-                "{program} not found; install Lima (`brew install lima`) or set sandbox.limactl"
+                "{program} not found; `orochi setup --sandbox` installs Lima, or set sandbox.limactl"
             ),
             SandboxClient::Incus => format!("{program} not found; set sandbox.incus"),
         })?;

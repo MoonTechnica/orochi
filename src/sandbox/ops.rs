@@ -33,7 +33,7 @@ const POOL: &str = "sbx-pool";
 fn limactl(config: &SandboxConfig) -> Result<PathBuf> {
     super::setup::locate(&config.limactl).with_context(|| {
         format!(
-            "{} not found; install Lima (`brew install lima`) or set sandbox.limactl",
+            "{} not found; `orochi setup --sandbox` installs Lima, or set sandbox.limactl",
             config.limactl
         )
     })
