@@ -58,7 +58,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 15] = [
+const COMMANDS: [Command; 16] = [
     Command {
         name: "help",
         aliases: &[],
@@ -133,7 +133,7 @@ const COMMANDS: [Command; 15] = [
         name: "workspaces",
         aliases: &[],
         usage: "",
-        about: "Show retained worktrees owned by this conversation",
+        about: "Show the worktrees still open in this conversation, and the patches of closed ones",
         anytime: false,
     },
     Command {
@@ -141,6 +141,13 @@ const COMMANDS: [Command; 15] = [
         aliases: &[],
         usage: "",
         about: "Show the lead's plan, its helpers, their worktrees and the merge trials",
+        anytime: true,
+    },
+    Command {
+        name: "worktrees",
+        aliases: &[],
+        usage: "[on|off]",
+        about: "Whether writing helpers get a Git worktree of their own in this conversation",
         anytime: true,
     },
     Command {
@@ -341,6 +348,10 @@ struct Session<'a> {
     accounts: Option<(Instant, Option<String>)>,
     /// Helpers the lead started, working past the turn that started them.
     background: background::Background<'a>,
+    /// Whether writing helpers get worktrees here: the config's default until `/worktrees`.
+    worktrees: bool,
+    /// Shared with each helper's `Env`: the hold on the session directory (`workspaces::hold`).
+    live: std::sync::Arc<std::sync::Mutex<Option<crate::workspaces::Live>>>,
     /// Helpers that have ended and whose results the lead has not been given yet.
     results: Vec<background::Finished>,
     /// What the current (or last) turn was classified as: a helper is routed by it.
@@ -557,6 +568,8 @@ pub async fn run_with(
         headless,
         accounts: None,
         background: background::Background::default(),
+        worktrees: config.workspaces.enabled,
+        live: std::sync::Arc::default(),
         results: vec![],
         descriptor: None,
         listening: true,
@@ -583,9 +596,14 @@ pub async fn run_with(
         session.view.welcome(config, data, root, &session.feed);
     }
     session.refresh_status(None);
+    // A conversation picked back up may have been left with worktrees open (a crash, a kill):
+    // they are closed now, as its end would have closed them.
+    session.sweep_workspaces("left open by an earlier run");
     // The host learns who is in the pane before the first message, not with it.
     session.view.report();
     let code = session.serve().await;
+    // Whatever the lead did not close, the conversation's end closes: no worktree outlives it.
+    session.sweep_workspaces("still open");
     session.distill().await;
     session.view.term.restore();
     code
@@ -632,18 +650,23 @@ impl<'a> Session<'a> {
                     .map(|f| f.ended)
                     .min()
                     .is_some_and(|ended| ended.elapsed() >= background::HOLD);
-                let idle_team = self.background.is_empty() && !self.manager.is_busy();
-                let results_due = !self.results.is_empty() && (self.background.is_empty() || held);
-                if results_due || self.manager.due(idle_team) {
-                    break Some(self.completion_message());
-                }
-                // An approved merge is written while no turn holds the tree: here.
+                // An approved merge is written while no turn holds the tree: here, and before
+                // the lead is woken, so the turn that wakes it carries the apply's outcome
+                // rather than a trial still waiting to be written (measured 2026-10-16: woken
+                // first, a lead asked for the apply a second time).
                 if let Some(id) = self.manager.approved.pop_front() {
                     let env = self.env();
                     self.manager.run_apply(env, &id);
                     continue;
                 }
-                if !self.listening && idle_team && !self.manager.has_pending() {
+                // A trial or apply under way holds the lead back too: a wake would take the
+                // repository lock the apply needs, and the wake should carry its outcome.
+                let idle_team = self.background.is_empty() && !self.manager.is_busy();
+                let results_due = !self.results.is_empty() && (idle_team || held);
+                if results_due || self.manager.due(idle_team) {
+                    break Some(self.completion_message());
+                }
+                if !self.listening && !self.team_working() {
                     break None;
                 }
                 let key = tokio::select! {
@@ -664,8 +687,10 @@ impl<'a> Session<'a> {
                     }
                     _ = resized.recv() => { self.view.term.resized(); continue }
                 };
+                // Input has ended, but the team has not: helpers still at work, a trial or an
+                // apply under way or approved, or results waiting to go back to the lead.
                 let ended = matches!(key, None | Some(Key::Eof)) && !self.tty;
-                if ended && !self.background.is_empty() {
+                if ended && self.team_working() {
                     self.listening = false;
                     continue;
                 }
@@ -808,6 +833,23 @@ impl<'a> Session<'a> {
                 let status = self.view.session_status(&self.conversation, self.root);
                 self.view.rows(status);
             }
+            "worktrees" => {
+                match argument.trim() {
+                    "on" => self.worktrees = true,
+                    "off" => self.worktrees = false,
+                    "" => {}
+                    other => {
+                        self.view
+                            .result(WARN, &format!("/worktrees takes on or off, not {other}"));
+                        return None;
+                    }
+                }
+                self.view.note(&format!(
+                    "worktrees for writing helpers: {} (closed as `{}` unless the lead says otherwise)",
+                    if self.worktrees { "on" } else { "off" },
+                    self.config.workspaces.finish
+                ));
+            }
             "workspaces" => {
                 let directory = self.env().workspace;
                 let rows = (|| -> Result<Vec<String>> {
@@ -819,8 +861,16 @@ impl<'a> Session<'a> {
                     rows.extend(
                         work.workspaces
                             .iter()
-                            .map(|w| format!("{} · {}", w.name, w.root.display())),
+                            .map(|w| format!("{} · {} (open)", w.name, w.root.display())),
                     );
+                    let mut patches: Vec<String> = std::fs::read_dir(&directory)?
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().is_some_and(|x| x == "patch"))
+                        .map(|p| format!("patch · {}", p.display()))
+                        .collect();
+                    patches.sort();
+                    rows.extend(patches);
                     Ok(rows)
                 })();
                 match rows {
@@ -839,6 +889,7 @@ impl<'a> Session<'a> {
                 self.awaiting = None;
                 // What the helpers were doing belonged to the conversation being left.
                 let stopped = self.background.abandon();
+                self.sweep_workspaces("still open");
                 self.results.clear();
                 self.stopped.clear();
                 self.asks.clear();
@@ -995,6 +1046,51 @@ impl<'a> Session<'a> {
                     .and_then(|r| r.thread.as_deref())
                     .unwrap_or(&self.workspace_id),
             ),
+            worktrees: self.worktrees,
+            live: self.live.clone(),
+        }
+    }
+
+    /// Closes every worktree this conversation still has open, keeping each one's changes as
+    /// a patch, and says so. `why` is the reason given in the note.
+    fn sweep_workspaces(&mut self, why: &str) {
+        let directory = self.env().workspace;
+        if !directory.join("workspaces.json").exists() {
+            return;
+        }
+        // Held elsewhere means another process is hosting this very thread: its worktrees
+        // are its own to close.
+        let held = match self.live.lock().expect("live").take() {
+            Some(live) => Some(live),
+            None => match crate::workspaces::hold(&directory) {
+                Ok(Some(live)) => Some(live),
+                _ => return,
+            },
+        };
+        let tools = tools(self.config, self.data);
+        let closed = crate::workspaces::Workspaces::open(self.root, &directory)
+            .and_then(|mut work| work.close_all(&tools));
+        // A merge trial's worktree carried nothing of its own: it goes without a patch.
+        let _ = crate::merge::sweep_trials(self.root, &directory);
+        drop(held);
+        match closed {
+            Ok(closed) if closed.is_empty() => {}
+            Ok(closed) => {
+                self.view.note(&format!(
+                    "closed {} {why}",
+                    if closed.len() == 1 {
+                        "1 worktree".to_owned()
+                    } else {
+                        format!("{} worktrees", closed.len())
+                    }
+                ));
+                for item in closed {
+                    self.view.note(&item.describe());
+                }
+            }
+            Err(error) => self
+                .view
+                .result(WARN, &format!("could not close worktrees: {error:#}")),
         }
     }
 
@@ -1175,6 +1271,16 @@ impl<'a> Session<'a> {
         );
     }
 
+    /// Whether anything is still owed to this conversation: a helper at work, a trial or an
+    /// apply running or approved, or a report, a message or a result the lead has not heard.
+    fn team_working(&self) -> bool {
+        !self.background.is_empty()
+            || self.manager.is_busy()
+            || !self.manager.approved.is_empty()
+            || self.manager.has_pending()
+            || !self.results.is_empty()
+    }
+
     /// What a finished trial or apply means, said and acted on.
     fn settled(&mut self, done: manager::Done) {
         let env = self.env();
@@ -1220,7 +1326,9 @@ impl<'a> Session<'a> {
             ));
         }
         let directory = self.env().workspace;
-        if let Ok(work) = crate::workspaces::Workspaces::open(self.root, &directory) {
+        if directory.join("workspaces.json").exists()
+            && let Ok(work) = crate::workspaces::Workspaces::open(self.root, &directory)
+        {
             for workspace in &work.workspaces {
                 if self
                     .background
@@ -3922,6 +4030,11 @@ fn grant<'a>(
                 .mailbox
                 .answer_request(&request.id, "refused", Some(reason), None, None);
         };
+        // Closing a worktree is not seating anyone: none of the gates below apply.
+        if request.finish {
+            finish(feed, background, &env, &request);
+            continue;
+        }
         let answer = |value: Value| {
             let _ = feed.mailbox.answer_request(
                 &request.id,
@@ -3955,11 +4068,21 @@ fn grant<'a>(
             refuse("work like this has cost less than a helper session costs here; do it yourself");
             continue;
         }
+        if request.write && !env.worktrees {
+            refuse(
+                "worktrees are off for this conversation (/worktrees on), so do the work yourself",
+            );
+            continue;
+        }
         let taken = crate::mailbox::our_names();
         let name = background.free_name(&request.name, &|name| taken.contains(name));
         let workspace = if request.write {
+            if let Err(error) = hold_live(&env) {
+                refuse(&format!("cannot hold the session directory: {error:#}"));
+                continue;
+            }
             match crate::workspaces::Workspaces::open(env.root, &env.workspace)
-                .and_then(|mut work| work.create(&name))
+                .and_then(|mut work| work.create_titled(&name, &request.title))
             {
                 Ok(root) => Some(root),
                 Err(error) => {
@@ -4256,6 +4379,71 @@ fn settle<'a>(
         }
     }
     lines
+}
+
+/// Takes the conversation's hold on its session directory, once.
+fn hold_live(env: &background::Env<'_>) -> Result<()> {
+    let mut live = env.live.lock().expect("live");
+    if live.is_none() {
+        *live = Some(
+            crate::workspaces::hold(&env.workspace)?
+                .ok_or_else(|| anyhow::anyhow!("another process is hosting this conversation"))?,
+        );
+    }
+    Ok(())
+}
+
+/// What closing a worktree needs from outside the repository.
+fn tools(config: &Config, data: &Path) -> crate::workspaces::Tools {
+    crate::workspaces::Tools {
+        gh: crate::discovery::find_in("gh", &crate::setup::search_path(Some(data))),
+        branch_prefix: config.workspaces.branch_prefix.clone(),
+    }
+}
+
+/// A lead's `finish_workspace`: the worktree is closed as asked and the answer carries what
+/// became of it. A helper still working in it is not closed under its feet.
+fn finish(
+    feed: &Feed,
+    background: &background::Background<'_>,
+    env: &background::Env<'_>,
+    request: &crate::mailbox::AgentRequest,
+) {
+    let answer = |state: &str, reason: &str| {
+        let _ = feed
+            .mailbox
+            .answer_request(&request.id, state, Some(reason), None, None);
+    };
+    if background.helpers.iter().any(|h| h.name == request.name) {
+        answer(
+            "refused",
+            &format!(
+                "`{}` is still working; wait for its report, or stop it first",
+                request.name
+            ),
+        );
+        return;
+    }
+    let how = match request.task.trim() {
+        "" => crate::workspaces::Finish::parse(&env.config.workspaces.finish),
+        word => crate::workspaces::Finish::parse(word),
+    }
+    .unwrap_or(crate::workspaces::Finish::Merge);
+    let closed = crate::workspaces::Workspaces::open(env.root, &env.workspace)
+        .and_then(|mut work| work.close(&request.name, how, &tools(env.config, env.data), ""));
+    match closed {
+        Ok(closed) => {
+            let mut result = serde_json::to_value(&closed).unwrap_or_default();
+            if let Some(object) = result.as_object_mut() {
+                object.insert("summary".into(), closed.describe().into());
+            }
+            // `started` is the one positive state the request table allows (its CHECK
+            // predates closing); for a finish it reads as closed, and the result rides in
+            // `reason`.
+            answer("started", &result.to_string());
+        }
+        Err(error) => answer("refused", &format!("{error:#}")),
+    }
 }
 
 /// What happened to a helper, as the transcript lines to show; its results are kept for the

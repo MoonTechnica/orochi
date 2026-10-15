@@ -120,13 +120,48 @@ impl<'a> Manager<'a> {
         *self = Self::default();
     }
 
+    /// A lead writes its plan as lists; one that wrote a numbered paragraph instead (a real
+    /// Claude lead did, 2026-10-16) is read line by line rather than refused.
     pub fn set_plan(&mut self, arguments: &Value) -> Result<Plan> {
         ensure!(
             arguments.to_string().chars().count() <= PLAN_CHARS,
             "plan too long; keep it to the points"
         );
-        let plan: Plan = serde_json::from_value(arguments.clone())
-            .context("plan must be lists of strings and a next_step string")?;
+        let lines = |value: &Value| -> Vec<String> {
+            match value {
+                Value::Array(items) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::String(text) => text.trim().to_owned(),
+                        other => other.to_string(),
+                    })
+                    .filter(|text| !text.is_empty())
+                    .collect(),
+                Value::String(text) => text
+                    .lines()
+                    .map(|line| {
+                        line.trim()
+                            .trim_start_matches(|c: char| {
+                                c.is_ascii_digit() || c == '.' || c == ')' || c == '-' || c == '*'
+                            })
+                            .trim()
+                            .to_owned()
+                    })
+                    .filter(|line| !line.is_empty())
+                    .collect(),
+                _ => vec![],
+            }
+        };
+        let plan = Plan {
+            plan: lines(&arguments["plan"]),
+            decisions: lines(&arguments["decisions"]),
+            open_questions: lines(&arguments["open_questions"]),
+            next_step: match &arguments["next_step"] {
+                Value::String(text) => text.trim().to_owned(),
+                Value::Array(_) => lines(&arguments["next_step"]).join("; "),
+                _ => String::new(),
+            },
+        };
         self.plan = Some(plan.clone());
         Ok(plan)
     }
@@ -147,7 +182,10 @@ impl<'a> Manager<'a> {
             .iter()
             .map(|(name, title, state)| format!("  `{name}` ({title}) · {state}"))
             .collect();
-        if let Ok(work) = Workspaces::open(root, directory) {
+        // Opening the manifest would create the session directory; only read one that is.
+        if directory.join("workspaces.json").exists()
+            && let Ok(work) = Workspaces::open(root, directory)
+        {
             for workspace in &work.workspaces {
                 if helpers.iter().any(|(name, ..)| *name == workspace.name) {
                     continue;
@@ -197,7 +235,9 @@ impl<'a> Manager<'a> {
         siblings: Vec<Value>,
     ) -> Value {
         let mut workspaces = vec![];
-        if let Ok(work) = Workspaces::open(root, directory) {
+        if directory.join("workspaces.json").exists()
+            && let Ok(work) = Workspaces::open(root, directory)
+        {
             for workspace in &work.workspaces {
                 let changed = git(&workspace.root, &["diff", "--name-only", &workspace.base])
                     .map(|out| out.lines().map(str::to_owned).collect::<Vec<_>>())
@@ -261,6 +301,7 @@ impl<'a> Manager<'a> {
                 name: found.name.clone(),
                 root: found.root.clone(),
                 base: found.base.clone(),
+                title: found.title.clone(),
             },
             env.workspace.clone(),
         );
@@ -291,6 +332,7 @@ impl<'a> Manager<'a> {
                     n,
                     state: State::Failed,
                     root: PathBuf::new(),
+                    worktree: PathBuf::new(),
                     ours: String::new(),
                     theirs: String::new(),
                     base: String::new(),
@@ -500,8 +542,14 @@ impl<'a> Manager<'a> {
             .count()
             + 1;
         self.runs.push(Box::pin(async move {
-            let (trial, outcome) =
-                write(trial, data.clone(), root.clone(), repository.clone()).await;
+            let (trial, outcome) = write(
+                trial,
+                data.clone(),
+                root.clone(),
+                directory.clone(),
+                repository.clone(),
+            )
+            .await;
             if trial.state != State::Stale {
                 return Done::Applied {
                     trial,
@@ -549,7 +597,7 @@ impl<'a> Manager<'a> {
                     stale: Some(stale),
                 };
             }
-            let (again, outcome) = write(again, data, root, repository).await;
+            let (again, outcome) = write(again, data, root, directory, repository).await;
             Done::Applied {
                 trial: again,
                 result: outcome,
@@ -782,13 +830,14 @@ async fn write(
     mut trial: Trial,
     data: PathBuf,
     root: PathBuf,
+    directory: PathBuf,
     repository: std::result::Result<String, String>,
 ) -> (Trial, Result<Vec<PathBuf>>) {
     tokio::task::spawn_blocking(move || {
         let outcome = (|| -> Result<Vec<PathBuf>> {
             let repository = repository.map_err(|e| anyhow::anyhow!(e))?;
             let _lock = crate::storage::workspace_lock(&data, &repository, false)?;
-            merge::apply(&root, &mut trial)
+            merge::apply(&root, &directory, &mut trial)
         })();
         (trial, outcome)
     })
@@ -809,6 +858,7 @@ fn failed_trial(error: &str) -> Trial {
         n: 0,
         state: State::Failed,
         root: PathBuf::new(),
+        worktree: PathBuf::new(),
         ours: String::new(),
         theirs: String::new(),
         base: String::new(),

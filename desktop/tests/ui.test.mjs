@@ -2254,6 +2254,16 @@ test("file links open Files and preserve root-file line positions and encoded sp
   assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "reports/my report.pdf"));
 });
 
+test("the setup dialog lists the GitHub CLI as something to put in where the machine has none", async () => {
+  const status = { ...SETUP, gh: { path: null, version: null, ok: false, managed: false } };
+  const { el } = await open({ setup_status: status });
+  const drawn = el("setup-body").render();
+  assert.match(drawn, /span.name GitHub CLI\n\s+span.note will be installed; it opens pull requests/);
+  const found = { ...SETUP, gh: { path: "/usr/local/bin/gh", version: "gh version 2.102.0", ok: true, managed: true } };
+  const again = await open({ setup_status: found });
+  assert.match(again.el("setup-body").render(), /span.name GitHub CLI\n\s+span.note gh version 2.102.0 · installed by Orochi/);
+});
+
 test("a window that can route to nothing asks to set up first, and installs what was chosen", async () => {
   const { el, calls } = await open({ setup_status: SETUP, sandbox_job: "job-1" });
   assert.equal(el("setup").open, true);

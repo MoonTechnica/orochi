@@ -7,7 +7,7 @@ pub mod workspace;
 
 pub use graph::{Part, Unit};
 pub use turn::{Coordination, Outbound, TurnKind};
-pub use workspace::{Conflict, copy_workspace};
+pub use workspace::{Change, Conflict, Content, Entry, commit, copy_workspace, entry, merge_text};
 
 use crate::{
     agents::{AgentError, ErrorKind},

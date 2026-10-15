@@ -2,7 +2,9 @@
 //! for and Orochi performs (`docs/manager-design.md` §4.5): a trial that merges, checks and
 //! reports, in a worktree of its own; then an apply that re-snapshots the user's tree and writes
 //! only the merged difference, with every target checked against what the merge was computed
-//! from. The user's HEAD, branch and index are never touched; a worktree is never deleted.
+//! from. The user's HEAD, branch and index are never touched. An applied trial closes the
+//! helper's worktree and its own, as `finish_workspace` closes one: no worktree outlives the
+//! conversation, and a trial left behind is swept with the conversation's worktrees.
 use crate::{
     collaboration::workspace::{self, Change, Content},
     types::CheckResult,
@@ -37,6 +39,9 @@ pub struct Trial {
     pub state: State,
     /// The trial's own worktree, where the merged tree is checked out and checks run.
     pub root: PathBuf,
+    /// That worktree's top, which is what `git worktree remove` takes.
+    #[serde(default)]
+    pub worktree: PathBuf,
     pub ours: String,
     pub theirs: String,
     pub base: String,
@@ -157,6 +162,7 @@ pub fn trial(source: &Path, workspace: &Workspace, directory: &Path, n: usize) -
             State::Conflicts
         },
         root: root.join(relative),
+        worktree: root,
         ours,
         theirs,
         base,
@@ -212,8 +218,10 @@ pub fn rechecked(trial: &mut Trial) -> Result<()> {
 }
 
 /// Writes the trial's merged difference into the user's tree. The tree is snapshotted again
-/// first: if it moved since the trial, nothing is written and the trial is `Stale`.
-pub fn apply(source: &Path, trial: &mut Trial) -> Result<Vec<PathBuf>> {
+/// first: if it moved since the trial, nothing is written and the trial is `Stale`. Once
+/// written, the helper's worktree (in the manifest under `directory`) and the trial's are
+/// closed: what they held is in the tree now.
+pub fn apply(source: &Path, directory: &Path, trial: &mut Trial) -> Result<Vec<PathBuf>> {
     ensure!(
         trial.state == State::Clean,
         "only a clean trial can be applied; trial {} is {:?}",
@@ -273,5 +281,40 @@ pub fn apply(source: &Path, trial: &mut Trial) -> Result<Vec<PathBuf>> {
     let written = workspace::commit(source, &refs)?;
     trial.state = State::Applied;
     trial.files = written.iter().map(|p| p.display().to_string()).collect();
+    // The change is in the tree; the worktrees that carried it are closed, the helper's
+    // through the manifest so the conversation forgets it too.
+    if let Ok(mut work) = crate::workspaces::Workspaces::open(source, directory) {
+        let _ = work.remove(&trial.workspace);
+    }
+    let _ = remove_worktree(source, &trial.worktree);
     Ok(written)
+}
+
+fn remove_worktree(source: &Path, worktree: &Path) -> Result<()> {
+    if !worktree.exists() {
+        return Ok(());
+    }
+    let path = worktree.to_str().context("non-UTF8 trial path")?;
+    if git(source, &["worktree", "remove", "--force", path]).is_err() {
+        std::fs::remove_dir_all(worktree)?;
+    }
+    let _ = git(source, &["worktree", "prune"]);
+    Ok(())
+}
+
+/// Every trial worktree under `directory`, closed: the conversation's end, `/new` and a
+/// resumed thread sweep them as they sweep the helpers' worktrees.
+pub fn sweep_trials(source: &Path, directory: &Path) -> Result<usize> {
+    let trials = directory.join("trials");
+    let Ok(entries) = std::fs::read_dir(&trials) else {
+        return Ok(0);
+    };
+    let mut count = 0;
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            remove_worktree(source, &entry.path())?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }

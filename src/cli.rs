@@ -187,6 +187,12 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// The worktrees Orochi's conversations opened for their helpers under this repository's
+    /// `.orochi/sessions/`, and the patches of closed ones.
+    Workspaces {
+        #[command(subcommand)]
+        command: Option<WorkspacesCommand>,
+    },
     /// Inspect local execution telemetry.
     Runs {
         #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=1000))]
@@ -378,6 +384,13 @@ pub enum McpCommand {
     /// Forget which of this repository's `.mcp.json` servers were approved or refused, so the
     /// next console session asks again (as `claude mcp reset-project-choices`).
     ResetProjectChoices,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WorkspacesCommand {
+    /// Close every worktree of every conversation no process is running any more, keeping each
+    /// one's changes as a patch, and remove session directories left with nothing in them.
+    Prune,
 }
 
 #[derive(Debug, Subcommand)]
@@ -598,6 +611,8 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 .unwrap_or_else(|_| crate::setup::NODE_DIST.to_owned());
             let lima = std::env::var("OROCHI_LIMA_RELEASES")
                 .unwrap_or_else(|_| crate::setup::LIMA_RELEASES.to_owned());
+            let gh = std::env::var("OROCHI_GH_RELEASES")
+                .unwrap_or_else(|_| crate::setup::GH_RELEASES.to_owned());
             let plan = crate::setup::Plan { install, sandbox };
             let mut antigravity = crate::setup::AntigravitySource::default();
             if let Ok(releases) = std::env::var("OROCHI_ANTIGRAVITY_RELEASES") {
@@ -607,7 +622,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 antigravity.cli_manifests = manifests;
             }
             tokio::select! {
-                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist, &lima, &antigravity) => status?,
+                status = crate::setup::run(&config, &paths.config, &paths.data, &plan, &dist, &lima, &gh, &antigravity) => status?,
                 _ = tokio::signal::ctrl_c() => return Ok(130),
             }
         };
@@ -1067,6 +1082,98 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         "{}  {} / {}  {:?}",
                         s.session_id, s.agent, s.model, s.outcome
                     );
+                }
+            }
+        }
+        Some(Command::Workspaces { command }) => {
+            let tools = crate::workspaces::Tools {
+                gh: crate::discovery::find_in("gh", &crate::setup::search_path(Some(&paths.data))),
+                branch_prefix: config.workspaces.branch_prefix.clone(),
+            };
+            match command {
+                Some(WorkspacesCommand::Prune) => {
+                    let report = crate::workspaces::prune(&root, &tools)?;
+                    if cli.json {
+                        let rows: Vec<serde_json::Value> = report
+                            .iter()
+                            .map(|(dir, closed)| {
+                                serde_json::json!({"session": dir, "closed": closed})
+                            })
+                            .collect();
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                    } else if report.is_empty() {
+                        println!("Nothing to prune: no conversation left a worktree behind.");
+                    } else {
+                        for (dir, closed) in &report {
+                            println!("{}", dir.display());
+                            for item in closed {
+                                println!("  {}", item.describe());
+                            }
+                        }
+                    }
+                }
+                None => {
+                    let sessions = root.join(".orochi/sessions");
+                    let mut rows = vec![];
+                    if let Ok(entries) = std::fs::read_dir(&sessions) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let dir = entry.path();
+                            let manifest = dir.join("workspaces.json");
+                            let Ok(bytes) = std::fs::read(&manifest) else {
+                                continue;
+                            };
+                            let Ok(state) =
+                                serde_json::from_slice::<crate::workspaces::Workspaces>(&bytes)
+                            else {
+                                continue;
+                            };
+                            let live = matches!(crate::workspaces::hold(&dir), Ok(None));
+                            let patches: Vec<String> = std::fs::read_dir(&dir)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|e| e.ok())
+                                .map(|e| e.path())
+                                .filter(|p| p.extension().is_some_and(|x| x == "patch"))
+                                .map(|p| p.display().to_string())
+                                .collect();
+                            rows.push(serde_json::json!({
+                                "session": dir,
+                                "live": live,
+                                "worktrees": state.workspaces.iter().map(|w| serde_json::json!({"name": w.name, "root": w.root})).collect::<Vec<_>>(),
+                                "patches": patches,
+                            }));
+                        }
+                    }
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                    } else if rows.is_empty() {
+                        println!(
+                            "No conversation has opened a worktree under {}.",
+                            root.display()
+                        );
+                    } else {
+                        for row in &rows {
+                            println!(
+                                "{}  {}",
+                                row["session"].as_str().unwrap_or(""),
+                                if row["live"].as_bool().unwrap_or(false) {
+                                    "(in use)"
+                                } else {
+                                    "(no process; `orochi workspaces prune` closes it)"
+                                }
+                            );
+                            for w in row["worktrees"].as_array().into_iter().flatten() {
+                                println!(
+                                    "  {} · {}",
+                                    w["name"].as_str().unwrap_or(""),
+                                    w["root"].as_str().unwrap_or("")
+                                );
+                            }
+                            for p in row["patches"].as_array().into_iter().flatten() {
+                                println!("  patch · {}", p.as_str().unwrap_or(""));
+                            }
+                        }
+                    }
                 }
             }
         }

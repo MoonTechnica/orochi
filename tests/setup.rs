@@ -92,7 +92,61 @@ target.chmod(0o755)
         r#"[{"version":"v24.0.0","lts":"Krypton"},{"version":"v22.0.0","lts":"Jod"}]"#,
     )
     .unwrap();
+    gh_release(&dist.join("gh"), false);
     (dist, log)
+}
+
+/// A stand-in for the GitHub CLI's release: its checksums file and the archive for this
+/// machine, which unpacks as one directory named after itself holding `bin/gh`, as the real
+/// one does (a zip on macOS, a tarball on Linux).
+fn gh_release(releases: &Path, tamper: bool) -> PathBuf {
+    let (platform, extension) = setup::gh_platform().expect("a platform gh publishes for");
+    let name = format!("gh_{}_{platform}", setup::GH_VERSION);
+    let build = releases.join("build").join(&name);
+    std::fs::create_dir_all(build.join("bin")).unwrap();
+    std::fs::create_dir_all(build.join("share/man")).unwrap();
+    executable(
+        &build.join("bin/gh"),
+        "#!/bin/sh\ncase $1 in --version) echo \"gh version fixture\";; esac\n",
+    );
+    let release = releases.join(format!("v{}", setup::GH_VERSION));
+    std::fs::create_dir_all(&release).unwrap();
+    let archive = release.join(format!("{name}.{extension}"));
+    let status = if extension == "zip" {
+        Command::new("zip")
+            .arg("-qr")
+            .arg(&archive)
+            .arg(&name)
+            .current_dir(releases.join("build"))
+            .status()
+    } else {
+        Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(releases.join("build"))
+            .arg(&name)
+            .status()
+    };
+    assert!(status.unwrap().success());
+    let sum = {
+        use sha2::Digest;
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(std::fs::read(&archive).unwrap())
+        )
+    };
+    let sum = if tamper {
+        sum.replace(|c: char| c.is_ascii_hexdigit(), "0")
+    } else {
+        sum
+    };
+    std::fs::write(
+        release.join(format!("gh_{}_checksums.txt", setup::GH_VERSION)),
+        format!("{sum}  {name}.{extension}\n"),
+    )
+    .unwrap();
+    releases.to_path_buf()
 }
 
 /// `python3 -m http.server` on a loopback port of the system's choosing, stopped when dropped.
@@ -176,6 +230,7 @@ impl Machine {
             .env("HOME", self.home())
             .env("SHLVL", "1")
             .env("OROCHI_NODE_DIST", dist)
+            .env("OROCHI_GH_RELEASES", format!("{dist}/gh"))
             .args(["--config", self.config().to_str().unwrap()])
             .args(["--data-dir", self.data().to_str().unwrap()]);
         cmd
@@ -234,6 +289,26 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     let toolchain = machine.data().join("toolchain");
     assert!(toolchain.join("node/current/bin/node").is_file());
     assert!(toolchain.join("node/v24.0.0/bin/node").is_file());
+    // The GitHub CLI goes in on every setup, since a helper's worktree may end as a pull
+    // request — unless this machine has one already: the lookup also reads the places a
+    // user's tools go, so what the step did here depends on the machine running the test.
+    let progress = setup::Progress::read(&machine.data()).unwrap();
+    let gh_step = progress.steps[2].name.clone();
+    if gh_step == "Installing the GitHub CLI" {
+        assert!(
+            stdout.contains(&format!("GitHub CLI {} under", setup::GH_VERSION)),
+            "{stdout}"
+        );
+        assert!(
+            toolchain
+                .join(format!("gh/{}/bin/gh", setup::GH_VERSION))
+                .is_file()
+        );
+        assert!(toolchain.join("bin/gh").is_file());
+    } else {
+        assert_eq!(gh_step, "Checking the GitHub CLI");
+        assert_eq!(progress.steps[2].state, "skipped");
+    }
     let shim = toolchain.join("bin/claude");
     assert!(shim.symlink_metadata().unwrap().file_type().is_symlink());
     assert!(shim.is_file());
@@ -261,12 +336,14 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     );
     assert!(installs.contains(&toolchain.join("cli").display().to_string()));
     assert!(toolchain.join("bin/claude").is_file());
-    // And nothing landed anywhere else.
+    // And nothing landed anywhere else. (A real `gh` already on the machine writes its own
+    // device id under `~/.local/state/gh` when its version is asked; that is gh's, not ours.)
     assert!(!machine.home().join(".npm").exists());
     assert_eq!(
         std::fs::read_dir(machine.home())
             .unwrap()
             .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != ".local")
             .count(),
         0
     );
@@ -286,6 +363,7 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
         [
             ("Writing the configuration file", "done"),
             ("Installing Node.js", "done"),
+            (gh_step.as_str(), progress.steps[2].state.as_str()),
             ("Installing claude", "done"),
             ("Preparing the ACP adapter for claude", "done"),
         ]
@@ -308,6 +386,7 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     assert_eq!(after["node"]["ok"], true);
     assert_eq!(after["node"]["managed"], true);
     assert_eq!(after["node"]["version"], "v24.0.0");
+    assert_eq!(after["gh"]["ok"], true);
     assert_eq!(after["config_file"], true);
     let claude = |status: &serde_json::Value| {
         status["agents"]
@@ -336,7 +415,7 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     assert!(stdout.contains("Node.js v24.0.0 at"), "{stdout}");
     assert!(!stdout.contains("downloading"), "{stdout}");
     let again = setup::Progress::read(&machine.data()).unwrap();
-    assert_eq!(again.steps.len(), 2);
+    assert_eq!(again.steps.len(), 3);
     assert!(
         again.steps.iter().all(|s| s.state == "skipped"),
         "{again:?}"
@@ -623,6 +702,37 @@ async fn lima_is_put_under_the_toolchain_from_a_checked_release_and_found_from_t
         .unwrap_err();
     assert!(error.to_string().contains("does not match"), "{error}");
     assert!(!fresh.path().join("toolchain/lima/current").exists());
+}
+
+#[tokio::test]
+async fn the_github_cli_is_put_under_the_toolchain_from_a_checked_release() {
+    let fixture = tempfile::tempdir().unwrap();
+    let releases = gh_release(&fixture.path().join("gh"), false);
+    let served = Served::new(&releases);
+    let data = tempfile::tempdir().unwrap();
+    setup::install_gh(data.path(), &served.url).await.unwrap();
+    let toolchain = data.path().join("toolchain");
+    let shim = toolchain.join("bin/gh");
+    assert!(shim.symlink_metadata().unwrap().file_type().is_symlink());
+    let out = Command::new(&shim).arg("--version").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "gh version fixture"
+    );
+    assert_eq!(
+        orochi::discovery::find_in("gh", &setup::search_path(Some(data.path()))),
+        Some(shim)
+    );
+
+    let tampered = tempfile::tempdir().unwrap();
+    let releases = gh_release(&tampered.path().join("gh"), true);
+    let served = Served::new(&releases);
+    let fresh = tempfile::tempdir().unwrap();
+    let error = setup::install_gh(fresh.path(), &served.url)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
+    assert!(!fresh.path().join("toolchain/gh/current").exists());
 }
 
 #[test]

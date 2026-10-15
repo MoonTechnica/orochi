@@ -18,10 +18,23 @@ conversation with its provider; it is not the owner of the execution environment
   A Git repository with an existing commit is required for writable workers.
 - Worktrees use detached HEADs at the snapshot commits. Worker names are unique within the
   session's retained workspace list; another launch with the same name gets a suffix.
-- The tool response and completion report identify the assigned workspace. Workspaces and
-  edits survive completion, interruption, `/new` and process exit. They are not implicitly
-  merged, committed or deleted. A restarted worker is not automatically resumed: the lead
-  can inspect and integrate the retained result explicitly.
+- The tool response and completion report identify the assigned workspace. **No worktree
+  outlives the conversation.** The lead closes a worktree with `finish_workspace` once the
+  helper's report is in: `merge` writes the changes into the user's working tree file by file,
+  three-way against the snapshot, as uncommitted edits — nothing is written when any file
+  conflicts; `pr` replays them onto the current HEAD on a branch (`workspaces.branch_prefix`
+  plus the helper's name), pushes it to the repository's first remote and opens a pull
+  request with `gh`; `discard` drops them. The worktree is removed in every case. Changes that
+  reached neither the tree nor a pull request are kept as `<name>.patch` beside the manifest.
+  A worktree still open at the conversation's end, at `/new`, or when a conversation is picked
+  up after a crash is closed the same way (kept as a patch, never merged unasked) and the
+  console says so. `orochi workspaces prune` does the same for every session directory no
+  process holds (`live`, a lock each conversation holds while it runs), and removes a session
+  directory left with nothing in it. A helper still working is never closed under it.
+- `/worktrees on|off` turns worktrees off for one conversation: a `write: true` request is
+  then refused with a reason the lead can repeat, and the lead does the work itself.
+  `[workspaces] enabled` is the default, `finish` what `finish_workspace` does when the lead
+  gives no `how`.
 - The workspace manifest is stored at `.orochi/sessions/<session-key>/workspaces.json`.
   The key is derived from the activity thread ID and stays the same when that thread is
   resumed by a terminal or headless host. With recording disabled a new conversation uses
@@ -38,11 +51,20 @@ For example, a lead may call its mailbox tool with:
 }
 ```
 
-Use `/workspaces` in the console to list the conversation’s retained worktrees.
+Use `/workspaces` in the console to list the conversation's open worktrees and the patches of
+closed ones; `orochi workspaces` lists every conversation's under the repository.
 
-The result includes `started` and `workspace`. The lead should examine the changes at that
-path and perform any requested integration itself. Read-only requests retain the existing
-`started` response without a workspace path.
+The result includes `started` and `workspace`. The lead examines the changes at that path and
+then closes it:
+
+```json
+{ "name": "backend", "how": "merge" }
+```
+
+`finish_workspace` answers with what became of it: the paths changed, the paths merged, any
+conflicts, the branch and pull request for `pr`, the patch file where one was written, and a
+one-line summary. Read-only requests retain the existing `started` response without a
+workspace path.
 
 ## Session containers and VMs
 
@@ -71,9 +93,13 @@ and headless conversations' `start_agent` execution path.
 
 ## Validation
 
-Automated tests cover dirty snapshots, source index preservation, retained workspaces,
-subdirectory cwd, read-only compatibility, concurrent writable helpers and distinct session
-sandbox ownership using mock ACP agents and a fake Incus client. Real Incus provisioning and container-side ACP execution with the validation agent were
+Automated tests cover dirty snapshots, source index preservation, subdirectory cwd, read-only
+compatibility, concurrent writable helpers and distinct session sandbox ownership using mock
+ACP agents and a fake Incus client; closing by merge (three-way beside a concurrent user edit,
+HEAD and index untouched), a conflict and a discard kept as patches, a pull request replayed
+onto HEAD and pushed to a local bare remote with a stand-in `gh`, the sweep at a
+conversation's end, and `prune` leaving a held session alone (`tests/workspaces.rs`,
+`tests/cli_e2e.rs`). Whether a real lead closes its worktrees sensibly is unverified. Real Incus provisioning and container-side ACP execution with the validation agent were
 verified on 2026-10-05; see [the live validation record](real-validation-20261005.md).
 Real provider agents still require separate validation.
 

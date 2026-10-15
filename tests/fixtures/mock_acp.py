@@ -52,7 +52,8 @@ def mailbox_tools():
     # tools only beside it.
     assert names[:4] == ["list_peers", "send_message", "read_messages", "set_status"], names
     manager = ["set_plan", "list_work", "stop_agent", "merge_trial", "apply_merge"]
-    assert names[4:] in ([], ["start_agent"], ["start_agent", *manager]), names
+    lead = ["start_agent", "finish_workspace"]
+    assert names[4:] in ([], lead, [*lead, *manager]), names
     offered.extend(names)
 
     def tool(tool_name, **arguments):
@@ -166,7 +167,7 @@ def delegate(request):
         name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
         lead = re.search(r"working in the background for `([^`]+)`", text)[1]
         (root / f"helper-{name}.txt").write_text(text)
-        if name.split("-")[0] in os.environ.get("MOCK_WRITERS", "").split(","):
+        if name.split("-")[0] in os.environ.get("MOCK_WRITERS", "").split(",") and os.environ.get("MOCK_MERGE"):
             # A writable helper implements in its own worktree: `root` is that worktree.
             (root / "feature.txt").write_text(f"written by {name}\n")
             if os.environ.get("MOCK_WRITER_EDITS"):
@@ -193,10 +194,12 @@ def delegate(request):
         send({"method": "session/update", "params": {"sessionId": session, "update": {
             "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: the flow goes through generate.ts. "}}}})
         return
-    if "Background agent `" in text or "Merge trial of `" in text or "Applied `" in text or "Message from `" in text:
+    if any(marker in text for marker in ("Background agent `", "Merge trial of `", "Applied `", "Apply of `", "Message from `")):
         with open(root / "completions.txt", "a") as out:
             out.write(text + "\n=====\n")
         merging = os.environ.get("MOCK_MERGE")
+        if merging and os.environ.get("MOCK_POLL"):
+            merging = None
         if merging and "Background agent `" in text and f"`{merging}`" in text:
             # The lead judges the helper's worktree worth merging and asks Orochi to try.
             _, tool = mailbox_tools()
@@ -209,6 +212,18 @@ def delegate(request):
             reply = tool("apply_merge", trial=trial)
             with open(root / "merge.txt", "a") as out:
                 out.write(json.dumps(reply) + "\n")
+        # A lead told how to close the worktrees named in the report: MOCK_FINISH is
+        # `name:how,...`; a name not listed is left open, for Orochi's own sweep.
+        plan = dict(pair.split(":") for pair in os.environ.get("MOCK_FINISH", "").split(",") if pair)
+        if plan:
+            proc, tool = mailbox_tools()
+            answers = {}
+            for name in re.findall(r"Its worktree `([a-z0-9-]+)`", text):
+                if name in plan:
+                    answers[name] = tool("finish_workspace", name=name, how=plan[name])
+            with open(root / "finished.txt", "w") as out:
+                json.dump(answers, out)
+            proc.terminate()
         return
     proc, tool = mailbox_tools()
     with open(root / "offered.txt", "a") as out:
@@ -225,6 +240,23 @@ def delegate(request):
         reply = tool("start_agent", name=name, title=title, task=f"Find out: {title}", write=name in os.environ.get("MOCK_WRITERS", "").split(","))
         answers.append(reply)
     (root / "started.txt").write_text(json.dumps(answers))
+    if os.environ.get("MOCK_POLL"):
+        # A lead that never ends its turn to wait: it polls list_work until the helper is done,
+        # asks for the trial, polls until the trial is clean, asks for the apply, and only then
+        # answers (a real Codex lead did exactly this, 2026-10-16).
+        merging = os.environ["MOCK_MERGE"]
+        deadline = time.time() + 60
+        while time.time() < deadline and tool("list_work")["helpers"]:
+            time.sleep(1)
+        tool("merge_trial", workspace=merging)
+        while time.time() < deadline:
+            merges = tool("list_work")["merges"]
+            if merges and merges[-1]["state"] == "clean":
+                break
+            time.sleep(1)
+        reply = tool("apply_merge", trial=merges[-1]["trial"])
+        with open(root / "merge.txt", "a") as out:
+            out.write(json.dumps(reply) + "\n")
     proc.terminate()
     # A lead that is still answering while its helpers finish.
     time.sleep(float(os.environ.get("MOCK_LEAD_DELAY", "0")))

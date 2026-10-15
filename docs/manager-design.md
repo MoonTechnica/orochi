@@ -1,8 +1,12 @@
 # The Lead as Manager: Design
 
-Written: 2026-10-16. **Status (2026-10-16): M0–M5 implemented, automated tests only; M6 not
-run.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and is
-cited; §14 says where the implementation departed from the design and why.
+Written: 2026-10-16. **Status (2026-10-16): M0–M5 implemented; M6 run once on both CLIs
+([real-validation-20261016.md](real-validation-20261016.md)): a real Codex lead and a real
+Claude lead each planned, delegated, asked for the trial, read it and asked for the apply with
+no tool named to them, a helper's message woke the idle lead, and the apply's race with the
+exit found there is fixed. `ask` in a terminal, `resolve`, and a resumed host are automated
+tests only.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and
+is cited; §14 says where the implementation departed from the design and why.
 
 One goal: **the agents Orochi starts for one conversation work as one team.** One of them — the
 lead — holds the plan, divides the work, starts and stops the others, answers their questions
@@ -222,13 +226,13 @@ apply_merge(trial 2)
   ours' = snapshot(user tree); ours' == trial.ours or re-trial
   diff   = merged tree ∖ ours' as collaboration Changes with `expected` entries
   workspace::commit(root, changes)        ← staged temp files, every target checked, then renamed
-  row:   state applied, files; the workspace keeps its row and its worktree
+  row:   state applied, files; the helper's worktree and the trial's are closed
 ```
 
-The apply writes files. It never commits, never touches HEAD, the branch or the index, and
-never deletes the worktree: what a merge did is visible in `git status` as the helper's edits
-would have been had the lead typed them, and the retained worktree is the record of what was
-merged. `/workspaces` says `applied` beside it.
+The apply writes files. It never commits and never touches HEAD, the branch or the index:
+what a merge did is visible in `git status` as the helper's edits would have been had the lead
+typed them. Once written, the helper's worktree and the trial's are closed (§14: the rule that
+no worktree outlives the conversation arrived on `main` the same day, with `finish_workspace`).
 
 An apply request that arrives while the lead's turn runs is answered `{"requested"}` and runs
 when the turn ends, because the turn holds the repository lock; the result then wakes the lead.
@@ -374,7 +378,7 @@ re-trial count (1) are constants until measured.
 | The trial reads a tree the lead is editing mid-turn | A trial is advisory; apply re-snapshots under the exclusive lock, after the turn |
 | `git merge-tree --write-tree` absent | The `three_way` fallback, with its copy budget, and the method named on the row |
 | A helper wakes the lead for nothing | The cap, the hold, and the helper told in the reply when its message will be read; measured in M6 |
-| Whether a real lead uses `set_plan` and `merge_trial` at all | **Unverified**; the tool descriptions are the lever, and M6 decides whether the prompt note has to say more |
+| Whether a real lead uses `set_plan` and `merge_trial` at all | **Measured** (M6, both CLIs): yes, without a tool named to it. A Codex lead polls `list_work` inside one long turn rather than ending it; a Claude lead ends its turn and is woken |
 | Resolution seats loop on an unresolvable conflict | One resolution per trial; a second `resolve` is refused with "resolved once already; decide, or stop and redo the part" |
 
 ## 14. Where the implementation departed (2026-10-16)
@@ -391,6 +395,9 @@ re-trial count (1) are constants until measured.
 | `orochi threads team <id>` | Not built; `v_merges` is readable with `--json` through the store | Nothing on the client side reads it yet |
 | Checks of a trial under a project sandbox | Run where the console runs, not in the session's container | `evaluate` is called outside the scheduler's placement; a sandboxed project's trial checks are **unverified** |
 | `alongside` says "start helpers only with `start_agent`" | As designed (the sentence the supervision design had planned) | — |
+| EOF, the exit and the wake counted only live helpers | After M6: an approved or running apply, a running trial and unreturned reports keep the console past EOF and hold the exit; an approved apply runs before the wake, and a wake waits for a running apply (it would take the lock the apply needs) | Run A: the apply raced the exit and the sweep closed the applied worktree as a patch |
+| `set_plan` took lists only | A paragraph is read line by line | A Claude lead wrote one |
+| Worktrees retained after an apply; `/workspaces` says `applied` | **Closed**: an applied trial removes the helper's worktree through the manifest and its own, and `sweep_trials` runs with the conversation's sweep | `main` took the rule that no worktree outlives the conversation (`finish_workspace`: merge, pr or discard, the worktree gone in every case) while this was being built; two rules over one worktree would be the race. `finish_workspace(merge)` stays the quick close with no checks; `merge_trial` → `apply_merge` is the careful one, and the lead's note says which is which |
 
 Pinned by `tests/merge.rs` (library), `tests/mailbox.rs` (the tools are requests; only a
 session marked manager lists them) and `tests/cli_e2e.rs` (a lead that plans, delegates,

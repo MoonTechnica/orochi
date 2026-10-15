@@ -1335,10 +1335,24 @@ fn sandboxed_leads_can_start_writable_helpers_through_the_portable_mailbox_relay
     success(&child.wait_with_output().unwrap());
     let replies: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("started.txt")).unwrap()).unwrap();
+    // Each worker wrote in a worktree of its own and nothing reached the user's tree; the
+    // conversation's end closed both worktrees, keeping each one's work as a patch.
     for (reply, name) in replies.as_array().unwrap().iter().zip(["alice", "bob"]) {
         let worker = Path::new(reply["workspace"].as_str().unwrap());
-        assert!(worker.join(format!("helper-{name}.txt")).is_file());
+        assert!(
+            !worker.exists(),
+            "{} outlived the conversation",
+            worker.display()
+        );
         assert!(!root.join(format!("helper-{name}.txt")).exists());
+        let patch = worker.parent().unwrap().join(format!("{name}.patch"));
+        assert!(
+            std::fs::read_to_string(&patch)
+                .unwrap_or_default()
+                .contains(&format!("helper-{name}.txt")),
+            "{}",
+            patch.display()
+        );
     }
     let state = State::load(&w.data()).unwrap();
     assert_eq!(state.projects.len(), 2);

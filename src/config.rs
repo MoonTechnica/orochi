@@ -17,6 +17,7 @@ pub struct Config {
     pub classifier: ClassifierConfig,
     pub roles: RolesConfig,
     pub manager: ManagerConfig,
+    pub workspaces: WorkspacesConfig,
     pub memory: MemoryConfig,
     pub learning: LearningConfig,
     pub frontier: Option<RouterConfig>,
@@ -50,6 +51,7 @@ impl Default for Config {
             classifier: ClassifierConfig::default(),
             roles: RolesConfig::default(),
             manager: ManagerConfig::default(),
+            workspaces: WorkspacesConfig::default(),
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
             frontier: None,
@@ -291,6 +293,31 @@ impl Default for SandboxConfig {
             vm_idle_minutes: 30,
             force: None,
             session_root: None,
+        }
+    }
+}
+
+/// Worktrees for the helpers a lead starts (`workspaces.rs`): the default for a conversation,
+/// which `/worktrees on|off` changes for one conversation, and what becomes of a worktree the
+/// lead closes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkspacesConfig {
+    /// A writing helper gets a worktree of its own. Off, a lead's request for one is refused
+    /// and it does the work itself in the user's tree.
+    pub enabled: bool,
+    /// What `finish_workspace` does when the lead does not say: `merge` into the user's tree,
+    /// or `pr` on a pushed branch.
+    pub finish: String,
+    /// What a pull request's branch is named after, followed by the helper's name.
+    pub branch_prefix: String,
+}
+impl Default for WorkspacesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            finish: "merge".into(),
+            branch_prefix: "orochi/".into(),
         }
     }
 }
@@ -864,6 +891,17 @@ impl Config {
         ensure!(
             matches!(self.manager.apply.as_str(), "ask" | "auto"),
             "manager.apply must be \"ask\" or \"auto\""
+        );
+        ensure!(
+            matches!(self.workspaces.finish.as_str(), "merge" | "pr"),
+            "workspaces.finish must be `merge` or `pr`"
+        );
+        ensure!(
+            self.workspaces
+                .branch_prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/' | '.')),
+            "workspaces.branch_prefix may hold only letters, digits, `-`, `_`, `.` and `/`"
         );
         for check in &self.evaluator.checks {
             ensure!(

@@ -36,6 +36,11 @@ pub const NODE_DIST: &str = "https://nodejs.org/dist";
 /// release is what the archive is checked against.
 pub const LIMA_VERSION: &str = "2.2.1";
 pub const LIMA_RELEASES: &str = "https://github.com/lima-vm/lima/releases/download";
+/// The GitHub CLI put in on every setup, pinned as Lima is and checked against the release's
+/// `gh_<version>_checksums.txt`: it is what opens a pull request from a helper's worktree
+/// (`workspaces.rs`), and a machine without it would have a worktree with nowhere to go.
+pub const GH_VERSION: &str = "2.102.0";
+pub const GH_RELEASES: &str = "https://github.com/cli/cli/releases/download";
 
 /// The data directory this process works in, so a lookup that is given none (`locate`) still
 /// finds the toolchain under it. Set once, by whoever resolved the paths.
@@ -336,6 +341,8 @@ pub struct Status {
     pub node: Tool,
     pub npm: Tool,
     pub git: Tool,
+    /// The GitHub CLI: the one Orochi put in, or one already here.
+    pub gh: Tool,
     pub config_file: bool,
     pub agents: Vec<AgentState>,
     pub sandbox: SandboxState,
@@ -359,6 +366,7 @@ pub fn status_with(config: &Config, config_path: &Path, data: &Path, keychain: b
     });
     let npm = tool("npm", &path, data, |_| true);
     let git = tool("git", &path, data, |_| true);
+    let gh = tool("gh", &path, data, |_| true);
     let agents: Vec<AgentState> = config
         .agents
         .iter()
@@ -388,6 +396,7 @@ pub fn status_with(config: &Config, config_path: &Path, data: &Path, keychain: b
         node,
         npm,
         git,
+        gh,
         config_file: config_path.is_file(),
         agents,
         sandbox: sandbox_state(config, &path, data),
@@ -625,7 +634,8 @@ enum Outcome {
 /// sandbox host. The steps are decided first and reported as they go (`Progress`), each also
 /// said on stdout, since a background job's log is all a terminal sees of it. `node_dist` is
 /// where Node.js releases are read from (`NODE_DIST`, or a mirror), `lima_releases` where
-/// Lima's are.
+/// Lima's are and `gh_releases` where the GitHub CLI's are.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     config: &Config,
     config_path: &Path,
@@ -633,6 +643,7 @@ pub async fn run(
     plan: &Plan,
     node_dist: &str,
     lima_releases: &str,
+    gh_releases: &str,
     antigravity: &AntigravitySource,
 ) -> Result<Status> {
     std::fs::create_dir_all(toolchain(data))?;
@@ -640,13 +651,14 @@ pub async fn run(
     enum Todo {
         Config,
         Node,
+        Gh,
         Cli(String),
         Adapter(String),
         Lima,
         Host,
         Image,
     }
-    let mut todo = vec![Todo::Config, Todo::Node];
+    let mut todo = vec![Todo::Config, Todo::Node, Todo::Gh];
     for id in &plan.install {
         let agent = config
             .agents
@@ -690,6 +702,7 @@ pub async fn run(
         .map(|step| match step {
             Todo::Config => "Writing the configuration file".to_owned(),
             Todo::Node => "Checking Node.js".to_owned(),
+            Todo::Gh => "Checking the GitHub CLI".to_owned(),
             Todo::Cli(id) => format!("Installing {id}"),
             Todo::Adapter(id) => format!("Preparing the ACP adapter for {id}"),
             Todo::Lima => "Installing Lima".to_owned(),
@@ -730,6 +743,33 @@ pub async fn run(
                         Outcome::Done(format!(
                             "Node.js {version} installed under {}",
                             toolchain(data).join("node").display()
+                        ))
+                    })
+                }
+            }
+            Todo::Gh => {
+                if before.gh.ok {
+                    Ok(Outcome::Skipped(format!(
+                        "{} at {}",
+                        before.gh.version.as_deref().unwrap_or("gh"),
+                        before
+                            .gh
+                            .path
+                            .as_deref()
+                            .unwrap_or(Path::new("?"))
+                            .display()
+                    )))
+                } else if gh_platform().is_none() {
+                    // Not what routing needs, so a machine without a build is told, not failed.
+                    Ok(Outcome::Skipped(
+                        "no GitHub CLI build is published for this machine; install gh yourself to open pull requests".into(),
+                    ))
+                } else {
+                    progress.steps[index].name = "Installing the GitHub CLI".into();
+                    install_gh(data, gh_releases).await.map(|()| {
+                        Outcome::Done(format!(
+                            "GitHub CLI {GH_VERSION} under {}",
+                            toolchain(data).join("gh").display()
                         ))
                     })
                 }
@@ -919,6 +959,98 @@ pub async fn install_lima(data: &Path, releases: &str) -> Result<()> {
             )?;
         }
     }
+    Ok(())
+}
+
+/// The name the GitHub CLI publishes this machine's build under, and the archive's extension:
+/// a zip on macOS, a tarball on Linux (`tar` on macOS unpacks both).
+pub fn gh_platform() -> Option<(&'static str, &'static str)> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some(("macOS_arm64", "zip")),
+        ("macos", "x86_64") => Some(("macOS_amd64", "zip")),
+        ("linux", "x86_64") => Some(("linux_amd64", "tar.gz")),
+        ("linux", "aarch64") => Some(("linux_arm64", "tar.gz")),
+        _ => None,
+    }
+}
+
+/// The GitHub CLI into `<data>/toolchain/gh/<version>/` (its archive unpacks as one directory
+/// holding `bin/gh` and `share/`), `current` pointing at it and `gh` linked into the
+/// toolchain's `bin`. The archive is checked against the release's checksums file before
+/// anything is unpacked. Signing in stays `gh auth login`, which takes a browser.
+pub async fn install_gh(data: &Path, releases: &str) -> Result<()> {
+    let (platform, extension) =
+        gh_platform().context("no GitHub CLI build is published for this machine")?;
+    let client = reqwest::Client::builder()
+        .user_agent(format!("orochi/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let archive = format!("gh_{GH_VERSION}_{platform}.{extension}");
+    let base = format!("{releases}/v{GH_VERSION}");
+    println!("  downloading the GitHub CLI {GH_VERSION} for {platform}");
+    let sums = client
+        .get(format!("{base}/gh_{GH_VERSION}_checksums.txt"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let expected = sums
+        .lines()
+        .find_map(|line| {
+            let (sum, file) = line.split_once("  ")?;
+            (file.trim() == archive).then(|| sum.trim().to_owned())
+        })
+        .context("the release lists no checksum for this build; refusing to install it")?;
+    let bytes = client
+        .get(format!("{base}/{archive}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    {
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+        ensure!(
+            actual == expected,
+            "the GitHub CLI download does not match its published checksum"
+        );
+    }
+    let gh = toolchain(data).join("gh");
+    std::fs::create_dir_all(&gh)?;
+    let stage = tempfile::Builder::new().prefix(".gh-").tempdir_in(&gh)?;
+    let file = stage.path().join(&archive);
+    std::fs::write(&file, &bytes)?;
+    let unpacked = stage.path().join("unpacked");
+    std::fs::create_dir_all(&unpacked)?;
+    let output = tokio::process::Command::new("tar")
+        .arg("-xf")
+        .arg(&file)
+        .arg("-C")
+        .arg(&unpacked)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .context("unpacking needs `tar`")?;
+    ensure!(
+        output.status.success(),
+        "unpacking the GitHub CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    // One directory named after the archive holds everything; take whatever it is called.
+    let top = std::fs::read_dir(&unpacked)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.join("bin/gh").is_file())
+        .context("the GitHub CLI archive did not contain bin/gh")?;
+    let destination = gh.join(GH_VERSION);
+    if destination.exists() {
+        std::fs::remove_dir_all(&destination)?;
+    }
+    std::fs::rename(&top, &destination)?;
+    point(&gh.join("current"), Path::new(GH_VERSION))?;
+    std::fs::create_dir_all(bin(data))?;
+    point(&bin(data).join("gh"), &gh.join("current/bin/gh"))?;
     Ok(())
 }
 
@@ -1310,6 +1442,7 @@ pub fn describe(status: &Status) -> String {
     out.push_str(&line("node", &status.node));
     out.push_str(&line("npm", &status.npm));
     out.push_str(&line("git", &status.git));
+    out.push_str(&line("gh", &status.gh));
     for agent in &status.agents {
         out.push_str(&format!(
             "{:<12} {:<18} {}\n",

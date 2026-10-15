@@ -5,7 +5,7 @@ use orochi::{
 };
 use serde_json::json;
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
     time::Duration,
 };
@@ -3390,7 +3390,7 @@ fn thread_names_a_recorded_conversation_and_is_refused_anywhere_else() {
 }
 
 #[test]
-fn writable_helpers_run_concurrently_in_dedicated_retained_worktrees() {
+fn writable_helpers_work_in_their_own_worktrees_which_the_lead_closes_and_the_end_sweeps() {
     let mut w = Workspace::new();
     let root = w.dir.path().join("repo");
     let git = |args: &[&str]| {
@@ -3420,6 +3420,8 @@ fn writable_helpers_run_concurrently_in_dedicated_retained_worktrees() {
     );
     env.insert("MOCK_WRITERS".into(), "alice,bob".into());
     env.insert("MOCK_LEAD_DELAY".into(), "4".into());
+    // The lead merges alice's worktree once her report is in and never closes bob's.
+    env.insert("MOCK_FINISH".into(), "alice:merge".into());
     w.config.scheduler.prompt_timeout_secs = 40;
     w.config.scheduler.discovery_timeout_secs = 20;
     let output = chat(&w, "Implement both components and add verification\n");
@@ -3434,17 +3436,119 @@ fn writable_helpers_run_concurrently_in_dedicated_retained_worktrees() {
         .collect();
     assert_eq!(paths.len(), 2);
     assert_ne!(paths[0], paths[1]);
-    for (path, name) in paths.iter().zip(["alice", "bob"]) {
-        assert!(path.join(".git").is_file());
-        assert!(path.join(format!("helper-{name}.txt")).is_file());
-        assert!(!root.join(format!("helper-{name}.txt")).exists());
-        assert_eq!(
-            std::fs::read_to_string(path.join("source.txt")).unwrap(),
-            "baseline"
+    let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap();
+    assert!(
+        completions.contains("Its worktree `alice`") && completions.contains("finish_workspace"),
+        "{completions}"
+    );
+    // Each helper wrote in a worktree of its own, never in the user's tree; the lead closed
+    // alice's with a merge, so her file arrived in the tree as an uncommitted change.
+    let finished: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("finished.txt")).unwrap()).unwrap();
+    assert_eq!(finished["alice"]["finished"], "alice", "{finished}");
+    assert_eq!(
+        finished["alice"]["result"]["merged"][0], "helper-alice.txt",
+        "{finished}"
+    );
+    assert!(root.join("helper-alice.txt").is_file());
+    assert!(!root.join("helper-bob.txt").exists());
+    // Bob's was never closed by the lead, so the conversation's end closed it: the worktree
+    // is gone and his work waits as a patch. No worktree outlives the conversation.
+    for path in &paths {
+        assert!(!path.exists(), "{} should be gone", path.display());
+    }
+    let listed = Command::new("git")
+        .current_dir(&root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .unwrap();
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert_eq!(listed.matches("worktree ").count(), 1, "{listed}");
+    let sessions = root.join(".orochi/sessions");
+    let patches: Vec<PathBuf> = walk(&sessions)
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|x| x == "patch"))
+        .collect();
+    assert_eq!(patches.len(), 1, "{patches:?}");
+    assert!(patches[0].ends_with("bob.patch"));
+    assert!(
+        std::fs::read_to_string(&patches[0])
+            .unwrap()
+            .contains("helper-bob.txt")
+    );
+    let notes = String::from_utf8_lossy(&output.stderr);
+    assert!(notes.contains("closed 1 worktree still open"), "{notes}");
+    let status = Command::new("git")
+        .current_dir(&root)
+        .args(["status", "--porcelain"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap();
+    assert!(
+        status.contains("?? helper-alice.txt") && status.lines().all(|l| l.starts_with("?? ")),
+        "the user's HEAD and index are untouched; the merge arrived as an edit: {status}"
+    );
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut found = vec![];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(walk(&path));
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn with_worktrees_off_a_writing_helper_is_refused_and_the_lead_is_told_why() {
+    let mut w = Workspace::new();
+    let root = w.dir.path().join("repo");
+    for args in [
+        vec!["init"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "user.email", "test@localhost"],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
         );
     }
-    let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap();
-    assert!(completions.contains("workspace:") && completions.contains("integrate explicitly"));
+    std::fs::write(root.join("source.txt"), "baseline").unwrap();
+    for args in [vec!["add", "."], vec!["commit", "-q", "-m", "initial"]] {
+        assert!(
+            Command::new("git")
+                .current_dir(&root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    w.config.mailbox.enabled = true;
+    w.config.workspaces.enabled = false;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert("MOCK_HELPERS".into(), "alice:Implement component A".into());
+    env.insert("MOCK_WRITERS".into(), "alice".into());
+    w.config.scheduler.prompt_timeout_secs = 40;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Implement the component\n");
+    success(&output);
+    let replies: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("started.txt")).unwrap()).unwrap();
+    let refused = replies[0]["refused"].as_str().unwrap_or_default();
+    assert!(refused.contains("/worktrees on"), "{replies}");
+    assert!(!root.join(".orochi/sessions").exists());
 }
 
 /// A repository with one commit at the workspace's `repo`, which writable helpers need.
@@ -3681,5 +3785,57 @@ fn a_restarted_host_resumes_the_threads_recorded_session() {
     assert!(
         log.contains("Now document it") && !log.contains("Previous conversation (context)"),
         "a loaded session is not also told the transcript: {log}"
+    );
+}
+
+/// A lead that polls instead of ending its turn — list_work until the helper is done, the
+/// trial, list_work until it is clean, then apply_merge, all inside one turn — still gets its
+/// apply: the apply runs once the turn ends and before the lead is woken, and the wake carries
+/// the outcome. Measured on a real Codex lead (2026-10-16), which did exactly this.
+#[test]
+fn an_apply_asked_for_inside_a_polling_turn_runs_before_the_lead_is_woken() {
+    let mut w = Workspace::new();
+    let root = committed_repository(&w);
+    w.config.mailbox.enabled = true;
+    w.config.manager.apply = "auto".into();
+    w.config.evaluator.checks = vec![CheckCommand {
+        name: "smoke".into(),
+        command: "true".into(),
+        args: vec![],
+    }];
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "delegate".into());
+    env.insert(
+        "MOCK_HELPERS".into(),
+        "backend:Implement the feature".into(),
+    );
+    env.insert("MOCK_WRITERS".into(), "backend".into());
+    env.insert("MOCK_MERGE".into(), "backend".into());
+    env.insert("MOCK_POLL".into(), "1".into());
+    env.insert("MOCK_HELPER_DELAYS".into(), "backend:0.5".into());
+    w.config.scheduler.prompt_timeout_secs = 90;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Implement the feature and merge it\n");
+    success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let merge = std::fs::read_to_string(root.join("merge.txt")).unwrap_or_default();
+    assert!(merge.contains(r#""approved": "auto""#), "{merge}\n{stderr}");
+    let completions = std::fs::read_to_string(root.join("completions.txt")).unwrap_or_default();
+    assert!(
+        completions.contains("Applied `backend` (trial backend-"),
+        "the wake carries the apply: {completions}\n{stderr}"
+    );
+    assert!(
+        completions.contains("Background agent `backend`")
+            && completions.matches("=====").count() == 1,
+        "one wake carries the helper's report and the apply's outcome: {completions}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("feature.txt")).unwrap(),
+        "written by backend\n"
+    );
+    assert!(
+        !stderr.contains("closed 1 worktree"),
+        "an applied worktree is not left for the sweep: {stderr}"
     );
 }

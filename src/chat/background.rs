@@ -40,6 +40,11 @@ pub struct Env<'a> {
     pub headless: bool,
     pub permission: PermissionMode,
     pub workspace: std::path::PathBuf,
+    /// Whether a writing helper may have a worktree in this conversation (`/worktrees`).
+    pub worktrees: bool,
+    /// The conversation's hold on its session directory, taken when the first worktree is
+    /// made, so `orochi workspaces prune` in another process leaves it alone.
+    pub live: std::sync::Arc<std::sync::Mutex<Option<crate::workspaces::Live>>>,
 }
 
 pub struct Helper {
@@ -397,22 +402,25 @@ pub fn completion(finished: &[Finished]) -> String {
     finished
         .iter()
         .map(|f| {
-            let mut head = format!("Background agent `{}` ({})", f.name, f.title);
-            if let Some(root) = &f.workspace {
-                head.push_str(&format!(
-                    "; workspace: {} (changes retained; integrate explicitly)",
-                    root.display()
-                ));
-            }
+            let head = format!("Background agent `{}` ({})", f.name, f.title);
             let elapsed = super::span(f.elapsed);
-            match &f.ending {
+            let mut text = match &f.ending {
                 Ending::Finished if f.result.is_empty() => {
                     format!("{head} finished after {elapsed} without reporting anything.")
                 }
                 Ending::Finished => format!("{head} finished after {elapsed}:\n{}", f.result),
                 Ending::Stopped => format!("{head} was stopped by the user after {elapsed}."),
                 Ending::Failed(why) => format!("{head} failed after {elapsed}: {why}."),
+            };
+            if let Some(root) = &f.workspace {
+                text.push_str(&format!(
+                    "\n\nIts worktree `{}` at {} ({}) is still open: review the changes there, then close it with finish_workspace (merge, pr or discard). Left open, it is closed when the conversation ends and its changes kept as a patch.",
+                    f.name,
+                    root.display(),
+                    crate::workspaces::summary(root).unwrap_or_else(|| "unreadable".into())
+                ));
             }
+            text
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -441,7 +449,7 @@ fn first_line(text: &str) -> String {
 fn prompt(lead: &str, name: &str, title: &str, task: &str, workspace: Option<&Path>) -> String {
     if let Some(root) = workspace {
         return format!(
-            "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\nImplement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree. Do not merge into the original workspace. Report changed files, checks and remaining issues, including the workspace path. Your changes are retained after you finish. Never start another agent or another Orochi.\n\nYour task:\n{task}",
+            "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\nImplement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree; do not commit, merge or push — `{lead}` closes the worktree when your report is in, merging your changes or opening a pull request from them. Report changed files, checks and remaining issues. Never start another agent or another Orochi.\n\nYour task:\n{task}",
             root.display()
         );
     }

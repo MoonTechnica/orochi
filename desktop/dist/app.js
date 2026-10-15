@@ -159,6 +159,8 @@ const WORDS = {
     "At least one agent is ready. Anything else can be added here later.":
       "使えるエージェントが少なくとも 1 つあります。ほかは後からここで追加できます。",
     "Node.js": "Node.js",
+    "GitHub CLI": "GitHub CLI",
+    "will be installed; it opens pull requests from helpers' worktrees": "インストールします。ヘルパーの worktree からプルリクエストを開くのに使います",
     "installed by Orochi": "Orochi がインストール",
     "too old; Node.js 22 or later will be installed": "古すぎます。Node.js 22 以降をインストールします",
     "will be installed under Orochi's data directory": "Orochi のデータディレクトリにインストールします",
@@ -1698,6 +1700,15 @@ async function drawSetup(fresh) {
       : t(view.node.path ? "too old; Node.js 22 or later will be installed" : "will be installed under Orochi's data directory"),
     view.node.ok,
   ));
+  if (view.gh) {
+    rows.append(setupRow(
+      t("GitHub CLI"),
+      view.gh.ok
+        ? `${view.gh.version || ""}${view.gh.managed ? ` · ${t("installed by Orochi")}` : ""}`
+        : t("will be installed; it opens pull requests from helpers' worktrees"),
+      view.gh.ok,
+    ));
+  }
   for (const agent of view.agents) {
     const installed = INSTALLED.has(agent.status);
     let note;
