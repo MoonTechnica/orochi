@@ -126,6 +126,11 @@ fn fill(value: &Value, instruction: &str) -> Value {
 /// `_meta` on an ACP request: a JSON object.
 pub type Meta = Map<String, Value>;
 
+/// Whether this agent is a native CLI driven through one of the pinned ACP bridges.
+pub fn bridged(agent: &AgentConfig) -> bool {
+    bridge(agent).is_some()
+}
+
 fn bridge(agent: &AgentConfig) -> Option<Bridge> {
     // Existing custom ACP commands/arguments remain authoritative. Native commands
     // may also be configured by absolute path or under a custom agent ID.

@@ -78,6 +78,13 @@ fn setup_login(open: State<'_, Open>, agent: String) -> Result<(), String> {
     in_terminal(&command)
 }
 
+/// Stops a setup job: the whole process group, so nothing it started is left downloading.
+#[tauri::command]
+fn cancel_job(open: State<'_, Open>, id: String) -> Result<(), String> {
+    let (_, data) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::cancel_job(&data, &id).map_err(fail)
+}
+
 /// Opens an agent's install instructions in the browser, from the Setup screen.
 #[tauri::command]
 fn open_docs(open: State<'_, Open>, url: String) -> Result<(), String> {
@@ -602,6 +609,7 @@ fn main() {
             setup_status,
             setup_login,
             open_docs,
+            cancel_job,
             sandbox_secret,
             sandbox_login,
             rename_thread,

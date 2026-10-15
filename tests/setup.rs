@@ -229,8 +229,8 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("Node.js v24.0.0 installed"), "{stdout}");
-    assert!(stdout.contains("gemini installed"), "{stdout}");
-    assert!(stdout.contains(&format!("Wrote {}", machine.config().display())));
+    assert!(stdout.contains("@google/gemini-cli at"), "{stdout}");
+    assert!(stdout.contains(&format!("wrote {}", machine.config().display())));
     let toolchain = machine.data().join("toolchain");
     assert!(toolchain.join("node/current/bin/node").is_file());
     assert!(toolchain.join("node/v24.0.0/bin/node").is_file());
@@ -262,6 +262,35 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
             .filter_map(|e| e.ok())
             .count(),
         0
+    );
+
+    // The run reported itself step by step, as a window follows it: decided up front, each
+    // timed, the config written, Node put in, gemini installed, and no adapter step for an
+    // agent that has no bridge.
+    let progress = setup::Progress::read(&machine.data()).unwrap();
+    assert!(progress.finished_at.is_some());
+    let steps: Vec<(&str, &str)> = progress
+        .steps
+        .iter()
+        .map(|s| (s.name.as_str(), s.state.as_str()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("Writing the configuration file", "done"),
+            ("Installing Node.js", "done"),
+            ("Installing gemini", "done"),
+        ]
+    );
+    for step in &progress.steps {
+        assert!(step.started_at.is_some() && step.finished_at >= step.started_at);
+    }
+    assert!(
+        progress.steps[1]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("v24.0.0")
     );
 
     // After: the Node Orochi put in is the one found, and Gemini is installed but not yet
@@ -296,7 +325,13 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     let stdout = String::from_utf8_lossy(&again.stdout);
     assert!(again.status.success());
     assert!(stdout.contains("Node.js v24.0.0 at"), "{stdout}");
-    assert!(!stdout.contains("Downloading"), "{stdout}");
+    assert!(!stdout.contains("downloading"), "{stdout}");
+    let again = setup::Progress::read(&machine.data()).unwrap();
+    assert_eq!(again.steps.len(), 2);
+    assert!(
+        again.steps.iter().all(|s| s.state == "skipped"),
+        "{again:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(&log)
             .unwrap()
@@ -320,6 +355,17 @@ fn a_node_archive_that_does_not_match_its_published_checksum_is_never_unpacked()
         stderr.contains("does not match its published checksum"),
         "{stderr}"
     );
+    // The step it failed on says so, and nothing after it was started.
+    let progress = setup::Progress::read(&machine.data()).unwrap();
+    assert_eq!(progress.steps[1].state, "failed");
+    assert!(
+        progress.steps[1]
+            .detail
+            .as_deref()
+            .unwrap()
+            .contains("checksum")
+    );
+    assert!(progress.finished_at.is_some());
     let node = machine.data().join("toolchain/node");
     assert!(!node.join("current").exists());
     assert!(!node.join("v24.0.0").exists());
@@ -540,4 +586,41 @@ async fn lima_is_put_under_the_toolchain_from_a_checked_release_and_found_from_t
         .unwrap_err();
     assert!(error.to_string().contains("does not match"), "{error}");
     assert!(!fresh.path().join("toolchain/lima/current").exists());
+}
+
+#[test]
+fn a_running_setup_job_can_be_stopped_and_is_written_down_as_interrupted() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    // In place of the binary: something that would run for a long time, in a child of its own,
+    // as a download or an npm install would be.
+    let slow = dir.path().join("slow");
+    executable(&slow, "#!/bin/sh\nsleep 300 &\nwait\n");
+    let id = orochi::sandbox::jobs::start(
+        &slow,
+        &dir.path().join("config.toml"),
+        &data,
+        Request::Prepare {
+            install: vec![],
+            sandbox: false,
+        },
+    )
+    .unwrap();
+    let job = orochi::sandbox::jobs::list(&data, 1).unwrap().remove(0);
+    assert_eq!(job.id, id);
+    assert_eq!(job.exit, None);
+    let pid = job.pid.expect("a job knows its process group");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    orochi::sandbox::jobs::cancel(&data, &id).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let job = orochi::sandbox::jobs::list(&data, 1).unwrap().remove(0);
+    assert_eq!(job.exit, Some(130));
+    // The whole group is gone, the sleep with it.
+    let alive = unsafe { libc::kill(-(pid as i32), 0) } == 0;
+    assert!(!alive, "the job's process group is still there");
+    // Stopping it again, or something that is not a job, changes nothing and says so.
+    orochi::sandbox::jobs::cancel(&data, &id).unwrap();
+    assert!(orochi::sandbox::jobs::cancel(&data, "../../etc").is_err());
+    assert!(orochi::sandbox::jobs::cancel(&data, "nope").is_err());
 }

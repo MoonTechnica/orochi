@@ -38,7 +38,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
-    "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-later", "setup-go",
+    "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-details", "setup-cancel", "setup-later", "setup-go",
     "place", "place-head", "place-title", "place-close", "place-body", "place-root-label",
     "place-root", "place-modes-label", "place-modes", "place-note", "place-more",
     "place-advanced", "place-docker", "place-error", "place-foot", "place-cancel", "place-go",
@@ -137,6 +137,7 @@ const SETUP = {
   ready: false,
   toolchain: "/home/me/.local/share/orochi/toolchain",
   jobs: [],
+  progress: null,
 };
 
 /// Every test here builds rows by hand, and a name invented in one of them is a name the page
@@ -2318,20 +2319,66 @@ test("an installed agent that is not signed in offers a sign-in that opens Termi
   assert.deepEqual(calls.filter(([name]) => name === "setup_login").map(([, a]) => a), [{ agent: "codex" }]);
 });
 
-test("while setup runs the dialog follows its log, and says so when it failed", async () => {
-  const running = { ...SETUP, jobs: [{ id: "1", request: { op: "prepare", install: ["claude"] }, started_at: 1, exit: null, tail: "Downloading Node.js v24.22.0" }] };
-  let { el, tick } = await open({ setup_status: running });
+/// A run two steps in: what `orochi setup` wrote to progress.json for the job "1".
+const PROGRESS = {
+  job: "1", started_at: 1000, finished_at: null,
+  steps: [
+    { name: "Writing the configuration file", state: "skipped", started_at: 1000, finished_at: 1020, detail: "/home/me/.config/orochi/config.toml exists" },
+    { name: "Installing Node.js", state: "done", started_at: 1020, finished_at: 16420, detail: "Node.js v24.22.0 installed under /home/me/.local/share/orochi/toolchain/node" },
+    { name: "Installing claude", state: "running", started_at: 16420, finished_at: null, detail: null },
+    { name: "Preparing the ACP adapter for claude", state: "pending", started_at: null, finished_at: null, detail: null },
+    { name: "Installing Lima", state: "pending", started_at: null, finished_at: null, detail: null },
+    { name: "Preparing the sandbox VM and Incus", state: "pending", started_at: null, finished_at: null, detail: null },
+    { name: "Building the container image", state: "pending", started_at: null, finished_at: null, detail: null },
+  ],
+};
+
+test("while setup runs the dialog lists every step, marks the one under way, times the done ones and counts them", async () => {
+  const job = { id: "1", request: { op: "prepare", install: ["claude"], sandbox: true }, started_at: 1, exit: null, tail: "Installing claude…" };
+  const running = { ...SETUP, jobs: [job], progress: PROGRESS };
+  let { el, tick, calls } = await open({ setup_status: running, cancel_job: null });
   assert.equal(el("setup-go").disabled, true);
   assert.equal(el("setup-go").textContent, "Installing…");
-  assert.match(el("setup-body").render(), /Downloading Node.js/);
+  const drawn = el("setup-body").render();
+  assert.match(drawn, /span.current Installing claude/);
+  assert.match(drawn, /span.count 3 of 7 steps/);
+  const steps = el("setup-body").querySelectorAll("div").filter((d) => d.dataset.state);
+  assert.deepEqual(steps.map((s) => s.dataset.state), ["skipped", "done", "running", "pending", "pending", "pending", "pending"]);
+  assert.match(steps[1].render(), /span.took 15.4s/);
+  assert.match(steps[1].render(), /span.name Installing Node.js/);
+  // The log is behind a toggle, not in the way.
+  assert.doesNotMatch(drawn, /Installing claude…/);
+  el("setup-details").dispatch("click");
+  await settle();
+  assert.match(el("setup-body").render(), /pre#?.* Installing claude…|Installing claude…/);
+  assert.equal(el("setup-details").textContent, "Hide details");
   // The log is re-read on the window's own tick, once enough time has passed.
   await tick();
+  // And the run can be stopped from here.
+  assert.equal(el("setup-cancel").hidden, false);
+  el("setup-cancel").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "cancel_job").map(([, a]) => a), [{ id: "1" }]);
 
-  const failed = { ...SETUP, jobs: [{ ...running.jobs[0], exit: 1, tail: "npm install of @anthropic-ai/claude-code failed" }] };
+  const failed = { ...SETUP, jobs: [{ ...job, exit: 1, tail: "npm install of @anthropic-ai/claude-code failed" }],
+    progress: { ...PROGRESS, finished_at: 20000, steps: PROGRESS.steps.map((s, i) => i === 2
+      ? { ...s, state: "failed", finished_at: 20000, detail: "npm install of @anthropic-ai/claude-code failed: E404" } : s) } };
   ({ el } = await open({ setup_status: failed }));
   assert.equal(el("setup-go").disabled, false);
-  assert.match(el("setup-body").render(), /Setup failed/);
-  assert.match(el("setup-body").render(), /npm install of/);
+  assert.equal(el("setup-cancel").hidden, true);
+  const after = el("setup-body").render();
+  assert.match(after, /Setup failed/);
+  assert.match(after, /span.detail npm install of @anthropic-ai\/claude-code failed: E404/);
+
+  const cancelled = { ...SETUP, jobs: [{ ...job, exit: 130 }], progress: PROGRESS };
+  ({ el } = await open({ setup_status: cancelled }));
+  assert.match(el("setup-body").render(), /Setup was cancelled/);
+
+  // Progress from an earlier run is not shown for this one.
+  const stale = { ...SETUP, jobs: [{ ...job, id: "2", tail: "" }], progress: PROGRESS };
+  ({ el } = await open({ setup_status: stale }));
+  assert.doesNotMatch(el("setup-body").render(), /span.count/);
+  assert.match(el("setup-body").render(), /Installing\. Node\.js/);
 });
 
 test("a window with a usable agent is not asked to set up, and Setup stays in the menu", async () => {

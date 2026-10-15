@@ -267,6 +267,8 @@ pub struct Setup {
     pub status: orochi::setup::Status,
     /// Setup jobs, newest first: the one running, and what the last ones said.
     pub jobs: Vec<orochi::sandbox::jobs::Job>,
+    /// The steps of the last run, as far as it got.
+    pub progress: Option<orochi::setup::Progress>,
 }
 
 /// Reads the Setup screen. It runs `node --version` and looks for sign-ins, so it runs off
@@ -279,7 +281,17 @@ pub fn setup(config: &Path, data: &Path) -> Result<Setup> {
         .filter(|j| matches!(j.request, orochi::sandbox::jobs::Request::Prepare { .. }))
         .take(3)
         .collect();
-    Ok(Setup { status, jobs })
+    let progress = orochi::setup::Progress::read(data);
+    Ok(Setup {
+        status,
+        jobs,
+        progress,
+    })
+}
+
+/// Stops a setup job the window started.
+pub fn cancel_job(data: &Path, id: &str) -> Result<()> {
+    orochi::sandbox::jobs::cancel(data, id)
 }
 
 /// The command that signs an agent in, for a terminal to run: every CLI's sign-in opens a

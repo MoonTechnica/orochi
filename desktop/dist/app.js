@@ -49,7 +49,7 @@ const state = {
   renaming: null,
   // First-launch setup: what this machine has of what Orochi needs, asked once when the window
   // opens and shown until something here can be routed to, or the person says later.
-  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set(), sandbox: null },
+  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set(), sandbox: null, details: false },
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -184,6 +184,20 @@ const WORDS = {
     "VM running": "VM 稼働中",
     "VM stopped": "VM 停止中",
     "not available on this machine": "このマシンでは利用できません",
+    "Show details": "詳細を表示",
+    "Hide details": "詳細を隠す",
+    "of": "/",
+    steps: "ステップ",
+    "Setup finished.": "初期設定が完了しました。",
+    "Setup was cancelled.": "初期設定をキャンセルしました。",
+    "Writing the configuration file": "設定ファイルを書き込み",
+    "Checking Node.js": "Node.js を確認",
+    "Installing Node.js": "Node.js をインストール",
+    "Installing Lima": "Lima をインストール",
+    "Preparing the sandbox VM and Incus": "サンドボックス VM と Incus を準備",
+    "Building the container image": "コンテナイメージをビルド",
+    "Installing {agent}": "{agent} をインストール",
+    "Preparing the ACP adapter for {agent}": "{agent} の ACP アダプタを準備",
     "Host VM": "ホスト VM",
     running: "稼働中",
     stopped: "停止中",
@@ -1752,21 +1766,89 @@ async function drawSetup(fresh) {
   }
   body.append(rows);
 
-  if (last) {
+  // The run's steps, as `orochi setup` reports them: decided before the first one starts, so
+  // what is still to come is listed from the beginning, each marked as it goes and timed.
+  const progress = view.progress && last && view.progress.job === last.id ? view.progress : null;
+  if (last && progress) {
     const failed = !running && last.exit !== 0;
+    const cancelled = !running && last.exit === 130;
+    const steps = progress.steps;
+    const finished = steps.filter((s) => s.state === "done" || s.state === "skipped").length;
+    const current = steps.find((s) => s.state === "running") || steps.find((s) => s.state === "failed");
+    const section = text("section", "setup-progress");
+    const head = text("div", "setup-head");
+    head.append(text("span", "current", running
+      ? stepName(current?.name || "")
+      : t(cancelled ? "Setup was cancelled." : failed ? "Setup failed. Fix what it says below and try again." : "Setup finished.")));
+    head.append(text("span", "count", `${Math.min(finished + (running ? 1 : 0), steps.length)} ${t("of")} ${steps.length} ${t("steps")}`));
+    section.append(head);
+    const bar = text("div", `setup-bar${failed ? " failed" : ""}`);
+    const fill = text("i");
+    fill.style.width = `${Math.round((finished / Math.max(1, steps.length)) * 100)}%`;
+    bar.append(fill);
+    section.append(bar);
+    const list = text("div", "setup-steps");
+    for (const step of steps) {
+      // A run stopped from here leaves its step written as under way; it is not.
+      const shown = cancelled && step.state === "running" ? "failed" : step.state;
+      const row = text("div", `setup-step ${shown}`);
+      row.dataset.state = shown;
+      const mark = text("span", "mark");
+      if (shown === "done") mark.append(drawn("check", "icon"));
+      if (shown === "failed") mark.append(drawn("x", "icon"));
+      row.append(mark, text("span", "name", stepName(step.name)));
+      row.append(text("span", "took", step.started_at && step.finished_at ? `${((step.finished_at - step.started_at) / 1000).toFixed(1)}s` : ""));
+      if (step.detail && (shown === "failed" || shown === "skipped" || state.setup.details)) {
+        row.append(text("span", "detail", step.detail));
+      }
+      list.append(row);
+    }
+    section.append(list);
+    body.append(section);
+  } else if (last) {
     body.append(text("p", "where", t(running
       ? "Installing. Node.js and the CLIs chosen go under Orochi's data directory; nothing on the system is changed."
-      : failed ? "Setup failed. Fix what it says below and try again." : "")));
+      : last.exit === 0 ? "Setup finished." : last.exit === 130 ? "Setup was cancelled." : "Setup failed. Fix what it says below and try again.")));
+  }
+  if (last && state.setup.details) {
     const log = text("pre", null, last.tail);
     log.id = "setup-log";
-    if (failed) log.className = "failed";
+    if (!running && last.exit !== 0) log.className = "failed";
     body.append(log);
   }
+  el("setup-details").hidden = !last;
+  el("setup-details").textContent = t(state.setup.details ? "Hide details" : "Show details");
+  el("setup-details").setAttribute("aria-expanded", String(state.setup.details));
+  el("setup-cancel").hidden = !running;
+  el("setup-cancel").textContent = t("Cancel");
+  el("setup-cancel").dataset.job = running ? view.jobs.find((j) => j.exit === null || j.exit === undefined).id : "";
 
   const go = el("setup-go");
   go.textContent = t(running ? "Installing…" : setupFinished() ? "Done" : "Install");
   go.disabled = running;
 }
+
+/// A step's name in the window's language. The agent's name inside it stays as it is.
+function stepName(name) {
+  const agent = name.match(/^(Installing|Preparing the ACP adapter for) (\S+)$/);
+  if (agent) {
+    return t(agent[1] === "Installing" ? "Installing {agent}" : "Preparing the ACP adapter for {agent}")
+      .replace("{agent}", agent[2]);
+  }
+  return t(name);
+}
+
+el("setup-details").addEventListener("click", () => {
+  state.setup.details = !state.setup.details;
+  drawSetup(false);
+});
+
+el("setup-cancel").addEventListener("click", async () => {
+  const id = el("setup-cancel").dataset.job;
+  if (!id) return;
+  await call("cancel_job", { id });
+  await drawSetup(true);
+});
 
 /// Nothing is left to ask for: something here is usable and nothing more was chosen.
 function setupFinished() {

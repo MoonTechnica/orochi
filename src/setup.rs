@@ -439,11 +439,108 @@ pub struct Plan {
     pub sandbox: bool,
 }
 
+/// One step of a run, as a window lists it: what it is, whether it is still to come, under way,
+/// done, skipped (nothing to do) or failed, and when it began and ended, in milliseconds.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Step {
+    pub name: String,
+    pub state: String,
+    #[serde(default)]
+    pub started_at: Option<i64>,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+    /// What came of it: a version, a path, or why it was skipped or failed.
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// A run's steps, decided before the first one starts so what is still to come is listed
+/// from the beginning, written to `<data>/setup/progress.json` on every change for a window
+/// to follow. `job` is the background job it runs as (`OROCHI_JOB`), so a window can tell
+/// this run's progress from an earlier one's.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Progress {
+    pub job: Option<String>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub steps: Vec<Step>,
+    #[serde(skip)]
+    path: PathBuf,
+}
+impl Progress {
+    fn new(data: &Path, names: Vec<String>) -> Result<Self> {
+        let dir = data.join("setup");
+        std::fs::create_dir_all(&dir)?;
+        let progress = Self {
+            job: std::env::var("OROCHI_JOB").ok(),
+            started_at: now_ms(),
+            finished_at: None,
+            steps: names
+                .into_iter()
+                .map(|name| Step {
+                    name,
+                    state: "pending".into(),
+                    started_at: None,
+                    finished_at: None,
+                    detail: None,
+                })
+                .collect(),
+            path: dir.join("progress.json"),
+        };
+        progress.write()?;
+        Ok(progress)
+    }
+    /// What the last run left, if any.
+    pub fn read(data: &Path) -> Option<Self> {
+        let path = data.join("setup/progress.json");
+        let mut progress: Self = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
+        progress.path = path;
+        Some(progress)
+    }
+    fn write(&self) -> Result<()> {
+        let fresh = self.path.with_extension("json.new");
+        std::fs::write(&fresh, serde_json::to_vec(self)?)?;
+        std::fs::rename(&fresh, &self.path)?;
+        Ok(())
+    }
+    fn start(&mut self, index: usize) {
+        println!("{}…", self.steps[index].name);
+        self.steps[index].state = "running".into();
+        self.steps[index].started_at = Some(now_ms());
+        let _ = self.write();
+    }
+    fn end(&mut self, index: usize, state: &str, detail: Option<String>) {
+        if let Some(detail) = &detail {
+            println!("  {detail}");
+        }
+        self.steps[index].state = state.into();
+        self.steps[index].finished_at = Some(now_ms());
+        self.steps[index].detail = detail;
+        if state == "failed" || self.steps.iter().all(|s| s.state != "pending") {
+            self.finished_at = Some(now_ms());
+        }
+        let _ = self.write();
+    }
+}
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+/// What one step came to.
+enum Outcome {
+    Done(String),
+    Skipped(String),
+}
+
 /// Puts in what is missing: the config file, Node.js where there is none or an old one, the
 /// CLIs asked for, the ACP adapters of every CLI that is there, and with `plan.sandbox` the
-/// sandbox host. Says what it does on stdout, one line each, since a background job's log is
-/// all a window sees of it. `node_dist` is where Node.js releases are read from (`NODE_DIST`,
-/// or a mirror), `lima_releases` where Lima's are.
+/// sandbox host. The steps are decided first and reported as they go (`Progress`), each also
+/// said on stdout, since a background job's log is all a terminal sees of it. `node_dist` is
+/// where Node.js releases are read from (`NODE_DIST`, or a mirror), `lima_releases` where
+/// Lima's are.
 pub async fn run(
     config: &Config,
     config_path: &Path,
@@ -453,81 +550,158 @@ pub async fn run(
     lima_releases: &str,
 ) -> Result<Status> {
     std::fs::create_dir_all(toolchain(data))?;
-    if !config_path.is_file() {
-        write_config(config_path)?;
-        println!("Wrote {}", config_path.display());
-    }
     let before = status_with(config, config_path, data, false);
-    if before.node.ok {
-        println!(
-            "Node.js {} at {}",
-            before.node.version.as_deref().unwrap_or("?"),
-            before
-                .node
-                .path
-                .as_deref()
-                .unwrap_or(Path::new("?"))
-                .display()
-        );
-    } else {
-        let version = install_node(data, node_dist).await?;
-        println!(
-            "Node.js {version} installed under {}",
-            toolchain(data).join("node").display()
-        );
+    enum Todo {
+        Config,
+        Node,
+        Cli(String),
+        Adapter(String),
+        Lima,
+        Host,
+        Image,
     }
+    let mut todo = vec![Todo::Config, Todo::Node];
     for id in &plan.install {
         let agent = config
             .agents
             .iter()
             .find(|a| &a.id == id)
             .with_context(|| format!("no such agent: {id}"))?;
-        let package = package(agent).with_context(|| {
+        package(agent).with_context(|| {
             format!(
                 "Orochi cannot install {id}; see {}",
                 docs(agent).unwrap_or("its documentation")
             )
         })?;
-        println!("Installing {} ({})…", id, package.package);
-        install_cli(data, package).await?;
-        println!(
-            "{id} installed; {} is on Orochi's toolchain",
-            bin(data).join(package.native).display()
-        );
+        todo.push(Todo::Cli(id.clone()));
     }
     for agent in config
         .agents
         .iter()
         .filter(|a| a.enabled && !a.routing_only)
     {
-        let availability = discovery::inspect(agent, &config.discovery, data);
-        if availability.status != "adapter_required" {
-            continue;
+        let state = before.agents.iter().find(|a| a.id == agent.id);
+        let installing = plan.install.contains(&agent.id);
+        if state.is_some_and(|a| a.status == "adapter_required")
+            || (installing && discovery::bridged(agent))
+        {
+            todo.push(Todo::Adapter(agent.id.clone()));
         }
-        println!("Preparing the ACP adapter for {}…", agent.id);
-        discovery::prepare(agent, &config.discovery, data)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e.message))?;
     }
     if plan.sandbox {
-        let state = sandbox_state(config, &search_path(Some(data)), data);
-        if state.client == "lima" && state.limactl.is_none() {
+        if before.sandbox.client == "lima" && before.sandbox.limactl.is_none() {
             ensure!(
-                state.supported,
+                before.sandbox.supported,
                 "Lima runs on macOS and Linux; on Windows use tools/windows/orochi.ps1 -Setup"
             );
-            install_lima(data, lima_releases).await?;
-            println!(
-                "Lima {LIMA_VERSION} installed under {}",
-                toolchain(data).join("lima").display()
-            );
-        } else if let Some(limactl) = &state.limactl {
-            println!("Lima at {}", limactl.display());
+            todo.push(Todo::Lima);
         }
-        println!("Setting up the sandbox host (the VM, Incus and the image)…");
-        let (sandbox, data) = (config.sandbox.clone(), data.to_path_buf());
-        tokio::task::spawn_blocking(move || crate::sandbox::setup::run(&sandbox, &data, false))
-            .await??;
+        todo.push(Todo::Host);
+        todo.push(Todo::Image);
+    }
+    let names = todo
+        .iter()
+        .map(|step| match step {
+            Todo::Config => "Writing the configuration file".to_owned(),
+            Todo::Node => "Checking Node.js".to_owned(),
+            Todo::Cli(id) => format!("Installing {id}"),
+            Todo::Adapter(id) => format!("Preparing the ACP adapter for {id}"),
+            Todo::Lima => "Installing Lima".to_owned(),
+            Todo::Host => "Preparing the sandbox VM and Incus".to_owned(),
+            Todo::Image => "Building the container image".to_owned(),
+        })
+        .collect();
+    let mut progress = Progress::new(data, names)?;
+    for (index, step) in todo.iter().enumerate() {
+        progress.start(index);
+        let result: Result<Outcome> = match step {
+            Todo::Config => {
+                if config_path.is_file() {
+                    Ok(Outcome::Skipped(format!(
+                        "{} exists",
+                        config_path.display()
+                    )))
+                } else {
+                    write_config(config_path)
+                        .map(|()| Outcome::Done(format!("wrote {}", config_path.display())))
+                }
+            }
+            Todo::Node => {
+                if before.node.ok {
+                    Ok(Outcome::Skipped(format!(
+                        "Node.js {} at {}",
+                        before.node.version.as_deref().unwrap_or("?"),
+                        before
+                            .node
+                            .path
+                            .as_deref()
+                            .unwrap_or(Path::new("?"))
+                            .display()
+                    )))
+                } else {
+                    progress.steps[index].name = "Installing Node.js".into();
+                    install_node(data, node_dist).await.map(|version| {
+                        Outcome::Done(format!(
+                            "Node.js {version} installed under {}",
+                            toolchain(data).join("node").display()
+                        ))
+                    })
+                }
+            }
+            Todo::Cli(id) => {
+                let agent = config.agents.iter().find(|a| &a.id == id).expect("checked");
+                let package = package(agent).expect("checked");
+                install_cli(data, package).await.map(|()| {
+                    Outcome::Done(format!(
+                        "{} at {}",
+                        package.package,
+                        bin(data).join(package.native).display()
+                    ))
+                })
+            }
+            Todo::Adapter(id) => {
+                let agent = config.agents.iter().find(|a| &a.id == id).expect("listed");
+                let availability = discovery::inspect(agent, &config.discovery, data);
+                match availability.status {
+                    "ready" => Ok(Outcome::Skipped("already prepared".into())),
+                    "adapter_required" => discovery::prepare(agent, &config.discovery, data)
+                        .await
+                        .map(|launch| Outcome::Done(launch.command))
+                        .map_err(|e| anyhow::anyhow!("{}", e.message)),
+                    other => Err(anyhow::anyhow!(
+                        "{}",
+                        availability.detail.unwrap_or_else(|| other.to_owned())
+                    )),
+                }
+            }
+            Todo::Lima => install_lima(data, lima_releases).await.map(|()| {
+                Outcome::Done(format!(
+                    "Lima {LIMA_VERSION} under {}",
+                    toolchain(data).join("lima").display()
+                ))
+            }),
+            Todo::Host | Todo::Image => {
+                let host_only = matches!(step, Todo::Host);
+                let (sandbox, data) = (config.sandbox.clone(), data.to_path_buf());
+                tokio::task::spawn_blocking(move || {
+                    crate::sandbox::setup::run(&sandbox, &data, host_only)
+                })
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|r| r)
+                .map(|()| Outcome::Done(String::new()))
+            }
+        };
+        match result {
+            Ok(Outcome::Done(detail)) => {
+                progress.end(index, "done", (!detail.is_empty()).then_some(detail))
+            }
+            Ok(Outcome::Skipped(detail)) => progress.end(index, "skipped", Some(detail)),
+            Err(error) => {
+                progress.end(index, "failed", Some(format!("{error:#}")));
+                return Err(error);
+            }
+        }
     }
     let after = status_with(config, config_path, data, cfg!(target_os = "macos"));
     for agent in &after.agents {
@@ -583,7 +757,7 @@ pub async fn install_lima(data: &Path, releases: &str) -> Result<()> {
         .build()?;
     let archive = format!("lima-{LIMA_VERSION}-{platform}.tar.gz");
     let base = format!("{releases}/v{LIMA_VERSION}");
-    println!("Downloading Lima {LIMA_VERSION} for {platform}…");
+    println!("  downloading Lima {LIMA_VERSION} for {platform}");
     let sums = client
         .get(format!("{base}/SHA256SUMS"))
         .send()
@@ -728,7 +902,7 @@ async fn install_node(data: &Path, dist: &str) -> Result<String> {
     let version = choose(&index).context("no Node.js release the adapters accept is listed")?;
     let name = format!("node-{version}-{platform}");
     let archive = format!("{name}.tar.gz");
-    println!("Downloading Node.js {version} for {platform}…");
+    println!("  downloading Node.js {version} for {platform}");
     let sums = client
         .get(format!("{dist}/{version}/SHASUMS256.txt"))
         .send()

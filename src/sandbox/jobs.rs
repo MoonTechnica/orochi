@@ -122,6 +122,9 @@ pub struct Job {
     /// The end of what it printed.
     #[serde(default)]
     pub tail: String,
+    /// The process group it runs as, so it can be stopped.
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 fn dir(data: &Path) -> PathBuf {
@@ -144,14 +147,14 @@ pub fn start(binary: &Path, config: &Path, data: &Path, request: Request) -> Res
         crate::types::now(),
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     );
-    let job = Job {
+    let mut job = Job {
         id: id.clone(),
         request: request.clone(),
         started_at: crate::types::now(),
         exit: None,
         tail: String::new(),
+        pid: None,
     };
-    std::fs::write(dir.join(format!("{id}.json")), serde_json::to_vec(&job)?)?;
     let log = dir.join(format!("{id}.log"));
     let exit = dir.join(format!("{id}.exit"));
     // `sh` only records the exit code; every argument reaches orochi as its own word.
@@ -172,6 +175,9 @@ pub fn start(binary: &Path, config: &Path, data: &Path, request: Request) -> Res
         // shell in between counts itself as one: given the full lookup here, the job finds the
         // same Node and CLIs the window reported.
         .env("PATH", crate::setup::search_path(Some(data)))
+        // Named to the command, so what it reports (`setup::Progress`) can be told from an
+        // earlier run's.
+        .env("OROCHI_JOB", &id)
         .current_dir("/")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -182,10 +188,41 @@ pub fn start(binary: &Path, config: &Path, data: &Path, request: Request) -> Res
         // Its own group, so closing the window does not take a half-built image with it.
         command.process_group(0);
     }
-    command
+    let child = command
         .spawn()
         .with_context(|| format!("could not start {}", binary.display()))?;
+    job.pid = Some(child.id());
+    std::fs::write(dir.join(format!("{id}.json")), serde_json::to_vec(&job)?)?;
     Ok(id)
+}
+
+/// Stops a job that is still running: its whole process group, so a download or an npm
+/// install under it goes too. It is written down as interrupted (130), as a run stopped at
+/// a terminal is, since the shell that would have recorded its exit is gone with it.
+pub fn cancel(data: &Path, id: &str) -> Result<()> {
+    let dir = dir(data);
+    ensure!(
+        !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        "no such job: {id}"
+    );
+    let job: Job = serde_json::from_slice(
+        &std::fs::read(dir.join(format!("{id}.json")))
+            .with_context(|| format!("no such job: {id}"))?,
+    )?;
+    let exit = dir.join(format!("{id}.exit"));
+    if exit.exists() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    if let Some(pid) = job.pid {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = job;
+    std::fs::write(exit, "130\n")?;
+    Ok(())
 }
 
 /// The most recent jobs, newest first, each with the end of its output.

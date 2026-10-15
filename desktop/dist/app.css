@@ -1216,4 +1216,42 @@ details[open] > summary .icon { transform: rotate(90deg); }
 }
 #setup-log.failed { border: 1px solid var(--danger); }
 #setup-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 6px var(--gutter) 14px; }
+#setup-foot #setup-details { margin-right: auto; border: 0; color: var(--muted); padding: 4px 0; }
+#setup-foot #setup-details:hover { color: var(--text); }
 #setup-go:disabled { opacity: .5; cursor: default; }
+/* The run's steps, in the order they will happen: what is done, what is under way, what is
+   still to come, each with how long it took. */
+.setup-progress { display: grid; gap: 6px; margin-top: 4px; }
+.setup-head { display: flex; align-items: baseline; gap: 10px; }
+.setup-head .current { font-weight: 600; }
+.setup-head .count { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.setup-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.setup-bar i { display: block; height: 100%; background: var(--brand); transition: width .3s; }
+.setup-bar.failed i { background: var(--danger); }
+.setup-steps { display: grid; gap: 2px; }
+.setup-step {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  column-gap: 10px;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  color: var(--muted);
+}
+.setup-step.running { color: var(--text); background: var(--raised); }
+.setup-step.done, .setup-step.skipped { color: var(--text); }
+.setup-step.failed { color: var(--danger); }
+.setup-step .mark { justify-self: center; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; }
+.setup-step .mark svg { width: 14px; height: 14px; }
+.setup-step.done .mark { color: var(--ok); }
+.setup-step.pending .mark::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
+.setup-step.skipped .mark::before { content: "–"; }
+.setup-step.running .mark::before {
+  content: ""; width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--brand); border-right-color: transparent;
+  animation: setup-spin .8s linear infinite;
+}
+@keyframes setup-spin { to { transform: rotate(360deg); } }
+.setup-step .took { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.setup-step .detail { grid-column: 2 / 4; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.setup-step.failed .detail { color: var(--danger); }
