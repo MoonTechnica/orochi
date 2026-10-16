@@ -24,6 +24,18 @@ const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
 const css = readFileSync(join(here, "../dist/app.css"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
+/// The one way to a settings page: the row at the foot, then its nav. Setup is a dialog the
+/// nav opens.
+async function openSettingsPage(el, page) {
+  if (el("account-menu").hidden) el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "settings")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === page).dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) {
   const calls = [];
   page([
@@ -552,10 +564,7 @@ const SANDBOXES = {
 };
 async function sandboxScreen(answers = {}) {
   const opened = await open({ sandboxes: SANDBOXES, sandbox_job: "3", ...answers });
-  opened.el("account").dispatch("click");
-  opened.el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "sandboxes")
-    .dispatch("click");
+  await openSettingsPage(opened.el, "sandboxes");
   await settle();
   const project = (name) =>
     opened.el("settings-body").querySelectorAll("div").find((d) => d.dataset.name === name);
@@ -1120,10 +1129,7 @@ test("insights keeps verified evidence and weak signals apart, and says so", asy
     },
   ];
   const { el } = await open({ insights });
-  el("account").dispatch("click");
-  el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "insights")
-    .dispatch("click");
+  await openSettingsPage(el, "insights");
   await new Promise((resolve) => setTimeout(resolve, 20));
   const drawn = el("settings-body").render();
   assert.match(drawn, /86%/, "the success rate is of the verified runs");
@@ -1139,10 +1145,7 @@ test("agents shows readiness and what is left of a quota", async () => {
     },
   ];
   const { el } = await open({ agents });
-  el("account").dispatch("click");
-  el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "agents")
-    .dispatch("click");
+  await openSettingsPage(el, "accounts");
   await new Promise((resolve) => setTimeout(resolve, 20));
   const drawn = el("settings-body").render();
   assert.match(drawn, /codex/);
@@ -1288,10 +1291,7 @@ test("settings edit the conversation store and what is remembered", async () => 
     settings,
     memory: { user: "Prefers small commits.\n", path: "/data/memory/USER.md" },
   });
-  el("account").dispatch("click");
-  el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "settings")
-    .dispatch("click");
+  await openSettingsPage(el, "roster");
   await new Promise((resolve) => setTimeout(resolve, 20));
   const host = el("settings-body");
   const page = async (name) => {
@@ -1394,25 +1394,21 @@ test("a thread that appears while the window is open is drawn, not just listed",
 test("everything that is not a conversation lives behind the row at the foot", async () => {
   const { el } = await open();
   assert.equal(el("account-menu").hidden, true, "it is a menu, not a row of buttons");
-  assert.equal(el("panel").open, false, "and nothing is over the conversation");
+  assert.equal(el("settings").hidden, true, "and nothing is in the conversation's place");
 
   el("account").dispatch("click");
   const items = el("account-menu")
     .querySelectorAll("button")
     .map((b) => b.textContent.replace("✓", ""));
-  assert.deepEqual(
-    items,
-    ["Setup", "Agents", "Insights", "Sandboxes", "Settings"],
-    "with settings kept apart from the ones above it",
-  );
+  assert.deepEqual(items, ["Settings"], "one row: everything else is a page of it");
 
   el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "agents")
+    .find((b) => b.dataset.screen === "settings")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(el("account-menu").hidden, true, "choosing one closes the menu");
-  assert.equal(el("settings").hidden, false, "and opens the settings page at that section");
-  assert.equal(el("settings-title").textContent, "Accounts");
+  assert.equal(el("account-menu").hidden, true, "choosing it closes the menu");
+  assert.equal(el("settings").hidden, false, "and opens the settings page");
+  assert.equal(el("settings-title").textContent, "Agents and models", "on its first page");
   assert.equal(el("thread").hidden, true, "a page takes the conversation's place");
   const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
   assert.deepEqual(
@@ -2554,7 +2550,7 @@ test("a window with a usable agent is not asked to set up, and Setup stays in th
   const { el } = await open({ setup_status: ready });
   assert.equal(el("setup").open, false);
   el("account").dispatch("click");
-  el("account-menu").querySelectorAll("button").find((b) => b.dataset.screen === "setup").dispatch("click");
+  await openSettingsPage(el, "setup");
   await settle();
   assert.equal(el("setup").open, true);
   assert.match(el("setup-body").render(), /At least one agent is ready/);
@@ -2594,10 +2590,7 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
     roster,
     suggest_roster: { roster: { claude: ["sonnet"] }, preferences: [], why: "sonnet measured best here" },
   });
-  el("account").dispatch("click");
-  el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "settings")
-    .dispatch("click");
+  await openSettingsPage(el, "roster");
   await new Promise((resolve) => setTimeout(resolve, 20));
   const host = el("settings-body");
   const drawn = host.render();

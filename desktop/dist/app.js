@@ -3735,15 +3735,8 @@ async function drawSettingsPage(page, host) {
 
 // Everything that is not a conversation lives behind the row at the foot of the sidebar,
 // rather than as a row of buttons competing with the threads for attention.
-const PANELS = [
-  ["setup", "Setup"],
-  ["agents", "Agents"],
-  ["insights", "Insights"],
-  ["sandboxes", "Sandboxes"],
-  ["sep"],
-  ["settings", "Settings"],
-];
-// Every entry but Setup opens the settings page at that section.
+// Everything is a page of Settings now, Setup among them, so the menu is one row.
+const PANELS = [["settings", "Settings"]];
 
 function closeAccount() {
   el("account-menu").hidden = true;
