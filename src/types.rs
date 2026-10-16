@@ -418,6 +418,11 @@ pub struct ExecutionCandidate {
     pub reasons: Vec<String>,
     #[serde(default)]
     pub prediction: Option<Prediction>,
+    /// The classifier named this model as suited and the user had written what it is for:
+    /// their word, so it goes before price. Still within the capable field, and still one
+    /// candidate among the rest should it fail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spoken_for: bool,
 }
 
 /// A file a chat message carries: an image or a document the agent should look at.

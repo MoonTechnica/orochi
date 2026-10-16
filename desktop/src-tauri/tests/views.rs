@@ -23,6 +23,7 @@ fn candidate() -> ExecutionCandidate {
         confidence: 0.5,
         reasons: vec!["normal implementation task".into()],
         prediction: None,
+        spoken_for: false,
     }
 }
 

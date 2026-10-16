@@ -103,3 +103,40 @@ so no models), no runs measured and nothing remembered. Codex answered first, in
 
 No preferences were proposed, which is right with nothing measured. Every ID named was one the
 agent advertised. Not applied here; the real configuration was not touched.
+
+## Roles: a roster with a note per model, run for real
+
+The roster was set by hand on this machine — OpenCode: the LM Studio model alone; Claude:
+`fable`, `opus`, `sonnet`, `haiku`; Codex: `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`;
+Antigravity off — with a note per model in Japanese (`opus`: 設計とレビュー、複雑な実装;
+`haiku`: 調査、ドキュメント、小さな修正; `gpt-6-luna`: 小さな修正、整形、定型作業; the local
+model: ローカルで済む小さな編集と、外に出したくないコード; and so on). A dry run of a small
+task then listed exactly the eight rostered models and nothing else. Three tasks were run in
+the one-file scratch repository, classifier on:
+
+| Task | Classified by | Read as | Route | Wall |
+|---|---|---|---|---|
+| Add a one-line docstring | codex / gpt-6-luna, 6 s | small_edit, `suited: gpt-6-luna` | opencode / local | 2 min 04 s |
+| Propose a test layout for 10+ modules, change nothing | claude / haiku, 12 s | architecture, `suited: opus` | opencode / local | 3 min 27 s |
+| Add tests for `""` and `None` | opencode / local: **timeout at 60 s** | heuristic `test` | opencode / local | 4 min 38 s |
+
+All three finished with correct work (the third's `unittest` ran green), but two things were
+wrong, and both were fixed the same evening:
+
+- **The note did not decide the route.** Haiku read the design question as suited to `opus`,
+  the note having said so, and the scorer multiplied Opus's cost by 0.35 — to 8,812 against
+  the local model's 2,557. No tilt reaches past a model that costs a tenth. A `suited` whose
+  model the user noted is now `spoken_for`: sorted before price and alone in the selection
+  pool. Rerun from the cache: `Route: claude / opus / medium — you said opus is for this kind
+  of work`, answered in 36 s (176,766 tokens, most of it reading the tree; the run ended in
+  `cancelled` because `--permission deny` refused its `git diff`, with the five-point answer
+  already written).
+- **The local model was asked to classify, and timed out, and would have been asked first
+  again.** An answerer nobody has timed is asked first; the local model took over the 60 s
+  budget to classify, the budget is one agent's worth, and a timed-out answer was not counted
+  as timed. It is now counted at its elapsed, so it goes last: `roster suggest` afterwards
+  went to Codex in 5 s. The test task itself, rerun, still met the one remaining timeout
+  record from before the fix and ran locally; its six tests pass.
+
+What a classification costs here, measured: Codex `gpt-6-luna` 5–6 s and ~15,500 tokens,
+Claude `haiku` 12 s and ~4,200 tokens, the local 27B model more than 60 s.

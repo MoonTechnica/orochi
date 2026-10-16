@@ -22,6 +22,7 @@ fn candidate(id: &str, cost: f64) -> ExecutionCandidate {
         expected_cost: cost,
         confidence: 0.9,
         reasons: vec![],
+        spoken_for: false,
         prediction: Some(Prediction {
             candidate_id: id.into(),
             model: "model".into(),

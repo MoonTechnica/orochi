@@ -149,6 +149,7 @@ pub fn candidates(
             let mut c = ExecutionCandidate {
                 id: String::new(),
                 prediction: None,
+                spoken_for: false,
                 agent: agent.id.clone(),
                 provider: agent.provider,
                 model: model.model.clone(),
@@ -295,9 +296,20 @@ pub fn candidates(
                 && (c.model.to_lowercase().contains(name.as_str())
                     || c.agent.to_lowercase().contains(name.as_str()))
             {
-                c.expected_cost *= SUITED;
-                c.reasons
-                    .push(format!("{name} is what this kind of work is for"));
+                // Where the user wrote what this model is for and the classifier read the
+                // work as that, it is the user's word for the route, as `--model` would be
+                // for a run: it goes before price, which no tilt could do beside a model
+                // that costs nothing (measured 2026-10-16: a design question read as
+                // `suited: opus` still ran on a local model at a tenth of the cost).
+                if agent.note_for(&c.model).is_some() {
+                    c.spoken_for = true;
+                    c.reasons
+                        .push(format!("you said {name} is for this kind of work"));
+                } else {
+                    c.expected_cost *= SUITED;
+                    c.reasons
+                        .push(format!("{name} is what this kind of work is for"));
+                }
             }
             // The mirror of a preference, and bounded the same way: dearer, never gone.
             if let Some(name) = &task.avoided
@@ -353,8 +365,9 @@ pub fn candidates(
         candidates.retain(|c| !cx.taken.contains(&(c.agent.clone(), c.model.clone())));
     }
     candidates.sort_by(|a, b| {
-        a.expected_cost
-            .total_cmp(&b.expected_cost)
+        b.spoken_for
+            .cmp(&a.spoken_for)
+            .then_with(|| a.expected_cost.total_cmp(&b.expected_cost))
             .then_with(|| a.id.cmp(&b.id))
     });
     Ok(candidates)

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 fn candidate() -> ExecutionCandidate {
     ExecutionCandidate {
         prediction: None,
+        spoken_for: false,
         id: "permitted".into(),
         agent: "codex".into(),
         provider: Provider::OPENAI,

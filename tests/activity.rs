@@ -23,6 +23,7 @@ fn candidate(agent: &str, model: &str) -> ExecutionCandidate {
         confidence: 0.5,
         reasons: vec![],
         prediction: None,
+        spoken_for: false,
     }
 }
 

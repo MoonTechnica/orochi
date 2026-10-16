@@ -225,9 +225,14 @@ pub fn select(candidates: &mut [ExecutionCandidate], config: &LearningConfig, dr
     if candidates.is_empty() {
         return;
     }
+    // The pool is what the first candidate's kind admits: what the user spoke for, if
+    // anything was, else what costs about the same as the cheapest.
     let pool = candidates
         .iter()
-        .take_while(|c| c.expected_cost <= candidates[0].expected_cost * config.max_cost_ratio)
+        .take_while(|c| {
+            c.spoken_for == candidates[0].spoken_for
+                && c.expected_cost <= candidates[0].expected_cost * config.max_cost_ratio
+        })
         .count();
     let epsilon = if config.strategy == LearningStrategy::Bandit {
         config.exploration

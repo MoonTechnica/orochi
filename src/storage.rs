@@ -407,7 +407,10 @@ impl Store {
             let Ok(run) = serde_json::from_str::<RunRecord>(&row?) else {
                 continue;
             };
-            if run.error_kind.is_some() {
+            // A refusal says nothing about speed; a timeout is the slowest answer there is,
+            // and an answerer nobody has timed goes first, so one that times out has to be
+            // timed or it is asked first again, and again (a local model, 2026-10-16).
+            if run.error_kind.as_deref().is_some_and(|k| k != "timeout") {
                 continue;
             }
             if let Some(key) = key(&run) {

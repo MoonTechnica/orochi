@@ -1286,6 +1286,7 @@ fn a_message_between_agents_belongs_to_the_conversation_it_was_sent_from() {
         confidence: 0.5,
         reasons: vec![],
         prediction: None,
+        spoken_for: false,
     };
 
     let mailbox = Mailbox::open(dir.path(), &MailboxConfig::default()).unwrap();
@@ -1461,6 +1462,7 @@ fn a_heavy_turn_seats_one_agent_where_work_like_it_has_measured_small() {
             confidence: 0.9,
             reasons: vec![],
             prediction: None,
+            spoken_for: false,
         };
         store
             .record(&RunRecord {

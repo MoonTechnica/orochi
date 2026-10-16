@@ -565,6 +565,7 @@ async fn consult(
             confidence: 0.0,
             reasons: vec![ledger.purpose.into()],
             prediction: None,
+            spoken_for: false,
         };
         let _ = store.record(&scheduler::make_record(
             &uuid::Uuid::new_v4().to_string(),

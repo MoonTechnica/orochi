@@ -704,6 +704,7 @@ fn pooled_evidence_moves_only_the_starting_point_of_an_unseen_context() {
             confidence: 0.8,
             reasons: vec![],
             prediction: None,
+            spoken_for: false,
         },
         usage: Usage {
             total_tokens: Some(tokens),
@@ -1234,6 +1235,7 @@ mod tier_pooling {
                 confidence: 0.8,
                 reasons: vec![],
                 prediction: None,
+                spoken_for: false,
             },
             usage: Usage {
                 total_tokens: Some(1000),
@@ -1366,6 +1368,7 @@ mod weak_labels {
                 confidence: 0.8,
                 reasons: vec![],
                 prediction: None,
+                spoken_for: false,
             },
             usage: Usage {
                 total_tokens: Some(1000),
@@ -1950,6 +1953,7 @@ fn a_small_task_goes_where_a_session_has_measured_cheaper() {
             confidence: 0.9,
             reasons: vec![],
             prediction: None,
+            spoken_for: false,
         };
         RunRecord {
             id: format!("{agent}-{at}"),
@@ -2070,6 +2074,7 @@ fn a_second_seat_is_dropped_from_work_measured_smaller_than_a_session() {
                 confidence: 0.9,
                 reasons: vec![],
                 prediction: None,
+                spoken_for: false,
             };
             store
                 .record(&RunRecord {
@@ -2168,6 +2173,7 @@ fn a_new_model_starts_from_what_its_agent_s_sessions_have_cost() {
             confidence: 0.9,
             reasons: vec![],
             prediction: None,
+            spoken_for: false,
         },
         usage: Usage {
             total_tokens: Some(tokens),
@@ -2246,6 +2252,7 @@ fn the_predicted_tokens_include_what_opening_the_session_costs() {
                     confidence: 0.9,
                     reasons: vec![],
                     prediction: None,
+                    spoken_for: false,
                 },
                 usage: Usage {
                     total_tokens: Some(tokens),
@@ -2351,6 +2358,7 @@ fn a_record_written_before_the_newest_fields_still_reads_back() {
             confidence: 0.9,
             reasons: vec![],
             prediction: None,
+            spoken_for: false,
         },
         usage: Usage {
             total_tokens: Some(145_906),
@@ -3401,5 +3409,169 @@ fn the_roster_keeps_the_scheduler_to_the_models_the_user_chose_and_a_dislike_onl
             .avoid
             .as_deref(),
         Some("fable")
+    );
+}
+
+/// What the user wrote a model is for is their word for the route once the classifier reads
+/// the work as that: it goes before price, where no tilt could reach past a model that costs
+/// nothing (measured 2026-10-16: a design question read as `suited: opus` ran on a local
+/// model at a tenth of the cost). The provider's own description stays a tilt.
+#[test]
+fn a_fit_the_user_wrote_down_goes_before_price_and_a_fit_the_provider_wrote_is_a_tilt() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let registry = Registry::bundled().unwrap();
+    let mut agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
+    let capabilities = caps(&["gpt-sol", "gpt-astra", "gpt-luna"]);
+    // Beside it, a model that costs next to nothing: the case the tilt cannot reach past.
+    let local = AgentConfig::preset("opencode", Provider::OPENCODE, "opencode", &["acp"]);
+    let local_models = caps(&["lmstudio/qwen"]);
+    let mut task = profiler::profile("add a health endpoint to the server", dir.path());
+    task.suited = Some("gpt-astra".into());
+    let (config, runtime, overrides) = (Config::default(), RuntimeMap::new(), Overrides::default());
+    let rank = |agent: &AgentConfig| {
+        scorer::candidates(
+            &[(agent, &capabilities), (&local, &local_models)],
+            &ScoringContext {
+                task: &task,
+                difficulty: None,
+                overrides: &overrides,
+                config: &config,
+                policies: &registry,
+                store: &store,
+                runtime: &runtime,
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap()
+    };
+    // The provider's description made it suited: cheaper, but the local model still wins.
+    let tilted = rank(&agent);
+    assert_eq!(
+        tilted[0].model,
+        "lmstudio/qwen",
+        "{:?}",
+        tilted.iter().map(|c| &c.model).collect::<Vec<_>>()
+    );
+    let astra = tilted.iter().find(|c| c.model == "gpt-astra").unwrap();
+    assert!(
+        !astra.spoken_for
+            && astra
+                .reasons
+                .iter()
+                .any(|r| r.contains("is what this kind of work is for"))
+    );
+
+    // The user's note made it suited: first, whatever it costs, and the pool is it alone.
+    agent
+        .notes
+        .insert("gpt-astra".into(), "hard problems".into());
+    let mut spoken = rank(&agent);
+    assert_eq!(spoken[0].model, "gpt-astra");
+    assert!(
+        spoken[0].spoken_for
+            && spoken[0]
+                .reasons
+                .iter()
+                .any(|r| r.contains("you said gpt-astra"))
+    );
+    assert!(
+        spoken[0].expected_cost > spoken[1].expected_cost,
+        "price did not decide it"
+    );
+    let mut bandit = config.learning.clone();
+    bandit.strategy = orochi::config::LearningStrategy::Bandit;
+    bandit.exploration = 1.0;
+    orochi::learning::select(&mut spoken, &bandit, 0.999);
+    assert_eq!(
+        spoken[0].model, "gpt-astra",
+        "even full exploration stays within what was spoken for"
+    );
+    assert!(
+        spoken[0]
+            .reasons
+            .iter()
+            .any(|r| r.contains("1 candidates within cost bound"))
+    );
+}
+
+/// An answerer nobody has timed is asked first, so one that times out must count as timed,
+/// and as the slowest, or it is asked first again and again (a local model, 2026-10-16).
+#[test]
+fn an_answerer_that_timed_out_is_timed_as_slow_and_a_refusal_is_not_timed_at_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let record = |agent: &str, at: i64, ms: u64, error: Option<&str>| RunRecord {
+        id: format!("{agent}-{at}"),
+        task_id: "q".into(),
+        repository_id: "repo".into(),
+        task_type: "classification".into(),
+        language: "none".into(),
+        framework: None,
+        scope: 1,
+        context_size: 0,
+        prediction: None,
+        candidate: ExecutionCandidate {
+            id: format!("{agent}/m"),
+            agent: agent.into(),
+            model: "m".into(),
+            provider: Provider::OPENAI,
+            reasoning_level: None,
+            mode: None,
+            session_strategy: "fresh".into(),
+            context_strategy: "adviser".into(),
+            success_probability: 0.0,
+            expected_tokens: 0.0,
+            expected_cost: 0.0,
+            confidence: 0.0,
+            reasons: vec![],
+            prediction: None,
+            spoken_for: false,
+        },
+        usage: Usage::default(),
+        duration_ms: ms,
+        attempt: 0,
+        outcome: Outcome::PartialSuccess,
+        checks: vec![],
+        error_kind: error.map(str::to_owned),
+        started_at: at,
+        purpose: "classification".into(),
+        complexity: Some(Complexity::Simple),
+        feedback: None,
+    };
+    store.record(&record("codex", 1, 6_000, None)).unwrap();
+    store
+        .record(&record("local", 2, 60_000, Some("timeout")))
+        .unwrap();
+    store
+        .record(&record("claude", 3, 2_000, Some("rate_limit")))
+        .unwrap();
+    let took = store.advice_latency("classification", 64).unwrap();
+    assert_eq!(took.get("codex"), Some(&6_000.0));
+    assert_eq!(
+        took.get("local"),
+        Some(&60_000.0),
+        "a timeout is an answer that took the whole wait"
+    );
+    assert_eq!(
+        took.get("claude"),
+        None,
+        "a refusal says nothing about speed"
+    );
+    let config = Config {
+        agents: ["local", "codex", "claude"]
+            .iter()
+            .map(|id| AgentConfig::preset(id, Provider::OPENAI, "test", &[]))
+            .collect(),
+        ..Config::default()
+    };
+    assert_eq!(
+        classifier::answerers(&config, &store),
+        ["claude", "codex", "local"],
+        "untimed first, then fastest, the one that timed out last"
     );
 }
