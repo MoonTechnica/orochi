@@ -3126,6 +3126,7 @@ mod pane {
             agent_type: Some("codex".into()),
             model: Some("gpt".into()),
             description: Some("x".repeat(400)),
+            of_turn: false,
         }
     }
 
@@ -3201,19 +3202,82 @@ mod pane {
             .due()
             .expect("the held report goes out after the interval");
         assert_eq!(body(&sent)["toolName"], "Edit");
+
+        // A seat taken, a seat's state, a seat given back: each goes out at once, since the
+        // next report would not say it had happened at all.
+        reporter.seat(seat("spec"));
+        assert!(reporter.update().is_some(), "a seat taken goes out at once");
+        reporter.seat_state("spec", SeatState::Blocked);
+        assert!(
+            reporter.update().is_some(),
+            "a seat's state goes out at once"
+        );
+        reporter.seat(Seat {
+            model: Some("gpt-6".into()),
+            ..seat("spec")
+        });
+        assert!(
+            reporter.update().is_none(),
+            "a detail of a seat is held like any other detail"
+        );
+        reporter.drop_seat("spec");
+        assert!(
+            reporter.update().is_some(),
+            "a seat given back goes out at once"
+        );
     }
 
     #[test]
-    fn seats_are_kept_by_name() {
+    fn seats_are_kept_by_name_and_a_seat_placed_again_keeps_the_state_it_was_given() {
         let mut reporter = Reporter::with(true);
         reporter.seat(seat("spec"));
         reporter.seat(seat("explorer"));
         reporter.seat(seat("spec"));
         assert_eq!(reporter.report.subagents.len(), 2);
+        reporter.seat_state("spec", SeatState::Blocked);
+        // The roster is rebuilt on every helper event; a helper waiting on the user must not
+        // read as working again because another helper said something.
+        reporter.seat(Seat {
+            model: Some("gpt-6".into()),
+            ..seat("spec")
+        });
+        assert_eq!(reporter.report.subagents[0].state, SeatState::Blocked);
+        assert_eq!(reporter.report.subagents[0].model.as_deref(), Some("gpt-6"));
         reporter.seat_state("spec", SeatState::Idle);
         assert_eq!(reporter.report.subagents[0].state, SeatState::Idle);
         reporter.drop_seat("spec");
         assert_eq!(reporter.report.subagents.len(), 1);
+    }
+
+    #[test]
+    fn a_turns_end_clears_only_the_seats_that_belonged_to_it() {
+        let mut reporter = Reporter::with(true);
+        reporter.seat(seat("spec"));
+        reporter.seat(Seat {
+            of_turn: true,
+            ..seat("reviewer")
+        });
+        reporter.seat(Seat {
+            of_turn: true,
+            description: Some("Research the API".into()),
+            ..seat("toolu_01")
+        });
+        reporter.clear_turn();
+        let left: Vec<_> = reporter
+            .report
+            .subagents
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(
+            left,
+            ["spec"],
+            "a helper outlives the turn; the turn's seats do not"
+        );
+        // What is kept for Orochi's own bookkeeping is not part of what the host is told.
+        let sent = body(&encode(&reporter.report));
+        assert!(sent["subagents"][0].get("ofTurn").is_none());
+        assert!(sent["subagents"][0].get("of_turn").is_none());
     }
 }
 

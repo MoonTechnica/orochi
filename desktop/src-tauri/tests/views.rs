@@ -819,6 +819,68 @@ fn the_seats_still_working_are_listed_across_threads_with_what_they_are_for() {
     assert!(helper.background && helper.read_only && !helper.lead);
 }
 
+/// An agent a seat's own CLI runs inside a Task is one read across threads too, under its
+/// seat, so the sidebar can draw it below the seat's row while it runs.
+#[test]
+fn the_agents_a_seats_cli_runs_inside_tasks_are_listed_under_their_seat_while_they_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let seat: String;
+    let turn: String;
+    {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        (seat, turn) = activity
+            .connection()
+            .query_row(
+                "SELECT seat_id, turn_id FROM v_roster WHERE thread_id=?1 AND role='reviewer'",
+                [&thread],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let attempt = activity
+            .create_attempt(&seat, &candidate(), false, None)
+            .unwrap();
+        for (key, data) in [
+            (
+                "task-1",
+                r#"{"title":"Task: Audit the parser","tool_name":"Task"}"#,
+            ),
+            (
+                "inner-1",
+                r#"{"title":"Read src/parser.rs","parent":"task-1"}"#,
+            ),
+            ("inner-2", r#"{"title":"Grep parse","parent":"task-1"}"#),
+        ] {
+            activity
+                .item(
+                    &thread,
+                    &turn,
+                    Some(&attempt),
+                    ItemKind::ToolCall,
+                    Some("in_progress"),
+                    Some(key),
+                    "",
+                    Some(data),
+                )
+                .unwrap();
+        }
+    }
+    let client = Client::open(dir.path()).unwrap();
+    let tasks = client.live_tasks().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].seat_id, seat);
+    assert_eq!(tasks[0].title.as_deref(), Some("Task: Audit the parser"));
+    assert_eq!(tasks[0].calls, 2);
+    // The timeline carries each call's id, so a client can hang the inner calls under theirs.
+    let items = client.thread(&thread).unwrap().unwrap().items;
+    let inner = items
+        .iter()
+        .filter(|i| i.data.as_ref().and_then(|d| d["parent"].as_str()) == Some("task-1"))
+        .count();
+    assert_eq!(inner, 2);
+    assert!(items.iter().any(|i| i.key.as_deref() == Some("task-1")));
+}
+
 /// Stopping a helper from the window is a control row naming that seat, or every background
 /// seat, which the host turns into the same stop a person gives at the terminal.
 #[test]

@@ -236,6 +236,8 @@ impl Recorder {
             }
             // A title the agent offered, which the user's own name for the thread outranks.
             Progress::Info(title) => db.title(&self.place.thread, title, false)?,
+            // A member's seat is a row of its own already; this is for whoever draws seats.
+            Progress::Member { .. } => {}
             Progress::Other(value) => {
                 self.item(db, ItemKind::Acp, None, None, "", Some(value))?;
             }
@@ -283,6 +285,8 @@ impl Recorder {
         );
         set("raw_input", raw(&update.raw_input));
         set("raw_output", raw(&update.raw_output));
+        set("parent", update.parent.clone().map(Into::into));
+        set("tool_name", update.tool_name.clone().map(Into::into));
         let data = serde_json::Value::Object(data);
         // Bound first: a guard in a `match` scrutinee lives for the whole match, and the
         // arms below lock again.

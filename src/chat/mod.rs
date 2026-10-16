@@ -911,7 +911,7 @@ impl<'a> Session<'a> {
                 self.asks.clear();
                 self.manager.reset();
                 self.lead_name = None;
-                sync_pane(&mut self.view, &self.background);
+                sync_pane(&mut self.view, &self.background, &self.results);
                 if stopped > 0 {
                     self.view
                         .note(&format!("Stopped {}", background_agents(stopped)));
@@ -1261,7 +1261,7 @@ impl<'a> Session<'a> {
         if let Some(line) = answer_ask(key, &mut self.asks, &mut self.trusted, &mut self.view) {
             self.view.line(&line);
             self.view.pane.report.state = crate::pane::State::Done;
-            sync_pane(&mut self.view, &self.background);
+            sync_pane(&mut self.view, &self.background, &self.results);
         }
         if self.asks.is_empty() {
             self.refresh_status(None);
@@ -1493,10 +1493,21 @@ impl<'a> Session<'a> {
         }
         match phase {
             Some(phase) => parts.push(format!("{phase} · esc to interrupt")),
-            None if !self.background.is_empty() => parts.push(format!(
-                "✻ Waiting for {} to finish",
-                background_agents(self.background.len())
-            )),
+            // The row is one line of the terminal: with sub-agents to count, "to finish" goes.
+            None if !self.background.is_empty() => parts.push(match self.background.tasks() {
+                0 => format!(
+                    "✻ Waiting for {} to finish",
+                    background_agents(self.background.len())
+                ),
+                1 => format!(
+                    "✻ Waiting for {} · 1 sub-agent",
+                    background_agents(self.background.len())
+                ),
+                n => format!(
+                    "✻ Waiting for {} · {n} sub-agents",
+                    background_agents(self.background.len())
+                ),
+            }),
             None => parts.push(
                 self.accounts()
                     .unwrap_or_else(|| "/help for commands".into()),
@@ -2806,6 +2817,13 @@ impl Session<'_> {
         self.view.note(&format!("report: {}", output.display()));
         let policies = Registry::load(self.data)?;
         let (events, mut received) = mpsc::unbounded_channel();
+        {
+            let report = &mut self.view.pane.report;
+            report.state = crate::pane::State::Working;
+            report.working_mode = None;
+            report.turn_completed_at = None;
+        }
+        self.view.report();
         let result = {
             let run = crate::collaboration::run(
                 self.config,
@@ -2826,11 +2844,10 @@ impl Session<'_> {
             loop {
                 tokio::select! {
                     biased;
-                    Some(event) = received.recv() => {
-                        if let ExecutionEvent::Progress(Progress::Note(note)) = event {
-                            self.view.note(&note);
-                        }
-                    }
+                    Some(event) = received.recv() => self.team_event(event),
+                    // Members take and give back their seats closer together than the pane
+                    // may be told; a report held for the interval goes out when it has passed.
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => self.view.report_due(),
                     key = self.keyboard.next(), if listening => match key {
                         // The collaboration stops on the interrupt it already listens for.
                         Some(Key::Escape | Key::Interrupt) => raise_interrupt(),
@@ -2842,10 +2859,15 @@ impl Session<'_> {
             }
         };
         while let Ok(event) = received.try_recv() {
-            if let ExecutionEvent::Progress(Progress::Note(note)) = event {
-                self.view.note(&note);
-            }
+            self.team_event(event);
         }
+        {
+            let report = &mut self.view.pane.report;
+            report.state = crate::pane::State::Done;
+            report.turn_completed_at = Some(crate::pane::now_millis());
+        }
+        self.view.pane.clear_turn();
+        self.view.report();
         match result {
             Ok(report) => {
                 let resume = format!(
@@ -2870,6 +2892,36 @@ impl Session<'_> {
         }
         self.refresh_status(None);
         Ok(())
+    }
+
+    /// What a running team says: its notes go to the transcript, and each member holding a
+    /// session is a seat of the pane while it does.
+    fn team_event(&mut self, event: ExecutionEvent) {
+        match event {
+            ExecutionEvent::Progress(Progress::Note(note)) => self.view.note(&note),
+            ExecutionEvent::Progress(Progress::Member {
+                name,
+                agent,
+                model,
+                ended,
+            }) => {
+                if ended {
+                    self.view.pane.drop_seat(&name);
+                } else {
+                    self.view.pane.seat(crate::pane::Seat {
+                        id: name,
+                        state: crate::pane::SeatState::Working,
+                        started_at: crate::pane::now_millis(),
+                        agent_type: agent,
+                        model,
+                        description: None,
+                        of_turn: true,
+                    });
+                }
+                self.view.report();
+            }
+            _ => {}
+        }
     }
 
     /// Splits complex work regardless of its deliverable: plan, do the work, then check it.
@@ -3341,7 +3393,7 @@ impl Session<'_> {
         let feed = &mut self.feed;
         let root = self.root;
         let mut screen = Screen::new(&mut self.view);
-        sync_pane(screen.view, helpers);
+        sync_pane(screen.view, helpers, results);
         // The lead takes its place first and each seat after the one before it, so each sees
         // what the earlier ones took and finds them in the mailbox, however long its own
         // discovery ran.
@@ -3557,7 +3609,7 @@ impl Session<'_> {
                         );
                         if !started.is_empty() {
                             helpers.launched(started);
-                            sync_pane(screen.view, helpers);
+                            sync_pane(screen.view, helpers, results);
                         }
                         if let Some(started) = helpers.announcement(false) {
                             let line = launch_line(screen.view, started);
@@ -3640,7 +3692,13 @@ impl Session<'_> {
             screen.interject(line);
         }
         screen.done();
-        sync_pane(screen.view, helpers);
+        sync_pane(screen.view, helpers, results);
+        // A helper's question outlives the turn, and is put back after the turn's end: the end
+        // says `done` over the `blocked` the question had set, and the pane went on saying
+        // `working` until the next helper said something.
+        if !asks.is_empty() {
+            show_ask(screen.view, asks);
+        }
         // Only a turn holding the conversation can be judged by what the user does next; a guest
         // or a phase is answered for elsewhere. A message queued while it ran was written before
         // the answer was seen, so it is no verdict on it.
@@ -3837,8 +3895,13 @@ fn show_manager(view: &mut View, background: &background::Background<'_>, manage
         .map(|h| h.name.len())
         .max()
         .unwrap_or(0);
+    // Each helper with what it was asked to do and for how long, and under it the agents its
+    // own CLI is running inside Tasks: the tree the sidebar draws, in rows.
     for (index, helper) in background.helpers.iter().enumerate() {
-        let mut parts = vec![format!("working · {}", span(helper.started.elapsed()))];
+        let mut parts = vec![
+            helper.title.clone(),
+            format!("working · {}", span(helper.started.elapsed())),
+        ];
         if let Some(doing) = &helper.doing {
             parts.push(doing.lines().next().unwrap_or("").to_owned());
         }
@@ -3856,6 +3919,24 @@ fn show_manager(view: &mut View, background: &background::Background<'_>, manage
         } else {
             format!("   {}", view.paint(MUTED, &label))
         });
+        for task in &helper.tasks {
+            let mut parts = vec![format!(
+                "{} · {}",
+                task.title.as_deref().unwrap_or("Task"),
+                span(task.started.elapsed())
+            )];
+            match (&task.doing, task.calls) {
+                (Some(doing), _) => parts.push(doing.lines().next().unwrap_or("").to_owned()),
+                (None, 1) => parts.push("1 call".into()),
+                (None, n) if n > 1 => parts.push(format!("{n} calls")),
+                _ => {}
+            }
+            let label = format!("{:name_width$}  ⎿ sub-agent  {}", "", parts.join(" · "));
+            rows.push(format!(
+                "   {}",
+                view.paint(MUTED, &fit(&label, width.saturating_sub(4)))
+            ));
+        }
     }
     view.term.overlay = Some(rows);
     view.term.status = view.paint(
@@ -4773,7 +4854,7 @@ fn on_helper(
             }
         }
     }
-    sync_pane(view, background);
+    sync_pane(view, background, results);
     lines
 }
 
@@ -4785,20 +4866,45 @@ fn launch_line(view: &View, started: Vec<(String, String)>) -> String {
         .to_owned()
 }
 
-/// The helpers as the host's pane lists them, and whether the pane is only watching them.
-fn sync_pane(view: &mut View, background: &background::Background<'_>) {
+/// The helpers as the host's pane lists them — the ones at work, and the ones that have
+/// finished and whose report still waits to go back to the lead, listed `idle` until it does
+/// — and whether the pane is only watching them. The turn's own seats are left alone.
+fn sync_pane(
+    view: &mut View,
+    background: &background::Background<'_>,
+    results: &[background::Finished],
+) {
     view.helpers = background.len();
-    // Helpers carry a title; seats beside the lead do not, and are the turn's to keep.
-    view.pane.report.subagents.retain(|seat| {
-        seat.description.is_none() || background.helpers.iter().any(|h| h.name == seat.id)
-    });
-    for helper in &background.helpers {
-        let (agent, model) = helper
-            .route
-            .as_deref()
+    let listed = |name: &str| {
+        background.helpers.iter().any(|h| h.name == name) || results.iter().any(|f| f.name == name)
+    };
+    view.pane
+        .report
+        .subagents
+        .retain(|seat| seat.of_turn || listed(&seat.id));
+    let route = |route: Option<&str>| {
+        route
             .and_then(|route| route.split_once(" · "))
             .map(|(a, m)| (Some(a.to_owned()), Some(m.to_owned())))
-            .unwrap_or_default();
+            .unwrap_or_default()
+    };
+    // A finished helper first, so a live one of the same name is the row the host keeps.
+    for finished in results {
+        let (agent, model) = route(finished.route.as_deref());
+        view.pane.seat(crate::pane::Seat {
+            id: finished.name.clone(),
+            state: crate::pane::SeatState::Idle,
+            started_at: finished.started_at,
+            agent_type: agent,
+            model,
+            description: Some(finished.title.clone()),
+            of_turn: false,
+        });
+        view.pane
+            .seat_state(&finished.name, crate::pane::SeatState::Idle);
+    }
+    for helper in &background.helpers {
+        let (agent, model) = route(helper.route.as_deref());
         view.pane.seat(crate::pane::Seat {
             id: helper.name.clone(),
             state: crate::pane::SeatState::Working,
@@ -4806,7 +4912,19 @@ fn sync_pane(view: &mut View, background: &background::Background<'_>) {
             agent_type: agent,
             model,
             description: Some(helper.title.clone()),
+            of_turn: false,
         });
+        // A live helper is never idle: that was a finished one of the same name.
+        if view
+            .pane
+            .report
+            .subagents
+            .iter()
+            .any(|s| s.id == helper.name && s.state == crate::pane::SeatState::Idle)
+        {
+            view.pane
+                .seat_state(&helper.name, crate::pane::SeatState::Working);
+        }
     }
     let report = &mut view.pane.report;
     match (report.state, background.is_empty()) {
@@ -4935,6 +5053,7 @@ fn aside(event: ExecutionEvent, screen: &mut Screen<'_>, name: &str) {
                 agent_type: Some(agent.clone()),
                 model: Some(model.clone()),
                 description: None,
+                of_turn: true,
             });
             screen.view.report();
             screen.aside(name, &route);
@@ -5709,6 +5828,12 @@ struct ToolState {
     diffs: Vec<FileDiff>,
     shown: bool,
     done: bool,
+    /// The call this one runs inside, where the agent's CLI runs an agent of its own.
+    parent: Option<String>,
+    /// How many calls ran inside this one: the Task's row says so when it ends.
+    children: usize,
+    /// Listed under the pane as an agent in its own right while it runs.
+    subagent: bool,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -5817,8 +5942,8 @@ impl<'v> Screen<'v> {
             report.interactive_prompt = None;
             report.interrupted = false;
             report.turn_completed_at = None;
-            report.subagents.clear();
         }
+        view.pane.clear_turn();
         view.report();
         Self {
             view,
@@ -6193,6 +6318,7 @@ impl<'v> Screen<'v> {
             | Progress::Context { .. }
             | Progress::Commands(_)
             | Progress::Info(_)
+            | Progress::Member { .. }
             | Progress::Other(_) => {}
             Progress::Attempt {
                 outcome,
@@ -6255,6 +6381,10 @@ impl<'v> Screen<'v> {
 
     fn tool(&mut self, update: ToolUpdate) {
         let id = update.id.clone();
+        if let Some(parent) = update.parent.clone() {
+            self.nested(update, parent);
+            return;
+        }
         if !self.tools.contains_key(&id) {
             self.order.push(id.clone());
         }
@@ -6265,6 +6395,11 @@ impl<'v> Screen<'v> {
             .is_some_and(|t| !t.trim().is_empty())
         {
             state.title = update.title;
+        }
+        // Claude Code's `Task` is an agent of its own, and the host lists it as one from the
+        // moment it starts rather than from its first call.
+        if matches!(update.tool_name.as_deref(), Some("Task" | "Agent")) {
+            state.subagent = true;
         }
         if update.detail.is_some() {
             state.detail = update.detail;
@@ -6300,6 +6435,9 @@ impl<'v> Screen<'v> {
             Some(failed) if !state.done => {
                 state.done = true;
                 let snapshot = state.clone();
+                if snapshot.subagent {
+                    self.view.pane.drop_seat(&id);
+                }
                 self.finish_tool(&id, &snapshot, Some(failed));
                 self.phase = "Working".into();
             }
@@ -6310,6 +6448,9 @@ impl<'v> Screen<'v> {
                 let show = !state.shown && self.view.term.tty && self.live == Live::Nothing;
                 state.shown = true;
                 let snapshot = state.clone();
+                if snapshot.subagent {
+                    self.subagent(&id);
+                }
                 // A lookup joining the line above shows nowhere else while it runs.
                 let show = show && !(foldable(&snapshot) && self.fold_open());
                 self.phase = format!("Running {}", fit(&tool_label(&snapshot), 48));
@@ -6330,6 +6471,89 @@ impl<'v> Screen<'v> {
                 }
             }
         }
+    }
+
+    /// A call made by an agent the lead's own CLI runs inside a `Task`. The host's hooks that
+    /// would have told it about that agent are silenced in everything Orochi launches
+    /// (`pane.rs`), so the pane learns of it here: the Task is listed as a seat while anything
+    /// runs inside it. The call itself draws no row — Claude Code shows a sub-agent's work as
+    /// a count on the Task's row, and so does this transcript — and never takes the pane's
+    /// tool line, which is the lead's. It is still kept by id: a permission question asks
+    /// about it by id alone.
+    fn nested(&mut self, update: ToolUpdate, parent: String) {
+        let id = update.id.clone();
+        let fresh = !self.tools.contains_key(&id);
+        let state = self.tools.entry(id).or_default();
+        state.parent = Some(parent.clone());
+        if update
+            .title
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+        {
+            state.title = update.title;
+        }
+        if update.detail.is_some() {
+            state.detail = update.detail;
+        }
+        if update.kind.is_some() {
+            state.kind = update.kind;
+        }
+        let finished = matches!(update.status.as_deref(), Some("completed" | "failed"));
+        state.done |= finished;
+        let label = tool_label(state);
+        let known = self.tools.contains_key(&parent);
+        if known {
+            let task = self.tools.get_mut(&parent).expect("checked");
+            task.subagent = true;
+            if fresh {
+                task.children += 1;
+            }
+        }
+        if !known || self.tools[&parent].done {
+            return;
+        }
+        self.subagent(&parent);
+        self.phase = if finished {
+            "Working".into()
+        } else {
+            let task = tool_label(&self.tools[&parent]);
+            format!("Running {} › {}", fit(&task, 24), fit(&label, 40))
+        };
+    }
+
+    /// Lists a Task under the pane as the agent it is, on the lead's own route.
+    fn subagent(&mut self, id: &str) {
+        let started_at = self
+            .view
+            .pane
+            .report
+            .subagents
+            .iter()
+            .find(|s| s.id == id)
+            .map_or_else(crate::pane::now_millis, |s| s.started_at);
+        let (agent, model) = self
+            .route
+            .as_deref()
+            .and_then(|route| route.split_once(" · "))
+            .map(|(a, m)| (Some(a.to_owned()), Some(m.to_owned())))
+            .unwrap_or_default();
+        let description = self.tools.get(id).and_then(|task| {
+            task.title
+                .as_deref()
+                .map(|t| t.trim().trim_matches('`'))
+                .filter(|t| !t.is_empty())
+                .map(|t| t.strip_prefix("Task:").map_or(t, str::trim).to_owned())
+        });
+        self.view.pane.seat(crate::pane::Seat {
+            id: id.to_owned(),
+            state: crate::pane::SeatState::Working,
+            started_at,
+            agent_type: agent,
+            model,
+            description,
+            of_turn: true,
+        });
+        self.view.report();
     }
 
     /// Replaces the tool's running row in place when it is still the last one printed.
@@ -6411,7 +6635,12 @@ impl<'v> Screen<'v> {
                 self.view.paint(WARN, " (not finished)"),
             ),
         };
-        let line = format!("{dot} {}{mark}", self.tool_heading(state, limit));
+        let inside = match state.children {
+            0 => String::new(),
+            1 => self.view.paint(MUTED, " · 1 tool call inside"),
+            n => self.view.paint(MUTED, &format!(" · {n} tool calls inside")),
+        };
+        let line = format!("{dot} {}{mark}{inside}", self.tool_heading(state, limit));
         self.view.line(&line);
         for diff in state.diffs.iter().take(3) {
             self.print_diff(diff);
@@ -6601,8 +6830,8 @@ impl<'v> Screen<'v> {
             report.tool_input = None;
             report.interactive_prompt = None;
             report.turn_completed_at = Some(crate::pane::now_millis());
-            report.subagents.clear();
         }
+        self.view.pane.clear_turn();
         self.view.report();
         self.settle();
         self.end_block();

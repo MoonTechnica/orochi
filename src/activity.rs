@@ -389,6 +389,8 @@ pub struct ItemRow {
     pub turn_origin: Option<String>,
     /// Whose it is, for drawing the speaker as the agent it is.
     pub provider: Option<String>,
+    /// A tool call's own id, which the calls made inside it (`data.parent`) name.
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -499,6 +501,30 @@ pub struct LiveSeat {
     pub doing: Option<String>,
     pub usage: Option<serde_json::Value>,
     pub provider: Option<String>,
+}
+
+/// An agent a seat's own CLI is running inside one of its tool calls — Claude Code's `Task`
+/// — while it runs: the row under the seat's row in the sidebar, and the branch under it in
+/// the console's listing. It is a tool call in `items` (`data.tool_name`), and the calls the
+/// inner agent makes are the items that name it as `data.parent`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveTask {
+    pub item_id: i64,
+    pub thread_id: String,
+    pub project_id: String,
+    pub turn: String,
+    /// The seat whose agent runs it.
+    pub seat_id: String,
+    pub role: String,
+    /// The tool call's own id.
+    pub key: Option<String>,
+    /// What the agent was asked to do, as the Task's title says.
+    pub title: Option<String>,
+    pub started_at: i64,
+    /// Calls made inside it so far.
+    pub calls: i64,
+    /// The call it is making right now, if one is open.
+    pub doing: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1035,7 +1061,7 @@ impl Activity {
                 "SELECT seq, turn_id, turn_ordinal, lane, role, agent, model, kind, status,
                         text, data, truncated, patches, created_at,
                         (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id), turn_origin,
-                        provider
+                        provider, key
                  FROM v_timeline WHERE thread_id=?1 ORDER BY seq",
             )?
             .query_map([id], |r| {
@@ -1062,6 +1088,7 @@ impl Activity {
                     ),
                     turn_origin: r.get(15)?,
                     provider: r.get(16)?,
+                    key: r.get(17)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1791,6 +1818,44 @@ impl Activity {
             let (seat, host) = row?;
             if host.is_some_and(|(pid, start)| crate::process::owner_alive(pid, start)) {
                 live.push(seat);
+            }
+        }
+        Ok(live)
+    }
+
+    /// Every agent a seat's CLI is running inside a `Task` right now, across threads, under a
+    /// host that is still alive — read with `live_seats`, whose rows these hang under.
+    pub fn live_tasks(&self) -> Result<Vec<LiveTask>> {
+        let mut statement = self.connection.prepare(
+            "SELECT item_id, thread_id, project_id, turn_id, seat_id, role, key, title,
+                    started_at, calls, doing, host_pid, host_start
+             FROM v_live_tasks ORDER BY started_at, item_id",
+        )?;
+        let rows = statement.query_map([], |r| {
+            let pid: Option<i64> = r.get(11)?;
+            let start: Option<i64> = r.get(12)?;
+            Ok((
+                LiveTask {
+                    item_id: r.get(0)?,
+                    thread_id: r.get(1)?,
+                    project_id: r.get(2)?,
+                    turn: r.get(3)?,
+                    seat_id: r.get(4)?,
+                    role: r.get(5)?,
+                    key: r.get(6)?,
+                    title: r.get(7)?,
+                    started_at: r.get(8)?,
+                    calls: r.get(9)?,
+                    doing: r.get(10)?,
+                },
+                pid.zip(start),
+            ))
+        })?;
+        let mut live = vec![];
+        for row in rows {
+            let (task, host) = row?;
+            if host.is_some_and(|(pid, start)| crate::process::owner_alive(pid, start)) {
+                live.push(task);
             }
         }
         Ok(live)
@@ -2971,6 +3036,27 @@ FROM v_roster r
 JOIN threads t ON t.id=r.thread_id
 LEFT JOIN hosts h ON h.thread_id=r.thread_id
 WHERE r.ended_at IS NULL;
+
+DROP VIEW IF EXISTS v_live_tasks;
+CREATE VIEW v_live_tasks AS
+SELECT i.id AS item_id, i.thread_id, t.project_id, i.turn_id, a.seat_id, s.role, i.key,
+       COALESCE(json_extract(i.data,'$.title'), NULLIF(i.text,'')) AS title,
+       i.created_at AS started_at,
+       (SELECT count(*) FROM items c WHERE c.attempt_id=i.attempt_id
+         AND json_extract(c.data,'$.parent')=i.key) AS calls,
+       (SELECT COALESCE(json_extract(c.data,'$.detail'), json_extract(c.data,'$.title'))
+          FROM items c WHERE c.attempt_id=i.attempt_id AND json_extract(c.data,'$.parent')=i.key
+           AND c.status IN ('pending','in_progress') ORDER BY c.id DESC LIMIT 1) AS doing,
+       h.pid AS host_pid, h.start AS host_start
+FROM items i
+JOIN threads t ON t.id=i.thread_id
+JOIN attempts a ON a.id=i.attempt_id
+JOIN seats s ON s.id=a.seat_id
+LEFT JOIN hosts h ON h.thread_id=i.thread_id
+WHERE i.kind='tool_call' AND i.status IN ('pending','in_progress') AND s.ended_at IS NULL
+  AND (json_extract(i.data,'$.tool_name') IN ('Task','Agent')
+       OR EXISTS (SELECT 1 FROM items c WHERE c.attempt_id=i.attempt_id
+                   AND json_extract(c.data,'$.parent')=i.key));
 
 DROP VIEW IF EXISTS v_turn_files;
 CREATE VIEW v_turn_files AS

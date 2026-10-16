@@ -237,6 +237,7 @@ recording what it applied in a one-row table `schema_minor(applied INTEGER)`. `U
 | `prompts` | No schema change: `answered_by` is written as `terminal`, `desktop` or `headless` from every path, which the receipt reads |
 | `v_roster` | Adds `title, background, origin, result IS NOT NULL AS reported`, and `elapsed_ms` |
 | `v_live_seats` (new) | Live seats across threads, for the sidebar's child rows and Activity: `seat_id, thread_id, project_id, ordinal, role, title, background, state, started_at, agent, model, doing, usage, host_pid, host_start` |
+| `v_live_tasks` (added 2026-10-16) | The agents a live seat's own CLI is running inside its tool calls (Claude Code's `Task`), one row each while the call is open, for the row under the seat's: `item_id, thread_id, project_id, turn_id, seat_id, role, key, title, started_at, calls, doing, host_pid, host_start`. A Task is a `tool_call` item whose `data.tool_name` is `Task`/`Agent`, or one that some item names as `data.parent` — both come from `claude-agent-acp`'s `_meta.claudeCode`, read by `acp::tool_update`; `calls` counts the items naming it, `doing` is the one still open |
 | `v_sidebar` | Adds `doing` (the lead's in-progress tool, as `v_roster.doing` computes it), `background` (live background seats), `heartbeat_at` |
 | `v_timeline` | Adds `turn_origin` so a completion turn is drawn as Orochi's |
 | `v_open_prompts` | Adds `read_only` of the asking seat, so a card can say why it is asking |
@@ -525,8 +526,24 @@ state it would report **changes**, at most every 500 ms, never per streamed toke
 | `model` | `agent · model` of the lead |
 | `toolName` / `toolInput` | the lead's running tool, as the transcript labels it |
 | `interactivePrompt` | the permission panel's text, fitted |
-| `subagents` | every live seat: `id` = name, `state` (`working`; `blocked` while its prompt waits; `idle` when done and not yet reported), `startedAt` ms, `agentType` = its agent, `model`, `description` = title |
+| `subagents` | every seat under the pane, one flat list — the host's schema (re-read 2026-10-16 from Orca 1.4.224: `id`, `state`, `startedAt`, `agentType`, `model`, `description`) names no parent, so nothing is drawn *below* a seat: the seats beside the lead (`description` none), the helpers (`description` = title; `blocked` while a question of theirs waits, kept so across every rebuild of the list and across the turn's end; `idle` once finished and until the report goes back to the lead), the members of a team the console runs (`Progress::Member`), and an agent the lead's own CLI runs inside a `Task` (below) |
 | `turnCompletedAt`, `interrupted` | at a turn's end |
+
+A change of `state`, or of which seats are listed and in what state, goes out at once; only the
+details (tool, model) wait for the interval, since a seat taken and given back within one
+interval would otherwise never have been reported.
+
+**Agents inside the agent.** Claude Code's `Task` runs an agent of its own, and Orca learns of
+those through `SubagentStart`/`SubagentStop` hooks (O3) — which §8.2 silences in everything
+Orochi launches. ACP has no field for it; `claude-agent-acp` (0.23.1, read 2026-10-16) puts the
+SDK's `parent_tool_use_id` on every update the inner agent produces as
+`_meta.claudeCode.parentToolUseId` and names the tool in `_meta.claudeCode.toolName`, and
+`acp::tool_update` reads both. A `Task` is a seat of the pane from the moment it starts until
+it ends, `description` its title, on the lead's own route; a call made inside it never takes the
+pane's `toolName`, which is the lead's, and draws no row of its own — the Task's row counts them
+(`· 3 tool calls inside`), as Claude Code's does — while the status row says `Running Task ›
+Read …`. `codex-acp` drops Codex's `Collab*` events (`thread.rs`, "TODO: Subagent UI?"), so a
+Codex sub-agent is invisible to Orochi and stays so until the adapter says something.
 
 Never sent (D6): `prompt`, `lastAssistantMessage`. `orochi host`, `serve`, pipes and tests never
 emit it. A manual check, in any Orca terminal:

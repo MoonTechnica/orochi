@@ -1160,6 +1160,11 @@ impl Client {
         self.activity.live_seats()
     }
 
+    /// Every agent a seat's own CLI runs inside a `Task` right now: the rows under a seat's.
+    pub fn live_tasks(&self) -> Result<Vec<orochi::activity::LiveTask>> {
+        self.activity.live_tasks()
+    }
+
     pub fn patch(&self, id: i64) -> Result<Option<String>> {
         self.activity.patch_text(id)
     }

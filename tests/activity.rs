@@ -1180,10 +1180,50 @@ fn a_thread_whose_helpers_outlive_its_turn_reads_as_working_in_the_background() 
             "lead",
         )
         .unwrap();
-    activity
+    let helper_attempt = activity
         .create_attempt(&helper, &candidate("codex", "gpt"), false, None)
         .unwrap();
     activity.seat_state(&helper, SeatState::Working).unwrap();
+    // The helper's own CLI runs an agent inside a Task, which makes a call of its own: the
+    // Task is a sub-agent row under the helper's for as long as it runs, counting its calls.
+    let task = activity
+        .item(
+            &thread,
+            &turn,
+            Some(&helper_attempt),
+            ItemKind::ToolCall,
+            Some("in_progress"),
+            Some("task-1"),
+            "",
+            Some(r#"{"title":"Task: Audit the parser","tool_kind":"other","tool_name":"Task"}"#),
+        )
+        .unwrap();
+    activity
+        .item(
+            &thread,
+            &turn,
+            Some(&helper_attempt),
+            ItemKind::ToolCall,
+            Some("in_progress"),
+            Some("inner-1"),
+            "",
+            Some(r#"{"title":"Read src/parser.rs","detail":"src/parser.rs","tool_kind":"read","tool_name":"Read","parent":"task-1"}"#),
+        )
+        .unwrap();
+    let tasks = activity.live_tasks().unwrap();
+    assert_eq!(tasks.len(), 1, "the Task, never the call made inside it");
+    assert_eq!(tasks[0].seat_id, helper);
+    assert_eq!(tasks[0].role, "spec");
+    assert_eq!(tasks[0].title.as_deref(), Some("Task: Audit the parser"));
+    assert_eq!(tasks[0].calls, 1);
+    assert_eq!(tasks[0].doing.as_deref(), Some("src/parser.rs"));
+    activity
+        .update_tool(task, Some("completed"), None, None)
+        .unwrap();
+    assert!(
+        activity.live_tasks().unwrap().is_empty(),
+        "a finished Task is no longer a row"
+    );
 
     let row = |activity: &Activity| {
         activity

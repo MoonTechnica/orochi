@@ -185,6 +185,15 @@ pub enum Progress {
     /// `session_info_update`: a title the agent offers for the conversation. Orochi never
     /// asks for one, so this is a title that costs nothing.
     Info(String),
+    /// A member of a team this run seated took a session (`ended: false`, with its route) or
+    /// gave it back. One channel carries a whole collaboration, so the member is named; it
+    /// is for whoever lists the seats, and the store already has the seat as a row.
+    Member {
+        name: String,
+        agent: Option<String>,
+        model: Option<String>,
+        ended: bool,
+    },
     /// An update kind this version does not know, kept as received so that a conversation
     /// recorded today still renders when the protocol grows a kind tomorrow.
     Other(Value),
@@ -210,6 +219,14 @@ pub struct ToolUpdate {
     /// where they are stored, not here.
     pub raw_input: Option<Value>,
     pub raw_output: Option<Value>,
+    /// The call this one runs inside: a sub-agent's tool call names the `Task` that started
+    /// the sub-agent. ACP has no field for it; `claude-agent-acp` (0.23.1, read 2026-10-16)
+    /// puts the SDK's `parent_tool_use_id` in `_meta.claudeCode.parentToolUseId` on every
+    /// update a sub-agent produces, and `codex-acp` says nothing of its sub-agents at all.
+    pub parent: Option<String>,
+    /// The tool's own name where the adapter gives it (`_meta.claudeCode.toolName`), which is
+    /// how a `Task` is told from the other calls ACP files under `other`.
+    pub tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +282,13 @@ pub(crate) fn tool_update(update: &Value) -> Option<ToolUpdate> {
             .collect(),
         raw_input: update.get("rawInput").filter(|v| !v.is_null()).cloned(),
         raw_output: update.get("rawOutput").filter(|v| !v.is_null()).cloned(),
+        parent: update["_meta"]["claudeCode"]["parentToolUseId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
+        tool_name: update["_meta"]["claudeCode"]["toolName"]
+            .as_str()
+            .map(str::to_owned),
         ..Default::default()
     };
     let mut lines = Vec::new();

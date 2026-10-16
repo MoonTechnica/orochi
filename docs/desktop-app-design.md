@@ -461,6 +461,7 @@ The app reads **only** `v_*` views; base tables are free to change. `meta.view_a
 | `v_timeline` | items ∪ messages ∪ peer_events for a thread, in order, each with `lane` (seat), author label, provider | the thread |
 | `v_room` | messages ∪ peer_events for a thread, or for a project | group chat |
 | `v_roster` | seat × latest attempt × peer: role, agent, model, state, status line, tool in progress, elapsed, tokens | roster, mission control |
+| `v_live_tasks` | the agents a live seat's own CLI runs inside its tool calls (Claude Code's `Task`): seat, title, calls made inside, the open one, elapsed (added 2026-10-16) | the row under a seat's in the sidebar, Activity and the thread's seats block; `work()` hangs the inner calls under the Task |
 | `v_turn_files` | per turn and path: change, added, removed, latest patch id | review pane |
 | `v_open_prompts` | unanswered prompts with their tool call | approval cards, badge, notifications |
 | `v_board` | parts with wave, state and the seat running each | work-graph board |

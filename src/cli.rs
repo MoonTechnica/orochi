@@ -1299,6 +1299,22 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                                 if seat.read_only { " (read-only)" } else { "" },
                                 seat.model.as_deref().unwrap_or("choosing")
                             );
+                            // The agents the seat's own CLI is running right now, under it.
+                            for task in activity
+                                .live_tasks()?
+                                .iter()
+                                .filter(|t| t.seat_id == seat.seat_id)
+                            {
+                                println!(
+                                    "    sub-agent  {}  {} calls{}",
+                                    task.title.as_deref().unwrap_or("Task"),
+                                    task.calls,
+                                    task.doing
+                                        .as_ref()
+                                        .map(|d| format!("  {d}"))
+                                        .unwrap_or_default()
+                                );
+                            }
                         }
                         for item in &thread.items {
                             let text = item.text.lines().next().unwrap_or("");

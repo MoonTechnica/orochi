@@ -190,7 +190,24 @@ def delegate(request):
             answer = json.loads(sys.stdin.readline())
             (root / f"helper-answer-{name}.txt").write_text(json.dumps(answer.get("result", {})))
         delays = dict(pair.split(":") for pair in os.environ.get("MOCK_HELPER_DELAYS", "").split(",") if pair)
-        time.sleep(float(delays.get(name.split("-")[0], "0.5")))
+        if os.environ.get("MOCK_HELPER_TASK") == name.split("-")[0]:
+            # The helper's own CLI runs an agent inside a Task for as long as the helper works,
+            # marked as claude-agent-acp marks it; a call inside it is open the whole time.
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call", "toolCallId": f"task-{name}", "title": "Task: Audit the parser", "kind": "other",
+                "status": "in_progress", "_meta": {"claudeCode": {"toolName": "Task"}}}}})
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call", "toolCallId": f"inner-{name}", "title": "Read src/parser.rs", "kind": "read",
+                "status": "in_progress", "_meta": {"claudeCode": {"toolName": "Read", "parentToolUseId": f"task-{name}"}}}}})
+            time.sleep(float(delays.get(name.split("-")[0], "0.5")))
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": f"inner-{name}", "status": "completed",
+                "_meta": {"claudeCode": {"parentToolUseId": f"task-{name}"}}}}})
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": f"task-{name}", "status": "completed",
+                "_meta": {"claudeCode": {"toolName": "Task"}}}}})
+        else:
+            time.sleep(float(delays.get(name.split("-")[0], "0.5")))
         send({"method": "session/update", "params": {"sessionId": session, "update": {
             "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: the flow goes through generate.ts. "}}}})
         return
@@ -466,6 +483,30 @@ def finish(request):
         update({"sessionUpdate": "tool_call_update", "toolCallId": "t3", "status": "completed", "content": [
             {"type": "diff", "path": "notes.txt", "oldText": "keep\nold line\n", "newText": "keep\nnew line\n"}]})
         say("## Summary\nThe notes now use **the new line**, see `notes.txt`:\n\n```sh\ncat notes.txt\n```\n- one item\n")
+    if os.environ.get("MOCK_SUBAGENT"):
+        # Claude Code runs an agent of its own inside a `Task`. ACP has no field for that, so
+        # claude-agent-acp (0.23.1) marks every update the inner agent produces with the
+        # Task's id in `_meta.claudeCode.parentToolUseId`, and names the tool in `toolName`.
+        def update(value):
+            send({"method": "session/update", "params": {"sessionId": session, "update": value}})
+        pause = float(os.environ.get("MOCK_TOOL_DELAY", "0"))
+        inside = {"claudeCode": {"parentToolUseId": "task-1"}}
+        update({"sessionUpdate": "tool_call", "toolCallId": "task-1", "title": "Task: Research the API", "kind": "other",
+                "status": "in_progress", "rawInput": {"description": "Research the API", "prompt": "Find where the API lives."},
+                "_meta": {"claudeCode": {"toolName": "Task"}}})
+        time.sleep(pause)
+        update({"sessionUpdate": "tool_call", "toolCallId": "sub-1", "title": "Read src/a.rs", "kind": "read",
+                "status": "in_progress", "rawInput": {"file_path": "src/a.rs"},
+                "_meta": {"claudeCode": {"toolName": "Read", "parentToolUseId": "task-1"}}})
+        time.sleep(pause)
+        update({"sessionUpdate": "tool_call_update", "toolCallId": "sub-1", "status": "completed", "_meta": inside,
+                "content": [{"type": "content", "content": {"type": "text", "text": "fn a() {}"}}]})
+        update({"sessionUpdate": "tool_call", "toolCallId": "sub-2", "title": "Search generate", "kind": "search",
+                "status": "completed", "_meta": {"claudeCode": {"toolName": "Grep", "parentToolUseId": "task-1"}}})
+        time.sleep(pause)
+        update({"sessionUpdate": "tool_call_update", "toolCallId": "task-1", "status": "completed",
+                "_meta": {"claudeCode": {"toolName": "Task"}},
+                "content": [{"type": "content", "content": {"type": "text", "text": "The API lives in generate.ts."}}]})
     if behavior == "live_e2e":
         (root / "result.txt").write_text("OROCHI_E2E_OK\n")
     elif not os.environ.get("MOCK_READ_ONLY"):

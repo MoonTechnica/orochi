@@ -271,6 +271,11 @@ const WORDS = {
     "file changed": "ファイルを変更",
     context: "コンテキスト",
     "from the helpers": "補助エージェントから",
+    "sub-agent": "サブエージェント",
+    call: "回の呼び出し",
+    calls: "回の呼び出し",
+    "call inside": "回の呼び出しを内包",
+    "calls inside": "回の呼び出しを内包",
     "background agent": "件のバックグラウンドエージェント",
     "background agents": "件のバックグラウンドエージェント",
     "Stop all": "すべて停止",
@@ -581,6 +586,25 @@ function member(thread, used) {
   return row;
 }
 
+/// The agents a seat's own CLI is running inside its tool calls right now (Claude Code's
+/// `Task`): one row each, under the seat's, as the seat's rows sit under the conversation's.
+function tasksOf(live) {
+  return live ? state.tasks.filter((task) => task.seat_id === live.seat_id) : [];
+}
+
+/// One such agent: what it was asked to do, the call it is making, and for how long.
+function task(item) {
+  const row = text("div", "member task");
+  row.dataset.live = "true";
+  row.append(drawn("loader", "state"));
+  row.append(text("span", "role", t("sub-agent")));
+  if (item.title) row.append(text("span", "doing", item.title.replace(/^Task:\s*/, "")));
+  if (item.doing) row.append(text("span", "model", item.doing.split("\n")[0]));
+  else if (item.calls > 0) row.append(text("span", "times", `${item.calls} ${t(item.calls === 1 ? "call" : "calls")}`));
+  row.append(text("span", "since", since(item.started_at)));
+  return row;
+}
+
 /// One checkout's card: its branch, and the conversations working in it — or, folded, one
 /// mark each.
 function place(project, cwd, threads) {
@@ -680,8 +704,9 @@ function place(project, cwd, threads) {
       row.append(text("span", "seats", `${thread.seats}`));
     }
     if (thread.terminal) row.append(drawn("terminal", "term"));
-    const open = team.length > 1 && expanded(thread);
-    if (team.length > 1) {
+    const running = state.tasks.some((item) => item.thread_id === thread.id);
+    const open = (team.length > 1 || running) && expanded(thread);
+    if (team.length > 1 || running) {
       const working = team.filter((m) => m.live > 0).length;
       const chip = text("span", "members");
       chip.dataset.open = String(open);
@@ -700,7 +725,11 @@ function place(project, cwd, threads) {
     card.append(row);
     if (open) {
       const list = text("div", "team");
-      for (const used of team) list.append(member(thread, used));
+      for (const used of team) {
+        list.append(member(thread, used));
+        const live = state.live.find((s) => s.thread_id === thread.id && s.role === used.role);
+        for (const item of tasksOf(live)) list.append(task(item));
+      }
       card.append(list);
     }
   }
@@ -1053,10 +1082,14 @@ function work(items) {
   head.append(drawn("chevron-right"));
   head.append(text("span", null, summary.join(", ")));
   node.append(head);
+  // What an agent ran inside a Task is listed under the Task, as its own work is.
+  const inside = (parent) => items.filter((i) => (i.data || {}).parent === parent).length;
   for (const item of items) {
     const d = item.data || {};
-    const label = item.kind === "thought" ? "thinking" : `${d.title || "tool"} ${d.detail || ""}`;
-    const row = text("div", null, label.trim());
+    let label = (item.kind === "thought" ? "thinking" : `${d.title || "tool"} ${d.detail || ""}`).trim();
+    const children = item.kind === "tool_call" && item.key ? inside(item.key) : 0;
+    if (children) label += ` · ${children} ${t(children === 1 ? "call inside" : "calls inside")}`;
+    const row = text("div", d.parent ? "inside" : null, label);
     // A file the call was about opens in Files, where it can be read as it is now.
     const where = Array.isArray(d.locations) ? d.locations[0] : null;
     const path = inTree(where?.path ?? d.raw_input?.file_path ?? d.raw_input?.path);
@@ -1275,6 +1308,14 @@ function drawTimeline(thread, said = []) {
       stop.addEventListener("click", () => call("stop_seat", { thread: thread.thread.id, seat: helper.seat_id }));
       row.append(stop);
       block.append(row);
+      for (const item of tasksOf(helper)) {
+        const inner = text("div", "row task");
+        inner.append(drawn("loader", "state"));
+        inner.append(text("span", "name", t("sub-agent")));
+        if (item.title) inner.append(text("span", "title", item.title.replace(/^Task:\s*/, "")));
+        inner.append(text("span", "since", since(item.started_at)));
+        block.append(inner);
+      }
     }
     host.append(block);
   }
@@ -2717,13 +2758,21 @@ function drawActivity(host) {
         select(th.id);
       });
       bucket.append(row);
-      const helpers = state.live.filter((live) => live.thread_id === th.id && !live.lead);
-      for (const helper of helpers) {
-        const child = text("div", "child");
-        child.append(text("span", "name", helper.role));
-        if (helper.title) child.append(text("span", "title", helper.title));
-        child.append(text("span", "since", since(helper.started_at)));
-        bucket.append(child);
+      for (const live of state.live.filter((s) => s.thread_id === th.id)) {
+        if (!live.lead) {
+          const child = text("div", "child");
+          child.append(text("span", "name", live.role));
+          if (live.title) child.append(text("span", "title", live.title));
+          child.append(text("span", "since", since(live.started_at)));
+          bucket.append(child);
+        }
+        for (const item of tasksOf(live)) {
+          const child = text("div", live.lead ? "child" : "child task");
+          child.append(text("span", "name", t("sub-agent")));
+          if (item.title) child.append(text("span", "title", item.title.replace(/^Task:\s*/, "")));
+          child.append(text("span", "since", since(item.started_at)));
+          bucket.append(child);
+        }
       }
     }
     host.append(bucket);
@@ -4400,6 +4449,7 @@ async function refresh(full) {
   state.prompts = prompts || [];
   state.folders = folders || [];
   state.live = (await call("live_seats", {})) || [];
+  state.tasks = (await call("live_tasks", {})) || [];
   await notify();
   // The accounts change when a probe runs, not when a key is pressed: read at most twice a
   // minute.

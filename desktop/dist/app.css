@@ -850,6 +850,11 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .member .model, .member .times, .member .doing { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
 .member .since { margin-left: auto; color: var(--muted); font-size: 11px; flex: none; }
 .member .state[data-icon="loader"] svg { animation: turning 1.4s linear infinite; }
+.member.task { padding-left: 18px; }
+.member.task .role { font-weight: 500; color: var(--muted); }
+.child.task { padding-left: 56px; }
+.seats-block .row.task { padding-left: 24px; color: var(--muted); }
+.work .inside { padding-left: 16px; }
 .thread[data-status="failed"] .state { color: var(--danger); }
 
 /* Hierarchy: project, then its checkouts, then their conversations. */
