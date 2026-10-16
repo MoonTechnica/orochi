@@ -3330,7 +3330,7 @@ async function drawPlan(thread) {
 function drawRoster(host, roster) {
   const section = text("div", "roster-screen");
   const head = text("div", "roster-head");
-  head.append(text("h3", null, "Which models may be used"));
+  head.append(text("h3", null, "Who may do the work"));
   const propose = text("button", null, "Propose a roster");
   propose.dataset.action = "propose";
   propose.addEventListener("click", async () => {
@@ -3418,7 +3418,7 @@ function drawRoster(host, roster) {
     text(
       "p",
       "caveat",
-      "What is unchecked is never used, whatever a preference or an adviser says; a model named for one run is. A proposal is kept as written and adjusted here.",
+      "Orochi picks among what is checked, by cost and by what each has done here. Unchecked is never used. \"Propose a roster\" has an agent choose from what each model is for and what it has measured; the choice is kept and you adjust it here.",
     ),
   );
   host.append(section);
@@ -3498,24 +3498,26 @@ async function drawScreen() {
     return;
   }
   if (state.panel === "agents") {
-    const [agents, roster] = await Promise.all([call("agents", {}), call("roster", {})]);
-    if (!(agents || []).length) {
+    const agents = (await call("agents", {})) || [];
+    if (!agents.length) {
       host.append(text("p", "empty", "Nothing has been run yet."));
-    } else {
-      host.append(
-        screenRows(
-          [["Agent"], ["Model"], ["State"], ["Cooling", true], ["Quota"]],
-          agents.map((a) => [
-            [a.agent],
-            [a.model === "*" ? "whole account" : a.model],
-            [a.status],
-            [a.cooling ? `${a.cooling}s` : "—", true],
-            [a.windows.length ? gauge(a.windows[0][1]) : "—"],
-          ]),
-        ),
-      );
+      return;
     }
-    drawRoster(host, roster);
+    host.append(
+      screenRows(
+        [["Agent"], ["Model"], ["State"], ["Cooling", true], ["Quota"]],
+        agents.map((a) => [
+          [a.agent],
+          [a.model === "*" ? "whole account" : a.model],
+          [a.status],
+          [a.cooling ? `${a.cooling}s` : "—", true],
+          [a.windows.length ? gauge(a.windows[0][1]) : "—"],
+        ]),
+      ),
+    );
+    host.append(
+      text("p", "caveat", "Which models may be used, and your preferences, are under Settings."),
+    );
     return;
   }
   if (state.panel === "sandboxes") {
@@ -3523,11 +3525,33 @@ async function drawScreen() {
     return;
   }
   if (state.panel === "settings") {
-    const [config, remembered] = await Promise.all([
+    const [config, remembered, roster] = await Promise.all([
       call("settings", {}),
       call("memory", {}),
+      call("roster", {}),
     ]);
     if (!config) return;
+
+    // What the person came here to decide: who may do the work, and how they like it done.
+    drawRoster(host, roster);
+    const notes = document.createElement("textarea");
+    notes.rows = 6;
+    notes.value = remembered?.user || "";
+    notes.placeholder =
+      "One line each, in your own words. For example:\nSmall edits go to the local model.\nDesign questions go to Claude.\nKeep diffs small.";
+    notes.addEventListener("change", () => call("save_memory", { text: notes.value }));
+    const preferences = text("div", "card");
+    preferences.append(text("div", "where", "Your preferences"));
+    preferences.append(notes);
+    preferences.append(
+      text(
+        "p",
+        "caveat",
+        "Read when a task is routed: a preference tilts the choice toward or away from an agent or model, and never overrides the list above. Agents never write this, and it is never sent to a routing adviser.",
+      ),
+    );
+    host.append(preferences);
+    host.append(text("h3", "settings-section", "Conversations"));
 
     // The conversation store is the one place Orochi keeps your own text, so it is the one
     // place with a switch, a window and a way to remove what is there.
@@ -3582,17 +3606,6 @@ async function drawScreen() {
       await refresh(true);
     });
     host.append(field("History", wipe));
-
-    // Memory is the user's own text, so it is edited as text.
-    const notes = document.createElement("textarea");
-    notes.rows = 8;
-    notes.value = remembered?.user || "";
-    notes.addEventListener("change", () => call("save_memory", { text: notes.value }));
-    host.append(field("What Orochi remembers about you", notes));
-
-    host.append(
-      text("p", "caveat", "Agents never write this, and it is never sent to a routing adviser."),
-    );
     return;
   }
   if (state.panel === "insights") {

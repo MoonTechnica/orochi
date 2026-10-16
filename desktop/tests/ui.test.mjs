@@ -2559,7 +2559,7 @@ test("later closes the setup dialog and the window carries on", async () => {
   assert.notEqual(el("thread-title").textContent, "");
 });
 
-test("the agents screen is the roster: a checkbox per model, kept the moment it changes", async () => {
+test("settings hold the roster: a checkbox per model, kept the moment it changes", async () => {
   const roster = {
     agents: [
       {
@@ -2575,13 +2575,14 @@ test("the agents screen is the roster: a checkbox per model, kept the moment it 
     ],
   };
   const { el, calls } = await open({
-    agents: [],
+    settings: { activity: { enabled: true, retention_days: 30, thinking: true } },
+    memory: { user: "", path: "/data/memory/USER.md" },
     roster,
     suggest_roster: { roster: { claude: ["sonnet"] }, preferences: [], why: "sonnet measured best here" },
   });
   el("account").dispatch("click");
   el("account-menu").querySelectorAll("button")
-    .find((b) => b.dataset.screen === "agents")
+    .find((b) => b.dataset.screen === "settings")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
   const host = el("panel-body");
@@ -2590,6 +2591,7 @@ test("the agents screen is the roster: a checkbox per model, kept the moment it 
   assert.match(drawn, /Everyday coding/, "what a model is for is beside its name");
   assert.doesNotMatch(drawn, /judge/, "an adviser runs no work and has no roster");
   assert.match(drawn, /Not discovered here yet/, "an agent never started here says so");
+  assert.match(drawn, /Your preferences/, "and the preferences are right under it");
 
   const boxes = host.querySelectorAll("input").filter((b) => b.dataset.model);
   assert.equal(boxes.length, 2);

@@ -1313,3 +1313,9 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .roster-model code { white-space: nowrap; }
 .roster-model .where { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #panel-body .roster-model input[type="checkbox"] { margin-top: 0; width: 14px; height: 14px; flex: none; }
+
+/* The × that closes a dialog: a glyph, sized to be seen, not a ring around nothing. */
+#panel-close, #setup-close, #place-close { font-size: 20px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
+.roster-screen { margin-top: 0; margin-bottom: 16px; }
+#panel-body h3.settings-section { margin: 20px 0 8px; }
+#panel-body .card textarea { width: 100%; box-sizing: border-box; }
