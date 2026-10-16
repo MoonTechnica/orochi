@@ -1301,9 +1301,15 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
         .map(|m| (m.id.as_str(), m.chosen))
         .collect();
     assert_eq!(chosen, [("opus", true), ("sonnet", false)]);
-    assert!(claude.known[0].about.contains("agentic coding"), "{:?}", claude.known[0]);
+    assert!(
+        claude.known[0].about.contains("agentic coding"),
+        "{:?}",
+        claude.known[0]
+    );
 
-    client.set_roster("claude", &["sonnet".into()], false).unwrap();
+    client
+        .set_roster("claude", &["sonnet".into()], false)
+        .unwrap();
     assert!(
         std::fs::read_to_string(&config)
             .unwrap()
@@ -1312,7 +1318,12 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
     client.set_roster("claude", &[], true).unwrap();
     let listing = client.roster().unwrap();
     assert!(!listing.agents[0].enabled && listing.agents[0].models.is_empty());
-    client.set_roster("claude", &["opus".into()], false).unwrap();
-    assert!(client.roster().unwrap().agents[0].enabled, "naming a model puts the agent back");
+    client
+        .set_roster("claude", &["opus".into()], false)
+        .unwrap();
+    assert!(
+        client.roster().unwrap().agents[0].enabled,
+        "naming a model puts the agent back"
+    );
     assert!(client.set_roster("nobody", &[], false).is_err());
 }

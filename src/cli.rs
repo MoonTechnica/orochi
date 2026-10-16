@@ -782,6 +782,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         mode: cli.mode,
                     },
                     resume: cli.resume,
+                    config_path: Some(paths.config.clone()),
                     // The chat answers permission requests itself unless asked to stop and
                     // ask; Shift-Tab and /confirm change it while it runs.
                     permission: cli.permission.unwrap_or(match config.scheduler.permission {
@@ -1236,7 +1237,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     .resolve_thread(&thread)?
                     .with_context(|| format!("no thread {thread}"))?
             };
-            return crate::chat::host::run(&config, &paths.data, &named).await;
+            return crate::chat::host::run(&config, &paths.config, &paths.data, &named).await;
         }
         Some(Command::Threads {
             command,

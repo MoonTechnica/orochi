@@ -27,7 +27,7 @@ use std::{
 /// within a blink; nothing else here is time-critical.
 const POLL: Duration = Duration::from_millis(100);
 
-pub async fn run(config: &Config, data: &Path, thread: &str) -> Result<u8> {
+pub async fn run(config: &Config, config_path: &Path, data: &Path, thread: &str) -> Result<u8> {
     let store = Store::open(data)?;
     let activity = share(Activity::open(data, config.activity.retention_days)?);
     let (cwd, overrides, permission) = {
@@ -84,6 +84,7 @@ pub async fn run(config: &Config, data: &Path, thread: &str) -> Result<u8> {
             host: Some(host),
             resume: None,
             permission,
+            config_path: Some(config_path.to_path_buf()),
             thread: Some(thread.to_owned()),
         },
         Some(keyboard),

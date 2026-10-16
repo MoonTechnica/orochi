@@ -33,7 +33,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     io::IsTerminal,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use term::{Key, Keyboard, Prompt, Term, width_of};
@@ -58,7 +58,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 16] = [
+const COMMANDS: [Command; 17] = [
     Command {
         name: "help",
         aliases: &[],
@@ -158,6 +158,13 @@ const COMMANDS: [Command; 16] = [
         anytime: true,
     },
     Command {
+        name: "roster",
+        aliases: &[],
+        usage: "[set <agent> [models…|off] | suggest]",
+        about: "Which of each agent's models may be used: show, set by hand, or have one proposed",
+        anytime: false,
+    },
+    Command {
         name: "mcp",
         aliases: &[],
         usage: "[login <name>|logout <name>]",
@@ -197,6 +204,9 @@ pub struct Options {
     /// A recorded session the first message continues.
     pub resume: Option<String>,
     pub permission: PermissionMode,
+    /// The configuration file `/roster set` writes; without one the roster is kept for this
+    /// session only.
+    pub config_path: Option<PathBuf>,
     /// A recorded conversation this session carries on, so its turns accumulate in the thread
     /// that already holds them instead of starting another.
     pub thread: Option<String>,
@@ -340,6 +350,8 @@ struct Session<'a> {
     /// `/mcp`, kept for the loop to run once the key that typed it has been handled: it is the
     /// one command that needs the network and a browser, so it is not over when `dispatch` is.
     mcp: Option<String>,
+    /// `/roster suggest`, held for the loop like `/mcp`: it starts an agent.
+    roster: bool,
     /// Where this conversation is written down, when `activity.enabled`.
     recorded: Option<Recorded>,
     /// No terminal at either end: the turns come from the store and so do the answers.
@@ -565,6 +577,7 @@ pub async fn run_with(
         twice: Twice::default(),
         quit: false,
         mcp: None,
+        roster: false,
         headless,
         accounts: None,
         background: background::Background::default(),
@@ -627,6 +640,7 @@ impl<'a> Session<'a> {
                         Some(message) => break Some(message),
                         None => {
                             self.run_mcp().await;
+                            self.run_roster().await;
                             continue;
                         }
                     }
@@ -751,6 +765,7 @@ impl<'a> Session<'a> {
                             break Some(message);
                         }
                         self.run_mcp().await;
+                        self.run_roster().await;
                     }
                     Action::Cycle => {
                         self.approval.cycle();
@@ -883,6 +898,7 @@ impl<'a> Session<'a> {
                 self.view.rows(rows);
             }
             "memory" => self.memory(argument),
+            "roster" => self.roster_command(argument),
             "mcp" => self.mcp = Some(argument.to_owned()),
             "new" | "clear" => {
                 // Moving on to something else says nothing about the last answer.
@@ -2103,6 +2119,165 @@ impl Session<'_> {
             }
         }
         self.view.rows(rows);
+    }
+
+    /// `/roster`: which of each agent's models may be used, as `orochi roster` shows and sets
+    /// it. A change is written to the configuration file and applies when an agent is next
+    /// chosen: a conversation under way keeps the session it is in, as it does whatever the
+    /// configuration says, until `/reroute` or `/new`.
+    fn roster_command(&mut self, argument: &str) {
+        let argument = argument.trim();
+        if argument == "suggest" {
+            self.roster = true;
+            return;
+        }
+        if let Some(rest) = argument.strip_prefix("set") {
+            let mut words = rest.split_whitespace();
+            let Some(agent) = words.next() else {
+                self.view.result(
+                    WARN,
+                    "/roster set <agent> [models…|off] · /roster lists them",
+                );
+                return;
+            };
+            let words: Vec<String> = words.map(str::to_owned).collect();
+            let off = words.len() == 1 && words[0] == "off";
+            let models = if off { vec![] } else { words };
+            let mut fresh = self.config.clone();
+            if let Err(error) = crate::roster::set(&mut fresh, agent, &models, off) {
+                self.view.result(ERR, &format!("✗ {error:#}"));
+                return;
+            }
+            self.adopt(fresh);
+            return;
+        }
+        if !argument.is_empty() {
+            self.view.result(
+                WARN,
+                "/roster · /roster set <agent> [models…|off] · /roster suggest",
+            );
+            return;
+        }
+        let Ok(policies) = Registry::load(self.data) else {
+            return;
+        };
+        let listing = crate::roster::listing(self.config, &policies, self.data);
+        let mut rows = vec![];
+        for entry in listing.agents.iter().filter(|a| !a.routing_only) {
+            rows.push(format!(
+                "{} {}  {}",
+                self.view.paint(BOLD, &entry.id),
+                self.view
+                    .paint(MUTED, if entry.enabled { "on" } else { "off" }),
+                if entry.models.is_empty() {
+                    self.view.paint(MUTED, "every model it advertises")
+                } else {
+                    entry.models.join(", ")
+                }
+            ));
+            if entry.known.is_empty() {
+                rows.push(self.view.paint(MUTED, "  not discovered here yet"));
+            }
+            for model in &entry.known {
+                rows.push(format!(
+                    "  {} {}  {}",
+                    if model.chosen { "*" } else { " " },
+                    model.id,
+                    self.view.paint(MUTED, &model.about)
+                ));
+            }
+        }
+        rows.push(self.view.paint(
+            MUTED,
+            "/roster set <agent> <models…|off> changes it; /roster suggest asks an agent",
+        ));
+        self.view.rows(rows);
+    }
+
+    /// Takes an edited configuration for the rest of the session and writes it down. The
+    /// session holds its configuration by reference for as long as it runs, so the edited one
+    /// is given the same life: a few per session, each the size of the file.
+    fn adopt(&mut self, fresh: Config) {
+        if let Some(path) = &self.options.config_path
+            && let Err(error) = fresh.save(path)
+        {
+            self.view.result(ERR, &format!("✗ not written: {error:#}"));
+            return;
+        }
+        let config: &'static Config = Box::leak(Box::new(fresh));
+        self.config = config;
+        let rows: Vec<String> = config
+            .agents
+            .iter()
+            .filter(|a| !a.routing_only)
+            .map(|a| {
+                format!(
+                    "roster: {} {}",
+                    a.id,
+                    if !a.enabled {
+                        "off".to_owned()
+                    } else if a.models.is_empty() {
+                        "every model it advertises".to_owned()
+                    } else {
+                        a.models.join(", ")
+                    }
+                )
+            })
+            .collect();
+        self.view.rows(rows);
+        if let Some(path) = &self.options.config_path {
+            self.view.note(&format!(
+                "wrote {}; it applies when an agent is next chosen (/reroute, or a new conversation)",
+                path.display()
+            ));
+        }
+    }
+
+    /// `/roster suggest`: an agent proposes the roster from what each model is for and what
+    /// it has measured here; the proposal is kept as the decision, to be adjusted with
+    /// `/roster set`.
+    async fn run_roster(&mut self) {
+        if !std::mem::take(&mut self.roster) {
+            return;
+        }
+        let Ok(policies) = Registry::load(self.data) else {
+            return;
+        };
+        self.view.note("asking an agent for a roster…");
+        let suggestion =
+            match crate::roster::suggest(self.config, &policies, self.store, self.root).await {
+                Ok(suggestion) => suggestion,
+                Err(error) => {
+                    self.view.result(ERR, &format!("✗ {error:#}"));
+                    return;
+                }
+            };
+        if let Some(why) = &suggestion.why {
+            self.view.note(why);
+        }
+        let mut fresh = self.config.clone();
+        let memory = crate::memory::Memory::open(self.data, &self.config.memory);
+        let repository = self.store.repository_id(self.root).ok();
+        let applied = match crate::roster::apply(
+            &mut fresh,
+            &suggestion,
+            memory.as_ref().zip(repository.as_deref()),
+            crate::types::now(),
+        ) {
+            Ok(applied) => applied,
+            Err(error) => {
+                self.view.result(ERR, &format!("✗ {error:#}"));
+                return;
+            }
+        };
+        for text in &applied.remembered {
+            self.view.note(&format!("remembered: {text}"));
+        }
+        if applied.rosters.is_empty() {
+            self.view.note("the roster stays as it is");
+        } else {
+            self.adopt(fresh);
+        }
     }
 
     /// `/mcp`: what the agents here are given, and the browser sign-in for a remote server.

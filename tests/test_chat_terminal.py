@@ -928,3 +928,48 @@ class RepositoryMcpServers(unittest.TestCase):
             self.assertEqual(self.given(c), ["beta"], c.rows())
         finally:
             c.close()
+
+
+class Roster(unittest.TestCase):
+    def test_the_roster_is_shown_set_and_proposed_from_the_console_and_binds_the_next_turn(self):
+        c = Console(env={"MOCK_SUGGESTION": json.dumps(
+            {"roster": {"test": ["sol-test", "made-up"]}, "preferences": [], "why": "sol measured best"})})
+        try:
+            c.type("/roster")
+            c.key(b"\r")
+            c.wait("not discovered here yet")
+            c.type("Hello")
+            c.key(b"\r")
+            c.wait("Fixture completed.")
+            c.type("/roster")
+            c.key(b"\r")
+            c.wait("* sol-test")
+            self.assertTrue(c.shown("* astra-test"), c.rows())
+            c.type("/roster set test astra")
+            c.key(b"\r")
+            c.wait("applies when an agent is next chosen")
+            self.assertIn('models = ["astra"]', (c.dir / "config.toml").read_text())
+            # The conversation keeps its session until an agent is chosen again.
+            c.type("/reroute")
+            c.key(b"\r")
+            c.pump(0.5)
+            c.type("Again")
+            c.key(b"\r")
+            c.wait("Fixture completed.")
+            self.assertTrue(c.shown("test · astra-test"), c.rows())
+            c.type("/roster suggest")
+            c.key(b"\r")
+            c.wait("sol measured best")
+            c.wait("roster: test sol-test")
+            rosters = [line for line in (c.dir / "config.toml").read_text().splitlines()
+                       if line.startswith("models = ")]
+            self.assertEqual(rosters, ['models = ["sol-test"]'], "a model never advertised is dropped")
+            c.type("/reroute")
+            c.key(b"\r")
+            c.pump(0.5)
+            c.type("Once more")
+            c.key(b"\r")
+            c.wait("Fixture completed.")
+            self.assertTrue(c.shown("test · sol-test"), c.rows())
+        finally:
+            c.close()
