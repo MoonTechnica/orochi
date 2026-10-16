@@ -134,6 +134,36 @@ noting that the conflicted first trial's worktree was still on disk until the co
 end — which is where the sweep then removed it. Five lead turns, 111 s of lead time, 201,337
 weighted on the lead in all; the conflict cost two wakes and one resolution seat over run B.
 
+## Run E — `ask` through a client, and a restarted host: Claude lead (sonnet-5), helper on Codex
+
+The headless path: `orochi threads new` / `threads send`, `orochi host --thread`,
+`manager.apply = "ask"`, and a client script standing in for the desktop's card — it polls
+`prompts` for a row of kind `apply` and answers it `yes`, as the window does. Then the host was
+left to its idle timeout (60 s), a second message was queued ("without starting anything or
+running any tool: what did your plan say, which trial was applied, what was the helper
+called?"), and a second host started on the same thread.
+
+| Turn | Host | Origin | Seats | Wall | Reported total | Weighted | Resumed |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | user | lead `tester` | 28 s | 339,755 | 84,739 | no |
+| 1 | 1 | — | helper `mathops` (writes) | 39 s | 25,034 | 4,740 | — |
+| 2 | 1 | background | lead | 17 s | 289,726 | 36,344 | yes |
+| 3 | 1 | merge | lead | 11 s | 149,782 | 18,522 | yes |
+| 4 | 1 | merge | lead | 12 s | 152,352 | 17,683 | yes |
+| 5 | 2 | user | lead `planner` | 6 s | 77,234 | 8,969 | **yes** |
+
+The lead's `apply_merge` was answered *asking the user*; the `prompts` row carried the trial's
+files, overlap and the line the dialog shows ("2 files · checks passed (unittest)"); the client
+answered it (`answered_by = desktop`); the apply ran, turn 4 told the lead *Applied*, and the
+lead confirmed the tree. The second host loaded the recorded sonnet-5 session (`resumed`
+on turn 5, 6 s, 8,969 weighted) and the lead answered from memory, correctly: the plan ("added,
+merged and applied, no further step"), the helper `mathops`, the trial `mathops-1`. A
+conversation's manager survives its host.
+
+The terminal form of the same question — the dialog drawn in the console's pinned area — was
+not driven live; it is the same `Ask` queue the seats' permission questions use, pinned by
+`tests/test_chat_terminal.py`.
+
 ## What it costs
 
 A wake is a resumed session. On haiku, the three Orochi-written turns of run B cost 16,660 to
@@ -152,10 +182,11 @@ through `claude-agent-acp`, which accumulates the turn.
 | A failed check stops the lead from applying | **Held**: the Codex lead investigated and fixed the cause through a second helper rather than applying |
 | A helper's message to an idle lead wakes it | **Held** (run B): delivered in the wake with the report |
 | The apply runs, closes the worktree, and the lead hears the outcome | **Held** on runs B and C; on run A it raced the exit — fixed, pinned, and run C is the fix on the same lead and shape |
-| `manager.apply = "ask"` in a terminal and from a client | **Not run**: both runs were piped, so `auto` was used |
+| `manager.apply = "ask"` from a client | **Held** (run E): a `prompts` row the client answered, the apply following it |
+| `manager.apply = "ask"` as the console's own dialog | Automated tests only (runs A–D were piped) |
 | A conflicted trial with `resolve = true` | **Held** (run D): the lead asked for it on reading the conflict, the resolution seat kept the user's side and cleared the markers, the recheck ran the project's check, and the lead reviewed before applying |
-| A restarted host resuming with plan and trials | Automated test only |
+| A restarted host resuming with plan and trials | **Held** (run E): the second host loaded the session and the lead recalled plan, helper and trial without a tool |
 
 Nothing was committed to any repository by the agents; the validation directory
-(`.orochi/live-validation-20261016/`) keeps the private config, data, the four repositories
-as the runs left them, every transcript, run D's sidecar and `analyze.py`.
+(`.orochi/live-validation-20261016/`) keeps the private config, data, the five repositories
+as the runs left them, every transcript, run D's sidecar, run E's client and `analyze.py`.

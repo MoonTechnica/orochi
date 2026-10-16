@@ -4,9 +4,10 @@ Written: 2026-10-16. **Status (2026-10-16): M0–M5 implemented; M6 run once on 
 ([real-validation-20261016.md](real-validation-20261016.md)): a real Codex lead and a real
 Claude lead each planned, delegated, asked for the trial, read it and asked for the apply with
 no tool named to them, a helper's message woke the idle lead, a conflict was resolved by a seat in the trial's
-worktree on the lead's `resolve = true` and applied after the lead's review, and the apply's
-race with the exit found there is fixed. `ask` in a terminal and a resumed host are automated
-tests only.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and
+worktree on the lead's `resolve = true` and applied after the lead's review, the apply's
+race with the exit found there is fixed, `ask` was answered from a client through the
+`prompts` row, and a restarted host resumed the session with the lead recalling its plan and
+trials. Only the console's own `ask` dialog is automated tests only.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and
 is cited; §14 says where the implementation departed from the design and why.
 
 One goal: **the agents Orochi starts for one conversation work as one team.** One of them — the
