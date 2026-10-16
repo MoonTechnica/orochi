@@ -34,15 +34,20 @@ impl Default for Config {
         Self {
             // What a preset can do is read from the CLI it drives, never assumed: `codex`
             // carries `web_search` and `claude` carries `WebSearch`/`WebFetch` (read from the
-            // installed binaries, 2026-09-25). The CLIs not installed here claim nothing, and a
-            // capability nobody claims is not a capability anybody is excluded over. Gemini
-            // CLI is no preset since 2026-10-16: Antigravity is its successor, and one still
-            // in use is written in as `command = "gemini"`, `args = ["--acp"]`.
+            // installed binaries, 2026-09-25), `opencode` carries `websearch`/`webfetch`
+            // (read from opencode 2.0.30, 2026-10-16). The CLIs not installed here claim
+            // nothing, and a capability nobody claims is not a capability anybody is excluded
+            // over. Gemini CLI is no preset since 2026-10-16: Antigravity is its successor,
+            // and one still in use is written in as `command = "gemini"`, `args = ["--acp"]`.
+            // OpenCode speaks ACP itself (`opencode acp`), so it needs no bridge; its provider
+            // is its own name, which `Registry::get` prices by the generic policy until one is
+            // written for it.
             agents: vec![
                 AgentConfig::preset("codex", Provider::OPENAI, "codex-acp", &[]).able(WEB),
                 AgentConfig::preset("claude", Provider::ANTHROPIC, "claude-agent-acp", &[])
                     .able(WEB),
                 AgentConfig::preset("antigravity", Provider::GOOGLE, "agy_acp_server.par", &[]),
+                AgentConfig::preset("opencode", Provider::OPENCODE, "opencode", &["acp"]).able(WEB),
             ],
             discovery: DiscoveryConfig::default(),
             scheduler: SchedulerConfig::default(),

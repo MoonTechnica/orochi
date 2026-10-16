@@ -47,8 +47,15 @@ fn explicit_agent_settings_and_disables_survive_automatic_registration() {
     )
     .unwrap();
     let config = Config::load(&path).unwrap();
-    assert_eq!(config.agents.len(), 3);
+    assert_eq!(config.agents.len(), 4);
     assert_eq!(config.agents.iter().filter(|a| a.id == "claude").count(), 1);
+    // OpenCode speaks ACP itself, so the preset is the CLI with its `acp` subcommand.
+    let opencode = config.agents.iter().find(|a| a.id == "opencode").unwrap();
+    assert_eq!(opencode.provider, Provider::OPENCODE);
+    assert_eq!(
+        (opencode.command.as_str(), opencode.args.as_slice()),
+        ("opencode", &["acp".to_owned()][..])
+    );
     assert!(!config.agents[0].enabled);
     assert_eq!(config.agents[0].command, "/custom/bridge");
     std::fs::write(&path, "[discovery]\nauto_add=false\n[[agents]]\nid='only'\nprovider='openai'\ncommand='/custom/bridge'\n").unwrap();

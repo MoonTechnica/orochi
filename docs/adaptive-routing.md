@@ -472,7 +472,7 @@ ACP has no field for browsing, web access or image generation. Orochi therefore 
 - The agent's own declaration in `_meta["orochi.dev/capabilities"]` on `initialize` — `{"browser": true, "web": true, "image": false}` — in the shape Orochi's `_meta` extensions for usage and quota already use. Unknown keys are ignored, so a later field does not break an older Orochi.
 - Nothing. A requirement that **no** agent in the field claims to meet is dropped rather than enforced, and every candidate carries the reason ("no agent here advertises web; asked anyway rather than excluding every agent"). Where somebody does claim it, it is a real gate and the agents that cannot are left out, exactly as before. The console applies the same rule: a message needing something nobody claims stays with the agent holding the conversation instead of being handed to a capable agent that does not exist.
 
-The presets claim only what the CLI they drive was read to have: `codex` and `claude` declare `web` (`web_search` in the Codex binary, `WebSearch`/`WebFetch` in the Claude binary, read on 2026-09-25); `gemini` and `antigravity` are not installed here and so claim nothing.
+The presets claim only what the CLI they drive was read to have: `codex` and `claude` declare `web` (`web_search` in the Codex binary, `WebSearch`/`WebFetch` in the Claude binary, read on 2026-09-25), and so does `opencode` (`websearch`/`webfetch` in opencode 2.0.30, read on 2026-10-16); `gemini` and `antigravity` are not installed here and so claim nothing.
 
 ### 7.4. What a reported total covers
 

@@ -23,6 +23,7 @@ impl Provider {
     pub const OPENAI: Self = Self::literal("openai");
     pub const ANTHROPIC: Self = Self::literal("anthropic");
     pub const GOOGLE: Self = Self::literal("google");
+    pub const OPENCODE: Self = Self::literal("opencode");
     /// A name written in this source; invalid ones fail to compile.
     const fn literal(name: &str) -> Self {
         let bytes = name.as_bytes();

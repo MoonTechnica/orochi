@@ -218,6 +218,8 @@ pub fn search_path(data: Option<&Path>) -> OsString {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join(".npm-global/bin"));
+        // Where `curl -fsSL https://opencode.ai/install | bash` puts the binary.
+        dirs.push(home.join(".opencode/bin"));
     }
     dirs.push("/opt/homebrew/bin".into());
     dirs.push("/usr/local/bin".into());
