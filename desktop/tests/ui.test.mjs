@@ -1202,8 +1202,11 @@ test("the work pane is one graph read downwards: a row per event, its words besi
   for (const item of thread.items) if (item.turn_ordinal === 2) item.turn_origin = "merge";
   const { el, calls } = await open({ team, thread, open_prompts: [prompt] });
   const work = el("work");
+  // The legend at the foot repeats every mark once; the graph is the rows above it.
+  const graph = work.querySelectorAll(".work-graph")[0];
   const drawn = work.render();
   assert.match(drawn, /Plan/, "the lead's plan heads the pane");
+  assert.match(work.querySelectorAll(".work-legend")[0].render(), /working now/, "and a legend says what the marks mean");
   const rows = work.querySelectorAll(".work-row");
   const said = rows.map((row) => row.querySelectorAll(".words")[0].textContent);
   // Two turns, two openings, two reports, two trials, one question, one end — each once.
@@ -1215,11 +1218,11 @@ test("the work pane is one graph read downwards: a row per event, its words besi
   assert.ok(said.some((s) => /src\/api\.rs → your tree/.test(s)), `the end says what reached the tree: ${said}`);
   const opened = rows.find((row) => row.querySelectorAll(".k")[0].textContent === "backend");
   assert.match(opened.querySelectorAll(".words")[0].attributes.get("title"), /\.orochi\/sessions\/k\/backend$/, "the worktree's place is in the row's title, relative to the project");
-  assert.equal(work.querySelectorAll(".lane-branch").length, 2, "a branch leaves the person's column for each worktree");
-  assert.equal(work.querySelectorAll(".lane-apply").length, 1, "and one comes back where it was applied");
-  assert.equal(work.querySelectorAll(".lane-landed").length, 1, "landing on a node of the person's column, as a merge commit does");
+  assert.equal(graph.querySelectorAll(".lane-branch").length, 2, "a branch leaves the person's column for each worktree");
+  assert.equal(graph.querySelectorAll(".lane-apply").length, 1, "and one comes back where it was applied");
+  assert.equal(graph.querySelectorAll(".lane-landed").length, 1, "landing on a node of the person's column, as a merge commit does");
   assert.equal(work.querySelectorAll("marker").length, 0, "with no arrowheads: the graph is read as git's is");
-  assert.equal(work.querySelectorAll(".lane-trial").length, 2);
+  assert.equal(graph.querySelectorAll(".lane-trial").length, 2);
 
   const buttons = work.querySelectorAll("button");
   assert.deepEqual(buttons.map((b) => b.textContent), ["Apply", "Decline"], "the apply question sits on its own row of the graph");
@@ -1264,12 +1267,13 @@ test("every way a worktree can end has its own mark in the gutter", async () => 
   };
   const { el } = await open({ team });
   const work = el("work");
-  assert.equal(work.querySelectorAll(".lane-branch").length, 4, "a branch leaves the person's column for every worktree");
-  assert.equal(work.querySelectorAll(".lane-apply").length, 1, "and comes back for the one that was applied");
-  assert.equal(work.querySelectorAll(".lane-out").length, 1, "a pull request leaves to the right");
-  assert.equal(work.querySelectorAll(".lane-end").length, 1, "a patch ends in a cross");
-  assert.equal(work.querySelectorAll(".lane-node").length, 2, "the conversation's turns are nodes on the person's column");
-  assert.ok(work.querySelectorAll(".lane-work.live").length >= 1, "a worktree still worked in is drawn live");
+  const graph = work.querySelectorAll(".work-graph")[0];
+  assert.equal(graph.querySelectorAll(".lane-branch").length, 4, "a branch leaves the person's column for every worktree");
+  assert.equal(graph.querySelectorAll(".lane-apply").length, 1, "and comes back for the one that was applied");
+  assert.equal(graph.querySelectorAll(".lane-out").length, 1, "a pull request leaves to the right");
+  assert.equal(graph.querySelectorAll(".lane-end").length, 1, "a patch ends in a cross");
+  assert.equal(graph.querySelectorAll(".lane-node").length, 2, "the conversation's turns are nodes on the person's column");
+  assert.ok(graph.querySelectorAll(".lane-work.live").length >= 1, "a worktree still worked in is drawn live");
   const said = work.querySelectorAll(".work-row").map((r) => r.querySelectorAll(".words")[0].textContent);
   assert.match(said.join("\n"), /you[\s\S]*backend[\s\S]*docs[\s\S]*cleanup[\s\S]*spike/, "read downwards, in the order things happened");
   assert.ok(said.some((s) => /^pull requesthttps:\/\/example\.test\/pull\/1/.test(s)), `a pull request's end names it: ${said}`);

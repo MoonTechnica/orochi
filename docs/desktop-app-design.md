@@ -587,8 +587,11 @@ followed by eye; the proposal and its mockups are the drawn tree this pane folds
 - **One graph, read downwards as a git graph is.** Every event is a row and the graph is the
   gutter at its left, drawn a row at a time (one small SVG per row, as git clients do) so the
   words and buttons sit on the event they belong to. The person's own tree is the first
-  column, solid while a turn runs and dashed between; each worktree (`v_team`) a column of
-  its own. The rows, in the order things happened: a turn (a filled node for a message typed,
+  column; each worktree (`v_team`) a column of its own. A line means only that the column
+  exists; a green bar on it means someone is at work in it **now** (the lead in its turn, a
+  helper in its worktree) — a first draft also drew past work and a thick stroke for a
+  running turn, three kinds of line, and was read as none of them; a one-line legend at the
+  foot names every mark. The rows, in the order things happened: a turn (a filled node for a message typed,
   hollow for one Orochi wrote back; clicking it scrolls the conversation there); a worktree
   opened (a branch leaving the first column, its name and title, the path in the row's title;
   while it is still open, where it stands at the right edge — `working…`, `reported`, `trial

@@ -309,6 +309,9 @@ const WORDS = {
     stale: "stale",
     declined: "見送り",
     running: "実行中",
+    "Orochi's turn": "Orochi のターン",
+    "worktree opened": "worktree 開始",
+    "working now": "作業中",
     "merging…": "マージを試しています…",
     from: "依頼元",
     "is read only · this command runs in your working tree": "は読み取り専用です · このコマンドは作業ツリーで実行されます",
@@ -3063,7 +3066,8 @@ function workEvents(thread, worktrees, trials, asking) {
   }
   const ordered = [...turns.values()].sort((a, b) => a.from - b.from);
   const last = ordered[ordered.length - 1];
-  if (last && thread.thread.status === "working") last.to = Date.now();
+  const running = last && thread.thread.status === "working" ? last : null;
+  if (running) running.to = Date.now();
   const events = ordered.map((turn) => ({ at: turn.from, kind: "turn", turn }));
   worktrees.forEach((row, index) => {
     const column = index + 1;
@@ -3081,20 +3085,21 @@ function workEvents(thread, worktrees, trials, asking) {
   // with, so it comes first; the person's own message comes before what it set off.
   const rank = (event) => (event.kind === "turn" ? (event.turn.origin ? 1 : -1) : 0);
   events.sort((a, b) => a.at - b.at || rank(a) - rank(b));
-  return { events, turns: ordered };
+  return { events, running };
 }
 
 /// One row's slice of the graph: the columns alive through it, the branch or return that
 /// starts or ends here, and the mark of the event itself.
-function gutter(event, index, events, turns, worktrees) {
+function gutter(event, index, events, running, worktrees) {
   const width = GRAPH_COL * (worktrees.length + 1) + 10;
   const svg = svgNode("svg", { width, height: GRAPH_ROW, viewBox: `0 0 ${width} ${GRAPH_ROW}` }, "gutter");
   const mid = GRAPH_ROW / 2;
   const cx = (column) => 8 + GRAPH_COL * column;
   const leadX = cx(0);
-  // The person's column: solid while a turn runs, dashed between.
-  const inTurn = turns.some((turn) => turn.from <= event.at && event.at <= turn.to);
-  svg.append(svgNode("line", { x1: leadX, y1: 0, x2: leadX, y2: GRAPH_ROW }, inTurn ? "lane-turn" : "lane-idle"));
+  // The person's column, and a green bar on it while the lead is working now. Only what is
+  // happening is marked: a line is a column that exists, a bar is someone at work in it.
+  svg.append(svgNode("line", { x1: leadX, y1: 0, x2: leadX, y2: GRAPH_ROW }, "lane-line"));
+  if (running && event.at >= running.from) svg.append(svgNode("rect", { x: leadX - 3, y: 0, width: 6, height: GRAPH_ROW }, "lane-work live"));
   // Each worktree's column, through the rows it is alive in.
   worktrees.forEach((row, i) => {
     const column = i + 1;
@@ -3103,17 +3108,17 @@ function gutter(event, index, events, turns, worktrees) {
     const closed = events.findIndex((e) => e.kind === "close" && e.row === row);
     const reported = events.findIndex((e) => e.kind === "report" && e.row === row);
     const alive = index > opened && (closed === -1 || index < closed);
-    const working = index > opened && (reported === -1 ? row.state === "open" : index <= reported);
+    const working = index > opened && reported === -1 && row.state === "open" && (row.seat_state === "working" || row.seat_state === "asking");
     if (alive) {
-      svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: GRAPH_ROW }, "lane-idle"));
-      if (working) svg.append(svgNode("rect", { x: x - 3, y: 0, width: 6, height: GRAPH_ROW }, reported === -1 ? "lane-work live" : "lane-work"));
+      svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: GRAPH_ROW }, "lane-line"));
+      if (working) svg.append(svgNode("rect", { x: x - 3, y: 0, width: 6, height: GRAPH_ROW }, "lane-work live"));
     }
     if (index === opened) {
       svg.append(svgNode("path", { d: `M${leadX},${mid - 8} C${leadX},${mid} ${x - 4},${mid - 4} ${x},${mid}` }, "lane-branch"));
-      svg.append(svgNode("line", { x1: x, y1: mid, x2: x, y2: GRAPH_ROW }, "lane-idle"));
+      svg.append(svgNode("line", { x1: x, y1: mid, x2: x, y2: GRAPH_ROW }, "lane-line"));
     }
     if (index === closed) {
-      svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: mid }, "lane-idle"));
+      svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: mid }, "lane-line"));
       if (row.state === "applied" || row.state === "merged") {
         // A merge joins the first column at a node, as a merge commit does; no arrowhead.
         svg.append(svgNode("path", { d: `M${x},${mid - 6} C${x},${mid} ${leadX + 6},${mid} ${leadX},${mid}` }, "lane-apply"));
@@ -3189,12 +3194,12 @@ async function drawWork(thread) {
     return;
   }
   const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
-  const { events, turns } = workEvents(thread, worktrees, trials, asking);
+  const { events, running } = workEvents(thread, worktrees, trials, asking);
   const graph = text("div", "work-graph");
   const where = (row) =>
     row.root.startsWith(thread.thread.project_root) ? row.root.slice(thread.thread.project_root.length + 1) : row.root;
   events.forEach((event, index) => {
-    const slice = gutter(event, index, events, turns, worktrees);
+    const slice = gutter(event, index, events, running, worktrees);
     if (event.kind === "turn") {
       const { turn } = event;
       const who = turn.origin === "merge" ? t("from the merge") : turn.origin ? t("from the helpers") : t("you");
@@ -3262,6 +3267,33 @@ async function drawWork(thread) {
     }
   });
   host.append(graph);
+  // What the marks mean, in one line: the graph is read by people who did not draw it.
+  const legend = text("div", "work-legend");
+  for (const [glyph, meaning] of [
+    ["lane-node you", t("you")],
+    ["lane-node from", t("Orochi's turn")],
+    ["lane-open", t("worktree opened")],
+    ["lane-report", t("reported")],
+    ["lane-trial clean", t("trial")],
+    ["lane-landed", t("applied")],
+    ["lane-end", t("patch")],
+    ["lane-work live", t("working now")],
+  ]) {
+    const item = text("span", "item");
+    const svg = svgNode("svg", { width: 14, height: 14, viewBox: "0 0 14 14" }, "gutter");
+    if (glyph === "lane-report") svg.append(svgNode("rect", { x: 3, y: 3, width: 8, height: 8 }, glyph));
+    else if (glyph === "lane-end") {
+      const cross = svgNode("g", {}, glyph);
+      cross.append(svgNode("line", { x1: 3, y1: 3, x2: 11, y2: 11 }));
+      cross.append(svgNode("line", { x1: 3, y1: 11, x2: 11, y2: 3 }));
+      svg.append(cross);
+    } else if (glyph === "lane-work live") svg.append(svgNode("rect", { x: 4, y: 0, width: 6, height: 14 }, glyph));
+    else svg.append(svgNode("circle", { cx: 7, cy: 7, r: 4 }, glyph));
+    item.append(svg);
+    item.append(text("span", null, meaning));
+    legend.append(item);
+  }
+  host.append(legend);
 }
 
 // The work graph of a turn, when it has one.
