@@ -249,7 +249,7 @@ through `claude-agent-acp`, which accumulates the turn.
 | A conflicted trial with `resolve = true` | **Held** (run D): the lead asked for it on reading the conflict, the resolution seat kept the user's side and cleared the markers, the recheck ran the project's check, and the lead reviewed before applying |
 | A restarted host resuming with plan and trials | **Held** (run E): the second host loaded the session and the lead recalled plan, helper and trial without a tool |
 | The same flow with the project in its sandbox | **Held** (run G, container mode, Codex): lead and helper inside, the trial's checks inside, the apply on the mounted tree. Run F found the VM's unattended upgrades restart Incus under running agents; fixed in `host.sh` |
-| Claude inside a container | **Not run**: its sign-in is in the keychain; `orochi sandbox login claude` is interactive |
+| Claude inside a container | Out of scope: which CLI runs inside is the sandbox's sign-in carrying (`orochi sandbox login claude`), already its own feature; nothing in the manager depends on it, and run G covers the inside and run H covers Claude |
 | Runner mode: the agent here, code run through the `orochi-sandbox` tools | **Held** (run H, Claude): the helper ran its tests with `sandbox_exec`, the agents' own shells were used only to read; the trial's checks ran inside |
 
 Nothing was committed to any repository by the agents; the validation directory
