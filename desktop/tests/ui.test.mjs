@@ -33,7 +33,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
-    "tabs", "pane-team", "pane-changes", "pane-plan",
+    "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
@@ -82,6 +82,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
               { name: "web-app", root: "/work/web-app", threads: 1, updated_at: 1 },
             ],
             open_prompts: [],
+            team: { plan: null, workspaces: [], merges: [] },
             // A machine with something to route to: the setup dialog stays closed unless a
             // test asks for it.
             setup_status: { ...SETUP, ready: true },
@@ -1159,6 +1160,69 @@ test("the plan pane draws the waves a divided turn runs in", async () => {
   assert.match(drawn, /Wave 1/);
   assert.match(drawn, /Wave 2/, "each wave is a heading of its own");
   assert.match(drawn, /build gamma/);
+});
+
+test("the work pane draws each worktree as a branch of the person's tree, with its trial and what became of it", async () => {
+  const where = recorded.thread.thread.project_root;
+  const team = {
+    plan: { plan: ["validate", "document"], decisions: [], open_questions: [], next_step: "merge both" },
+    workspaces: [
+      {
+        id: "w1", name: "backend", title: "Implement validation", root: `${where}/.orochi/sessions/k/backend`, base: "abc",
+        state: "applied",
+        closed: { name: "backend", how: "applied", changed: ["src/api.rs"], merged: ["src/api.rs"], conflicts: [], patch: null, branch: null, pr: null, error: null },
+        created_at: 1, closed_at: 5, seat_id: "s1", seat_state: "done", agent: "claude", model: "opus", reasoning: "high",
+        started_at: 1, ended_at: 4, usage: null, reported: true, doing: null, trial: "backend-1", trial_state: "applied", trials: 1,
+      },
+      {
+        id: "w2", name: "docs", title: "Document the rules", root: `${where}/.orochi/sessions/k/docs`, base: "abc",
+        state: "open", closed: null,
+        created_at: 2, closed_at: null, seat_id: "s2", seat_state: "done", agent: "codex", model: "gpt-5.6", reasoning: null,
+        started_at: 2, ended_at: 4, usage: null, reported: true, doing: null, trial: "docs-1", trial_state: "clean", trials: 1,
+      },
+    ],
+    merges: [
+      { id: "backend-1", workspace: "backend", n: 1, state: "applied", files: ["src/api.rs"], overlap: [], conflicts: [],
+        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: 3, updated_at: 5 },
+      { id: "docs-1", workspace: "docs", n: 1, state: "clean", files: ["docs/api.md"], overlap: ["docs/api.md"], conflicts: [],
+        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: 3, updated_at: 4 },
+    ],
+  };
+  // The apply question under a headless host is a prompt row the window answers.
+  const prompt = {
+    id: "p-apply", thread_id: recorded.thread.thread.id, thread_title: recorded.thread.thread.title, project: "repo",
+    kind: "apply", agent: null, model: null, role: null, title: "Apply `docs` to your tree?",
+    detail: "1 file · cargo test passed", options: [["apply", "Apply"]], created_at: 0, read_only: false, lead: true,
+    workspace: "docs",
+  };
+  const { el, calls } = await open({ team, open_prompts: [prompt] });
+  const work = el("work");
+  const drawn = work.render();
+  assert.match(drawn, /Plan/, "the lead's plan heads the pane");
+  assert.match(drawn, /your tree/, "the person's own tree is the root");
+  assert.match(drawn, /backend[\s\S]*applied · 1 file/, "a worktree that was applied says so");
+  assert.match(drawn, /\.orochi\/sessions\/k\/backend/, "and where it was, relative to the project");
+  assert.doesNotMatch(drawn, new RegExp(where.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/\\.orochi"), "never the whole path");
+  assert.match(drawn, /trial #1[\s\S]*cargo test[\s\S]*overlap docs\/api\.md/, "a trial says what it found");
+  assert.match(drawn, /seat[\s\S]*claude · opus · high/, "and who worked there");
+  const branches = work.querySelectorAll(".work-tree")[0].children[0].querySelectorAll("li");
+  assert.ok(branches.length >= 2, `the worktrees are branches under the root: ${drawn}`);
+
+  const buttons = work.querySelectorAll("button");
+  assert.deepEqual(buttons.map((b) => b.textContent), ["Apply", "Decline"], "the apply question sits on its worktree's row");
+  buttons[0].dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    calls.find(([name]) => name === "answer")[1],
+    { prompt: "p-apply", option: "apply" },
+    "and answering it is the same row a terminal would answer",
+  );
+});
+
+test("a conversation without worktrees says so in the work pane", async () => {
+  const { el } = await open();
+  assert.match(el("work").render(), /No worktrees in this conversation/);
+  assert.ok(el("pane-work").hidden, "the pane waits behind its tab");
 });
 
 test("settings edit the conversation store and what is remembered", async () => {

@@ -305,7 +305,10 @@ paths, `payload` is the lead's words — content, in this file only, never in te
   path, which also leaves helpers' command questions unanswerable from a terminal).
 - `orochi threads team <id>` prints `v_team`, which is what keeps the view honest.
 - Desktop: the Team pane draws `v_team`; the apply card shows files, overlap and checks; the
-  sidebar's row gains the merges-waiting count.
+  sidebar's row gains the merges-waiting count. **Built 2026-10-16 as a Work tab of its own**
+  (`desktop-app-design.md` §6.4a): the Team pane stays presence, and Work draws the worktrees
+  as a tree under the person's own, with the apply question's buttons on its worktree's row.
+  The sidebar count is not built.
 - A host with a running trial or apply is not idle.
 
 ## 8. Configuration
@@ -389,7 +392,7 @@ re-trial count (1) are constants until measured.
 |---|---|---|
 | `/team` for the team view | `/work` | `/team <task>` already runs a team |
 | A `three_way` fallback where `git merge-tree --write-tree` is absent | `merge_trial` refuses with "git 2.40 or newer is needed for merge trials" | `--merge-base` (2.40) is what makes the base the launch snapshot rather than the commits' ancestor; a fallback that merges from the wrong base is worse than none |
-| `workspaces` table and `v_team` view | `merges` table and `v_merges` view only; the console reads `workspaces.json` | The manifest already exists and a client has no reader for it yet; adding a mirror nobody reads would be the dishonest view the rule warns about |
+| `workspaces` table and `v_team` view | `merges` table and `v_merges` view only at first; the console reads `workspaces.json`. **Added 2026-10-16** once the desktop's Work pane became their reader: `workspaces` (`id, thread_id, name, title, root, base, seat_id, state, closed, created_at, closed_at`, state one of `open, applied, merged, pr, patch, failed, closed`, `closed` the `workspaces::Closed` as written), `v_team` joining each to its seat and latest trial, `Activity::team`, `orochi threads team <id>` | The manifest already existed and a client had no reader for it; a mirror nobody reads would have been the dishonest view the rule warns about. The console still reads the manifest, which stays the authority; the rows are what a client and `threads team` read |
 | `turns.origin` gains `'merge'` and `'mail'` | As designed; a turn carrying helper results **and** merge or mail reports is `'background'` | One turn, one origin; the helper's report is the costlier thing it carries |
 | An apply request during a turn runs when the turn ends | As designed, through the idle loop; `apply_merge` answers `requested` at once | The repository lock is `try_lock`, so an apply cannot wait for a turn: it is run only where no turn holds the tree |
 | A stale trial re-run once, then applied | As designed, inside the apply: a tree that moved is tried again on the tree as it is now, checks run again, and only a clean, passing result is written; the stale trial and the new one are both recorded | Measured in the fixture: a lead's own turn moves the tree (it writes its completion marker), so without the retry no apply would ever land |

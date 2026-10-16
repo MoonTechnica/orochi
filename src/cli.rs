@@ -397,6 +397,9 @@ pub enum WorkspacesCommand {
 pub enum ThreadCommand {
     /// Show one thread's timeline, seats and changed files.
     Show { id: String },
+    /// Show one thread's team: the lead's plan, each helper's worktree and what became of
+    /// it, and every merge trial — the same rows the desktop's Work pane draws.
+    Team { id: String },
     /// Start a thread in this directory without running it; `orochi host` picks it up.
     New,
     /// Queue a message in a thread. A running host takes it next; otherwise start one.
@@ -1093,6 +1096,20 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             match command {
                 Some(WorkspacesCommand::Prune) => {
                     let report = crate::workspaces::prune(&root, &tools)?;
+                    // The conversations these belonged to are not known here; their rows are,
+                    // by the worktree's path.
+                    if config.activity.enabled
+                        && let Ok(activity) = crate::activity::Activity::open(
+                            &paths.data,
+                            config.activity.retention_days,
+                        )
+                    {
+                        for (dir, closed) in &report {
+                            for item in closed {
+                                let _ = activity.close_workspace_at(&dir.join(&item.name), item);
+                            }
+                        }
+                    }
                     if cli.json {
                         let rows: Vec<serde_json::Value> = report
                             .iter()
@@ -1251,6 +1268,64 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         }
                         for file in &thread.files {
                             println!("  {} +{} -{}", file.path, file.added, file.removed);
+                        }
+                    }
+                }
+                Some(ThreadCommand::Team { id }) => {
+                    let id = named(&activity, &id)?;
+                    let team = activity.team(&id)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&team)?);
+                    } else {
+                        if let Some(plan) = &team.plan {
+                            for (index, step) in
+                                plan["plan"].as_array().into_iter().flatten().enumerate()
+                            {
+                                println!("plan {}. {}", index + 1, step.as_str().unwrap_or(""));
+                            }
+                            if let Some(next) = plan["next_step"].as_str().filter(|n| !n.is_empty())
+                            {
+                                println!("next · {next}");
+                            }
+                        }
+                        for workspace in &team.workspaces {
+                            println!(
+                                "{}  {}  {}  {}{}",
+                                workspace.name,
+                                workspace.title,
+                                workspace.state,
+                                workspace.root,
+                                workspace
+                                    .trial
+                                    .as_ref()
+                                    .map(|t| format!(
+                                        "  trial {t} {}",
+                                        workspace.trial_state.as_deref().unwrap_or("")
+                                    ))
+                                    .unwrap_or_default()
+                            );
+                        }
+                        for merge in &team.merges {
+                            println!(
+                                "trial {}  {}  {}  {} files  {} overlap  {} conflicts{}",
+                                merge.id,
+                                merge.workspace,
+                                merge.state,
+                                merge.files.len(),
+                                merge.overlap.len(),
+                                merge.conflicts.len(),
+                                merge
+                                    .error
+                                    .as_ref()
+                                    .map(|e| format!("  {e}"))
+                                    .unwrap_or_default()
+                            );
+                        }
+                        if team.plan.is_none()
+                            && team.workspaces.is_empty()
+                            && team.merges.is_empty()
+                        {
+                            println!("No plan, worktrees or merge trials in this conversation");
                         }
                     }
                 }

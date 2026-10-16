@@ -313,6 +313,11 @@ fn board(open: State<'_, Open>, thread: String) -> Result<Vec<serde_json::Value>
 }
 
 #[tauri::command]
+fn team(open: State<'_, Open>, thread: String) -> Result<orochi::activity::Team, String> {
+    open.0.lock().unwrap().team(&thread).map_err(fail)
+}
+
+#[tauri::command]
 fn tree_files(
     open: State<'_, Open>,
     thread: String,
@@ -629,6 +634,7 @@ fn main() {
             agents,
             insights,
             board,
+            team,
             tree_files,
             tree_patch,
             tree_refresh,

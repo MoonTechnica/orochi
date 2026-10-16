@@ -92,6 +92,9 @@ pub struct Prompt {
     /// it wants to run can still write.
     pub read_only: bool,
     pub lead: bool,
+    /// An `apply` question: the worktree whose merge trial is waiting, so the Work pane can
+    /// put the buttons on that worktree's row.
+    pub workspace: Option<String>,
 }
 
 /// A folder a thread can be started in: one the store already knows about.
@@ -1043,6 +1046,12 @@ impl Client {
         self.activity.thread(id)
     }
 
+    /// The Work pane: the lead's plan, each helper's worktree with its seat and latest trial,
+    /// and every merge trial, from `v_team` and `v_merges`.
+    pub fn team(&self, thread: &str) -> Result<orochi::activity::Team> {
+        self.activity.team(thread)
+    }
+
     /// Pins the route a thread's next messages take (`agent[/model] [effort]`), or with `None`
     /// lets Orochi choose. The row says so at once; the host acts on it as `/model`.
     pub fn set_route(&self, thread: &str, route: Option<&str>) -> Result<()> {
@@ -1094,34 +1103,61 @@ impl Client {
             let request: serde_json::Value =
                 serde_json::from_str(&request).unwrap_or(serde_json::Value::Null);
             let call = &request["toolCall"];
+            let kind: String = r.get(4)?;
+            // An apply question is the manager's, not an agent's: it names the worktree whose
+            // clean trial waits, the lines the console would print, and one way to say yes.
+            let apply = kind == "apply";
+            let workspace = request["workspace"].as_str().map(str::to_owned);
+            let lines: Vec<&str> = request["lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|line| line.as_str())
+                .collect();
             Ok(Prompt {
                 id: r.get(0)?,
                 thread_id: r.get(1)?,
                 thread_title: r.get(2)?,
                 project: r.get(3)?,
-                kind: r.get(4)?,
+                kind,
                 agent: r.get(6)?,
                 model: r.get(7)?,
                 role: r.get(8)?,
-                title: call["title"].as_str().unwrap_or("Permission").to_owned(),
-                detail: call["rawInput"]["command"]
-                    .as_str()
-                    .or_else(|| call["rawInput"]["file_path"].as_str())
-                    .map(str::to_owned),
-                options: request["options"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|option| {
-                        Some((
-                            option["optionId"].as_str()?.to_owned(),
-                            option["name"].as_str().unwrap_or("Allow").to_owned(),
-                        ))
-                    })
-                    .collect(),
+                title: if apply {
+                    format!(
+                        "Apply `{}` to your tree?",
+                        workspace.as_deref().unwrap_or("the worktree")
+                    )
+                } else {
+                    call["title"].as_str().unwrap_or("Permission").to_owned()
+                },
+                detail: if apply {
+                    Some(lines.join("\n")).filter(|d| !d.is_empty())
+                } else {
+                    call["rawInput"]["command"]
+                        .as_str()
+                        .or_else(|| call["rawInput"]["file_path"].as_str())
+                        .map(str::to_owned)
+                },
+                options: if apply {
+                    vec![("apply".to_owned(), "Apply".to_owned())]
+                } else {
+                    request["options"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|option| {
+                            Some((
+                                option["optionId"].as_str()?.to_owned(),
+                                option["name"].as_str().unwrap_or("Allow").to_owned(),
+                            ))
+                        })
+                        .collect()
+                },
                 created_at: r.get(9)?,
                 read_only: r.get::<_, Option<i64>>(10)?.unwrap_or(0) != 0,
                 lead: r.get::<_, Option<i64>>(11)?.unwrap_or(1) != 0,
+                workspace,
             })
         })?;
         rows.map(|row| Ok(row?)).collect()

@@ -72,6 +72,23 @@ pub struct Closed {
     pub error: Option<String>,
 }
 impl Closed {
+    /// What became of the change, in one word: the state the worktree's row is left in.
+    pub fn outcome(&self) -> &'static str {
+        if self.how == "applied" {
+            "applied"
+        } else if self.pr.is_some() {
+            "pr"
+        } else if !self.merged.is_empty() {
+            "merged"
+        } else if self.patch.is_some() {
+            "patch"
+        } else if self.error.is_some() {
+            "failed"
+        } else {
+            "closed"
+        }
+    }
+
     /// One paragraph for the lead or the user.
     pub fn describe(&self) -> String {
         let mut text = format!("workspace `{}` closed", self.name);
@@ -120,7 +137,7 @@ pub struct Workspaces {
     pub directory: PathBuf,
     pub workspaces: Vec<Workspace>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub name: String,
     pub root: PathBuf,

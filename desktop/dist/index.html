@@ -62,6 +62,7 @@
     <div class="resizer" id="side-resizer" role="separator" aria-orientation="vertical" aria-label="Resize the side pane" tabindex="0"></div>
     <div id="tabs" role="tablist">
       <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
+      <button class="tab" data-pane="work" role="tab" aria-selected="false">Work</button>
       <button class="tab" data-pane="changes" role="tab" aria-selected="false">Changes</button>
       <button class="tab" data-pane="plan" role="tab" aria-selected="false">Plan</button>
       <button class="tab" data-pane="files" role="tab" aria-selected="false">Files</button>
@@ -73,6 +74,9 @@
         <input id="say" placeholder="Message the team…" aria-label="Message the team">
       </form>
       <p id="say-hint" class="empty">Delivered when the agent next checks.</p>
+    </section>
+    <section id="pane-work" class="pane" hidden>
+      <div id="work"></div>
     </section>
     <section id="pane-changes" class="pane" hidden>
       <div id="scopes" role="tablist">

@@ -414,6 +414,62 @@ pub struct SeatRow {
     pub reported: bool,
 }
 
+/// A helper's worktree as the team view shows it (`v_team`): the manifest's row, the seat
+/// that worked in it, and where its latest merge trial stands.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceRow {
+    pub id: String,
+    pub name: String,
+    pub title: String,
+    pub root: String,
+    pub base: String,
+    /// `open`, else what became of it: `applied`, `merged`, `pr`, `patch`, `failed`, `closed`.
+    pub state: String,
+    /// What closing it did, as `workspaces::Closed`, once it is closed.
+    pub closed: Option<serde_json::Value>,
+    pub created_at: i64,
+    pub closed_at: Option<i64>,
+    pub seat_id: Option<String>,
+    pub seat_state: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub reasoning: Option<String>,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub usage: Option<serde_json::Value>,
+    pub reported: bool,
+    pub doing: Option<String>,
+    /// The latest merge trial of this worktree, and its state.
+    pub trial: Option<String>,
+    pub trial_state: Option<String>,
+    pub trials: i64,
+}
+
+/// A merge trial as `v_merges` shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeRow {
+    pub id: String,
+    pub workspace: String,
+    pub n: i64,
+    pub state: String,
+    pub files: Vec<String>,
+    pub overlap: Vec<String>,
+    pub conflicts: Vec<String>,
+    pub checks: Vec<serde_json::Value>,
+    pub error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A conversation's team as a client draws it: the lead's plan, its helpers' worktrees and
+/// the merge trials of each.
+#[derive(Debug, Clone, Serialize)]
+pub struct Team {
+    pub plan: Option<serde_json::Value>,
+    pub workspaces: Vec<WorkspaceRow>,
+    pub merges: Vec<MergeRow>,
+}
+
 /// A thread a search found, with the words around the match when it was found by content.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchHit {
@@ -1287,6 +1343,153 @@ impl Activity {
             }
         }
         Ok(trials)
+    }
+
+    /// A worktree opened for a helper, as the manifest records it.
+    pub fn open_workspace(
+        &self,
+        thread: &str,
+        workspace: &crate::workspaces::Workspace,
+        seat: Option<&str>,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.connection.execute(
+            "INSERT INTO workspaces (id, thread_id, name, title, root, base, seat_id, state,
+                created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,'open',?8)",
+            params![
+                id,
+                thread,
+                workspace.name,
+                workspace.title,
+                workspace.root.display().to_string(),
+                workspace.base,
+                seat,
+                millis()
+            ],
+        )?;
+        Ok(id)
+    }
+
+    /// What became of a worktree, on the thread's open row of that name. False when the
+    /// thread has no such worktree open.
+    pub fn close_workspace(
+        &self,
+        thread: &str,
+        closed: &crate::workspaces::Closed,
+    ) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE workspaces SET state=?3, closed=?4, closed_at=?5
+             WHERE id=(SELECT id FROM workspaces WHERE thread_id=?1 AND name=?2 AND state='open'
+                       ORDER BY created_at DESC LIMIT 1)",
+            params![
+                thread,
+                closed.name,
+                closed.outcome(),
+                serde_json::to_string(closed)?,
+                millis()
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// The same for a worktree known by its path alone: `orochi workspaces prune` closes what
+    /// other conversations left behind without knowing their threads.
+    pub fn close_workspace_at(
+        &self,
+        worktree: &Path,
+        closed: &crate::workspaces::Closed,
+    ) -> Result<bool> {
+        let worktree = worktree.display().to_string();
+        let changed = self.connection.execute(
+            "UPDATE workspaces SET state=?2, closed=?3, closed_at=?4
+             WHERE state='open' AND (root=?1 OR root LIKE ?1 || '/%')",
+            params![
+                worktree,
+                closed.outcome(),
+                serde_json::to_string(closed)?,
+                millis()
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// The team of a thread: the plan the lead set, every worktree opened in it with its seat
+    /// and latest trial, and every merge trial.
+    pub fn team(&self, thread: &str) -> Result<Team> {
+        let plan = self
+            .management(thread)?
+            .and_then(|m| serde_json::from_str(&m).ok());
+        let json = |text: Option<String>| text.and_then(|t| serde_json::from_str(&t).ok());
+        let list = |text: Option<String>| -> Vec<String> {
+            json(text)
+                .and_then(|v: serde_json::Value| serde_json::from_value(v).ok())
+                .unwrap_or_default()
+        };
+        let workspaces = self
+            .connection
+            .prepare(
+                "SELECT workspace_id, name, title, root, base, state, closed, created_at,
+                        closed_at, seat_id, seat_state, agent, model, reasoning, started_at,
+                        ended_at, usage, reported, doing, trial_id, trial_state, trials
+                 FROM v_team WHERE thread_id=?1 ORDER BY created_at",
+            )?
+            .query_map([thread], |r| {
+                Ok(WorkspaceRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    title: r.get(2)?,
+                    root: r.get(3)?,
+                    base: r.get(4)?,
+                    state: r.get(5)?,
+                    closed: json(r.get(6)?),
+                    created_at: r.get(7)?,
+                    closed_at: r.get(8)?,
+                    seat_id: r.get(9)?,
+                    seat_state: r.get(10)?,
+                    agent: r.get(11)?,
+                    model: r.get(12)?,
+                    reasoning: r.get(13)?,
+                    started_at: r.get(14)?,
+                    ended_at: r.get(15)?,
+                    usage: json(r.get(16)?),
+                    reported: r.get::<_, Option<i64>>(17)?.unwrap_or(0) != 0,
+                    doing: r.get(18)?,
+                    trial: r.get(19)?,
+                    trial_state: r.get(20)?,
+                    trials: r.get(21)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let merges = self
+            .connection
+            .prepare(
+                "SELECT merge_id, workspace, n, state, files, overlap, conflicts, checks, error,
+                        created_at, updated_at
+                 FROM v_merges WHERE thread_id=?1 ORDER BY created_at",
+            )?
+            .query_map([thread], |r| {
+                Ok(MergeRow {
+                    id: r.get(0)?,
+                    workspace: r.get(1)?,
+                    n: r.get(2)?,
+                    state: r.get(3)?,
+                    files: list(r.get(4)?),
+                    overlap: list(r.get(5)?),
+                    conflicts: list(r.get(6)?),
+                    checks: json(r.get(7)?)
+                        .and_then(|v: serde_json::Value| serde_json::from_value(v).ok())
+                        .unwrap_or_default(),
+                    error: r.get(8)?,
+                    created_at: r.get(9)?,
+                    updated_at: r.get(10)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(Team {
+            plan,
+            workspaces,
+            merges,
+        })
     }
 
     /// What was said in a thread, as (user, agent) pairs per turn, oldest first: what a fresh
@@ -2175,6 +2378,32 @@ CREATE TRIGGER IF NOT EXISTS ch_merges_u AFTER UPDATE ON merges BEGIN
   INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.updated_at); END;
 "#,
     ),
+    // A helper's worktree from the moment it is opened to what became of it, as
+    // `workspaces::Closed` says it: the manifest mirrored, so a client can draw the team
+    // (`docs/manager-design.md` §5). Paths and a patch's name, content, so here only.
+    (
+        "workspaces",
+        r#"
+CREATE TABLE IF NOT EXISTS workspaces (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  root TEXT NOT NULL,
+  base TEXT NOT NULL,
+  seat_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('open','applied','merged','pr','patch','failed','closed')),
+  closed TEXT,
+  created_at INTEGER NOT NULL, closed_at INTEGER);
+CREATE INDEX IF NOT EXISTS workspaces_thread ON workspaces(thread_id, created_at);
+CREATE TRIGGER IF NOT EXISTS ch_workspaces_i AFTER INSERT ON workspaces BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('workspaces',new.id,new.thread_id,new.created_at); END;
+CREATE TRIGGER IF NOT EXISTS ch_workspaces_u AFTER UPDATE ON workspaces BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('workspaces',new.id,new.thread_id,COALESCE(new.closed_at,new.created_at)); END;
+"#,
+    ),
     // What was said, searchable: the user's messages and the agents' finished replies. An
     // agent's reply is indexed once it completes, not on every streamed chunk, and a deleted
     // thread takes its rows with it through the items it cascades.
@@ -2733,7 +2962,7 @@ SELECT pt.turn_id, tn.thread_id, pt.id, pt.brief, pt.paths, pt.after, pt.wave, p
        (SELECT s.id FROM seats s WHERE s.turn_id=pt.turn_id AND s.part_id=pt.id LIMIT 1) AS seat_id
 FROM parts pt JOIN turns tn ON tn.id=pt.turn_id;
 
-DROP VIEW IF EXISTS v_route;
+DROP VIEW IF EXISTS v_merges;
 CREATE VIEW v_merges AS
 SELECT m.id AS merge_id, m.thread_id, m.workspace, m.n, m.state,
        json_extract(m.trial,'$.root') AS root,
@@ -2745,6 +2974,22 @@ SELECT m.id AS merge_id, m.thread_id, m.workspace, m.n, m.state,
        m.created_at, m.updated_at
 FROM merges m;
 
+DROP VIEW IF EXISTS v_team;
+CREATE VIEW v_team AS
+SELECT w.id AS workspace_id, w.thread_id, w.name, w.title, w.root, w.base, w.state, w.closed,
+       w.created_at, w.closed_at, w.seat_id,
+       r.state AS seat_state, r.agent, r.model, r.reasoning, r.started_at, r.ended_at,
+       r.usage, r.reported, r.doing,
+       (SELECT m.id FROM merges m WHERE m.thread_id=w.thread_id AND m.workspace=w.name
+          AND m.created_at>=w.created_at ORDER BY m.n DESC LIMIT 1) AS trial_id,
+       (SELECT m.state FROM merges m WHERE m.thread_id=w.thread_id AND m.workspace=w.name
+          AND m.created_at>=w.created_at ORDER BY m.n DESC LIMIT 1) AS trial_state,
+       (SELECT count(*) FROM merges m WHERE m.thread_id=w.thread_id AND m.workspace=w.name
+          AND m.created_at>=w.created_at) AS trials
+FROM workspaces w
+LEFT JOIN v_roster r ON r.seat_id=w.seat_id;
+
+DROP VIEW IF EXISTS v_route;
 CREATE VIEW v_route AS
 SELECT a.id AS attempt_id, tn.thread_id, s.turn_id, s.id AS seat_id, s.role,
        a.n, a.agent, a.provider, a.model, a.reasoning, a.mode, a.resumed,

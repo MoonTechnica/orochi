@@ -1341,3 +1341,174 @@ fn a_hidden_project_keeps_its_threads_and_a_deleted_one_takes_them() {
     assert!(!activity.delete_project("proj").unwrap());
     assert!(!activity.hide_project("proj", false).unwrap());
 }
+
+/// A helper's worktree is a row from the moment it is opened to what became of it, and the
+/// team view joins it to the seat that worked there and its latest merge trial — the rows
+/// the desktop's Work pane and `orochi threads team` both read.
+#[test]
+fn a_worktree_is_a_row_from_open_to_closed_and_the_team_view_joins_its_seat_and_trial() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    let host = activity.register_host(Some(&thread), "terminal").unwrap();
+    assert!(activity.claim_turn(&turn, &host).unwrap());
+    let seat = activity
+        .create_seat(
+            &turn,
+            100,
+            "backend",
+            false,
+            false,
+            None,
+            Some(std::path::Path::new("/tmp/repo/.orochi/sessions/k/backend")),
+        )
+        .unwrap();
+    activity
+        .seat_details(&seat, Some("Implement validation"), true, "lead")
+        .unwrap();
+    let attempt = activity
+        .create_attempt(&seat, &candidate("claude", "opus"), false, None)
+        .unwrap();
+    let _ = attempt;
+    activity
+        .set_management(
+            &thread,
+            r#"{"plan":["validate","document"],"next_step":"merge"}"#,
+        )
+        .unwrap();
+    let workspace = orochi::workspaces::Workspace {
+        name: "backend".into(),
+        root: "/tmp/repo/.orochi/sessions/k/backend".into(),
+        base: "abc123".into(),
+        title: "Implement validation".into(),
+    };
+    activity
+        .open_workspace(&thread, &workspace, Some(&seat))
+        .unwrap();
+    let docs = orochi::workspaces::Workspace {
+        name: "docs".into(),
+        root: "/tmp/repo/.orochi/sessions/k/docs".into(),
+        base: "abc123".into(),
+        title: "Document the rules".into(),
+    };
+    activity.open_workspace(&thread, &docs, None).unwrap();
+
+    let team = activity.team(&thread).unwrap();
+    assert_eq!(team.plan.unwrap()["plan"][1], "document");
+    assert_eq!(team.workspaces.len(), 2);
+    let backend = &team.workspaces[0];
+    assert_eq!(
+        (backend.name.as_str(), backend.state.as_str()),
+        ("backend", "open")
+    );
+    assert_eq!(
+        backend.agent.as_deref(),
+        Some("claude"),
+        "joined to its seat"
+    );
+    assert_eq!(backend.title, "Implement validation");
+    assert!(backend.trial.is_none() && backend.trials == 0);
+
+    let trial = orochi::merge::Trial {
+        id: "backend-1".into(),
+        workspace: "backend".into(),
+        n: 1,
+        state: orochi::merge::State::Clean,
+        root: "/tmp/repo/.orochi/sessions/k/trials/backend-1".into(),
+        worktree: "/tmp/repo/.orochi/sessions/k/trials/backend-1".into(),
+        ours: "o".into(),
+        theirs: "t".into(),
+        base: "abc123".into(),
+        merged: "m".into(),
+        files: vec!["src/api.rs".into()],
+        overlap: vec![],
+        conflicts: vec![],
+        checks: vec![CheckResult {
+            name: "cargo test".into(),
+            passed: true,
+            exit_code: Some(0),
+            duration_ms: 10,
+            timed_out: false,
+        }],
+        error: None,
+    };
+    activity.record_merge(&thread, &trial).unwrap();
+    let team = activity.team(&thread).unwrap();
+    assert_eq!(team.workspaces[0].trial.as_deref(), Some("backend-1"));
+    assert_eq!(team.workspaces[0].trial_state.as_deref(), Some("clean"));
+    assert_eq!(team.merges.len(), 1);
+    assert_eq!(team.merges[0].files, vec!["src/api.rs".to_owned()]);
+    assert_eq!(team.merges[0].checks[0]["passed"], true);
+
+    // Closing: an apply, and a sweep that kept the other as a patch.
+    let applied = orochi::workspaces::Closed {
+        name: "backend".into(),
+        how: "applied".into(),
+        changed: vec!["src/api.rs".into()],
+        merged: vec!["src/api.rs".into()],
+        ..Default::default()
+    };
+    assert!(activity.close_workspace(&thread, &applied).unwrap());
+    let swept = orochi::workspaces::Closed {
+        name: "docs".into(),
+        how: "closed".into(),
+        changed: vec!["docs/api.md".into()],
+        patch: Some("/tmp/repo/.orochi/sessions/k/docs.patch".into()),
+        ..Default::default()
+    };
+    assert!(activity.close_workspace(&thread, &swept).unwrap());
+    assert!(
+        !activity.close_workspace(&thread, &swept).unwrap(),
+        "nothing open by that name is left to close"
+    );
+    let team = activity.team(&thread).unwrap();
+    let states: Vec<&str> = team.workspaces.iter().map(|w| w.state.as_str()).collect();
+    assert_eq!(states, vec!["applied", "patch"]);
+    assert_eq!(
+        team.workspaces[1].closed.as_ref().unwrap()["patch"],
+        "/tmp/repo/.orochi/sessions/k/docs.patch"
+    );
+    assert!(team.workspaces.iter().all(|w| w.closed_at.is_some()));
+
+    // A prune in another process knows only the worktree's path.
+    let later = orochi::workspaces::Workspace {
+        name: "cleanup".into(),
+        root: "/tmp/repo/.orochi/sessions/k/cleanup/sub".into(),
+        base: "abc123".into(),
+        title: String::new(),
+    };
+    activity.open_workspace(&thread, &later, None).unwrap();
+    let pruned = orochi::workspaces::Closed {
+        name: "cleanup".into(),
+        how: "closed".into(),
+        ..Default::default()
+    };
+    assert!(
+        activity
+            .close_workspace_at(
+                std::path::Path::new("/tmp/repo/.orochi/sessions/k/cleanup"),
+                &pruned
+            )
+            .unwrap()
+    );
+    let team = activity.team(&thread).unwrap();
+    assert_eq!(team.workspaces[2].state, "closed");
+
+    // The feed names the thread each change belongs to, so a window redraws the pane.
+    let named: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM changes WHERE tbl='workspaces' AND thread_id=?1",
+            [&thread],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(named >= 6, "{named}");
+    // Deleting the thread takes its worktree rows with it.
+    assert!(activity.delete_thread(&thread).unwrap());
+    let left: i64 = activity
+        .connection()
+        .query_row("SELECT count(*) FROM workspaces", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+}

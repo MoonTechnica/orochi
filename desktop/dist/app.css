@@ -1256,3 +1256,31 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .setup-step .detail { grid-column: 2 / 4; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setup-step.failed .detail { white-space: normal; overflow-wrap: anywhere; }
 .setup-step.failed .detail { color: var(--danger); }
+
+/* Work ------------------------------------------------------------------- */
+/* The worktrees as a tree: the person's tree at the root, a branch per helper's worktree, and
+   under each what happened in it. Connectors are borders, so the tree reads without an image. */
+.work-plan { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
+.work-plan b { color: var(--text); font-weight: 600; }
+.work-plan .next { flex-basis: 100%; }
+.work-tree, .work-tree ul { list-style: none; margin: 0; padding: 0; }
+.work-tree ul { margin-left: 7px; padding-left: 18px; border-left: 1px solid var(--line); }
+.work-tree li { position: relative; }
+.work-tree ul li::before { content: ""; position: absolute; left: -18px; top: 13px; width: 12px; border-top: 1px solid var(--line); }
+.work-row { display: grid; grid-template-columns: 14px auto 1fr auto; gap: 8px; align-items: baseline; padding: 4px 0; min-width: 0; font-size: 12px; }
+.work-row .k { font-weight: 600; white-space: nowrap; }
+.work-row .d { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.work-row .s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.work-row button { font-size: 11px; padding: 2px 8px; }
+.work-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); align-self: center; display: inline-block; }
+.work-dot[data-tone="ok"] { background: var(--ok); }
+.work-dot[data-tone="live"] { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+.work-dot[data-tone="warn"] { background: var(--brand); }
+.work-dot[data-tone="danger"] { background: var(--danger); }
+.work-dot[data-tone="ask"] { background: transparent; border: 2px solid var(--brand); width: 6px; height: 6px; }
+.pill { font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.pill[data-tone="ok"] { color: var(--ok); border-color: transparent; background: color-mix(in srgb, var(--ok) 15%, transparent); }
+.pill[data-tone="live"] { color: var(--ok); }
+.pill[data-tone="warn"] { color: var(--brand); border-color: transparent; background: color-mix(in srgb, var(--brand) 15%, transparent); }
+.pill[data-tone="danger"] { color: var(--danger); border-color: transparent; background: color-mix(in srgb, var(--danger) 15%, transparent); }
+.pill[data-tone="ask"] { color: var(--brand); border-color: var(--brand); }

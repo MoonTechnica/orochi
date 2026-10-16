@@ -1168,3 +1168,106 @@ fn the_setup_sign_in_opens_the_agents_own_login_and_refuses_a_name_that_is_not_o
     assert!(view::open_docs(&config, "https://example.com/anything").is_err());
     assert!(view::open_docs(&config, "file:///etc/passwd").is_err());
 }
+
+/// The Work pane is a query too: each worktree with its seat and latest trial, every trial,
+/// and the apply question as a card with one way to say yes and the worktree it is about.
+#[test]
+fn the_work_pane_reads_worktrees_trials_and_the_apply_question_from_the_views_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    {
+        let store = share(Activity::attach(dir.path(), 30).unwrap());
+        let db = store.lock().unwrap();
+        let turn: String = db
+            .connection()
+            .query_row("SELECT id FROM turns LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let seat = db
+            .create_seat(
+                &turn,
+                100,
+                "backend",
+                false,
+                false,
+                None,
+                Some(std::path::Path::new(
+                    "/tmp/orochi/.orochi/sessions/k/backend",
+                )),
+            )
+            .unwrap();
+        db.create_attempt(&seat, &candidate(), false, None).unwrap();
+        db.set_management(&thread, r#"{"plan":["validate"],"next_step":"merge"}"#)
+            .unwrap();
+        db.open_workspace(
+            &thread,
+            &orochi::workspaces::Workspace {
+                name: "backend".into(),
+                root: "/tmp/orochi/.orochi/sessions/k/backend".into(),
+                base: "abc".into(),
+                title: "Implement validation".into(),
+            },
+            Some(&seat),
+        )
+        .unwrap();
+        db.record_merge(
+            &thread,
+            &orochi::merge::Trial {
+                id: "backend-1".into(),
+                workspace: "backend".into(),
+                n: 1,
+                state: orochi::merge::State::Clean,
+                root: "/tmp/orochi/.orochi/sessions/k/trials/backend-1".into(),
+                worktree: "/tmp/orochi/.orochi/sessions/k/trials/backend-1".into(),
+                ours: "o".into(),
+                theirs: "t".into(),
+                base: "abc".into(),
+                merged: "m".into(),
+                files: vec!["src/api.rs".into()],
+                overlap: vec!["src/api.rs".into()],
+                conflicts: vec![],
+                checks: vec![],
+                error: None,
+            },
+        )
+        .unwrap();
+        db.open_prompt(
+            &thread,
+            &turn,
+            None,
+            None,
+            "apply",
+            r#"{"apply":"backend-1","workspace":"backend","lines":["1 file · no checks"],"files":["src/api.rs"],"overlap":["src/api.rs"]}"#,
+        )
+        .unwrap();
+    }
+    let client = Client::open(dir.path()).unwrap();
+
+    let team = client.team(&thread).unwrap();
+    assert_eq!(team.plan.unwrap()["next_step"], "merge");
+    assert_eq!(team.workspaces.len(), 1);
+    let backend = &team.workspaces[0];
+    assert_eq!(backend.state, "open");
+    assert_eq!(
+        backend.agent.as_deref(),
+        Some("claude"),
+        "its seat is joined"
+    );
+    assert_eq!(backend.trial.as_deref(), Some("backend-1"));
+    assert_eq!(backend.trial_state.as_deref(), Some("clean"));
+    assert_eq!(team.merges[0].overlap, vec!["src/api.rs".to_owned()]);
+
+    let apply = client
+        .open_prompts()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.kind == "apply")
+        .expect("the apply question is open");
+    assert_eq!(apply.title, "Apply `backend` to your tree?");
+    assert_eq!(apply.detail.as_deref(), Some("1 file · no checks"));
+    assert_eq!(
+        apply.options,
+        vec![("apply".to_owned(), "Apply".to_owned())],
+        "one way to say yes; No is the absence of a choice"
+    );
+    assert_eq!(apply.workspace.as_deref(), Some("backend"));
+}

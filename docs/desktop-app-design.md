@@ -577,6 +577,36 @@ The Team pane is therefore **who is in the room** — the roster, each seat with
 agent and model, and what it is doing — plus arrivals, departures and status changes, and the
 box for leaving the team a note. It is presence, not transcript.
 
+### 6.4a Work — `v_team` + `v_merges` (added 2026-10-16; automated tests only)
+
+What the room is *doing* with worktrees: the lead opens one per writing helper, the helper
+reports, Orochi tries the merge, the person approves, the tree takes it
+([`manager-design.md`](manager-design.md)). Asked for on 2026-10-16 so that flow can be
+followed by eye; the proposal and its mockups are the drawn tree this pane folds into rows.
+
+- **A tree, rooted at the person's own tree.** The root row is the thread's branch and the
+  lead's route, with *waiting for you* on it while an apply question is open. One branch per
+  worktree (`v_team`): its name, what it was for, where it is relative to the project, and at
+  the right edge where it stands on the way back — `working…`, `reported`, `trial clean ·
+  apply?`, `trial conflicts`, `resolving`, then `applied · n files`, `merged · n files`, `pull
+  request <url>`, `kept as a patch`, `failed` or `closed`. Under each: the seat that worked
+  there (agent, model, effort, elapsed), every merge trial of it (`v_merges`: files, the checks
+  by name, overlap, conflicts, the error), the apply question's buttons when one is open, and
+  what closing it did (`workspaces.closed`, the `Closed` record: paths written, the branch or
+  pull request, the patch kept, the error).
+- **The apply question lives on its worktree's row.** Under a headless host it is a `prompts`
+  row of kind `apply`; `open_prompts` reads its `workspace`, `lines` and gives it one option,
+  *Apply*, so the same `answer` the permission card uses answers it. The timeline card still
+  shows it too.
+- **The plan heads the pane** (`threads.management`): the steps numbered and the next step.
+- **Not built:** the lane diagram of the proposal (time on the horizontal axis, branches
+  leaving the lead's lane at the snapshot and rejoining at the apply). It would be one SVG of
+  connectors over the same rows, and the rows come first.
+
+Tauri command `team(thread)` returns `Activity::team`: the plan, the `v_team` rows and the
+`v_merges` rows. `orochi threads team <id>` prints the same, which is what keeps the pane a
+query. The console's `/work` keeps reading the manifest and its own memory, as before.
+
 ### 6.5 Changes — `v_turn_files` + `git diff`
 
 File list with `+n −m`, unified or split diff beside it. Scopes follow Codex's review pane: **Last turn** (stored patches — the only scope that survives the working tree moving on), **Unstaged**, **Staged**, **Branch** (against the merge base) — the last three are `git diff` in the thread's `cwd`, which is the authority. Clicking a filename opens the user's editor at the line.

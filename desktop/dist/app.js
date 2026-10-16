@@ -272,6 +272,37 @@ const WORDS = {
     "background agent": "件のバックグラウンドエージェント",
     "background agents": "件のバックグラウンドエージェント",
     "Stop all": "すべて停止",
+    "No worktrees in this conversation.": "この会話に worktree はありません。",
+    "your tree": "あなたのツリー",
+    "waiting for you": "あなたの判断待ち",
+    Plan: "計画",
+    next: "次",
+    seat: "担当",
+    trial: "trial",
+    clean: "clean",
+    conflicts: "競合",
+    resolving: "競合を解消中",
+    "apply?": "反映しますか",
+    reported: "報告済み",
+    open: "作業中",
+    applied: "反映済み",
+    merged: "マージ済み",
+    "pull request": "プルリクエスト",
+    "kept as a patch": "パッチとして保存",
+    closed: "閉じました",
+    apply: "反映",
+    Apply: "ツリーに反映",
+    Decline: "反映しない",
+    file: "ファイル",
+    files: "ファイル",
+    "no checks": "チェックなし",
+    passed: "合格",
+    overlap: "両側で変更",
+    written: "書き込み",
+    patch: "パッチ",
+    "changed nothing": "変更なし",
+    stale: "stale",
+    declined: "見送り",
     from: "依頼元",
     "is read only · this command runs in your working tree": "は読み取り専用です · このコマンドは作業ツリーで実行されます",
     cooling: "待機中",
@@ -2943,6 +2974,214 @@ el("say-form").addEventListener("submit", async (event) => {
   if (thread) await drawRoom(thread);
 });
 
+// Work -------------------------------------------------------------------
+// The worktrees of a conversation as a tree: the person's own tree at the root, one branch per
+// helper's worktree, and under each the seat that worked in it, its merge trials and what
+// became of it. Read from `v_team` and `v_merges`, which `orochi threads team` prints too, so
+// a row the window cannot draw is a view that is missing something.
+
+/// What a worktree's row says at its right edge: where it is on the way back to the tree.
+function worktreeState(row) {
+  const closed = row.closed || {};
+  const n = (list) => (list || []).length;
+  switch (row.state) {
+    case "applied":
+      return { tone: "ok", label: `${t("applied")} · ${files(n(closed.merged))}` };
+    case "merged":
+      return { tone: "ok", label: `${t("merged")} · ${files(n(closed.merged))}` };
+    case "pr":
+      return { tone: "ok", label: `${t("pull request")} ${closed.pr || ""}`.trim() };
+    case "patch":
+      return { tone: "warn", label: t("kept as a patch") };
+    case "failed":
+      return { tone: "danger", label: t("failed") };
+    case "closed":
+      return { tone: "muted", label: t("closed") };
+    default:
+      break;
+  }
+  if (row.trial_state === "clean") return { tone: "ask", label: `${t("trial")} ${t("clean")} · ${t("apply?")}` };
+  if (row.trial_state === "conflicts") return { tone: "warn", label: `${t("trial")} ${t("conflicts")}` };
+  if (row.trial_state === "resolving") return { tone: "warn", label: t("resolving") };
+  if (row.trial_state) return { tone: "muted", label: `${t("trial")} ${row.trial_state}` };
+  if (row.reported) return { tone: "muted", label: t("reported") };
+  if (row.seat_state === "working" || row.seat_state === "asking") return { tone: "live", label: t("working…") };
+  return { tone: "muted", label: t(row.seat_state || "open") };
+}
+
+function files(n) {
+  return n === 1 ? `1 ${t("file")}` : `${n} ${t("files")}`;
+}
+
+/// One row of the tree, as a list item.
+function leaf(row) {
+  const item = text("li");
+  item.append(row);
+  return item;
+}
+
+function workRow({ dot, key, detail, status, buttons }) {
+  const row = text("div", "work-row");
+  const mark = text("i", "work-dot");
+  mark.dataset.tone = dot;
+  row.append(mark);
+  row.append(text("span", "k", key));
+  row.append(text("span", "d", detail || ""));
+  const right = text("span", "s");
+  if (status) {
+    const pill = text("span", "pill", status.label);
+    pill.dataset.tone = status.tone;
+    right.append(pill);
+  }
+  for (const button of buttons || []) right.append(button);
+  row.append(right);
+  return row;
+}
+
+/// A trial's checks in a few words: all passed, or which failed.
+function checksPhrase(checks) {
+  if (!checks || !checks.length) return t("no checks");
+  const failed = checks.filter((c) => c.passed === false);
+  if (!failed.length) return `${checks.map((c) => c.name).join(", ")} ${t("passed")}`;
+  return `${failed.map((c) => c.name).join(", ")} ${t("failed")}`;
+}
+
+async function drawWork(thread) {
+  const host = el("work");
+  host.replaceChildren();
+  const team = (await call("team", { thread: thread.thread.id })) || {};
+  const worktrees = team.workspaces || [];
+  const trials = team.merges || [];
+  if (team.plan?.plan?.length) {
+    const plan = text("div", "work-plan");
+    plan.append(text("b", null, t("Plan")));
+    for (const [index, step] of team.plan.plan.entries()) {
+      plan.append(text("span", null, `${index + 1}. ${step}`));
+    }
+    if (team.plan.next_step) plan.append(text("span", "next", `${t("next")} · ${team.plan.next_step}`));
+    host.append(plan);
+  }
+  if (!worktrees.length) {
+    host.append(text("p", "empty", t("No worktrees in this conversation.")));
+    return;
+  }
+  const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
+  const lead = thread.seats.filter((s) => s.lead).at(-1);
+  const root = text("ul", "work-tree");
+  const own = text("li");
+  own.append(
+    workRow({
+      dot: thread.thread.status === "working" ? "live" : "ok",
+      key: t("your tree"),
+      detail: [thread.thread.branch, lead && [lead.agent, lead.model].filter(Boolean).join(" · ")]
+        .filter(Boolean)
+        .join(" · "),
+      status: asking.length ? { tone: "ask", label: t("waiting for you") } : null,
+    }),
+  );
+  const branches = text("ul");
+  for (const row of worktrees) {
+    const branch = text("li");
+    branch.dataset.state = row.state;
+    const where = row.root.startsWith(thread.thread.project_root)
+      ? row.root.slice(thread.thread.project_root.length + 1)
+      : row.root;
+    const status = worktreeState(row);
+    branch.append(
+      workRow({
+        dot: status.tone,
+        key: row.name,
+        detail: [row.title, where].filter(Boolean).join(" · "),
+        status,
+      }),
+    );
+    const under = text("ul");
+    let leaves = 0;
+    const put = (item) => {
+      under.append(item);
+      leaves += 1;
+    };
+    if (row.agent) {
+      const ended = row.ended_at || Date.now();
+      put(
+        leaf(
+          workRow({
+            dot: row.seat_state === "working" ? "live" : "muted",
+            key: t("seat"),
+            detail: [row.agent, row.model, row.reasoning, row.started_at ? span(ended - row.started_at) : null]
+              .filter(Boolean)
+              .join(" · "),
+            status: { tone: "muted", label: row.reported ? t("reported") : t(row.seat_state || "open") },
+          }),
+        ),
+      );
+    }
+    for (const trial of trials.filter((m) => m.workspace === row.name && m.created_at >= row.created_at)) {
+      const parts = [files(trial.files.length), checksPhrase(trial.checks)];
+      if (trial.overlap.length) parts.push(`${t("overlap")} ${trial.overlap.join(", ")}`);
+      if (trial.conflicts.length) parts.push(`${t("conflicts")} ${trial.conflicts.join(", ")}`);
+      if (trial.error) parts.push(trial.error);
+      const tone = trial.state === "clean" || trial.state === "applied" ? "ok"
+        : trial.state === "conflicts" || trial.state === "resolving" || trial.state === "stale" ? "warn"
+        : trial.state === "failed" ? "danger" : "muted";
+      put(
+        leaf(
+          workRow({
+            dot: tone,
+            key: `${t("trial")} #${trial.n}`,
+            detail: parts.join(" · "),
+            status: { tone, label: t(trial.state) },
+          }),
+        ),
+      );
+    }
+    for (const prompt of asking.filter((p) => p.workspace === row.name)) {
+      const buttons = [];
+      for (const [id, name] of prompt.options) {
+        const button = text("button", "primary", t(name));
+        button.type = "button";
+        button.addEventListener("click", () => answer(prompt.id, id));
+        buttons.push(button);
+      }
+      const no = text("button", null, t("Decline"));
+      no.type = "button";
+      no.addEventListener("click", () => answer(prompt.id, null));
+      buttons.push(no);
+      put(
+        leaf(
+          workRow({ dot: "ask", key: t("apply"), detail: prompt.detail || "", buttons }),
+        ),
+      );
+    }
+    if (row.closed) {
+      const closed = row.closed;
+      const parts = [];
+      if (closed.merged?.length) parts.push(`${t("written")} ${closed.merged.join(", ")}`);
+      if (closed.pr) parts.push(closed.pr);
+      else if (closed.branch) parts.push(closed.branch);
+      if (closed.conflicts?.length) parts.push(`${t("conflicts")} ${closed.conflicts.join(", ")}`);
+      if (closed.patch) parts.push(`${t("patch")} ${String(closed.patch).split("/").pop()}`);
+      if (closed.error) parts.push(closed.error);
+      if (!parts.length) parts.push(t("changed nothing"));
+      put(
+        leaf(
+          workRow({
+            dot: status.tone === "ok" ? "ok" : status.tone === "danger" ? "danger" : "muted",
+            key: t(closed.how === "applied" ? "applied" : "closed"),
+            detail: parts.join(" · "),
+            status: row.closed_at ? { tone: "muted", label: clock(row.closed_at) } : null,
+          }),
+        ),
+      );
+    }
+    if (leaves) branch.append(under);
+    branches.append(branch);
+  }
+  own.append(branches);
+  root.append(own);
+  host.append(root);
+}
+
 // The work graph of a turn, when it has one.
 async function drawPlan(thread) {
   const host = el("pane-plan");
@@ -3886,6 +4125,7 @@ async function refresh(full) {
   state.said = said;
   drawTimeline(thread, said);
   drawTeam(thread);
+  drawWork(thread);
   drawChanges(thread);
   drawRoom(thread);
   drawPlan(thread);

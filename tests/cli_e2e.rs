@@ -3478,6 +3478,26 @@ fn writable_helpers_work_in_their_own_worktrees_which_the_lead_closes_and_the_en
     );
     let notes = String::from_utf8_lossy(&output.stderr);
     assert!(notes.contains("closed 1 worktree still open"), "{notes}");
+    // Both worktrees are rows: alice's closed by the lead's merge, bob's by the sweep as a
+    // patch, each with what closing it did.
+    let activity = orochi::activity::Activity::attach(&w.dir.path().join("data"), 30).unwrap();
+    let mut rows: Vec<(String, String, String)> = activity
+        .connection()
+        .prepare("SELECT name, state, closed FROM v_team ORDER BY name")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    rows.sort();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(
+        (rows[0].0.as_str(), rows[0].1.as_str()),
+        ("alice", "merged")
+    );
+    assert!(rows[0].2.contains("helper-alice.txt"), "{}", rows[0].2);
+    assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("bob", "patch"));
+    assert!(rows[1].2.contains("bob.patch"), "{}", rows[1].2);
     let status = Command::new("git")
         .current_dir(&root)
         .args(["status", "--porcelain"])
@@ -3687,6 +3707,33 @@ fn a_lead_merges_a_helpers_worktree_through_a_trial_and_an_apply_orochi_performs
         origins.contains("background") && origins.contains("merge"),
         "{origins}"
     );
+    // The worktree is a row of the team view from open to applied, joined to the trial that
+    // landed it, which is what the desktop's Work pane and `orochi threads team` draw.
+    let (name, state, trial, trial_state, trials): (String, String, String, String, i64) = activity
+        .connection()
+        .query_row(
+            "SELECT name, state, trial_id, trial_state, trials FROM v_team",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!((name.as_str(), state.as_str()), ("backend", "applied"));
+    assert_eq!(
+        (trial.as_str(), trial_state.as_str()),
+        ("backend-2", "applied")
+    );
+    assert_eq!(trials, 2);
+    let thread_id: String = activity
+        .connection()
+        .query_row("SELECT id FROM threads", [], |r| r.get(0))
+        .unwrap();
+    drop(activity);
+    let team = w.run(&["threads", "team", &thread_id, "--json"]);
+    success(&team);
+    let team: serde_json::Value = serde_json::from_slice(&team.stdout).unwrap();
+    assert_eq!(team["workspaces"][0]["state"], "applied", "{team}");
+    assert_eq!(team["workspaces"][0]["closed"]["how"], "applied", "{team}");
+    assert_eq!(team["merges"].as_array().unwrap().len(), 2, "{team}");
     let telemetry = std::fs::read(data.join("telemetry.sqlite3")).unwrap();
     for word in [b"start backend".as_slice(), b"feature.txt", b"backend-1"] {
         assert!(

@@ -1076,6 +1076,14 @@ impl<'a> Session<'a> {
         match closed {
             Ok(closed) if closed.is_empty() => {}
             Ok(closed) => {
+                if let Some(recorded) = &self.recorded
+                    && let Some(thread) = &recorded.thread
+                {
+                    let store = recorded.store();
+                    for item in &closed {
+                        let _ = store.close_workspace(thread, item);
+                    }
+                }
                 self.view.note(&format!(
                     "closed {} {why}",
                     if closed.len() == 1 {
@@ -4032,7 +4040,7 @@ fn grant<'a>(
         };
         // Closing a worktree is not seating anyone: none of the gates below apply.
         if request.finish {
-            finish(feed, background, &env, &request);
+            finish(feed, background, &env, recorded, &request);
             continue;
         }
         let answer = |value: Value| {
@@ -4076,15 +4084,22 @@ fn grant<'a>(
         }
         let taken = crate::mailbox::our_names();
         let name = background.free_name(&request.name, &|name| taken.contains(name));
+        let mut opened = None;
         let workspace = if request.write {
             if let Err(error) = hold_live(&env) {
                 refuse(&format!("cannot hold the session directory: {error:#}"));
                 continue;
             }
-            match crate::workspaces::Workspaces::open(env.root, &env.workspace)
-                .and_then(|mut work| work.create_titled(&name, &request.title))
-            {
-                Ok(root) => Some(root),
+            match crate::workspaces::Workspaces::open(env.root, &env.workspace).and_then(
+                |mut work| {
+                    let root = work.create_titled(&name, &request.title)?;
+                    Ok((root, work.workspaces.last().cloned()))
+                },
+            ) {
+                Ok((root, entry)) => {
+                    opened = entry;
+                    Some(root)
+                }
                 Err(error) => {
                     refuse(&format!("cannot create workspace: {error:#}"));
                     continue;
@@ -4102,6 +4117,15 @@ fn grant<'a>(
         let ordinal = 100 + started.len() + background.len();
         let seat = helper_seat(recorded, ordinal, &name, &request.title, request.write);
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
+        // The worktree is a row from the moment it exists: a helper that never starts leaves
+        // one the sweep closes, and the row has to be there for the sweep to close it.
+        if let (Some(entry), Some(recorded)) = (&opened, recorded)
+            && let Some(thread) = &recorded.thread
+        {
+            let _ = recorded
+                .store()
+                .open_workspace(thread, entry, seat_id.as_deref());
+        }
         // The lead's call may have given up waiting; then it does the work itself, and a
         // helper started anyway would do it twice.
         let granted = feed
@@ -4348,6 +4372,20 @@ fn settle<'a>(
                     record(t);
                 }
             }
+            // An apply closed the helper's worktree through the manifest; its row says so.
+            if let (Ok(files), Some(recorded)) = (&result, recorded)
+                && let Some(thread) = &recorded.thread
+            {
+                let written: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
+                let closed = crate::workspaces::Closed {
+                    name: trial.workspace.clone(),
+                    how: "applied".into(),
+                    changed: written.clone(),
+                    merged: written,
+                    ..Default::default()
+                };
+                let _ = recorded.store().close_workspace(thread, &closed);
+            }
             lines.push(match &result {
                 Ok(files) => view.paint(
                     OK,
@@ -4407,6 +4445,7 @@ fn finish(
     feed: &Feed,
     background: &background::Background<'_>,
     env: &background::Env<'_>,
+    recorded: Option<&Recorded>,
     request: &crate::mailbox::AgentRequest,
 ) {
     let answer = |state: &str, reason: &str| {
@@ -4433,6 +4472,11 @@ fn finish(
         .and_then(|mut work| work.close(&request.name, how, &tools(env.config, env.data), ""));
     match closed {
         Ok(closed) => {
+            if let Some(recorded) = recorded
+                && let Some(thread) = &recorded.thread
+            {
+                let _ = recorded.store().close_workspace(thread, &closed);
+            }
             let mut result = serde_json::to_value(&closed).unwrap_or_default();
             if let Some(object) = result.as_object_mut() {
                 object.insert("summary".into(), closed.describe().into());
