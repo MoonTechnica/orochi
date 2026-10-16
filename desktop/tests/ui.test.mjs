@@ -1217,6 +1217,8 @@ test("the work pane is one graph read downwards: a row per event, its words besi
   assert.match(opened.querySelectorAll(".words")[0].attributes.get("title"), /\.orochi\/sessions\/k\/backend$/, "the worktree's place is in the row's title, relative to the project");
   assert.equal(work.querySelectorAll(".lane-branch").length, 2, "a branch leaves the person's column for each worktree");
   assert.equal(work.querySelectorAll(".lane-apply").length, 1, "and one comes back where it was applied");
+  assert.equal(work.querySelectorAll(".lane-landed").length, 1, "landing on a node of the person's column, as a merge commit does");
+  assert.equal(work.querySelectorAll("marker").length, 0, "with no arrowheads: the graph is read as git's is");
   assert.equal(work.querySelectorAll(".lane-trial").length, 2);
 
   const buttons = work.querySelectorAll("button");

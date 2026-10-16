@@ -1265,7 +1265,6 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .work-plan b { color: var(--text); font-weight: 600; }
 .work-plan .next { flex-basis: 100%; }
 .work-graph { display: flex; flex-direction: column; }
-.gutter-defs { position: absolute; width: 0; height: 0; }
 .work-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; height: 26px; font-size: 12px; }
 .work-row.clickable { cursor: pointer; }
 .work-row.clickable:hover .words { color: var(--brand); }
@@ -1301,5 +1300,4 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .gutter .lane-apply { fill: none; stroke: var(--ok); stroke-width: 2; }
 .gutter .lane-out { stroke: var(--muted); stroke-width: 1.5; }
 .gutter .lane-end line { stroke: var(--muted); stroke-width: 2; }
-.gutter-defs .lane-arrowhead { fill: var(--muted); }
-.gutter-defs .lane-arrowhead.ok { fill: var(--ok); }
+.gutter .lane-landed { fill: var(--ok); stroke: var(--ok); }

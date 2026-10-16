@@ -596,8 +596,9 @@ followed by eye; the proposal and its mockups are the drawn tree this pane folds
   how long); each merge trial (`v_merges`: a node coloured by its state, with files, the
   checks by name, overlap, conflicts, the error); the apply question while one is open (a
   node on its column and the buttons on the row); and its end — an applied merge as a green
-  arrow back into the first column with the paths written, a pull request as a grey arrow out
-  to its address, a worktree kept as a patch as a cross with the patch's name. A bar on the
+  curve joining the first column at a node, as a merge commit does (no arrowheads anywhere:
+  the graph is read as git's is), with the paths written; a pull request as a line running
+  out to its address; a worktree kept as a patch as a cross with the patch's name. A bar on the
   column shows the seat at work, green while it still is. Rows are one line tall and in the
   order things happened, not to scale; the clock is at the right edge. The first draft drew
   this twice, as horizontal lanes and as a tree beneath them, and read as a duplicate; the one

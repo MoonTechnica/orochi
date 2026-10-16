@@ -3115,9 +3115,13 @@ function gutter(event, index, events, turns, worktrees) {
     if (index === closed) {
       svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: mid }, "lane-idle"));
       if (row.state === "applied" || row.state === "merged") {
-        svg.append(svgNode("path", { d: `M${x},${mid - 6} C${x},${mid} ${leadX + 6},${mid} ${leadX + 2},${mid}`, "marker-end": "url(#lane-arrow-ok)" }, "lane-apply"));
+        // A merge joins the first column at a node, as a merge commit does; no arrowhead.
+        svg.append(svgNode("path", { d: `M${x},${mid - 6} C${x},${mid} ${leadX + 6},${mid} ${leadX},${mid}` }, "lane-apply"));
+        svg.append(svgNode("circle", { cx: leadX, cy: mid, r: 5 }, "lane-landed"));
       } else if (row.state === "pr") {
-        svg.append(svgNode("line", { x1: x, y1: mid, x2: width - 2, y2: mid, "marker-end": "url(#lane-arrow)" }, "lane-out"));
+        // A pull request leaves the conversation: the line runs out to its words.
+        svg.append(svgNode("line", { x1: x, y1: mid, x2: width, y2: mid }, "lane-out"));
+        svg.append(svgNode("circle", { cx: x, cy: mid, r: 4 }, "lane-open"));
       } else {
         const cross = svgNode("g", {}, "lane-end");
         cross.append(svgNode("line", { x1: x - 4, y1: mid - 4, x2: x + 4, y2: mid + 4 }));
@@ -3138,19 +3142,6 @@ function gutter(event, index, events, turns, worktrees) {
   } else if (event.kind === "ask") {
     svg.append(svgNode("circle", { cx: cx(event.column), cy: mid, r: 4 }, "lane-ask"));
   }
-  return svg;
-}
-
-/// The arrowheads every gutter shares, drawn once at the head of the graph.
-function gutterDefs() {
-  const svg = svgNode("svg", { width: 0, height: 0 }, "gutter-defs");
-  const defs = svgNode("defs");
-  for (const [id, klass] of [["lane-arrow", "lane-arrowhead"], ["lane-arrow-ok", "lane-arrowhead ok"]]) {
-    const arrow = svgNode("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto" });
-    arrow.append(svgNode("path", { d: "M0,0 L10,5 L0,10 z" }, klass));
-    defs.append(arrow);
-  }
-  svg.append(defs);
   return svg;
 }
 
@@ -3200,7 +3191,6 @@ async function drawWork(thread) {
   const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
   const { events, turns } = workEvents(thread, worktrees, trials, asking);
   const graph = text("div", "work-graph");
-  graph.append(gutterDefs());
   const where = (row) =>
     row.root.startsWith(thread.thread.project_root) ? row.root.slice(thread.thread.project_root.length + 1) : row.root;
   events.forEach((event, index) => {
