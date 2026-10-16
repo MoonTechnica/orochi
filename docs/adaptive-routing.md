@@ -293,7 +293,9 @@ Advisers decide only the routing. The final edits are made by a single ACP agent
 
 ### Local models
 
-For both advisers and execution, local models can be used if a CLI reachable over ACP supports them. Orochi does not distinguish whether the model it connects to is in the cloud or local. Configure the local model on the CLI side and set `model` to the model ID reported over ACP. `provider` is used to select the Policy (priors and constraints). An unknown model ID is evaluated with that Provider Policy's default rule (`*`, tier unknown). Nothing has yet been verified against a real CLI with a local model.
+For both advisers and execution, local models can be used if a CLI reachable over ACP supports them. Orochi does not distinguish whether the model it connects to is in the cloud or local, except by what a policy says about the model ID. Configure the local model on the CLI side and set `model` to the model ID reported over ACP. `provider` is used to select the Policy (priors and constraints). An unknown model ID is evaluated with that Provider Policy's default rule (`*`, tier unknown).
+
+Through OpenCode this needs no configuration: the `opencode` preset finds the CLI, and `policies/opencode.json` reads the upstream from the model ID's prefix — `lmstudio/`, `ollama/` and `llama.cpp/` are tier `local` (`price_premium` 0.1: billed nothing but the machine's time), `-free` and `big-pickle` are tier `free` (0.2: billed nothing, shared and throttled), the Claude and GPT families carry the priors their own policies give them, and the rest is `*`. Both premiums and both priors are Orochi's heuristics, not published numbers; their effect is that small work goes to the local model when one is loaded and hard work does not, since the local prior falls under `required_success` from `complex` up until the EWMA has seen otherwise. Verified once against the real CLI on 2026-10-16 ([real-validation-20261016-2.md](real-validation-20261016-2.md)): a 27B model in LM Studio completed a small test-writing task in under three minutes.
 
 ## 4.2. Deriving the team automatically
 

@@ -117,6 +117,8 @@ If a CLI is not on PATH, you can set an absolute path in `command`. The native C
 
 Gemini CLI is no longer a preset — Antigravity is its successor — but one still in use works as an entry of its own: `[[agents]]` with `id = "gemini"`, `provider = "google"`, `command = "gemini"`, `args = ["--acp"]` ([Gemini CLI ACP mode](https://geminicli.com/docs/cli/acp-mode/)).
 
+OpenCode is a preset too (`opencode acp`; the CLI is its own ACP server, so there is no adapter), and it is also the way to run a **local model**: a provider written into OpenCode's own `opencode.json` — LM Studio, Ollama, llama.cpp — shows up over ACP as `lmstudio/…`, `ollama/…` or `llama.cpp/…`, and [policies/opencode.json](policies/opencode.json) prices those as nearly free (nothing leaves the machine and nothing is billed) and OpenCode's `-free` tier as cheap, while their success priors keep them off hard work until the learning has seen them do it. `setup --check` counts such a provider as signed in, since there is nothing to sign in to. A limit or an outage on one of OpenCode's upstreams cools down that model only, never the agent. Run once against the real CLI on 2026-10-16 ([real-validation-20261016-2.md](docs/real-validation-20261016-2.md)).
+
 The four known presets are filled in even when omitted from the configuration file. An explicit entry with the same ID takes precedence, so `enabled = false` excludes one. To control the automatic fill-in and downloads:
 
 ```toml
@@ -520,7 +522,7 @@ Roughly, the score is `(expected tokens × cache adjustment + context restoratio
 
 ```sh
 orochi policy update                          # install the bundled version
-orochi policy update --from ./policies        # read the 3 JSON files
+orochi policy update --from ./policies        # read the 4 JSON files
 orochi policy update --from ./registry.json   # read a whole registry
 orochi policy update --url https://example.org/registry.json --sha256 '<64-digit digest>'
 ```

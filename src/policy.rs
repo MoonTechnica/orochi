@@ -104,6 +104,7 @@ impl Registry {
             include_str!("../policies/openai.json"),
             include_str!("../policies/anthropic.json"),
             include_str!("../policies/google.json"),
+            include_str!("../policies/opencode.json"),
         ]
         .iter()
         .map(|p| serde_json::from_str(p))

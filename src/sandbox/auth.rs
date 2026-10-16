@@ -76,6 +76,19 @@ pub fn recipe(agent: &AgentConfig) -> Recipe {
                 "a Google sign-in stays in this machine's keychain; set `modelProvider: \"gemini\"` in ~/.gemini/antigravity-cli/settings.json and `orochi sandbox secret set GEMINI_API_KEY`",
             ),
         }
+    } else if name.contains("opencode") {
+        // https://opencode.ai/docs/providers/: keys added with `/connect` are stored in
+        // ~/.local/share/opencode/auth.json; a local provider in opencode.json needs none.
+        Recipe {
+            files: vec![
+                ".local/share/opencode/auth.json".into(),
+                ".config/opencode/opencode.json".into(),
+            ],
+            env: vec!["OPENCODE_API_KEY".into()],
+            hint: Some(
+                "sign in on this machine (`opencode auth login`); its auth.json and opencode.json are shared",
+            ),
+        }
     } else if name.contains("gemini") {
         // https://geminicli.com/docs/get-started/authentication: headless uses cached
         // credentials, ~/.gemini/.env, or GEMINI_API_KEY / GOOGLE_* variables.

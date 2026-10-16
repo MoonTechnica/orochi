@@ -205,7 +205,12 @@ impl AgentAdapter for ProviderAdapter {
             kind,
             message: crate::context::bounded(message, 1000),
             reset_at,
-            model_scoped: data["scope"].as_str() == Some("model"),
+            // OpenCode is one agent in front of many upstreams, each model ID naming its own
+            // (`opencode/…` its gateway, `lmstudio/…` this machine, `anthropic/…` a key), so a
+            // spent or unreachable one says nothing about the others and must not cool down
+            // the agent: the scope is the model, as the next narrowest thing the runtime has.
+            model_scoped: data["scope"].as_str() == Some("model")
+                || self.0 == crate::types::Provider::OPENCODE,
         }
     }
     fn get_usage(&self, payload: &Value) -> Option<Usage> {

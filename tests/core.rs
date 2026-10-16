@@ -3179,3 +3179,90 @@ mod pane {
         assert_eq!(reporter.report.subagents.len(), 1);
     }
 }
+
+/// OpenCode is one agent in front of many upstreams, and its policy says so: a model served
+/// from this machine is nearly free and is what small work goes to, the free tier is cheap,
+/// and neither is offered work it is unlikely to finish. A limit or an outage on one upstream
+/// cools down that model and not the agent, since another upstream is unaffected by it.
+#[test]
+fn a_local_model_through_opencode_takes_small_work_and_is_not_offered_hard_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let registry = Registry::bundled().unwrap();
+    let policy = registry.get(Provider::OPENCODE);
+    assert_eq!(policy.model_rule("lmstudio/qwen/qwen3.8-27b").tier, "local");
+    assert_eq!(policy.model_rule("ollama/qwen3-coder").tier, "local");
+    assert_eq!(
+        policy.model_rule("opencode/glm-5.3-flash-free").tier,
+        "free"
+    );
+    assert_eq!(policy.model_rule("opencode/big-pickle").tier, "free");
+    assert_eq!(
+        policy.model_rule("opencode/claude-sonnet-5-5").tier,
+        "standard"
+    );
+    assert_eq!(policy.model_rule("anthropic/claude-fable-5-1").price(), 2.5);
+    assert_eq!(policy.model_rule("opencode/kimi-k3").tier, "unknown");
+
+    let agent = AgentConfig::preset("opencode", Provider::OPENCODE, "opencode", &["acp"]);
+    let capabilities = caps(&[
+        "opencode/claude-sonnet-5-5",
+        "opencode/glm-5.3-flash-free",
+        "lmstudio/qwen/qwen3.8-27b",
+    ]);
+    let task = profiler::profile("add a unit test for the parser", dir.path());
+    let (config, runtime, overrides) = (Config::default(), RuntimeMap::new(), Overrides::default());
+    let rank = |difficulty: Option<Complexity>| {
+        scorer::candidates(
+            &[(&agent, &capabilities)],
+            &ScoringContext {
+                task: &task,
+                difficulty,
+                overrides: &overrides,
+                config: &config,
+                policies: &registry,
+                store: &store,
+                runtime: &runtime,
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .map(|c| c.model)
+        .collect::<Vec<_>>()
+    };
+    let small = rank(None);
+    assert_eq!(
+        small.first().map(String::as_str),
+        Some("lmstudio/qwen/qwen3.8-27b"),
+        "{small:?}"
+    );
+    assert_eq!(
+        small.get(1).map(String::as_str),
+        Some("opencode/glm-5.3-flash-free"),
+        "{small:?}"
+    );
+    let hard = rank(Some(Complexity::Complex));
+    assert_eq!(
+        hard,
+        ["opencode/claude-sonnet-5-5"],
+        "the floor keeps the rest out"
+    );
+
+    let limited = json!({"code": 429, "message": "rate limit exceeded", "data": {}});
+    let through_opencode = ProviderAdapter(Provider::OPENCODE).classify_error(&limited, "", 100);
+    assert_eq!(through_opencode.kind, ErrorKind::RateLimit);
+    assert!(
+        through_opencode.model_scoped,
+        "one upstream's limit is not the agent's"
+    );
+    let through_claude = ProviderAdapter(Provider::ANTHROPIC).classify_error(&limited, "", 100);
+    assert!(
+        !through_claude.model_scoped,
+        "one account's limit is the agent's"
+    );
+}

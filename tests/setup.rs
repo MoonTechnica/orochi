@@ -926,3 +926,33 @@ async fn antigravity_is_put_under_the_toolchain_from_its_vendors_checked_downloa
     assert!(error.to_string().contains("manifest's checksum"), "{error}");
     assert!(!fresh.path().join("toolchain/bin/agy").exists());
 }
+
+/// OpenCode with a provider of its own written in -- a local server, say -- is a working agent
+/// with nothing to sign in to, and the report must not say otherwise.
+#[test]
+fn opencode_with_a_local_provider_configured_counts_as_signed_in() {
+    let home = tempfile::tempdir().unwrap();
+    assert!(!setup::opencode_has_provider(home.path()));
+    let dir = home.path().join(".config/opencode");
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("opencode.json");
+    std::fs::write(&config, r#"{"$schema":"https://opencode.ai/config.json"}"#).unwrap();
+    assert!(!setup::opencode_has_provider(home.path()));
+    std::fs::write(&config, r#"{"providers":{}}"#).unwrap();
+    assert!(!setup::opencode_has_provider(home.path()));
+    // The 2.x CLI writes `providers`; the documentation shows `provider`. Either is one.
+    std::fs::write(
+        &config,
+        r#"{"providers":{"lmstudio":{"settings":{"baseURL":"http://127.0.0.1:1235/v1"}}}}"#,
+    )
+    .unwrap();
+    assert!(setup::opencode_has_provider(home.path()));
+    std::fs::write(
+        &config,
+        r#"{"provider":{"ollama":{"npm":"@ai-sdk/openai-compatible"}}}"#,
+    )
+    .unwrap();
+    assert!(setup::opencode_has_provider(home.path()));
+    std::fs::write(&config, "not json").unwrap();
+    assert!(!setup::opencode_has_provider(home.path()));
+}

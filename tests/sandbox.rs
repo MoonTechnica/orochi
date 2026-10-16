@@ -1110,12 +1110,24 @@ fn each_agent_is_given_what_its_own_documentation_says_a_headless_one_needs() {
     assert!(recipe(&gemini).env.contains(&"GEMINI_API_KEY".to_owned()));
     assert!(by("antigravity").env.contains(&"GEMINI_API_KEY".to_owned()));
     assert!(by("antigravity").hint.unwrap().contains("keychain"));
+    // OpenCode: the keys `/connect` stored, and the config that names its local providers.
+    assert!(
+        by("opencode")
+            .files
+            .contains(&".local/share/opencode/auth.json".to_owned())
+    );
+    assert!(
+        by("opencode")
+            .files
+            .contains(&".config/opencode/opencode.json".to_owned())
+    );
+    assert!(by("opencode").env.contains(&"OPENCODE_API_KEY".to_owned()));
     // Anything else says what it needs in its own entry.
-    let mut other = AgentConfig::preset("opencode", Provider::OPENAI, "opencode", &["acp"]);
-    other.sandbox_files = vec![".local/share/opencode/auth.json".into()];
+    let mut other = AgentConfig::preset("acme", Provider::OPENAI, "acme-acp", &[]);
+    other.sandbox_files = vec![".local/share/acme/auth.json".into()];
     other.sandbox_env = vec!["OPENROUTER_API_KEY".into()];
     let r = recipe(&other);
-    assert_eq!(r.files, [".local/share/opencode/auth.json"]);
+    assert_eq!(r.files, [".local/share/acme/auth.json"]);
     assert_eq!(r.env, ["OPENROUTER_API_KEY"]);
 }
 

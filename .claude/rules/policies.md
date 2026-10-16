@@ -8,7 +8,7 @@ paths:
 
 # Provider policy and scoring
 
-`policies/{openai,anthropic,google}.json` are compiled in via `include_str!` and validated by `policy.rs` before use. Every struct is `#[serde(deny_unknown_fields)]`, so a new JSON key needs a matching field plus a validation rule, and `Registry::bundled()` must still pass `validate()`.
+`policies/{openai,anthropic,google,opencode}.json` are compiled in via `include_str!` and validated by `policy.rs` before use. Every struct is `#[serde(deny_unknown_fields)]`, so a new JSON key needs a matching field plus a validation rule, and `Registry::bundled()` must still pass `validate()`.
 
 The set of providers is **open**: a registry holds one policy per provider and any number of providers (`orochi policy update --from <dir>` installs every `*.json` there), and `Registry::get` answers for a provider nobody wrote a policy for with `ProviderPolicy::generic` — Orochi's own neutral prior, never part of a `Registry`, so it is not what `validate` requires provenance of. Adding a provider means adding a policy file, never a variant.
 

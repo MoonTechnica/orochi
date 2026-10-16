@@ -479,15 +479,39 @@ fn signed_in(agent: &AgentConfig, keychain: bool) -> Option<bool> {
     if files.is_empty() && recipe.env.is_empty() {
         return None;
     }
-    let file = home
-        .as_ref()
-        .is_some_and(|home| files.iter().any(|f| home.join(f).is_file()));
+    let opencode = agent.id == "opencode" || agent.command.contains("opencode");
+    if opencode {
+        // The config file is carried into a sandbox for its local providers, but having one
+        // is not a sign-in: only a key is, or a provider it reaches without one.
+        files.retain(|f| !f.ends_with("opencode.json"));
+    }
+    let file = home.as_ref().is_some_and(|home| {
+        files.iter().any(|f| home.join(f).is_file()) || opencode && opencode_has_provider(home)
+    });
     let variable = recipe.env.iter().any(|k| {
         agent.env.get(k).is_some_and(|v| !v.is_empty())
             || std::env::var_os(k).is_some_and(|v| !v.is_empty())
     });
     let item = claude && keychain && keychain_item("Claude Code-credentials");
     Some(file || variable || item)
+}
+/// Whether opencode's own config names a provider of its own -- a local server (LM Studio,
+/// Ollama, llama.cpp) or an endpoint with its key written in -- which is a model to run with
+/// no sign-in at all. Read from `~/.config/opencode/opencode.json`, both the `provider` key
+/// its documentation shows and the `providers` key the 2.x CLI writes.
+pub fn opencode_has_provider(home: &Path) -> bool {
+    let Ok(text) = std::fs::read(home.join(".config/opencode/opencode.json")) else {
+        return false;
+    };
+    let Ok(config) = serde_json::from_slice::<serde_json::Value>(&text) else {
+        return false;
+    };
+    ["provider", "providers"].iter().any(|key| {
+        config
+            .get(key)
+            .and_then(|v| v.as_object())
+            .is_some_and(|p| !p.is_empty())
+    })
 }
 /// Whether a generic password item exists, read from its attributes alone: `-w` is what would
 /// read the secret and bring up a prompt, and it is never passed.
