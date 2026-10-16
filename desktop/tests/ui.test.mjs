@@ -38,6 +38,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
+    "settings", "settings-nav", "settings-main", "settings-head", "settings-title", "settings-close", "settings-body",
     "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-details", "setup-cancel", "setup-later", "setup-go",
     "place", "place-head", "place-title", "place-close", "place-body", "place-root-label",
     "place-root", "place-modes-label", "place-modes", "place-note", "place-more",
@@ -557,7 +558,7 @@ async function sandboxScreen(answers = {}) {
     .dispatch("click");
   await settle();
   const project = (name) =>
-    opened.el("panel-body").querySelectorAll("div").find((d) => d.dataset.name === name);
+    opened.el("settings-body").querySelectorAll("div").find((d) => d.dataset.name === name);
   const press = async (node, label) => {
     node.querySelectorAll("button").find((b) => b.textContent === label).dispatch("click");
     await settle();
@@ -568,7 +569,7 @@ const jobs = (calls) => calls.filter(([name]) => name === "sandbox_job").map(([,
 
 test("the sandboxes screen shows the host, each project, where it runs and how to reach it", async () => {
   const { el, project } = await sandboxScreen();
-  const drawn = el("panel-body").render();
+  const drawn = el("settings-body").render();
   assert.match(drawn, /Host VM: running/);
   const web = project("web-app").render();
   assert.match(web, /\/work\/web-app/);
@@ -597,11 +598,11 @@ test("changing where a project runs, focusing and building are operations the co
     { op: "unfocus" },
   ]);
   assert.equal(
-    el("panel-body").querySelectorAll("button").some((b) => b.textContent === "Set up network"),
+    el("settings-body").querySelectorAll("button").some((b) => b.textContent === "Set up network"),
     false,
     "nothing here asks for an administrator: the gateway needs no setup on this machine",
   );
-  const build = el("panel-body").querySelectorAll("button").find((b) => b.textContent === "Build image");
+  const build = el("settings-body").querySelectorAll("button").find((b) => b.textContent === "Build image");
   assert.equal(build.disabled, true, "an image already being built is not started twice");
 });
 
@@ -618,10 +619,10 @@ test("a host VM that is not there is offered to be set up, and nothing that need
   const { el, calls } = await sandboxScreen({
     sandboxes: { ...SANDBOXES, vm: null, reachable: false, projects: [], jobs: [] },
   });
-  const drawn = el("panel-body").render();
+  const drawn = el("settings-body").render();
   assert.match(drawn, /not created/);
   assert.match(drawn, /asked where it runs/);
-  const buttons = el("panel-body").querySelectorAll("button");
+  const buttons = el("settings-body").querySelectorAll("button");
   assert.equal(buttons.find((b) => b.textContent === "Build image").disabled, true);
   buttons.find((b) => b.textContent === "Set up VM").dispatch("click");
   await settle();
@@ -632,11 +633,11 @@ test("environment initialization stays visible while running and prevents confli
   const { el } = await sandboxScreen({
     sandboxes: { ...SANDBOXES, jobs: [{ id: "setup-1", request: { op: "setup" }, exit: null, tail: "Installing Lima…", started_at: 1 }] },
   });
-  const buttons = el("panel-body").querySelectorAll("button");
+  const buttons = el("settings-body").querySelectorAll("button");
   for (const label of ["Initialize sandbox environment", "Stop VM", "Build image"]) {
     assert.equal(buttons.find((b) => b.textContent === label).disabled, true);
   }
-  assert.match(el("panel-body").render(), /Installing Lima/);
+  assert.match(el("settings-body").render(), /Installing Lima/);
 });
 
 test("a local Linux host offers Incus initialization and lets a failed setup be retried", async () => {
@@ -645,9 +646,9 @@ test("a local Linux host offers Incus initialization and lets a failed setup be 
       projects: [], jobs: [{ id: "setup-1", request: { op: "setup" }, exit: 1,
         tail: "Run orochi init in a terminal to authorize setup", started_at: 1 }] },
   });
-  assert.match(el("panel-body").render(), /Local Incus host/);
-  assert.match(el("panel-body").render(), /authorize setup/);
-  const buttons = el("panel-body").querySelectorAll("button");
+  assert.match(el("settings-body").render(), /Local Incus host/);
+  assert.match(el("settings-body").render(), /authorize setup/);
+  const buttons = el("settings-body").querySelectorAll("button");
   assert.equal(buttons.some((b) => b.textContent === "Set up VM"), false);
   const setup = buttons.find((b) => b.textContent === "Initialize sandbox environment");
   assert.equal(setup.disabled, false);
@@ -658,30 +659,30 @@ test("a local Linux host offers Incus initialization and lets a failed setup be 
 
 test("the sandboxes screen says how each agent is signed in inside, by name and never by value", async () => {
   const { el } = await sandboxScreen();
-  const auth = el("panel-body").querySelectorAll("div").filter((d) => d.dataset.agent);
+  const auth = el("settings-body").querySelectorAll("div").filter((d) => d.dataset.agent);
   const said = (agent) => auth.find((d) => d.dataset.agent === agent).render();
   assert.match(said("codex"), /~\/\.codex\/auth\.json/, "its sign-in file goes in");
   assert.match(said("gemini"), /GEMINI_API_KEY \(stored key\)/);
   assert.match(said("claude"), /nothing carried/);
   assert.match(said("claude"), /claude setup-token/, "with what to do about it");
-  assert.match(el("panel-body").render(), /11434, 1234/, "and which local servers it reaches");
+  assert.match(el("settings-body").render(), /11434, 1234/, "and which local servers it reaches");
 });
 
 test("a Claude token is made in a terminal, and an API key goes to the keychain from a password field", async () => {
   const { el, calls } = await sandboxScreen({ sandbox_login: null, sandbox_secret: null });
-  const claude = el("panel-body").querySelectorAll("div").find((d) => d.dataset.agent === "claude");
+  const claude = el("settings-body").querySelectorAll("div").find((d) => d.dataset.agent === "claude");
   claude.querySelectorAll("button").find((b) => b.textContent === "Get a token").dispatch("click");
   await settle();
   assert.deepEqual(calls.find(([n]) => n === "sandbox_login")[1], { agent: "claude" });
 
-  const inputs = el("panel-body").querySelectorAll("input");
+  const inputs = el("settings-body").querySelectorAll("input");
   const name = inputs.find((i) => i.id === "sbx-secret-name");
   const value = inputs.find((i) => i.id === "sbx-secret-value");
   assert.equal(value.type, "password");
   name.value = "OPENROUTER_API_KEY";
   value.value = "sk-or-secret";
   name.dispatch("input");
-  el("panel-body").querySelectorAll("button").find((b) => b.textContent === "Store key").dispatch("click");
+  el("settings-body").querySelectorAll("button").find((b) => b.textContent === "Store key").dispatch("click");
   await settle();
   assert.deepEqual(calls.find(([n]) => n === "sandbox_secret")[1], { name: "OPENROUTER_API_KEY", value: "sk-or-secret" });
   assert.equal(value.value, "", "and the field does not keep it");
@@ -1124,7 +1125,7 @@ test("insights keeps verified evidence and weak signals apart, and says so", asy
     .find((b) => b.dataset.screen === "insights")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const drawn = el("panel-body").render();
+  const drawn = el("settings-body").render();
   assert.match(drawn, /86%/, "the success rate is of the verified runs");
   assert.match(drawn, /12,000/);
   assert.match(drawn, /its own estimates/, "and the screen says whose numbers these are");
@@ -1143,7 +1144,7 @@ test("agents shows readiness and what is left of a quota", async () => {
     .find((b) => b.dataset.screen === "agents")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const drawn = el("panel-body").render();
+  const drawn = el("settings-body").render();
   assert.match(drawn, /codex/);
   assert.match(drawn, /whole account/, "a `*` model is the account, not a model named star");
   assert.match(drawn, /300s/);
@@ -1292,10 +1293,16 @@ test("settings edit the conversation store and what is remembered", async () => 
     .find((b) => b.dataset.screen === "settings")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const host = el("panel-body");
-  assert.match(host.render(), /Keep conversations for/);
+  const host = el("settings-body");
+  const page = async (name) => {
+    el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === name).dispatch("click");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  };
+  await page("preferences");
   assert.match(host.render(), /Prefers small commits/, "memory is shown as the text it is");
   assert.match(host.render(), /never sent to a routing adviser/);
+  await page("conversations");
+  assert.match(host.render(), /Keep conversations for/);
 
   const wipe = host.querySelectorAll("button").find((b) =>
     b.textContent.startsWith("Delete every"),
@@ -1404,16 +1411,22 @@ test("everything that is not a conversation lives behind the row at the foot", a
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(el("account-menu").hidden, true, "choosing one closes the menu");
-  assert.equal(el("panel").open, true, "and opens it over the conversation");
-  assert.equal(el("panel-title").textContent, "Agents");
-  assert.equal(
-    el("timeline").hidden,
-    false,
-    "the conversation stays where it is; a panel is asked for and dismissed",
+  assert.equal(el("settings").hidden, false, "and opens the settings page at that section");
+  assert.equal(el("settings-title").textContent, "Accounts");
+  assert.equal(el("thread").hidden, true, "a page takes the conversation's place");
+  const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
+  assert.deepEqual(
+    pages,
+    ["roster", "preferences", "accounts", "insights", "sandboxes", "conversations", "notifications", "setup"],
+    "every former panel is a page of it",
   );
+  el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === "insights").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(el("settings-title").textContent, "Insights", "the nav switches pages");
 
-  el("panel-close").dispatch("click");
-  assert.equal(el("panel").open, false, "and dismissed is dismissed");
+  el("settings-close").dispatch("click");
+  assert.equal(el("settings").hidden, true, "and closed is closed");
+  assert.equal(el("thread").hidden, false, "with the conversation back in its place");
 });
 
 test("a thread nobody has written in yet says so, rather than being Untitled", async () => {
@@ -2585,13 +2598,12 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
     .find((b) => b.dataset.screen === "settings")
     .dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  const host = el("panel-body");
+  const host = el("settings-body");
   const drawn = host.render();
   assert.match(drawn, /opus/);
   assert.match(drawn, /Everyday coding/, "what a model is for is beside its name");
   assert.doesNotMatch(drawn, /judge/, "an adviser runs no work and has no roster");
   assert.match(drawn, /No models listed yet/, "an agent never started here says so");
-  assert.match(drawn, /Your preferences/, "and the preferences are right under it");
 
   const boxes = host.querySelectorAll("input").filter((b) => b.dataset.model);
   assert.equal(boxes.length, 2);
@@ -2605,7 +2617,7 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   let set = calls.filter(([name]) => name === "set_roster").at(-1);
   assert.deepEqual(set[1], { agent: "claude", models: [], off: false }, "every model checked is no roster at all");
 
-  const again = el("panel-body").querySelectorAll("input").filter((b) => b.dataset.model);
+  const again = el("settings-body").querySelectorAll("input").filter((b) => b.dataset.model);
   const opusAgain = again.find((b) => b.dataset.model === "opus");
   opusAgain.checked = false;
   opusAgain.dispatch("change");
@@ -2613,7 +2625,7 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   set = calls.filter(([name]) => name === "set_roster").at(-1);
   assert.deepEqual(set[1], { agent: "claude", models: [], off: true }, "nothing checked takes the agent out");
 
-  const propose = el("panel-body").querySelectorAll("button").find((b) => b.dataset.action === "propose");
+  const propose = el("settings-body").querySelectorAll("button").find((b) => b.dataset.action === "propose");
   propose.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(calls.some(([name]) => name === "suggest_roster"));

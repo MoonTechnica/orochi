@@ -15,6 +15,8 @@ const call = async (name, args) => {
 };
 
 const state = {
+  // The settings page that is open, or null while the conversation is in its place.
+  settings: null,
   thread: null,
   projects: [],
   prompts: [],
@@ -3473,15 +3475,16 @@ function gauge(fraction) {
 async function openPanel(panel) {
   // Setup is a dialog of its own: it is what the window asks first, not a screen over it.
   if (panel === "setup") return openSetup();
-  state.panel = panel;
-  el("panel-title").textContent =
-    panel === "activity"
-      ? t("Activity")
-      : panel === "search"
-        ? t("Search")
-        : PANELS.find(([p]) => p === panel)?.[1] || "";
-  el("panel").showModal();
-  await drawScreen();
+  // Activity and Search are asked for and dismissed; everything else is a settings page.
+  if (panel === "activity" || panel === "search") {
+    state.panel = panel;
+    el("panel-title").textContent = panel === "activity" ? t("Activity") : t("Search");
+    el("panel").showModal();
+    await drawScreen();
+    return;
+  }
+  const page = { agents: "accounts", settings: remembered("settings-page") || "roster" }[panel] || panel;
+  await openSettings(SETTINGS_PAGES.some(([p]) => p === page) ? page : "roster");
 }
 
 function closePanel() {
@@ -3494,12 +3497,75 @@ el("panel").addEventListener("close", () => {
   state.panel = null;
 });
 
+// Settings is a page in the conversation's place: a nav of its pages on the left, the page on
+// the right, and the sidebar still there, so choosing a thread is how it is left as much as ×.
+const SETTINGS_PAGES = [
+  ["roster", "Agents and models"],
+  ["preferences", "Preferences"],
+  ["accounts", "Accounts"],
+  ["insights", "Insights"],
+  ["sandboxes", "Sandboxes"],
+  ["sep"],
+  ["conversations", "Conversations"],
+  ["notifications", "Notifications"],
+  ["sep"],
+  ["setup", "Setup"],
+];
+
+async function openSettings(page) {
+  state.settings = page;
+  remember("settings-page", page);
+  el("thread").hidden = true;
+  el("side").hidden = true;
+  el("settings").hidden = false;
+  await drawSettings();
+}
+
+function closeSettings() {
+  if (!state.settings) return;
+  state.settings = null;
+  el("settings").hidden = true;
+  el("thread").hidden = false;
+  el("side").hidden = false;
+}
+
+el("settings-close").addEventListener("click", closeSettings);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.settings && !el("panel").open && !el("confirm").open) {
+    closeSettings();
+  }
+});
+
+async function drawSettings() {
+  const nav = el("settings-nav");
+  nav.replaceChildren();
+  for (const [page, label] of SETTINGS_PAGES) {
+    if (page === "sep") {
+      nav.append(text("div", "sep"));
+      continue;
+    }
+    const row = document.createElement("button");
+    row.type = "button";
+    row.dataset.page = page;
+    row.textContent = label;
+    if (page === state.settings) row.setAttribute("aria-current", "page");
+    row.addEventListener("click", () => (page === "setup" ? openSetup() : openSettings(page)));
+    nav.append(row);
+  }
+  el("settings-title").textContent =
+    SETTINGS_PAGES.find(([p]) => p === state.settings)?.[1] || "Settings";
+  const host = el("settings-body");
+  // A key half typed into the sign-in form is not redrawn away.
+  if (state.settings === "sandboxes" && state.secretTyping && host.children?.length) return;
+  host.replaceChildren();
+  await drawSettingsPage(state.settings, host);
+}
+
 async function drawScreen() {
+  if (state.settings) return drawSettings();
   const host = el("panel-body");
   // The palette is typed into; redrawing it on every refresh would take the typing away.
   if (state.panel === "search" && host.children?.length) return;
-  // A key half typed into the sign-in form is not redrawn away.
-  if (state.panel === "sandboxes" && state.secretTyping && host.children?.length) return;
   host.replaceChildren();
   if (state.panel === "activity") {
     drawActivity(host);
@@ -3507,9 +3573,39 @@ async function drawScreen() {
   }
   if (state.panel === "search") {
     drawSearch(host);
+  }
+}
+
+async function drawSettingsPage(page, host) {
+  const field = (label, node) => {
+    const row = text("div", "card");
+    row.append(text("div", "where", label));
+    row.append(node);
+    return row;
+  };
+  if (page === "roster") {
+    drawRoster(host, await call("roster", {}));
     return;
   }
-  if (state.panel === "agents") {
+  if (page === "preferences") {
+    const remembered = await call("memory", {});
+    const notes = document.createElement("textarea");
+    notes.rows = 10;
+    notes.value = remembered?.user || "";
+    notes.placeholder =
+      "One line each, in your own words. For example:\nSmall edits go to the local model.\nDesign questions go to Claude.\nKeep diffs small.";
+    notes.addEventListener("change", () => call("save_memory", { text: notes.value }));
+    host.append(field("Your preferences", notes));
+    host.append(
+      text(
+        "p",
+        "caveat",
+        "Read when a task is routed: a preference tilts the choice toward or away from an agent or model, and never overrides the list under Agents and models. Agents never write this, and it is never sent to a routing adviser.",
+      ),
+    );
+    return;
+  }
+  if (page === "accounts") {
     const agents = (await call("agents", {})) || [];
     if (!agents.length) {
       host.append(text("p", "empty", "Nothing has been run yet."));
@@ -3527,53 +3623,18 @@ async function drawScreen() {
         ]),
       ),
     );
-    host.append(
-      text("p", "caveat", "Which models may be used, and your preferences, are under Settings."),
-    );
     return;
   }
-  if (state.panel === "sandboxes") {
+  if (page === "sandboxes") {
     await drawSandboxes(host);
     return;
   }
-  if (state.panel === "settings") {
-    const [config, remembered, roster] = await Promise.all([
-      call("settings", {}),
-      call("memory", {}),
-      call("roster", {}),
-    ]);
+  if (page === "conversations") {
+    const config = await call("settings", {});
     if (!config) return;
-
-    // What the person came here to decide: who may do the work, and how they like it done.
-    drawRoster(host, roster);
-    const notes = document.createElement("textarea");
-    notes.rows = 6;
-    notes.value = remembered?.user || "";
-    notes.placeholder =
-      "One line each, in your own words. For example:\nSmall edits go to the local model.\nDesign questions go to Claude.\nKeep diffs small.";
-    notes.addEventListener("change", () => call("save_memory", { text: notes.value }));
-    const preferences = text("div", "card");
-    preferences.append(text("div", "where", "Your preferences"));
-    preferences.append(notes);
-    preferences.append(
-      text(
-        "p",
-        "caveat",
-        "Read when a task is routed: a preference tilts the choice toward or away from an agent or model, and never overrides the list above. Agents never write this, and it is never sent to a routing adviser.",
-      ),
-    );
-    host.append(preferences);
-    host.append(text("h3", "settings-section", "Conversations"));
-
     // The conversation store is the one place Orochi keeps your own text, so it is the one
     // place with a switch, a window and a way to remove what is there.
     const activity = config.activity || {};
-    const field = (label, node) => {
-      const row = text("div", "card");
-      row.append(text("div", "where", label));
-      row.append(node);
-      return row;
-    };
     const keep = document.createElement("input");
     keep.type = "number";
     keep.value = String(activity.retention_days ?? 30);
@@ -3594,16 +3655,6 @@ async function drawScreen() {
     });
     host.append(field("Record conversations at all", on));
 
-    // A sound is this window's, not Orochi's: kept where the window keeps its own things.
-    const sound = document.createElement("input");
-    sound.type = "checkbox";
-    sound.checked = state.sound;
-    sound.addEventListener("change", () => {
-      state.sound = sound.checked;
-      remember("sound", state.sound);
-    });
-    host.append(field("Play a sound with notifications", sound));
-
     const wipe = document.createElement("button");
     wipe.textContent = "Delete every conversation";
     wipe.addEventListener("click", async () => {
@@ -3620,7 +3671,19 @@ async function drawScreen() {
     host.append(field("History", wipe));
     return;
   }
-  if (state.panel === "insights") {
+  if (page === "notifications") {
+    // A sound is this window's, not Orochi's: kept where the window keeps its own things.
+    const sound = document.createElement("input");
+    sound.type = "checkbox";
+    sound.checked = state.sound;
+    sound.addEventListener("change", () => {
+      state.sound = sound.checked;
+      remember("sound", state.sound);
+    });
+    host.append(field("Play a sound with notifications", sound));
+    return;
+  }
+  if (page === "insights") {
     const stats = (await call("insights", {})) || [];
     host.append(text("h3", null, "What the routes have done"));
     if (!stats.length) {
@@ -3662,6 +3725,7 @@ const PANELS = [
   ["sep"],
   ["settings", "Settings"],
 ];
+// Every entry but Setup opens the settings page at that section.
 
 function closeAccount() {
   el("account-menu").hidden = true;
@@ -4293,6 +4357,7 @@ function widen() {
 
 // Loop ----------------------------------------------------------------------
 async function select(id) {
+  closeSettings();
   state.thread = id;
   await call("seen", { thread: id });
   await refresh(true);
@@ -4332,7 +4397,7 @@ async function refresh(full) {
   drawSidebar();
   folderLabel();
   // An open panel follows what it is showing; it never takes the conversation's place.
-  if (state.panel) await drawScreen();
+  if (state.panel || state.settings) await drawScreen();
 
   if (!state.thread) {
     el("thread-title").textContent = "Nothing selected";

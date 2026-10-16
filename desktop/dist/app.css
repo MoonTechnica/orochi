@@ -357,8 +357,9 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 #account-menu button:hover { background: var(--line); }
 #account-menu .tick { margin-left: auto; color: var(--brand); }
 #account-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
-/* Agents, Insights and Settings are asked for and dismissed; they are not places the window
-   goes, so they do not take the conversation's place. */
+/* Activity and Search are asked for and dismissed, so they are dialogs over the conversation.
+   Settings is a place the window goes: a page with a nav of its own, in the conversation's
+   place until it is closed. */
 #panel {
   width: min(720px, 90vw);
   max-height: 80vh;
@@ -384,15 +385,15 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 #screen { flex: 1; overflow: auto; padding: var(--gutter); }
 /* Sized to its content, not to the window: a five-column table stretched across a wide
    screen puts a column at each edge and nothing in between. */
-#panel-body table { border-collapse: collapse; min-width: 480px; }
-#panel-body th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 24px 4px 0; white-space: nowrap; }
-#panel-body td { padding: 5px 24px 5px 0; border-top: 1px solid var(--line); white-space: nowrap; }
-#panel-body .card { max-width: 620px; }
+:is(#panel-body, #settings-body) table { border-collapse: collapse; min-width: 480px; }
+:is(#panel-body, #settings-body) th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 24px 4px 0; white-space: nowrap; }
+:is(#panel-body, #settings-body) td { padding: 5px 24px 5px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+:is(#panel-body, #settings-body) .card { max-width: 620px; }
 /* The form controls are the page's, not the browser's: a default number box and textarea
    arrive white and serif in the middle of a dark window. */
-#panel-body input[type="number"],
-#panel-body input[type="text"],
-#panel-body textarea {
+:is(#panel-body, #settings-body) input[type="number"],
+:is(#panel-body, #settings-body) input[type="text"],
+:is(#panel-body, #settings-body) textarea {
   width: 100%;
   max-width: 420px;
   margin-top: 6px;
@@ -403,13 +404,13 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
   padding: 6px 8px;
   font: inherit;
 }
-#panel-body textarea { max-width: 100%; resize: vertical; white-space: pre-wrap; }
-#panel-body input[type="checkbox"] { accent-color: var(--brand); margin-top: 6px; width: 16px; height: 16px; }
-#panel-body .card button { margin-top: 6px; }
-#panel-body .card button[data-sure="yes"] { border-color: var(--danger); color: var(--danger); }
-#panel-body .num { text-align: right; font-variant-numeric: tabular-nums; }
-#panel-body h3 { margin: 0 0 8px; font-size: 13px; }
-#panel-body .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }
+:is(#panel-body, #settings-body) textarea { max-width: 100%; resize: vertical; white-space: pre-wrap; }
+:is(#panel-body, #settings-body) input[type="checkbox"] { accent-color: var(--brand); margin-top: 6px; width: 16px; height: 16px; }
+:is(#panel-body, #settings-body) .card button { margin-top: 6px; }
+:is(#panel-body, #settings-body) .card button[data-sure="yes"] { border-color: var(--danger); color: var(--danger); }
+:is(#panel-body, #settings-body) .num { text-align: right; font-variant-numeric: tabular-nums; }
+:is(#panel-body, #settings-body) h3 { margin: 0 0 8px; font-size: 13px; }
+:is(#panel-body, #settings-body) .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }
 .gauge { display: inline-block; width: 90px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; vertical-align: middle; }
 .gauge i { display: block; height: 100%; background: var(--ok); }
 .gauge.low i { background: var(--danger); }
@@ -577,8 +578,9 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 #account-menu button:hover { background: var(--line); }
 #account-menu .tick { margin-left: auto; color: var(--brand); }
 #account-menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
-/* Agents, Insights and Settings are asked for and dismissed; they are not places the window
-   goes, so they do not take the conversation's place. */
+/* Activity and Search are asked for and dismissed, so they are dialogs over the conversation.
+   Settings is a place the window goes: a page with a nav of its own, in the conversation's
+   place until it is closed. */
 #panel {
   width: min(720px, 90vw);
   max-height: 80vh;
@@ -604,15 +606,15 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 #screen { flex: 1; overflow: auto; padding: var(--gutter); }
 /* Sized to its content, not to the window: a five-column table stretched across a wide
    screen puts a column at each edge and nothing in between. */
-#panel-body table { border-collapse: collapse; min-width: 480px; }
-#panel-body th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 24px 4px 0; white-space: nowrap; }
-#panel-body td { padding: 5px 24px 5px 0; border-top: 1px solid var(--line); white-space: nowrap; }
-#panel-body .card { max-width: 620px; }
+:is(#panel-body, #settings-body) table { border-collapse: collapse; min-width: 480px; }
+:is(#panel-body, #settings-body) th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 4px 24px 4px 0; white-space: nowrap; }
+:is(#panel-body, #settings-body) td { padding: 5px 24px 5px 0; border-top: 1px solid var(--line); white-space: nowrap; }
+:is(#panel-body, #settings-body) .card { max-width: 620px; }
 /* The form controls are the page's, not the browser's: a default number box and textarea
    arrive white and serif in the middle of a dark window. */
-#panel-body input[type="number"],
-#panel-body input[type="text"],
-#panel-body textarea {
+:is(#panel-body, #settings-body) input[type="number"],
+:is(#panel-body, #settings-body) input[type="text"],
+:is(#panel-body, #settings-body) textarea {
   width: 100%;
   max-width: 420px;
   margin-top: 6px;
@@ -623,13 +625,13 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
   padding: 6px 8px;
   font: inherit;
 }
-#panel-body textarea { max-width: 100%; resize: vertical; white-space: pre-wrap; }
-#panel-body input[type="checkbox"] { accent-color: var(--brand); margin-top: 6px; width: 16px; height: 16px; }
-#panel-body .card button { margin-top: 6px; }
-#panel-body .card button[data-sure="yes"] { border-color: var(--danger); color: var(--danger); }
-#panel-body .num { text-align: right; font-variant-numeric: tabular-nums; }
-#panel-body h3 { margin: 0 0 8px; font-size: 13px; }
-#panel-body .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }
+:is(#panel-body, #settings-body) textarea { max-width: 100%; resize: vertical; white-space: pre-wrap; }
+:is(#panel-body, #settings-body) input[type="checkbox"] { accent-color: var(--brand); margin-top: 6px; width: 16px; height: 16px; }
+:is(#panel-body, #settings-body) .card button { margin-top: 6px; }
+:is(#panel-body, #settings-body) .card button[data-sure="yes"] { border-color: var(--danger); color: var(--danger); }
+:is(#panel-body, #settings-body) .num { text-align: right; font-variant-numeric: tabular-nums; }
+:is(#panel-body, #settings-body) h3 { margin: 0 0 8px; font-size: 13px; }
+:is(#panel-body, #settings-body) .caveat { color: var(--muted); font-size: 12px; margin-top: 12px; }
 .gauge { display: inline-block; width: 90px; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; vertical-align: middle; }
 .gauge i { display: block; height: 100%; background: var(--ok); }
 .gauge.low i { background: var(--danger); }
@@ -1312,11 +1314,25 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .roster-model { display: flex; align-items: baseline; gap: 8px; cursor: pointer; font-size: 13px; }
 .roster-model code { white-space: nowrap; }
 .roster-model .where { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#panel-body .roster-model input[type="checkbox"] { margin-top: 0; width: 14px; height: 14px; flex: none; }
+:is(#panel-body, #settings-body) .roster-model input[type="checkbox"] { margin-top: 0; width: 14px; height: 14px; flex: none; }
 
 /* The × that closes a dialog: a glyph, sized to be seen, not a ring around nothing. */
 #panel-close, #setup-close, #place-close { font-size: 20px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
 .roster-screen { margin-top: 0; margin-bottom: 16px; }
-#panel-body h3.settings-section { margin: 20px 0 8px; }
-#panel-body .card textarea { width: 100%; box-sizing: border-box; }
-#panel-body .first-look { margin: 0 0 10px; }
+:is(#panel-body, #settings-body) h3.settings-section { margin: 20px 0 8px; }
+:is(#panel-body, #settings-body) .card textarea { width: 100%; box-sizing: border-box; }
+:is(#panel-body, #settings-body) .first-look { margin: 0 0 10px; }
+
+/* Settings: a page, not a dialog. Its nav is the sidebar's idiom, its body the panel's. */
+#settings { grid-column: 2 / 4; display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: 0; }
+#settings-nav { display: flex; flex-direction: column; gap: 2px; padding: 12px 8px; border-right: 1px solid var(--line); }
+#settings-nav button { text-align: left; border: 0; background: none; color: var(--muted); padding: 7px 10px; border-radius: 6px; font: inherit; cursor: pointer; }
+#settings-nav button:hover { color: var(--text); }
+#settings-nav button[aria-current="page"] { background: var(--panel); color: var(--text); }
+#settings-nav .sep { height: 1px; background: var(--line); margin: 8px 4px; }
+#settings-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+#settings-head { display: flex; align-items: center; gap: 8px; padding: 12px var(--gutter); border-bottom: 1px solid var(--line); }
+#settings-title { margin: 0; font-size: 14px; }
+#settings-close { margin-left: auto; border: 0; color: var(--muted); font-size: 20px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
+#settings-close:hover { color: var(--text); }
+#settings-body { overflow: auto; padding: var(--gutter); min-height: 0; }
