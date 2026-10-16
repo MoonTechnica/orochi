@@ -1512,3 +1512,51 @@ fn a_worktree_is_a_row_from_open_to_closed_and_the_team_view_joins_its_seat_and_
         .unwrap();
     assert_eq!(left, 0);
 }
+
+/// A trial is dated from when it started, not from when its result was written: the row is
+/// opened as `running` at the start, and the finished trial fills it in without moving it.
+#[test]
+fn a_merge_trial_is_dated_from_its_start_and_filled_in_when_it_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, _, _) = thread_with_a_turn(&activity);
+    activity
+        .merge_started(&thread, "backend-1", "backend", 1)
+        .unwrap();
+    let team = activity.team(&thread).unwrap();
+    assert_eq!(team.merges.len(), 1);
+    assert_eq!(team.merges[0].state, "running");
+    assert!(team.merges[0].files.is_empty());
+    let started = team.merges[0].created_at;
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let trial = orochi::merge::Trial {
+        id: "backend-1".into(),
+        workspace: "backend".into(),
+        n: 1,
+        state: orochi::merge::State::Clean,
+        root: "/tmp/t".into(),
+        worktree: "/tmp/t".into(),
+        ours: "o".into(),
+        theirs: "t".into(),
+        base: "b".into(),
+        merged: "m".into(),
+        files: vec!["a.rs".into()],
+        overlap: vec![],
+        conflicts: vec![],
+        checks: vec![],
+        error: None,
+    };
+    activity.record_merge(&thread, &trial).unwrap();
+    // Starting it again changes nothing: the row is the trial's.
+    activity
+        .merge_started(&thread, "backend-1", "backend", 1)
+        .unwrap();
+    let team = activity.team(&thread).unwrap();
+    assert_eq!(team.merges.len(), 1);
+    assert_eq!(team.merges[0].state, "clean");
+    assert_eq!(team.merges[0].files, vec!["a.rs".to_owned()]);
+    assert_eq!(team.merges[0].created_at, started, "dated from its start");
+    assert!(team.merges[0].updated_at > started);
+    // The placeholder is not a trial a restarted host would read back as one.
+    assert_eq!(activity.merges(&thread).unwrap().len(), 1);
+}

@@ -1296,6 +1296,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .gutter .lane-trial.applied { fill: var(--ok); }
 .gutter .lane-trial.conflicts, .gutter .lane-trial.resolving, .gutter .lane-trial.stale { stroke: var(--brand); }
 .gutter .lane-trial.failed { stroke: var(--danger); }
+.gutter .lane-trial.running { stroke: var(--ok); stroke-dasharray: 2 2; }
 .gutter .lane-ask { fill: var(--panel); stroke: var(--brand); stroke-width: 2; }
 .gutter .lane-apply { fill: none; stroke: var(--ok); stroke-width: 2; }
 .gutter .lane-out { stroke: var(--muted); stroke-width: 1.5; }

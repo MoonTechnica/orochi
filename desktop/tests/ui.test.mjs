@@ -1185,8 +1185,9 @@ test("the work pane is one graph read downwards: a row per event, its words besi
     merges: [
       { id: "backend-1", workspace: "backend", n: 1, state: "applied", files: ["src/api.rs"], overlap: [], conflicts: [],
         checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: at + 3000, updated_at: at + 5000 },
+      // Recorded in the same instant as the second turn began: it is what woke that turn.
       { id: "docs-1", workspace: "docs", n: 1, state: "clean", files: ["docs/api.md"], overlap: ["docs/api.md"], conflicts: [],
-        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: at + 3100, updated_at: at + 3100 },
+        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: at + 4000, updated_at: at + 4000 },
     ],
   };
   // The apply question under a headless host is a prompt row the window answers.
@@ -1196,7 +1197,10 @@ test("the work pane is one graph read downwards: a row per event, its words besi
     detail: "1 file · cargo test passed", options: [["apply", "Apply"]], created_at: at + 4500, read_only: false, lead: true,
     workspace: "docs",
   };
-  const { el, calls } = await open({ team, open_prompts: [prompt] });
+  // The second recorded turn is one Orochi wrote back with the trial's result.
+  const thread = structuredClone(recorded.thread);
+  for (const item of thread.items) if (item.turn_ordinal === 2) item.turn_origin = "merge";
+  const { el, calls } = await open({ team, thread, open_prompts: [prompt] });
   const work = el("work");
   const drawn = work.render();
   assert.match(drawn, /Plan/, "the lead's plan heads the pane");
@@ -1205,6 +1209,7 @@ test("the work pane is one graph read downwards: a row per event, its words besi
   // Two turns, two openings, two reports, two trials, one question, one end — each once.
   assert.equal(rows.length, 10, said.join("\n"));
   assert.match(said.join("\n"), /^you[\s\S]*backend[\s\S]*docs[\s\S]*reported[\s\S]*trial #1[\s\S]*apply\?[\s\S]*applied · 1 file/, said.join("\n"));
+  assert.match(said.join("\n"), /trial #1.*overlap docs\/api\.md\nfrom the merge/, `a trial recorded as the turn it woke begins is drawn before it: ${said.join("\n")}`);
   assert.ok(said.some((s) => /^reportedclaude · opus · high · 2s/.test(s)), `who worked there is on the report row: ${said}`);
   assert.ok(said.some((s) => /^trial #1docs\/api\.md|^trial #1.*overlap docs\/api\.md/.test(s)), `a trial says what it found: ${said}`);
   assert.ok(said.some((s) => /src\/api\.rs → your tree/.test(s)), `the end says what reached the tree: ${said}`);

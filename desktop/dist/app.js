@@ -308,6 +308,8 @@ const WORDS = {
     "changed nothing": "変更なし",
     stale: "stale",
     declined: "見送り",
+    running: "実行中",
+    "merging…": "マージを試しています…",
     from: "依頼元",
     "is read only · this command runs in your working tree": "は読み取り専用です · このコマンドは作業ツリーで実行されます",
     cooling: "待機中",
@@ -3075,7 +3077,10 @@ function workEvents(thread, worktrees, trials, asking) {
     }
     if (row.state !== "open") events.push({ at: row.closed_at || row.created_at, kind: "close", row, column });
   });
-  events.sort((a, b) => a.at - b.at);
+  // A trial, report or end recorded in the same instant as a turn is what that turn was woken
+  // with, so it comes first; the person's own message comes before what it set off.
+  const rank = (event) => (event.kind === "turn" ? (event.turn.origin ? 1 : -1) : 0);
+  events.sort((a, b) => a.at - b.at || rank(a) - rank(b));
   return { events, turns: ordered };
 }
 
@@ -3231,13 +3236,13 @@ async function drawWork(thread) {
       graph.append(workRow({ gutter: slice, key: t("reported"), detail, status: { tone: "muted", label: clock(row.ended_at) }, title: `${row.name} · ${detail}` }));
     } else if (event.kind === "trial") {
       const { trial } = event;
-      const parts = [files(trial.files.length), checksPhrase(trial.checks)];
+      const parts = trial.state === "running" ? [t("merging…")] : [files(trial.files.length), checksPhrase(trial.checks)];
       if (trial.overlap.length) parts.push(`${t("overlap")} ${trial.overlap.join(", ")}`);
       if (trial.conflicts.length) parts.push(`${t("conflicts")} ${trial.conflicts.join(", ")}`);
       if (trial.error) parts.push(trial.error);
       const tone = trial.state === "clean" || trial.state === "applied" ? "ok"
         : trial.state === "conflicts" || trial.state === "resolving" || trial.state === "stale" ? "warn"
-        : trial.state === "failed" ? "danger" : "muted";
+        : trial.state === "failed" ? "danger" : trial.state === "running" ? "live" : "muted";
       graph.append(workRow({ gutter: slice, key: `${t("trial")} #${trial.n}`, detail: parts.join(" · "), status: { tone, label: t(trial.state) }, title: parts.join(" · ") }));
     } else if (event.kind === "ask") {
       const { prompt } = event;

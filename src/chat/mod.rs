@@ -4242,8 +4242,19 @@ fn decide_request<'a>(
                 return;
             }
             match manager.start_trial(env.clone(), &workspace, resolve) {
-                Ok(id) => answer(json!({"started": id,
-                    "note": "the result reaches you as a message of its own; answer the user now"})),
+                Ok(id) => {
+                    // Dated from its start, so a client draws the trial where it began.
+                    if let (Some(recorded), Some(thread)) = (recorded, &thread) {
+                        let n = id
+                            .rsplit('-')
+                            .next()
+                            .and_then(|n| n.parse().ok())
+                            .unwrap_or(1);
+                        let _ = recorded.store().merge_started(thread, &id, &workspace, n);
+                    }
+                    answer(json!({"started": id,
+                        "note": "the result reaches you as a message of its own; answer the user now"}));
+                }
                 Err(error) => refuse(&format!("{error:#}")),
             }
         }

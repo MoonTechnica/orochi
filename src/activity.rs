@@ -1311,6 +1311,17 @@ impl Activity {
             .optional()?)
     }
 
+    /// A merge trial the moment it starts, so its row is dated from then and a client can show
+    /// it running; `record_merge` fills the row in when it ends and keeps that date.
+    pub fn merge_started(&self, thread: &str, id: &str, workspace: &str, n: usize) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO merges (id, thread_id, workspace, n, state, trial, created_at,
+                updated_at) VALUES (?1,?2,?3,?4,'running','{}',?5,?5)",
+            params![id, thread, workspace, n as i64, millis()],
+        )?;
+        Ok(())
+    }
+
     /// A merge trial as it stands, written whole each time it changes.
     pub fn record_merge(&self, thread: &str, trial: &crate::merge::Trial) -> Result<()> {
         let state = serde_json::to_value(&trial.state)?;
