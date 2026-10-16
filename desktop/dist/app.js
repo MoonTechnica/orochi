@@ -2980,31 +2980,17 @@ el("say-form").addEventListener("submit", async (event) => {
 });
 
 // Work -------------------------------------------------------------------
-// The worktrees of a conversation as a tree: the person's own tree at the root, one branch per
-// helper's worktree, and under each the seat that worked in it, its merge trials and what
-// became of it. Read from `v_team` and `v_merges`, which `orochi threads team` prints too, so
-// a row the window cannot draw is a view that is missing something.
+// The conversation's worktrees, read downwards as a git graph is: the person's own tree is the
+// first column, each worktree a column of its own, and every event a row — a turn beginning, a
+// worktree opened (a branch leaving the first column), its report, each merge trial, the apply
+// question with its buttons, and its end: an applied merge rejoins the first column, a pull
+// request leaves to the right, a worktree kept as a patch ends in a cross. The graph is the
+// gutter of the rows, drawn a row at a time, so the words and the buttons sit on the event
+// they belong to. Read from `v_team` and `v_merges`, which `orochi threads team` prints too,
+// so a row the window cannot draw is a view that is missing something.
 
-/// What a worktree's row says at its right edge: where it is on the way back to the tree.
+/// What a worktree still open says at its right edge: where it is on the way back.
 function worktreeState(row) {
-  const closed = row.closed || {};
-  const n = (list) => (list || []).length;
-  switch (row.state) {
-    case "applied":
-      return { tone: "ok", label: `${t("applied")} · ${files(n(closed.merged))}` };
-    case "merged":
-      return { tone: "ok", label: `${t("merged")} · ${files(n(closed.merged))}` };
-    case "pr":
-      return { tone: "ok", label: `${t("pull request")} ${closed.pr || ""}`.trim() };
-    case "patch":
-      return { tone: "warn", label: t("kept as a patch") };
-    case "failed":
-      return { tone: "danger", label: t("failed") };
-    case "closed":
-      return { tone: "muted", label: t("closed") };
-    default:
-      break;
-  }
   if (row.trial_state === "clean") return { tone: "ask", label: `${t("trial")} ${t("clean")} · ${t("apply?")}` };
   if (row.trial_state === "conflicts") return { tone: "warn", label: `${t("trial")} ${t("conflicts")}` };
   if (row.trial_state === "resolving") return { tone: "warn", label: t("resolving") };
@@ -3014,36 +3000,30 @@ function worktreeState(row) {
   return { tone: "muted", label: t(row.seat_state || "open") };
 }
 
+/// What closing a worktree did, as its end row says it.
+function worktreeEnd(row) {
+  const closed = row.closed || {};
+  const n = (list) => (list || []).length;
+  switch (row.state) {
+    case "applied":
+    case "merged":
+      return { tone: "ok", label: `${t(row.state)} · ${files(n(closed.merged))}`, detail: `${(closed.merged || []).join(", ")} → ${t("your tree")}` };
+    case "pr":
+      return { tone: "ok", label: t("pull request"), detail: closed.pr || closed.branch || "" };
+    case "patch":
+      return { tone: "warn", label: t("kept as a patch"), detail: closed.patch ? String(closed.patch).split("/").pop() : "" };
+    case "failed":
+      return { tone: "danger", label: t("failed"), detail: closed.error || "" };
+    default:
+      return { tone: "muted", label: t("closed"), detail: closed.error || t("changed nothing") };
+  }
+}
+
 function files(n) {
   return n === 1 ? `1 ${t("file")}` : `${n} ${t("files")}`;
 }
 
-/// One row of the tree, as a list item.
-function leaf(row) {
-  const item = text("li");
-  item.append(row);
-  return item;
-}
-
-function workRow({ dot, key, detail, status, buttons }) {
-  const row = text("div", "work-row");
-  const mark = text("i", "work-dot");
-  mark.dataset.tone = dot;
-  row.append(mark);
-  row.append(text("span", "k", key));
-  row.append(text("span", "d", detail || ""));
-  const right = text("span", "s");
-  if (status) {
-    const pill = text("span", "pill", status.label);
-    pill.dataset.tone = status.tone;
-    right.append(pill);
-  }
-  for (const button of buttons || []) right.append(button);
-  row.append(right);
-  return row;
-}
-
-/// A trial's checks in a few words: all passed, or which failed.
+/// A trial's checks in a few words: which ran and passed, or which failed.
 function checksPhrase(checks) {
   if (!checks || !checks.length) return t("no checks");
   const failed = checks.filter((c) => c.passed === false);
@@ -3051,7 +3031,7 @@ function checksPhrase(checks) {
   return `${failed.map((c) => c.name).join(", ")} ${t("failed")}`;
 }
 
-/// An SVG element with its attributes set; the lanes are drawn, as the icons are.
+/// An SVG element with its attributes set; the gutter is drawn, as the icons are.
 function svgNode(tag, attributes = {}, klass) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
@@ -3064,16 +3044,12 @@ function showTurn(id) {
   el("timeline").querySelectorAll(".turn").find((node) => node.dataset.turn === id)?.scrollIntoView?.({ block: "start" });
 }
 
-/// The worktrees over time, read downwards as a git graph is: the person's own tree is the
-/// first column, each worktree a column of its own, and every event a row with its words to
-/// the right — a turn beginning, a worktree opened (a branch leaving the first column), its
-/// report, each merge trial, and its end: an applied merge rejoins the first column, a pull
-/// request leaves to the right, a worktree kept as a patch ends in a cross. Rows are in the
-/// order things happened, not to scale: the pane is narrow and tall, and what matters is the
-/// order and the branches. Drawn from the same rows as the tree beneath, so the two cannot
-/// disagree.
-function drawLanes(thread, worktrees, trials) {
-  const now = Date.now();
+const GRAPH_ROW = 26;
+const GRAPH_COL = 18;
+
+/// Every row of the graph, in the order it happened: a turn, a worktree opened, its report,
+/// each trial of it, the apply question while it is open, and its end.
+function workEvents(thread, worktrees, trials, asking) {
   const turns = new Map();
   for (const item of thread.items) {
     if (!item.at) continue;
@@ -3085,12 +3061,8 @@ function drawLanes(thread, worktrees, trials) {
   }
   const ordered = [...turns.values()].sort((a, b) => a.from - b.from);
   const last = ordered[ordered.length - 1];
-  if (last && thread.thread.status === "working") last.to = now;
-  const ending = (row) => row.closed_at || (row.state === "open" ? now : row.created_at);
-
-  // Every row of the graph, in the order it happened.
-  const events = [];
-  for (const turn of ordered) events.push({ at: turn.from, kind: "turn", turn });
+  if (last && thread.thread.status === "working") last.to = Date.now();
+  const events = ordered.map((turn) => ({ at: turn.from, kind: "turn", turn }));
   worktrees.forEach((row, index) => {
     const column = index + 1;
     events.push({ at: row.created_at, kind: "open", row, column });
@@ -3098,35 +3070,75 @@ function drawLanes(thread, worktrees, trials) {
     for (const trial of trials.filter((m) => m.workspace === row.name && m.created_at >= row.created_at)) {
       events.push({ at: trial.created_at, kind: "trial", row, column, trial });
     }
-    if (row.state !== "open") events.push({ at: ending(row), kind: "close", row, column });
+    for (const prompt of asking.filter((p) => p.workspace === row.name)) {
+      events.push({ at: prompt.created_at || Number.MAX_SAFE_INTEGER, kind: "ask", row, column, prompt });
+    }
+    if (row.state !== "open") events.push({ at: row.closed_at || row.created_at, kind: "close", row, column });
   });
   events.sort((a, b) => a.at - b.at);
-  const ROW = 24;
-  const TOP = 10;
-  const COL = 20;
-  const LEFT = 14;
-  const W = 320;
-  const H = TOP + ROW * Math.max(events.length, 1) + 8;
-  const columns = worktrees.length + 1;
-  const cx = (column) => LEFT + COL * column;
-  const textX = cx(columns) + 4;
-  // A time between two rows lands between them, so bars and strokes keep their order.
-  const y = (at) => {
-    if (!events.length) return TOP;
-    if (at <= events[0].at) return TOP + ROW / 2;
-    for (let i = 1; i < events.length; i += 1) {
-      if (at <= events[i].at) {
-        const span = events[i].at - events[i - 1].at || 1;
-        return TOP + ROW * (i - 1) + ROW / 2 + (ROW * (at - events[i - 1].at)) / span;
+  return { events, turns: ordered };
+}
+
+/// One row's slice of the graph: the columns alive through it, the branch or return that
+/// starts or ends here, and the mark of the event itself.
+function gutter(event, index, events, turns, worktrees) {
+  const width = GRAPH_COL * (worktrees.length + 1) + 10;
+  const svg = svgNode("svg", { width, height: GRAPH_ROW, viewBox: `0 0 ${width} ${GRAPH_ROW}` }, "gutter");
+  const mid = GRAPH_ROW / 2;
+  const cx = (column) => 8 + GRAPH_COL * column;
+  const leadX = cx(0);
+  // The person's column: solid while a turn runs, dashed between.
+  const inTurn = turns.some((turn) => turn.from <= event.at && event.at <= turn.to);
+  svg.append(svgNode("line", { x1: leadX, y1: 0, x2: leadX, y2: GRAPH_ROW }, inTurn ? "lane-turn" : "lane-idle"));
+  // Each worktree's column, through the rows it is alive in.
+  worktrees.forEach((row, i) => {
+    const column = i + 1;
+    const x = cx(column);
+    const opened = events.findIndex((e) => e.kind === "open" && e.row === row);
+    const closed = events.findIndex((e) => e.kind === "close" && e.row === row);
+    const reported = events.findIndex((e) => e.kind === "report" && e.row === row);
+    const alive = index > opened && (closed === -1 || index < closed);
+    const working = index > opened && (reported === -1 ? row.state === "open" : index <= reported);
+    if (alive) {
+      svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: GRAPH_ROW }, "lane-idle"));
+      if (working) svg.append(svgNode("rect", { x: x - 3, y: 0, width: 6, height: GRAPH_ROW }, reported === -1 ? "lane-work live" : "lane-work"));
+    }
+    if (index === opened) {
+      svg.append(svgNode("path", { d: `M${leadX},${mid - 8} C${leadX},${mid} ${x - 4},${mid - 4} ${x},${mid}` }, "lane-branch"));
+      svg.append(svgNode("line", { x1: x, y1: mid, x2: x, y2: GRAPH_ROW }, "lane-idle"));
+    }
+    if (index === closed) {
+      svg.append(svgNode("line", { x1: x, y1: 0, x2: x, y2: mid }, "lane-idle"));
+      if (row.state === "applied" || row.state === "merged") {
+        svg.append(svgNode("path", { d: `M${x},${mid - 6} C${x},${mid} ${leadX + 6},${mid} ${leadX + 2},${mid}`, "marker-end": "url(#lane-arrow-ok)" }, "lane-apply"));
+      } else if (row.state === "pr") {
+        svg.append(svgNode("line", { x1: x, y1: mid, x2: width - 2, y2: mid, "marker-end": "url(#lane-arrow)" }, "lane-out"));
+      } else {
+        const cross = svgNode("g", {}, "lane-end");
+        cross.append(svgNode("line", { x1: x - 4, y1: mid - 4, x2: x + 4, y2: mid + 4 }));
+        cross.append(svgNode("line", { x1: x - 4, y1: mid + 4, x2: x + 4, y2: mid - 4 }));
+        svg.append(cross);
       }
     }
-    return TOP + ROW * (events.length - 1) + ROW / 2 + (at > events[events.length - 1].at ? ROW / 2 : 0);
-  };
-  const svg = svgNode(
-    "svg",
-    { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": t("How the worktrees branched from your tree and came back") },
-    "lanes",
-  );
+  });
+  // The event's own mark.
+  if (event.kind === "turn") {
+    svg.append(svgNode("circle", { cx: leadX, cy: mid, r: event.turn.origin ? 4 : 5 }, event.turn.origin ? "lane-node from" : "lane-node you"));
+  } else if (event.kind === "open") {
+    svg.append(svgNode("circle", { cx: cx(event.column), cy: mid, r: 4 }, "lane-open"));
+  } else if (event.kind === "report") {
+    svg.append(svgNode("rect", { x: cx(event.column) - 4, y: mid - 4, width: 8, height: 8 }, "lane-report"));
+  } else if (event.kind === "trial") {
+    svg.append(svgNode("circle", { cx: cx(event.column), cy: mid, r: 5 }, `lane-trial ${event.trial.state}`));
+  } else if (event.kind === "ask") {
+    svg.append(svgNode("circle", { cx: cx(event.column), cy: mid, r: 4 }, "lane-ask"));
+  }
+  return svg;
+}
+
+/// The arrowheads every gutter shares, drawn once at the head of the graph.
+function gutterDefs() {
+  const svg = svgNode("svg", { width: 0, height: 0 }, "gutter-defs");
   const defs = svgNode("defs");
   for (const [id, klass] of [["lane-arrow", "lane-arrowhead"], ["lane-arrow-ok", "lane-arrowhead ok"]]) {
     const arrow = svgNode("marker", { id, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto" });
@@ -3134,114 +3146,31 @@ function drawLanes(thread, worktrees, trials) {
     defs.append(arrow);
   }
   svg.append(defs);
-  const titled = (node, words) => {
-    const title = svgNode("title");
-    title.textContent = words;
-    node.append(title);
-    return node;
-  };
-  const words = (rowY, name, detail) => {
-    const node = svgNode("text", { x: textX, y: rowY + 4 }, "lane-words");
-    const head = svgNode("tspan", {}, "lane-name");
-    head.textContent = name;
-    node.append(head);
-    if (detail) {
-      const sub = svgNode("tspan", { dx: 6 }, "lane-title");
-      sub.textContent = detail.length > 42 ? `${detail.slice(0, 41)}…` : detail;
-      node.append(sub);
-    }
-    svg.append(node);
-  };
-
-  // The person's column: dashed throughout, solid while a turn runs.
-  const leadX = cx(0);
-  svg.append(svgNode("line", { x1: leadX, y1: TOP, x2: leadX, y2: H - 8 }, "lane-idle"));
-  for (const turn of ordered) {
-    svg.append(svgNode("line", { x1: leadX, y1: y(turn.from), x2: leadX, y2: Math.max(y(turn.to), y(turn.from) + 3) }, "lane-turn"));
-  }
-  // Each worktree's column, from where it was opened to where it ended.
-  worktrees.forEach((row, index) => {
-    const x = cx(index + 1);
-    const top = y(row.created_at);
-    const bottom = y(ending(row));
-    svg.append(svgNode("path", { d: `M${leadX},${top} C${leadX + COL / 2},${top} ${x - COL / 2},${top} ${x},${top + 6}` }, "lane-branch"));
-    svg.append(svgNode("line", { x1: x, y1: top + 6, x2: x, y2: Math.max(bottom, top + 6) }, "lane-idle"));
-    const from = y(row.started_at || row.created_at);
-    const to = y(row.ended_at || (row.state === "open" && !row.reported ? now : row.started_at || row.created_at));
-    const work = svgNode("rect", { x: x - 4, y: from, width: 8, height: Math.max(to - from, 2), rx: 2 }, row.ended_at ? "lane-work" : "lane-work live");
-    titled(work, [row.agent, row.model, row.started_at ? span((row.ended_at || now) - row.started_at) : null].filter(Boolean).join(" · "));
-    svg.append(work);
-  });
-  // The rows.
-  events.forEach((event, index) => {
-    const rowY = TOP + ROW * index + ROW / 2;
-    if (event.kind === "turn") {
-      const { turn } = event;
-      const node = svgNode("circle", { cx: leadX, cy: rowY, r: turn.origin ? 4 : 5 }, turn.origin ? "lane-node from" : "lane-node you");
-      const who = turn.origin === "merge" ? t("from the merge") : turn.origin ? t("from the helpers") : t("you");
-      titled(node, `${who} · ${clock(turn.from)}`);
-      node.addEventListener("click", () => showTurn(turn.id));
-      svg.append(node);
-      words(rowY, who, turn.origin ? clock(turn.from) : turn.text || clock(turn.from));
-      return;
-    }
-    const { row, column } = event;
-    const x = cx(column);
-    if (event.kind === "open") {
-      svg.append(titled(svgNode("circle", { cx: x, cy: rowY, r: 4 }, "lane-open"), `${row.name} · ${t("opened")} · ${clock(row.created_at)}`));
-      words(rowY, row.name, row.title || t("opened"));
-    } else if (event.kind === "report") {
-      svg.append(titled(svgNode("rect", { x: x - 4, y: rowY - 4, width: 8, height: 8 }, "lane-report"), `${t("reported")} · ${clock(row.ended_at)}`));
-      words(rowY, row.name, `${t("reported")} · ${row.started_at ? span(row.ended_at - row.started_at) : clock(row.ended_at)}`);
-    } else if (event.kind === "trial") {
-      const { trial } = event;
-      const node = svgNode("circle", { cx: x, cy: rowY, r: 5 }, `lane-trial ${trial.state}`);
-      const parts = [files(trial.files.length), checksPhrase(trial.checks)];
-      if (trial.overlap.length) parts.push(`${t("overlap")} ${trial.overlap.join(", ")}`);
-      if (trial.conflicts.length) parts.push(`${t("conflicts")} ${trial.conflicts.join(", ")}`);
-      titled(node, `${t("trial")} #${trial.n} · ${t(trial.state)} · ${parts.join(" · ")}`);
-      svg.append(node);
-      words(rowY, `${t("trial")} #${trial.n}`, `${t(trial.state)} · ${parts.join(" · ")}`);
-    } else if (row.state === "applied" || row.state === "merged") {
-      const path = svgNode("path", { d: `M${x},${rowY - 6} C${x},${rowY} ${leadX + COL / 2},${rowY} ${leadX + 2},${rowY}`, "marker-end": "url(#lane-arrow-ok)" }, "lane-apply");
-      titled(path, `${t(row.state)} · ${files((row.closed?.merged || []).length)} · ${clock(row.closed_at)}`);
-      svg.append(path);
-      words(rowY, t(row.state), `${files((row.closed?.merged || []).length)} → ${t("your tree")}`);
-    } else if (row.state === "pr") {
-      const out = svgNode("line", { x1: x, y1: rowY, x2: textX - 4, y2: rowY, "marker-end": "url(#lane-arrow)" }, "lane-out");
-      titled(out, `${t("pull request")} ${row.closed?.pr || row.closed?.branch || ""}`.trim());
-      svg.append(out);
-      words(rowY, t("pull request"), row.closed?.pr || row.closed?.branch || "");
-    } else {
-      const cross = svgNode("g", {}, "lane-end");
-      cross.append(svgNode("line", { x1: x - 4, y1: rowY - 4, x2: x + 4, y2: rowY + 4 }));
-      cross.append(svgNode("line", { x1: x - 4, y1: rowY + 4, x2: x + 4, y2: rowY - 4 }));
-      const patch = row.closed?.patch ? String(row.closed.patch).split("/").pop() : "";
-      titled(cross, `${t(row.state)}${patch ? ` · ${patch}` : ""}`);
-      svg.append(cross);
-      words(rowY, t(row.state), patch || (row.closed?.error ?? ""));
-    }
-  });
   return svg;
 }
 
-/// The lanes with the switch that folds them away, as this window remembers it.
-function lanesBlock(thread, worktrees, trials) {
-  const block = text("div", "work-lanes");
-  const hidden = remembered("work-lanes").includes("hidden");
-  const toggle = text("button", "lane-toggle", t(hidden ? "Show flow" : "Hide flow"));
-  toggle.type = "button";
-  const figure = text("div", "work-lanes-figure");
-  figure.append(drawLanes(thread, worktrees, trials));
-  figure.hidden = hidden;
-  toggle.addEventListener("click", () => {
-    figure.hidden = !figure.hidden;
-    toggle.textContent = t(figure.hidden ? "Show flow" : "Hide flow");
-    remember("work-lanes", figure.hidden ? ["hidden"] : []);
-  });
-  block.append(toggle);
-  block.append(figure);
-  return block;
+/// One row: the gutter, the words, and what sits at the right edge.
+function workRow({ gutter: slice, key, detail, status, buttons, title, onClick }) {
+  const row = text("div", "work-row");
+  row.append(slice);
+  const words = text("span", "words");
+  words.append(text("span", "k", key));
+  if (detail) words.append(text("span", "d", detail));
+  if (title) words.setAttribute("title", title);
+  row.append(words);
+  const right = text("span", "s");
+  if (status) {
+    const pill = text("span", "pill", status.label);
+    pill.dataset.tone = status.tone;
+    right.append(pill);
+  }
+  for (const button of buttons || []) right.append(button);
+  row.append(right);
+  if (onClick) {
+    row.classList.add("clickable");
+    row.addEventListener("click", onClick);
+  }
+  return row;
 }
 
 async function drawWork(thread) {
@@ -3263,60 +3192,45 @@ async function drawWork(thread) {
     host.append(text("p", "empty", t("No worktrees in this conversation.")));
     return;
   }
-  host.append(lanesBlock(thread, worktrees, trials));
   const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
-  const lead = thread.seats.filter((s) => s.lead).at(-1);
-  const root = text("ul", "work-tree");
-  const own = text("li");
-  own.append(
-    workRow({
-      dot: thread.thread.status === "working" ? "live" : "ok",
-      key: t("your tree"),
-      detail: [thread.thread.branch, lead && [lead.agent, lead.model].filter(Boolean).join(" · ")]
-        .filter(Boolean)
-        .join(" · "),
-      status: asking.length ? { tone: "ask", label: t("waiting for you") } : null,
-    }),
-  );
-  const branches = text("ul");
-  for (const row of worktrees) {
-    const branch = text("li");
-    branch.dataset.state = row.state;
-    branch.dataset.workspace = row.name;
-    const where = row.root.startsWith(thread.thread.project_root)
-      ? row.root.slice(thread.thread.project_root.length + 1)
-      : row.root;
-    const status = worktreeState(row);
-    branch.append(
-      workRow({
-        dot: status.tone,
-        key: row.name,
-        detail: [row.title, where].filter(Boolean).join(" · "),
-        status,
-      }),
-    );
-    const under = text("ul");
-    let leaves = 0;
-    const put = (item) => {
-      under.append(item);
-      leaves += 1;
-    };
-    if (row.agent) {
-      const ended = row.ended_at || Date.now();
-      put(
-        leaf(
-          workRow({
-            dot: row.seat_state === "working" ? "live" : "muted",
-            key: t("seat"),
-            detail: [row.agent, row.model, row.reasoning, row.started_at ? span(ended - row.started_at) : null]
-              .filter(Boolean)
-              .join(" · "),
-            status: { tone: "muted", label: row.reported ? t("reported") : t(row.seat_state || "open") },
-          }),
-        ),
+  const { events, turns } = workEvents(thread, worktrees, trials, asking);
+  const graph = text("div", "work-graph");
+  graph.append(gutterDefs());
+  const where = (row) =>
+    row.root.startsWith(thread.thread.project_root) ? row.root.slice(thread.thread.project_root.length + 1) : row.root;
+  events.forEach((event, index) => {
+    const slice = gutter(event, index, events, turns, worktrees);
+    if (event.kind === "turn") {
+      const { turn } = event;
+      const who = turn.origin === "merge" ? t("from the merge") : turn.origin ? t("from the helpers") : t("you");
+      graph.append(
+        workRow({
+          gutter: slice,
+          key: who,
+          detail: turn.origin ? "" : turn.text,
+          status: { tone: "muted", label: clock(turn.from) },
+          title: `${who} · ${clock(turn.from)}`,
+          onClick: () => showTurn(turn.id),
+        }),
       );
+      return;
     }
-    for (const trial of trials.filter((m) => m.workspace === row.name && m.created_at >= row.created_at)) {
+    const { row } = event;
+    if (event.kind === "open") {
+      graph.append(
+        workRow({
+          gutter: slice,
+          key: row.name,
+          detail: row.title || t("opened"),
+          status: row.state === "open" ? worktreeState(row) : { tone: "muted", label: clock(row.created_at) },
+          title: `${row.name} · ${where(row)}`,
+        }),
+      );
+    } else if (event.kind === "report") {
+      const detail = [row.agent, row.model, row.reasoning, row.started_at ? span(row.ended_at - row.started_at) : null].filter(Boolean).join(" · ");
+      graph.append(workRow({ gutter: slice, key: t("reported"), detail, status: { tone: "muted", label: clock(row.ended_at) }, title: `${row.name} · ${detail}` }));
+    } else if (event.kind === "trial") {
+      const { trial } = event;
       const parts = [files(trial.files.length), checksPhrase(trial.checks)];
       if (trial.overlap.length) parts.push(`${t("overlap")} ${trial.overlap.join(", ")}`);
       if (trial.conflicts.length) parts.push(`${t("conflicts")} ${trial.conflicts.join(", ")}`);
@@ -3324,18 +3238,9 @@ async function drawWork(thread) {
       const tone = trial.state === "clean" || trial.state === "applied" ? "ok"
         : trial.state === "conflicts" || trial.state === "resolving" || trial.state === "stale" ? "warn"
         : trial.state === "failed" ? "danger" : "muted";
-      put(
-        leaf(
-          workRow({
-            dot: tone,
-            key: `${t("trial")} #${trial.n}`,
-            detail: parts.join(" · "),
-            status: { tone, label: t(trial.state) },
-          }),
-        ),
-      );
-    }
-    for (const prompt of asking.filter((p) => p.workspace === row.name)) {
+      graph.append(workRow({ gutter: slice, key: `${t("trial")} #${trial.n}`, detail: parts.join(" · "), status: { tone, label: t(trial.state) }, title: parts.join(" · ") }));
+    } else if (event.kind === "ask") {
+      const { prompt } = event;
       const buttons = [];
       for (const [id, name] of prompt.options) {
         const button = text("button", "primary", t(name));
@@ -3347,39 +3252,21 @@ async function drawWork(thread) {
       no.type = "button";
       no.addEventListener("click", () => answer(prompt.id, null));
       buttons.push(no);
-      put(
-        leaf(
-          workRow({ dot: "ask", key: t("apply"), detail: prompt.detail || "", buttons }),
-        ),
+      graph.append(workRow({ gutter: slice, key: t("apply?"), detail: prompt.detail || "", buttons, title: prompt.detail || "" }));
+    } else {
+      const end = worktreeEnd(row);
+      graph.append(
+        workRow({
+          gutter: slice,
+          key: end.label,
+          detail: end.detail,
+          status: row.closed_at ? { tone: end.tone, label: clock(row.closed_at) } : null,
+          title: `${row.name} · ${end.label} · ${end.detail}`,
+        }),
       );
     }
-    if (row.closed) {
-      const closed = row.closed;
-      const parts = [];
-      if (closed.merged?.length) parts.push(`${t("written")} ${closed.merged.join(", ")}`);
-      if (closed.pr) parts.push(closed.pr);
-      else if (closed.branch) parts.push(closed.branch);
-      if (closed.conflicts?.length) parts.push(`${t("conflicts")} ${closed.conflicts.join(", ")}`);
-      if (closed.patch) parts.push(`${t("patch")} ${String(closed.patch).split("/").pop()}`);
-      if (closed.error) parts.push(closed.error);
-      if (!parts.length) parts.push(t("changed nothing"));
-      put(
-        leaf(
-          workRow({
-            dot: status.tone === "ok" ? "ok" : status.tone === "danger" ? "danger" : "muted",
-            key: t(closed.how === "applied" ? "applied" : "closed"),
-            detail: parts.join(" · "),
-            status: row.closed_at ? { tone: "muted", label: clock(row.closed_at) } : null,
-          }),
-        ),
-      );
-    }
-    if (leaves) branch.append(under);
-    branches.append(branch);
-  }
-  own.append(branches);
-  root.append(own);
-  host.append(root);
+  });
+  host.append(graph);
 }
 
 // The work graph of a turn, when it has one.

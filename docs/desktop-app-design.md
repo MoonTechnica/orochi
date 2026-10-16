@@ -584,16 +584,24 @@ reports, Orochi tries the merge, the person approves, the tree takes it
 ([`manager-design.md`](manager-design.md)). Asked for on 2026-10-16 so that flow can be
 followed by eye; the proposal and its mockups are the drawn tree this pane folds into rows.
 
-- **A tree, rooted at the person's own tree.** The root row is the thread's branch and the
-  lead's route, with *waiting for you* on it while an apply question is open. One branch per
-  worktree (`v_team`): its name, what it was for, where it is relative to the project, and at
-  the right edge where it stands on the way back — `working…`, `reported`, `trial clean ·
-  apply?`, `trial conflicts`, `resolving`, then `applied · n files`, `merged · n files`, `pull
-  request <url>`, `kept as a patch`, `failed` or `closed`. Under each: the seat that worked
-  there (agent, model, effort, elapsed), every merge trial of it (`v_merges`: files, the checks
-  by name, overlap, conflicts, the error), the apply question's buttons when one is open, and
-  what closing it did (`workspaces.closed`, the `Closed` record: paths written, the branch or
-  pull request, the patch kept, the error).
+- **One graph, read downwards as a git graph is.** Every event is a row and the graph is the
+  gutter at its left, drawn a row at a time (one small SVG per row, as git clients do) so the
+  words and buttons sit on the event they belong to. The person's own tree is the first
+  column, solid while a turn runs and dashed between; each worktree (`v_team`) a column of
+  its own. The rows, in the order things happened: a turn (a filled node for a message typed,
+  hollow for one Orochi wrote back; clicking it scrolls the conversation there); a worktree
+  opened (a branch leaving the first column, its name and title, the path in the row's title;
+  while it is still open, where it stands at the right edge — `working…`, `reported`, `trial
+  clean · apply?`, `trial conflicts`, `resolving`); its report (a square; who worked there and
+  how long); each merge trial (`v_merges`: a node coloured by its state, with files, the
+  checks by name, overlap, conflicts, the error); the apply question while one is open (a
+  node on its column and the buttons on the row); and its end — an applied merge as a green
+  arrow back into the first column with the paths written, a pull request as a grey arrow out
+  to its address, a worktree kept as a patch as a cross with the patch's name. A bar on the
+  column shows the seat at work, green while it still is. Rows are one line tall and in the
+  order things happened, not to scale; the clock is at the right edge. The first draft drew
+  this twice, as horizontal lanes and as a tree beneath them, and read as a duplicate; the one
+  graph is what remained.
 - **The apply question lives on its worktree's row.** Under a headless host it is a `prompts`
   row of kind `apply`; `open_prompts` reads its `workspace`, `lines` and gives it one option,
   *Apply*, so the same `answer` the permission card uses answers it. The timeline card still

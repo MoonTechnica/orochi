@@ -1258,58 +1258,47 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .setup-step.failed .detail { color: var(--danger); }
 
 /* Work ------------------------------------------------------------------- */
-/* The worktrees as a tree: the person's tree at the root, a branch per helper's worktree, and
-   under each what happened in it. Connectors are borders, so the tree reads without an image. */
+/* The worktrees as a git graph read downwards: every event is a row, and the graph is the
+   gutter at the row's left, drawn a row at a time so the words and buttons sit on the event
+   they belong to. Rows are one line tall; the whole of a long line is in its title. */
 .work-plan { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .work-plan b { color: var(--text); font-weight: 600; }
 .work-plan .next { flex-basis: 100%; }
-.work-tree, .work-tree ul { list-style: none; margin: 0; padding: 0; }
-.work-tree ul { margin-left: 7px; padding-left: 18px; border-left: 1px solid var(--line); }
-.work-tree li { position: relative; }
-.work-tree ul li::before { content: ""; position: absolute; left: -18px; top: 13px; width: 12px; border-top: 1px solid var(--line); }
-.work-row { display: grid; grid-template-columns: 14px auto 1fr auto; gap: 8px; align-items: baseline; padding: 4px 0; min-width: 0; font-size: 12px; }
-.work-row .k { font-weight: 600; white-space: nowrap; }
-.work-row .d { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.work-graph { display: flex; flex-direction: column; }
+.gutter-defs { position: absolute; width: 0; height: 0; }
+.work-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; height: 26px; font-size: 12px; }
+.work-row.clickable { cursor: pointer; }
+.work-row.clickable:hover .words { color: var(--brand); }
+.work-row .gutter { display: block; flex: none; }
+.work-row .words { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.work-row .k { font-weight: 600; }
+.work-row .d { color: var(--muted); margin-left: 6px; }
 .work-row .s { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 .work-row button { font-size: 11px; padding: 2px 8px; }
-.work-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); align-self: center; display: inline-block; }
-.work-dot[data-tone="ok"] { background: var(--ok); }
-.work-dot[data-tone="live"] { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
-.work-dot[data-tone="warn"] { background: var(--brand); }
-.work-dot[data-tone="danger"] { background: var(--danger); }
-.work-dot[data-tone="ask"] { background: transparent; border: 2px solid var(--brand); width: 6px; height: 6px; }
 .pill { font-size: 11px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
 .pill[data-tone="ok"] { color: var(--ok); border-color: transparent; background: color-mix(in srgb, var(--ok) 15%, transparent); }
 .pill[data-tone="live"] { color: var(--ok); }
 .pill[data-tone="warn"] { color: var(--brand); border-color: transparent; background: color-mix(in srgb, var(--brand) 15%, transparent); }
 .pill[data-tone="danger"] { color: var(--danger); border-color: transparent; background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .pill[data-tone="ask"] { color: var(--brand); border-color: var(--brand); }
-
-/* The lanes above the tree, read downwards as a git graph: the person's tree is the first
-   column, each worktree a column, each event a row with its words to the right. */
-.work-lanes { margin-bottom: 10px; }
-.lane-toggle { font-size: 11px; padding: 2px 8px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; }
-.work-lanes-figure { overflow-x: auto; }
-.lanes { display: block; width: 100%; min-width: 240px; max-width: 480px; height: auto; font-size: 11px; }
-.lanes .lane-words { fill: var(--text); }
-.lanes .lane-name { fill: var(--text); font-weight: 600; }
-.lanes .lane-title { fill: var(--muted); font-size: 10px; }
-.lanes .lane-idle { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 3; fill: none; }
-.lanes .lane-turn { stroke: var(--text); stroke-width: 3; }
-.lanes .lane-node { fill: var(--panel); stroke: var(--text); stroke-width: 2; cursor: pointer; }
-.lanes .lane-node.you { fill: var(--text); }
-.lanes .lane-branch { fill: none; stroke: var(--muted); stroke-width: 1.5; }
-.lanes .lane-open { fill: var(--panel); stroke: var(--muted); stroke-width: 1.5; }
-.lanes .lane-work { fill: var(--text); opacity: .18; }
-.lanes .lane-work.live { fill: var(--ok); opacity: .35; }
-.lanes .lane-report { fill: var(--text); }
-.lanes .lane-trial { fill: var(--panel); stroke: var(--muted); stroke-width: 2; }
-.lanes .lane-trial.clean, .lanes .lane-trial.applied { stroke: var(--ok); }
-.lanes .lane-trial.applied { fill: var(--ok); }
-.lanes .lane-trial.conflicts, .lanes .lane-trial.resolving, .lanes .lane-trial.stale { stroke: var(--brand); }
-.lanes .lane-trial.failed { stroke: var(--danger); }
-.lanes .lane-apply { fill: none; stroke: var(--ok); stroke-width: 2; }
-.lanes .lane-out { stroke: var(--muted); stroke-width: 1.5; }
-.lanes .lane-end line { stroke: var(--muted); stroke-width: 2; }
-.lanes .lane-arrowhead { fill: var(--muted); }
-.lanes .lane-arrowhead.ok { fill: var(--ok); }
+/* The marks in the gutter. */
+.gutter .lane-idle { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 3; fill: none; }
+.gutter .lane-turn { stroke: var(--text); stroke-width: 3; }
+.gutter .lane-node { fill: var(--panel); stroke: var(--text); stroke-width: 2; }
+.gutter .lane-node.you { fill: var(--text); }
+.gutter .lane-branch { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.gutter .lane-open { fill: var(--panel); stroke: var(--muted); stroke-width: 1.5; }
+.gutter .lane-work { fill: var(--text); opacity: .18; }
+.gutter .lane-work.live { fill: var(--ok); opacity: .35; }
+.gutter .lane-report { fill: var(--text); }
+.gutter .lane-trial { fill: var(--panel); stroke: var(--muted); stroke-width: 2; }
+.gutter .lane-trial.clean, .gutter .lane-trial.applied { stroke: var(--ok); }
+.gutter .lane-trial.applied { fill: var(--ok); }
+.gutter .lane-trial.conflicts, .gutter .lane-trial.resolving, .gutter .lane-trial.stale { stroke: var(--brand); }
+.gutter .lane-trial.failed { stroke: var(--danger); }
+.gutter .lane-ask { fill: var(--panel); stroke: var(--brand); stroke-width: 2; }
+.gutter .lane-apply { fill: none; stroke: var(--ok); stroke-width: 2; }
+.gutter .lane-out { stroke: var(--muted); stroke-width: 1.5; }
+.gutter .lane-end line { stroke: var(--muted); stroke-width: 2; }
+.gutter-defs .lane-arrowhead { fill: var(--muted); }
+.gutter-defs .lane-arrowhead.ok { fill: var(--ok); }

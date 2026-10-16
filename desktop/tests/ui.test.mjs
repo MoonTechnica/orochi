@@ -1162,8 +1162,9 @@ test("the plan pane draws the waves a divided turn runs in", async () => {
   assert.match(drawn, /build gamma/);
 });
 
-test("the work pane draws each worktree as a branch of the person's tree, with its trial and what became of it", async () => {
+test("the work pane is one graph read downwards: a row per event, its words beside it, the apply question on its row", async () => {
   const where = recorded.thread.thread.project_root;
+  const at = recorded.thread.items[0].at;
   const team = {
     plan: { plan: ["validate", "document"], decisions: [], open_questions: [], next_step: "merge both" },
     workspaces: [
@@ -1171,45 +1172,52 @@ test("the work pane draws each worktree as a branch of the person's tree, with i
         id: "w1", name: "backend", title: "Implement validation", root: `${where}/.orochi/sessions/k/backend`, base: "abc",
         state: "applied",
         closed: { name: "backend", how: "applied", changed: ["src/api.rs"], merged: ["src/api.rs"], conflicts: [], patch: null, branch: null, pr: null, error: null },
-        created_at: 1, closed_at: 5, seat_id: "s1", seat_state: "done", agent: "claude", model: "opus", reasoning: "high",
-        started_at: 1, ended_at: 4, usage: null, reported: true, doing: null, trial: "backend-1", trial_state: "applied", trials: 1,
+        created_at: at + 500, closed_at: at + 5000, seat_id: "s1", seat_state: "done", agent: "claude", model: "opus", reasoning: "high",
+        started_at: at + 500, ended_at: at + 2000, usage: null, reported: true, doing: null, trial: "backend-1", trial_state: "applied", trials: 1,
       },
       {
         id: "w2", name: "docs", title: "Document the rules", root: `${where}/.orochi/sessions/k/docs`, base: "abc",
         state: "open", closed: null,
-        created_at: 2, closed_at: null, seat_id: "s2", seat_state: "done", agent: "codex", model: "gpt-5.6", reasoning: null,
-        started_at: 2, ended_at: 4, usage: null, reported: true, doing: null, trial: "docs-1", trial_state: "clean", trials: 1,
+        created_at: at + 600, closed_at: null, seat_id: "s2", seat_state: "done", agent: "codex", model: "gpt-5.6", reasoning: null,
+        started_at: at + 600, ended_at: at + 2100, usage: null, reported: true, doing: null, trial: "docs-1", trial_state: "clean", trials: 1,
       },
     ],
     merges: [
       { id: "backend-1", workspace: "backend", n: 1, state: "applied", files: ["src/api.rs"], overlap: [], conflicts: [],
-        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: 3, updated_at: 5 },
+        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: at + 3000, updated_at: at + 5000 },
       { id: "docs-1", workspace: "docs", n: 1, state: "clean", files: ["docs/api.md"], overlap: ["docs/api.md"], conflicts: [],
-        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: 3, updated_at: 4 },
+        checks: [{ name: "cargo test", passed: true, exit_code: 0, duration_ms: 1, timed_out: false }], error: null, created_at: at + 3100, updated_at: at + 3100 },
     ],
   };
   // The apply question under a headless host is a prompt row the window answers.
   const prompt = {
     id: "p-apply", thread_id: recorded.thread.thread.id, thread_title: recorded.thread.thread.title, project: "repo",
     kind: "apply", agent: null, model: null, role: null, title: "Apply `docs` to your tree?",
-    detail: "1 file · cargo test passed", options: [["apply", "Apply"]], created_at: 0, read_only: false, lead: true,
+    detail: "1 file · cargo test passed", options: [["apply", "Apply"]], created_at: at + 4500, read_only: false, lead: true,
     workspace: "docs",
   };
   const { el, calls } = await open({ team, open_prompts: [prompt] });
   const work = el("work");
   const drawn = work.render();
   assert.match(drawn, /Plan/, "the lead's plan heads the pane");
-  assert.match(drawn, /your tree/, "the person's own tree is the root");
-  assert.match(drawn, /backend[\s\S]*applied · 1 file/, "a worktree that was applied says so");
-  assert.match(drawn, /\.orochi\/sessions\/k\/backend/, "and where it was, relative to the project");
-  assert.doesNotMatch(drawn, new RegExp(where.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/\\.orochi"), "never the whole path");
-  assert.match(drawn, /trial #1[\s\S]*cargo test[\s\S]*overlap docs\/api\.md/, "a trial says what it found");
-  assert.match(drawn, /seat[\s\S]*claude · opus · high/, "and who worked there");
-  const branches = work.querySelectorAll(".work-tree")[0].children[0].querySelectorAll("li");
-  assert.ok(branches.length >= 2, `the worktrees are branches under the root: ${drawn}`);
+  const rows = work.querySelectorAll(".work-row");
+  const said = rows.map((row) => row.querySelectorAll(".words")[0].textContent);
+  // Two turns, two openings, two reports, two trials, one question, one end — each once.
+  assert.equal(rows.length, 10, said.join("\n"));
+  assert.match(said.join("\n"), /^you[\s\S]*backend[\s\S]*docs[\s\S]*reported[\s\S]*trial #1[\s\S]*apply\?[\s\S]*applied · 1 file/, said.join("\n"));
+  assert.ok(said.some((s) => /^reportedclaude · opus · high · 2s/.test(s)), `who worked there is on the report row: ${said}`);
+  assert.ok(said.some((s) => /^trial #1docs\/api\.md|^trial #1.*overlap docs\/api\.md/.test(s)), `a trial says what it found: ${said}`);
+  assert.ok(said.some((s) => /src\/api\.rs → your tree/.test(s)), `the end says what reached the tree: ${said}`);
+  const opened = rows.find((row) => row.querySelectorAll(".k")[0].textContent === "backend");
+  assert.match(opened.querySelectorAll(".words")[0].attributes.get("title"), /\.orochi\/sessions\/k\/backend$/, "the worktree's place is in the row's title, relative to the project");
+  assert.equal(work.querySelectorAll(".lane-branch").length, 2, "a branch leaves the person's column for each worktree");
+  assert.equal(work.querySelectorAll(".lane-apply").length, 1, "and one comes back where it was applied");
+  assert.equal(work.querySelectorAll(".lane-trial").length, 2);
 
-  const buttons = work.querySelectorAll("button").filter((b) => b.className !== "lane-toggle");
-  assert.deepEqual(buttons.map((b) => b.textContent), ["Apply", "Decline"], "the apply question sits on its worktree's row");
+  const buttons = work.querySelectorAll("button");
+  assert.deepEqual(buttons.map((b) => b.textContent), ["Apply", "Decline"], "the apply question sits on its own row of the graph");
+  const ask = rows.find((row) => row.querySelectorAll("button").length);
+  assert.equal(ask.querySelectorAll(".lane-ask").length, 1, "on docs' column");
   buttons[0].dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.deepEqual(
@@ -1222,11 +1230,11 @@ test("the work pane draws each worktree as a branch of the person's tree, with i
 test("a conversation without worktrees says so in the work pane", async () => {
   const { el } = await open();
   assert.match(el("work").render(), /No worktrees in this conversation/);
-  assert.equal(el("work").querySelectorAll("svg").length, 0, "and draws no lanes for nothing");
+  assert.equal(el("work").querySelectorAll(".work-row").length, 0, "and draws no graph for nothing");
   assert.ok(el("pane-work").hidden, "the pane waits behind its tab");
 });
 
-test("the lanes above the tree place each worktree in time, leaving the person's tree and coming back", async () => {
+test("every way a worktree can end has its own mark in the gutter", async () => {
   const where = recorded.thread.thread.project_root;
   const at = recorded.thread.items[0].at;
   const row = (name, state, created, closed, extra = {}) => ({
@@ -1247,28 +1255,19 @@ test("the lanes above the tree place each worktree in time, leaving the person's
       { id: "backend-1", workspace: "backend", n: 1, state: "applied", files: ["a.rs"], overlap: [], conflicts: [], checks: [], error: null, created_at: at + 3000, updated_at: at + 5000 },
     ],
   };
-  const { el, localStorage } = await open({ team });
+  const { el } = await open({ team });
   const work = el("work");
-  const lanes = work.querySelectorAll("svg");
-  assert.equal(lanes.length, 1, "one figure");
-  const figure = lanes[0];
-  assert.equal(figure.querySelectorAll(".lane-branch").length, 4, "a branch leaves the person's lane for every worktree");
-  assert.equal(figure.querySelectorAll(".lane-apply").length, 1, "and comes back for the one that was applied");
-  assert.equal(figure.querySelectorAll(".lane-out").length, 1, "a pull request leaves to the right");
-  assert.equal(figure.querySelectorAll(".lane-end").length, 1, "a patch ends in a cross");
-  assert.equal(figure.querySelectorAll(".lane-trial").length, 1, "each trial is a node on its worktree's lane");
-  assert.equal(figure.querySelectorAll(".lane-node").length, 2, "and the conversation's turns are nodes on the person's lane");
-  assert.ok(figure.querySelectorAll(".lane-work.live").length === 1, "a worktree still worked in is drawn live");
-  const rows = figure.querySelectorAll(".lane-words").map((node) => node.textContent);
-  assert.equal(rows.length, 2 + 4 + 3 + 1 + 3, "a row per turn, opening, report, trial and end");
-  assert.match(rows.join("\n"), /you[\s\S]*backend[\s\S]*docs[\s\S]*cleanup[\s\S]*spike/, "read downwards, in the order things happened");
-  assert.ok(rows.some((row) => /^applied/.test(row)) && rows.some((row) => /^pull request/.test(row)), `each end is said in words: ${rows}`);
-
-  const toggle = work.querySelectorAll("button").find((b) => b.className === "lane-toggle");
-  assert.equal(toggle.textContent, "Hide flow");
-  toggle.dispatch("click");
-  assert.equal(toggle.textContent, "Show flow");
-  assert.equal(JSON.parse(localStorage.getItem("work-lanes"))[0], "hidden", "folding the lanes is remembered in this window");
+  assert.equal(work.querySelectorAll(".lane-branch").length, 4, "a branch leaves the person's column for every worktree");
+  assert.equal(work.querySelectorAll(".lane-apply").length, 1, "and comes back for the one that was applied");
+  assert.equal(work.querySelectorAll(".lane-out").length, 1, "a pull request leaves to the right");
+  assert.equal(work.querySelectorAll(".lane-end").length, 1, "a patch ends in a cross");
+  assert.equal(work.querySelectorAll(".lane-node").length, 2, "the conversation's turns are nodes on the person's column");
+  assert.ok(work.querySelectorAll(".lane-work.live").length >= 1, "a worktree still worked in is drawn live");
+  const said = work.querySelectorAll(".work-row").map((r) => r.querySelectorAll(".words")[0].textContent);
+  assert.match(said.join("\n"), /you[\s\S]*backend[\s\S]*docs[\s\S]*cleanup[\s\S]*spike/, "read downwards, in the order things happened");
+  assert.ok(said.some((s) => /^pull requesthttps:\/\/example\.test\/pull\/1/.test(s)), `a pull request's end names it: ${said}`);
+  assert.ok(said.some((s) => /^kept as a patchcleanup\.patch/.test(s)), `a patch's end names the file: ${said}`);
+  assert.ok(said.some((s) => s.startsWith("spike") && /working/.test(work.render())), "an open worktree says it is being worked in");
 });
 
 test("settings edit the conversation store and what is remembered", async () => {
