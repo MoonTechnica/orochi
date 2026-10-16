@@ -634,6 +634,7 @@ impl Activity {
             )?;
         }
         added(&connection)?;
+        repair_merges(&connection)?;
         // Threads an agent named after Orochi's own preamble before that was refused: named
         // again from the message that opened them.
         repair_titles(&connection)?;
@@ -1328,7 +1329,7 @@ impl Activity {
         self.connection.execute(
             "INSERT INTO merges (id, thread_id, workspace, n, state, trial, created_at, updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?7)
-             ON CONFLICT(id) DO UPDATE SET state=excluded.state, trial=excluded.trial,
+             ON CONFLICT(thread_id, id) DO UPDATE SET state=excluded.state, trial=excluded.trial,
                 updated_at=excluded.updated_at",
             params![
                 trial.id,
@@ -2371,24 +2372,7 @@ CREATE TRIGGER IF NOT EXISTS ch_agent_requests_u AFTER UPDATE ON agent_requests 
     ),
     // A merge trial of a helper's worktree and what it found, as `merge::Trial` serializes it:
     // paths and check names, content, so here only (`docs/manager-design.md` §5).
-    (
-        "merges",
-        r#"
-CREATE TABLE IF NOT EXISTS merges (
-  id TEXT PRIMARY KEY,
-  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
-  workspace TEXT NOT NULL,
-  n INTEGER NOT NULL,
-  state TEXT NOT NULL,
-  trial TEXT NOT NULL,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS merges_thread ON merges(thread_id, created_at);
-CREATE TRIGGER IF NOT EXISTS ch_merges_i AFTER INSERT ON merges BEGIN
-  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.created_at); END;
-CREATE TRIGGER IF NOT EXISTS ch_merges_u AFTER UPDATE ON merges BEGIN
-  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.updated_at); END;
-"#,
-    ),
+    ("merges", MERGES),
     // A helper's worktree from the moment it is opened to what became of it, as
     // `workspaces::Closed` says it: the manifest mirrored, so a client can draw the team
     // (`docs/manager-design.md` §5). Paths and a patch's name, content, so here only.
@@ -2437,6 +2421,52 @@ INSERT INTO search (text, item_id, thread_id)
 "#,
     ),
 ];
+
+/// A trial's id (`<workspace>-<n>`) is unique within its conversation and nowhere else, so
+/// the key is the pair. The first shape keyed on the id alone, and a second conversation's
+/// `backend-1` then overwrote the first's; `repair_merges` rebuilds such a table.
+const MERGES: &str = r#"
+CREATE TABLE IF NOT EXISTS merges (
+  id TEXT NOT NULL,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  workspace TEXT NOT NULL,
+  n INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  trial TEXT NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, id));
+CREATE INDEX IF NOT EXISTS merges_thread ON merges(thread_id, created_at);
+CREATE TRIGGER IF NOT EXISTS ch_merges_i AFTER INSERT ON merges BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.created_at); END;
+CREATE TRIGGER IF NOT EXISTS ch_merges_u AFTER UPDATE ON merges BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('merges',new.id,new.thread_id,new.updated_at); END;
+"#;
+
+/// Rebuilds a `merges` table keyed on the trial id alone around the (thread, id) pair, keeping
+/// its rows. The views over it are dropped here and written again with the rest.
+fn repair_merges(connection: &Connection) -> Result<()> {
+    let keyed_on_id_alone: bool = connection.query_row(
+        "SELECT count(*) = 1 AND max(name = 'id') = 1
+         FROM pragma_table_info('merges') WHERE pk > 0",
+        [],
+        |r| r.get(0),
+    )?;
+    if !keyed_on_id_alone {
+        return Ok(());
+    }
+    let transaction =
+        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
+    transaction.execute_batch(&format!(
+        "ALTER TABLE merges RENAME TO merges_old;
+         DROP VIEW IF EXISTS v_merges; DROP VIEW IF EXISTS v_team;
+         {MERGES}
+         INSERT OR IGNORE INTO merges (id, thread_id, workspace, n, state, trial, created_at, updated_at)
+           SELECT id, thread_id, workspace, n, state, trial, created_at, updated_at FROM merges_old;
+         DROP TABLE merges_old;"
+    ))?;
+    transaction.commit()?;
+    Ok(())
+}
 
 fn repair_titles(connection: &Connection) -> Result<()> {
     let mut statement = connection.prepare(

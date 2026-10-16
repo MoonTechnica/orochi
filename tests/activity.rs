@@ -1560,3 +1560,77 @@ fn a_merge_trial_is_dated_from_its_start_and_filled_in_when_it_ends() {
     // The placeholder is not a trial a restarted host would read back as one.
     assert_eq!(activity.merges(&thread).unwrap().len(), 1);
 }
+
+/// A trial's id is unique within its conversation and nowhere else: two conversations may
+/// both have a `backend-1`, and a store from before the key said so is rebuilt on open with
+/// its rows kept.
+#[test]
+fn two_conversations_may_both_have_a_trial_of_the_same_name() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        let (first, _, _) = thread_with_a_turn(&activity);
+        // The first shape of the table, keyed on the id alone, with one trial in it.
+        activity
+            .connection()
+            .execute_batch(&format!(
+                "DROP VIEW IF EXISTS v_merges; DROP VIEW IF EXISTS v_team; DROP TABLE merges;
+                 CREATE TABLE merges (
+                   id TEXT PRIMARY KEY,
+                   thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                   workspace TEXT NOT NULL, n INTEGER NOT NULL, state TEXT NOT NULL,
+                   trial TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                 INSERT INTO merges VALUES ('backend-1','{first}','backend',1,'clean','{{}}',1,1);"
+            ))
+            .unwrap();
+    }
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let first: String = activity
+        .connection()
+        .query_row("SELECT id FROM threads", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        activity.team(&first).unwrap().merges.len(),
+        1,
+        "the old row survived the rebuild"
+    );
+    let second = activity
+        .create_thread(
+            "proj",
+            std::path::Path::new("/tmp/repo"),
+            Some("main"),
+            "repo-hash",
+            Origin::Console,
+            &Overrides::default(),
+            "ask",
+        )
+        .unwrap();
+    activity
+        .merge_started(&second, "backend-1", "backend", 1)
+        .unwrap();
+    assert_eq!(activity.team(&second).unwrap().merges.len(), 1);
+    assert_eq!(
+        activity.team(&first).unwrap().merges[0].state,
+        "clean",
+        "the second conversation's trial did not overwrite the first's"
+    );
+    let keys: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('merges') WHERE pk > 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(keys, 2, "keyed on (thread, id)");
+    // The feed trigger came back with the table.
+    let fed: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM changes WHERE tbl='merges' AND thread_id=?1",
+            [&second],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(fed, 1);
+}
