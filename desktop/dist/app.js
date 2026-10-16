@@ -3349,6 +3349,7 @@ function drawRoster(host, roster) {
   refresh.dataset.action = "refresh";
   refresh.addEventListener("click", async () => {
     refresh.disabled = true;
+    refresh.textContent = "Refreshing…";
     report("Starting every agent once to read what it offers…");
     try {
       await call("refresh_models", {});
@@ -3367,6 +3368,17 @@ function drawRoster(host, roster) {
     host.append(section);
     return;
   }
+  // A first look, before any agent has been started here: say what the button does once,
+  // rather than once per agent.
+  if (entries.every((a) => !a.known.length)) {
+    section.append(
+      text(
+        "p",
+        "caveat first-look",
+        "No agent has been started here yet, so there are no models to choose from. Refresh models starts each one once (about twenty seconds) and lists what it offers; until then every agent may use every model it has.",
+      ),
+    );
+  }
   for (const agent of entries) {
     const card = text("div", "card roster-agent");
     card.dataset.agent = agent.id;
@@ -3382,7 +3394,7 @@ function drawRoster(host, roster) {
     who.append(on, text("strong", null, agent.id), text("span", "where", agent.provider));
     card.append(who);
     if (!agent.known.length) {
-      card.append(text("p", "caveat", "Not discovered here yet — Refresh models."));
+      card.append(text("p", "caveat", "No models listed yet."));
       section.append(card);
       continue;
     }

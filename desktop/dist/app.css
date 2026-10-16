@@ -1319,3 +1319,4 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .roster-screen { margin-top: 0; margin-bottom: 16px; }
 #panel-body h3.settings-section { margin: 20px 0 8px; }
 #panel-body .card textarea { width: 100%; box-sizing: border-box; }
+#panel-body .first-look { margin: 0 0 10px; }

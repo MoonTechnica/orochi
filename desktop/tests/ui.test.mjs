@@ -2590,7 +2590,7 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   assert.match(drawn, /opus/);
   assert.match(drawn, /Everyday coding/, "what a model is for is beside its name");
   assert.doesNotMatch(drawn, /judge/, "an adviser runs no work and has no roster");
-  assert.match(drawn, /Not discovered here yet/, "an agent never started here says so");
+  assert.match(drawn, /No models listed yet/, "an agent never started here says so");
   assert.match(drawn, /Your preferences/, "and the preferences are right under it");
 
   const boxes = host.querySelectorAll("input").filter((b) => b.dataset.model);
