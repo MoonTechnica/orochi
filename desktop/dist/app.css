@@ -1284,3 +1284,29 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .pill[data-tone="warn"] { color: var(--brand); border-color: transparent; background: color-mix(in srgb, var(--brand) 15%, transparent); }
 .pill[data-tone="danger"] { color: var(--danger); border-color: transparent; background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .pill[data-tone="ask"] { color: var(--brand); border-color: var(--brand); }
+
+/* The lanes above the tree: time runs to the right, the person's tree on top. */
+.work-lanes { margin-bottom: 10px; }
+.lane-toggle { font-size: 11px; padding: 2px 8px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; }
+.work-lanes-figure { overflow-x: auto; }
+.lanes { display: block; width: 100%; min-width: 440px; height: auto; font-size: 11px; }
+.lanes .lane-name { fill: var(--text); font-weight: 600; }
+.lanes .lane-title { fill: var(--muted); font-size: 10px; }
+.lanes .lane-idle { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 3; fill: none; }
+.lanes .lane-turn { stroke: var(--text); stroke-width: 3; }
+.lanes .lane-node { fill: var(--panel); stroke: var(--text); stroke-width: 2; cursor: pointer; }
+.lanes .lane-node.you { fill: var(--text); }
+.lanes .lane-branch { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.lanes .lane-work { fill: var(--text); opacity: .18; }
+.lanes .lane-work.live { fill: var(--ok); opacity: .35; }
+.lanes .lane-report { fill: var(--text); }
+.lanes .lane-trial { fill: var(--panel); stroke: var(--muted); stroke-width: 2; }
+.lanes .lane-trial.clean, .lanes .lane-trial.applied { stroke: var(--ok); }
+.lanes .lane-trial.applied { fill: var(--ok); }
+.lanes .lane-trial.conflicts, .lanes .lane-trial.resolving, .lanes .lane-trial.stale { stroke: var(--brand); }
+.lanes .lane-trial.failed { stroke: var(--danger); }
+.lanes .lane-apply { fill: none; stroke: var(--ok); stroke-width: 2; }
+.lanes .lane-out { stroke: var(--muted); stroke-width: 1.5; }
+.lanes .lane-end line { stroke: var(--muted); stroke-width: 2; }
+.lanes .lane-arrowhead { fill: var(--muted); }
+.lanes .lane-arrowhead.ok { fill: var(--ok); }

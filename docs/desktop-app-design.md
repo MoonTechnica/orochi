@@ -599,9 +599,17 @@ followed by eye; the proposal and its mockups are the drawn tree this pane folds
   *Apply*, so the same `answer` the permission card uses answers it. The timeline card still
   shows it too.
 - **The plan heads the pane** (`threads.management`): the steps numbered and the next step.
-- **Not built:** the lane diagram of the proposal (time on the horizontal axis, branches
-  leaving the lead's lane at the snapshot and rejoining at the apply). It would be one SVG of
-  connectors over the same rows, and the rows come first.
+- **The lanes above the tree** (built the same day, after the rows): one inline SVG, time on
+  the horizontal axis from the first turn to now, the person's lane on top with each turn a
+  node (filled for a message typed, hollow for one Orochi wrote back) and a thick stroke while
+  it ran; one lane per worktree below, a branch leaving the person's lane where it was opened,
+  a bar while its seat worked (green while it still does), a square at its report, a node per
+  merge trial coloured by its state, and then one of three ends: a green arrow rejoining the
+  person's lane where the merge was applied, a grey arrow leaving to the right for a pull
+  request, or a cross where it was kept as a patch. Hovering a mark says what it is and when;
+  a turn's node scrolls the conversation to that turn. The lanes are drawn from the same
+  `team` answer as the rows, so they can never disagree with them, and a *Hide flow* switch
+  folds them away for this window (`localStorage`, a per-viewer convenience).
 
 Tauri command `team(thread)` returns `Activity::team`: the plan, the `v_team` rows and the
 `v_merges` rows. `orochi threads team <id>` prints the same, which is what keeps the pane a

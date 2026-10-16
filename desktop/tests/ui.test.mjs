@@ -1208,7 +1208,7 @@ test("the work pane draws each worktree as a branch of the person's tree, with i
   const branches = work.querySelectorAll(".work-tree")[0].children[0].querySelectorAll("li");
   assert.ok(branches.length >= 2, `the worktrees are branches under the root: ${drawn}`);
 
-  const buttons = work.querySelectorAll("button");
+  const buttons = work.querySelectorAll("button").filter((b) => b.className !== "lane-toggle");
   assert.deepEqual(buttons.map((b) => b.textContent), ["Apply", "Decline"], "the apply question sits on its worktree's row");
   buttons[0].dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1222,7 +1222,50 @@ test("the work pane draws each worktree as a branch of the person's tree, with i
 test("a conversation without worktrees says so in the work pane", async () => {
   const { el } = await open();
   assert.match(el("work").render(), /No worktrees in this conversation/);
+  assert.equal(el("work").querySelectorAll("svg").length, 0, "and draws no lanes for nothing");
   assert.ok(el("pane-work").hidden, "the pane waits behind its tab");
+});
+
+test("the lanes above the tree place each worktree in time, leaving the person's tree and coming back", async () => {
+  const where = recorded.thread.thread.project_root;
+  const at = recorded.thread.items[0].at;
+  const row = (name, state, created, closed, extra = {}) => ({
+    id: name, name, title: `Do ${name}`, root: `${where}/.orochi/sessions/k/${name}`, base: "abc", state, closed: null,
+    created_at: created, closed_at: closed, seat_id: null, seat_state: "done", agent: "claude", model: "opus", reasoning: null,
+    started_at: created, ended_at: closed || created + 1000, usage: null, reported: true, doing: null, trial: null, trial_state: null, trials: 0,
+    ...extra,
+  });
+  const team = {
+    plan: null,
+    workspaces: [
+      row("backend", "applied", at + 500, at + 5000, { closed: { how: "applied", merged: ["a.rs"] }, trial: "backend-1", trial_state: "applied", trials: 1 }),
+      row("docs", "pr", at + 600, at + 5500, { closed: { how: "pr", pr: "https://example.test/pull/1", branch: "orochi/docs" } }),
+      row("cleanup", "patch", at + 700, at + 6000, { closed: { how: "closed", patch: "/x/cleanup.patch" } }),
+      row("spike", "open", at + 800, null, { ended_at: null, reported: false, seat_state: "working" }),
+    ],
+    merges: [
+      { id: "backend-1", workspace: "backend", n: 1, state: "applied", files: ["a.rs"], overlap: [], conflicts: [], checks: [], error: null, created_at: at + 3000, updated_at: at + 5000 },
+    ],
+  };
+  const { el, localStorage } = await open({ team });
+  const work = el("work");
+  const lanes = work.querySelectorAll("svg");
+  assert.equal(lanes.length, 1, "one figure");
+  const figure = lanes[0];
+  assert.equal(figure.querySelectorAll(".lane-branch").length, 4, "a branch leaves the person's lane for every worktree");
+  assert.equal(figure.querySelectorAll(".lane-apply").length, 1, "and comes back for the one that was applied");
+  assert.equal(figure.querySelectorAll(".lane-out").length, 1, "a pull request leaves to the right");
+  assert.equal(figure.querySelectorAll(".lane-end").length, 1, "a patch ends in a cross");
+  assert.equal(figure.querySelectorAll(".lane-trial").length, 1, "each trial is a node on its worktree's lane");
+  assert.equal(figure.querySelectorAll(".lane-node").length, 2, "and the conversation's turns are nodes on the person's lane");
+  assert.ok(figure.querySelectorAll(".lane-work.live").length === 1, "a worktree still worked in is drawn live");
+  assert.match(figure.render(), /your tree[\s\S]*backend[\s\S]*docs[\s\S]*cleanup[\s\S]*spike/, "lanes are labeled in the order the worktrees were opened");
+
+  const toggle = work.querySelectorAll("button").find((b) => b.className === "lane-toggle");
+  assert.equal(toggle.textContent, "Hide flow");
+  toggle.dispatch("click");
+  assert.equal(toggle.textContent, "Show flow");
+  assert.equal(JSON.parse(localStorage.getItem("work-lanes"))[0], "hidden", "folding the lanes is remembered in this window");
 });
 
 test("settings edit the conversation store and what is remembered", async () => {

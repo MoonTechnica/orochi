@@ -308,7 +308,8 @@ paths, `payload` is the lead's words — content, in this file only, never in te
   sidebar's row gains the merges-waiting count. **Built 2026-10-16 as a Work tab of its own**
   (`desktop-app-design.md` §6.4a): the Team pane stays presence, and Work draws the worktrees
   as a tree under the person's own, with the apply question's buttons on its worktree's row.
-  The sidebar count is not built.
+  A lane diagram above the rows places the same worktrees in time. The sidebar count is not
+  built.
 - A host with a running trial or apply is not idle.
 
 ## 8. Configuration
