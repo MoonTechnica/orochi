@@ -105,6 +105,35 @@ the lead verified the tree (5 tests, `git diff --check`) and updated its plan to
 worktree was closed by the apply; the sweep at exit found nothing open and wrote no patch.
 Two turns, 122 s, 10,670 weighted on the lead in all.
 
+## Run D — a conflict: Claude lead (haiku), helper and resolver on Codex gpt-5.6-luna
+
+The same task, with the user kept working: a sidecar appended a `multiply` of its own to the
+user's `calc.py` five seconds after the helper's worktree appeared, at the end of the file,
+where the helper would put its own `multiply` and `divide`.
+
+| Turn | Origin | Seats | Wall | Reported total | Weighted | Requests |
+|---|---|---|---|---|---|---|
+| 1 | user | lead `tester` | 23 s | 298,558 | 84,493 | 11 |
+| 1 | — | helper `calc-ops` (writes) | 38 s | 23,874 | 3,236 | 11 |
+| 2 | background | lead, resumed | 9 s | 188,507 | 23,978 | 9 |
+| 3 | merge | lead, resumed | 12 s | 196,572 | 29,201 | 8 |
+| 3 | — | `resolve-calc-ops` (writes, in the trial's worktree) | 46 s | 24,206 | 3,640 | 11 |
+| 4 | background | lead, resumed | 13 s | 208,129 | 32,629 | 8 |
+| 5 | merge | lead, resumed | 11 s | 218,260 | 31,036 | 8 |
+
+`merge_trial(calc-ops)` → *1 conflict (calc.py); merge_trial("calc-ops", resolve=true)
+resolves them* → the lead read it, said why ("your uncommitted `multiply` clashed with the
+helper's") and asked for the resolving trial → trial 2 reproduced the conflict and Orochi
+seated `resolve-calc-ops` in trial 2's worktree with the `untangle` instruction → it kept the
+user's `multiply` (docstring and all), added the helper's `divide` and its three tests, and
+cleared the markers in 46 s → the recheck ran the project's check: *clean · 2 files · checks
+passed · 1 file both sides changed (calc.py)* → the lead reviewed the trial's output and tests
+before asking for the apply → 2 files written, 5 tests passing in the user's tree, the helper's
+worktree closed by the apply. The lead's report to the user was accurate to the row, down to
+noting that the conflicted first trial's worktree was still on disk until the conversation's
+end — which is where the sweep then removed it. Five lead turns, 111 s of lead time, 201,337
+weighted on the lead in all; the conflict cost two wakes and one resolution seat over run B.
+
 ## What it costs
 
 A wake is a resumed session. On haiku, the three Orochi-written turns of run B cost 16,660 to
@@ -124,9 +153,9 @@ through `claude-agent-acp`, which accumulates the turn.
 | A helper's message to an idle lead wakes it | **Held** (run B): delivered in the wake with the report |
 | The apply runs, closes the worktree, and the lead hears the outcome | **Held** on runs B and C; on run A it raced the exit — fixed, pinned, and run C is the fix on the same lead and shape |
 | `manager.apply = "ask"` in a terminal and from a client | **Not run**: both runs were piped, so `auto` was used |
-| A conflicted trial with `resolve = true` | **Not run** |
+| A conflicted trial with `resolve = true` | **Held** (run D): the lead asked for it on reading the conflict, the resolution seat kept the user's side and cleared the markers, the recheck ran the project's check, and the lead reviewed before applying |
 | A restarted host resuming with plan and trials | Automated test only |
 
 Nothing was committed to any repository by the agents; the validation directory
-(`.orochi/live-validation-20261016/`) keeps the private config, data, the three repositories
-as the runs left them, every transcript and `analyze.py`.
+(`.orochi/live-validation-20261016/`) keeps the private config, data, the four repositories
+as the runs left them, every transcript, run D's sidecar and `analyze.py`.

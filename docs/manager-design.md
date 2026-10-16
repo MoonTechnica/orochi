@@ -3,8 +3,9 @@
 Written: 2026-10-16. **Status (2026-10-16): M0–M5 implemented; M6 run once on both CLIs
 ([real-validation-20261016.md](real-validation-20261016.md)): a real Codex lead and a real
 Claude lead each planned, delegated, asked for the trial, read it and asked for the apply with
-no tool named to them, a helper's message woke the idle lead, and the apply's race with the
-exit found there is fixed. `ask` in a terminal, `resolve`, and a resumed host are automated
+no tool named to them, a helper's message woke the idle lead, a conflict was resolved by a seat in the trial's
+worktree on the lead's `resolve = true` and applied after the lead's review, and the apply's
+race with the exit found there is fixed. `ask` in a terminal and a resumed host are automated
 tests only.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and
 is cited; §14 says where the implementation departed from the design and why.
 
