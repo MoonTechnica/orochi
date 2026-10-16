@@ -586,6 +586,12 @@ fn live_seats(open: State<'_, Open>) -> Result<Vec<orochi::activity::LiveSeat>, 
     open.0.lock().unwrap().live_seats().map_err(fail)
 }
 
+/// Every agent a seat's own CLI runs inside a `Task` right now, drawn under that seat.
+#[tauri::command]
+fn live_tasks(open: State<'_, Open>) -> Result<Vec<orochi::activity::LiveTask>, String> {
+    open.0.lock().unwrap().live_tasks().map_err(fail)
+}
+
 /// Where the core keeps its data, by the same rule the CLI uses, so the window and the
 /// terminal are looking at one store.
 fn data_dir() -> anyhow::Result<std::path::PathBuf> {
@@ -659,6 +665,7 @@ fn main() {
             seen,
             changed,
             live_seats,
+            live_tasks,
             stop_seat,
             search,
             set_route,

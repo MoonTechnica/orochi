@@ -505,6 +505,20 @@ impl Cx<'_> {
             None => eprintln!("{text}"),
         }
     }
+    /// A member took a session on `route`, or with `None` gave it back. Only a screen that
+    /// lists seats wants it, so a terminal's stderr hears nothing.
+    fn member(&self, name: &str, route: Option<(&str, &str)>) {
+        if let Some(events) = &self.events {
+            let _ = events.send(crate::acp::ExecutionEvent::Progress(
+                crate::acp::Progress::Member {
+                    name: name.to_owned(),
+                    agent: route.map(|(agent, _)| agent.to_owned()),
+                    model: route.map(|(_, model)| model.to_owned()),
+                    ended: route.is_none(),
+                },
+            ));
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

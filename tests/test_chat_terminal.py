@@ -191,11 +191,12 @@ def typing(chunks, lines=1, during_turn=False):
     return shots
 
 
-def divided(env="", stop_at=None, answer=b"\n", follow=None):
+def divided(env="", stop_at=None, answer=b"\n", follow=None, raw=None, host=False):
     """A design step that divides the work, the question answered with `answer` (Enter takes
     the team), and whatever runs next. `env` adds fixture settings; with `stop_at`, Ctrl-C is
-    pressed once that text is on screen; `follow` is sent as the next message. Returns every
-    row drawn, the repository, the data directory and the prompts the agents received."""
+    pressed once that text is on screen; `follow` is sent as the next message; `raw`, a list,
+    receives every byte written, and `host` runs the session in an agent host's pane. Returns
+    every row drawn, the repository, the data directory and the prompts the agents received."""
     dir = Path(tempfile.mkdtemp())
     repo = dir / "repo"
     repo.mkdir()
@@ -245,7 +246,8 @@ MOCK_LOG = "{dir / 'agent.jsonl'}"
     process = subprocess.Popen(
         [BINARY, "--config", str(path), "--data-dir", str(dir / "data"), "-C", str(repo), "chat"],
         stdin=slave, stdout=slave, stderr=slave, close_fds=True,
-        env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS)))
+        env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS),
+                 **({"ORCA_PANE_KEY": "tab:1"} if host else {})))
     os.close(slave)
     screen = screen_module.Screen(ROWS, COLS)
 
@@ -263,6 +265,8 @@ MOCK_LOG = "{dir / 'agent.jsonl'}"
                 return
             if not data:
                 return
+            if raw is not None:
+                raw.append(data)
             screen.feed(data.decode("utf-8", "replace"))
 
     shown = lambda text: lambda s: any(text in row for row in s.text())
@@ -305,12 +309,21 @@ MOCK_LOG = "{dir / 'agent.jsonl'}"
     return screen.text(), repo, dir / "data", prompts
 
 
+def reports(raw):
+    """The OSC 9999 reports in the bytes a session wrote, oldest first."""
+    data = b"".join(raw).decode("utf-8", "replace")
+    return [json.loads(m) for m in re.findall(r"\x1b\]9999;(.*?)\x07", data)]
+
+
 class Console:
     """One live session in a pty, driven a key at a time."""
 
     def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
-                 files=None, mailbox=False):
+                 files=None, mailbox=False, host=False):
+        """`host` runs the session as an agent host's pane runs it, so `reports()` has what it
+        was told."""
         self.dir = Path(tempfile.mkdtemp())
+        self.raw = []
         self.repo = self.dir / "repo"
         self.repo.mkdir()
         # What the repository holds before the session starts, such as its own .mcp.json.
@@ -350,7 +363,8 @@ MOCK_LOG = "{self.log}"
             [BINARY, "--config", str(path), "--data-dir", str(self.dir / "data"),
              "-C", str(self.repo), *args, "chat"],
             stdin=slave, stdout=slave, stderr=slave, close_fds=True,
-            env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS)))
+            env=dict(os.environ, TERM="xterm-256color", COLUMNS=str(COLS), LINES=str(ROWS),
+                     **({"ORCA_PANE_KEY": "tab:1"} if host else {})))
         os.close(slave)
         self.screen = screen_module.Screen(ROWS, COLS)
         self.wait("What would you like to work on?")
@@ -371,7 +385,16 @@ MOCK_LOG = "{self.log}"
                 return
             if not data:
                 return
+            self.raw.append(data)
             self.screen.feed(data.decode("utf-8", "replace"))
+
+    def reports(self):
+        """What the console told its host's pane, oldest first (`pane.rs`)."""
+        return reports(self.raw)
+
+    def seats(self):
+        """The pane's seats by name, as last reported."""
+        return {seat["id"]: seat for seat in self.reports()[-1].get("subagents", [])}
 
     def shown(self, text):
         return any(text in row for row in self.screen.text())
@@ -515,6 +538,84 @@ class BackgroundAgents(unittest.TestCase):
             answer = c.repo / "helper-answer-spec.txt"
             c.pump(TURN, until=lambda s: answer.exists())
             self.assertIn("allow", answer.read_text())
+        finally:
+            c.close()
+
+    def test_down_draws_each_helper_with_its_title_and_the_agents_its_cli_runs_inside_tasks_under_it(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API",
+            "MOCK_HELPER_TASK": "spec",
+            "MOCK_HELPER_DELAYS": "spec:60",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("Waiting for 1 background agent")
+            c.wait("· 1 sub-agent")
+            c.key(b"\x1b[B")
+            c.wait("Background agents")
+            self.assertTrue(c.shown("spec") and c.shown("Research the API"), c.rows())
+            self.assertTrue(c.shown("⎿ sub-agent  Audit the parser"), c.rows())
+            self.assertTrue(c.shown("src/parser.rs"), c.rows())
+            self.assertEqual(len(c.prompts()), 2, "the Task is the helper's own CLI's, not a session of Orochi's")
+        finally:
+            c.close()
+
+    def test_inside_a_host_pane_the_helpers_are_its_seats_blocked_while_one_asks_and_idle_while_a_report_waits(self):
+        c = Console(behavior="delegate", mailbox=True, host=True, env={
+            "MOCK_HELPERS": "spec:Research the API,explorer:Map the flow",
+            "MOCK_HELPER_ASK": "spec",
+            "MOCK_HELPER_DELAYS": "spec:0.2,explorer:60",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("· from the spec agent")
+            # The rest of the team goes on talking — explorer routes, the lead's turn ends —
+            # and each of those rebuilds the listing; the seat waiting on the user stays so.
+            c.pump(1.5)
+            seats = c.seats()
+            self.assertEqual(seats["spec"]["state"], "blocked", c.reports()[-3:])
+            self.assertEqual(seats["spec"]["description"], "Research the API")
+            self.assertEqual(seats["explorer"]["state"], "working", c.reports()[-3:])
+            self.assertEqual(c.reports()[-1]["state"], "blocked")
+            c.key(b"1")
+            c.wait("allowed once")
+            # spec reports right after; explorer keeps it waiting, so its report is held for
+            # the lead and its seat reads idle until it goes back, rather than vanishing.
+            c.pump(TURN, until=lambda s: c.seats().get("spec", {}).get("state") == "idle")
+            seats = c.seats()
+            self.assertEqual(seats["spec"]["state"], "idle", c.reports()[-3:])
+            self.assertEqual(seats["spec"]["description"], "Research the API")
+            self.assertEqual(seats["explorer"]["state"], "working")
+            last = c.reports()[-1]
+            self.assertEqual((last["state"], last.get("workingMode")), ("working", "monitoring"), last)
+            self.assertTrue(all(seat["agentType"] == "test" for seat in seats.values()), seats)
+        finally:
+            c.close()
+
+    def test_inside_a_host_pane_an_agent_the_leads_cli_runs_in_a_task_is_a_seat_and_its_calls_stay_off_the_leads_tool_line(self):
+        c = Console(host=True, env={"MOCK_SUBAGENT": "1", "MOCK_TOOL_DELAY": "0.4"})
+        try:
+            c.type("Look into the API")
+            c.key(b"\r")
+            c.wait("Fixture completed.")
+            c.pump(0.6)
+            reports = c.reports()
+            listed = [r for r in reports if r.get("subagents")]
+            self.assertTrue(listed, reports)
+            (seat,) = listed[0]["subagents"]
+            self.assertEqual(seat["id"], "task-1")
+            self.assertEqual(seat["description"], "Research the API")
+            self.assertEqual((seat["state"], seat["agentType"], seat["model"]), ("working", "test", "sol-test"), seat)
+            # The Task is the lead's tool; what runs inside it is not.
+            self.assertTrue(any(r.get("toolName", "").startswith("Task") for r in reports), reports)
+            self.assertFalse([r for r in reports if r.get("toolName") in ("Read", "Search")], reports)
+            self.assertFalse(reports[-1].get("subagents"), "gone with the Task")
+            rows = c.screen.text()
+            self.assertTrue([row for row in rows if "Research the API" in row and "2 tool calls inside" in row], c.rows())
+            self.assertFalse([row for row in rows if "src/a.rs" in row or "Search generate" in row],
+                             "a sub-agent's calls are a count on the Task's row, not rows of their own")
         finally:
             c.close()
 
@@ -676,6 +777,22 @@ class ChatTerminal(unittest.TestCase):
         for part in ("alpha", "beta", "gamma"):
             self.assertEqual((repo / part / "done.txt").read_text(), part)
         self.assertEqual((repo / "completed.txt").read_text(), "integrated")
+
+    def test_inside_a_host_pane_a_teams_members_are_its_seats_while_they_hold_sessions(self):
+        raw = []
+        rows, _, _, _ = divided(raw=raw, host=True)
+        self.assertTrue(any("team finished · result merged" in row for row in rows), "\n".join(rows))
+        seen = reports(raw)
+        seated = [r for r in seen if r.get("subagents")]
+        self.assertTrue(seated, seen)
+        # alpha and beta run side by side, so at some point two members held sessions at once.
+        self.assertTrue(any(len(r["subagents"]) >= 2 for r in seated), [r["subagents"] for r in seated])
+        for seat in (seat for r in seated for seat in r["subagents"]):
+            self.assertEqual((seat["state"], seat["agentType"]), ("working", "test"), seat)
+            self.assertTrue(seat["model"].endswith("-test"), seat)
+        self.assertTrue(all(r["state"] == "working" for r in seated), "a team at work is the pane working")
+        self.assertEqual(seen[-1]["state"], "done")
+        self.assertFalse(seen[-1].get("subagents"), "the team's seats go with the team")
 
     def test_interrupting_a_running_team_stops_it_and_leaves_it_resumable(self):
         rows, repo, data, _ = divided(

@@ -57,6 +57,9 @@ pub struct Helper {
     pub route: Option<String>,
     /// The tool it is running, while it runs one.
     pub doing: Option<String>,
+    /// The agents its own CLI is running inside its tool calls (Claude Code's `Task`), while
+    /// they run: the branches under the helper in the console's listing.
+    pub tasks: Vec<Task>,
     pub seat: Option<crate::activity::SeatRef>,
     pub workspace: Option<std::path::PathBuf>,
     /// The descriptor of the turn that asked for it, which the completion turn is routed by.
@@ -64,6 +67,21 @@ pub struct Helper {
     reply: String,
     receiver: mpsc::UnboundedReceiver<ExecutionEvent>,
     abort: AbortHandle,
+}
+
+/// An agent a helper's CLI runs inside one of its tool calls, known by that call's id. ACP
+/// says nothing of it on its own; `claude-agent-acp` marks the calls made inside it with the
+/// call's id as their parent (`ToolUpdate::parent`), and names the `Task` that opened it.
+pub struct Task {
+    pub id: String,
+    /// What it was asked to do, as the Task's title says.
+    pub title: Option<String>,
+    pub started: Instant,
+    /// Calls it has made so far, each counted once.
+    pub calls: usize,
+    seen: std::collections::BTreeSet<String>,
+    /// The call it is making right now.
+    pub doing: Option<String>,
 }
 
 /// How a helper ended.
@@ -78,6 +96,8 @@ pub struct Finished {
     pub name: String,
     pub title: String,
     pub elapsed: Duration,
+    /// When it started, on the wall clock, for the host's pane while its report waits.
+    pub started_at: u64,
     pub route: Option<String>,
     pub ending: Ending,
     pub result: String,
@@ -121,6 +141,10 @@ impl<'a> Background<'a> {
     }
     pub fn len(&self) -> usize {
         self.helpers.len()
+    }
+    /// How many agents the helpers' own CLIs are running inside Tasks right now.
+    pub fn tasks(&self) -> usize {
+        self.helpers.iter().map(|h| h.tasks.len()).sum()
     }
     /// A name no live helper has, from the one asked for.
     pub fn free_name(&self, wanted: &str, taken: &dyn Fn(&str) -> bool) -> String {
@@ -220,6 +244,7 @@ impl<'a> Background<'a> {
             started_at: crate::pane::now_millis(),
             route: None,
             doing: None,
+            tasks: vec![],
             seat,
             workspace,
             descriptor,
@@ -297,13 +322,58 @@ impl<'a> Background<'a> {
                 helper.route = Some(format!("{agent} · {model}"));
             }
             ExecutionEvent::Progress(crate::acp::Progress::Tool(update)) => {
-                match update.status.as_deref() {
-                    Some("completed" | "failed") => helper.doing = None,
-                    _ => {
-                        let what = update.detail.clone().or_else(|| update.title.clone());
-                        if what.is_some() {
-                            helper.doing = what;
+                let what = update.detail.clone().or_else(|| update.title.clone());
+                let done = matches!(update.status.as_deref(), Some("completed" | "failed"));
+                if let Some(parent) = &update.parent {
+                    // A call made inside a Task: the Task's, not the helper's own.
+                    let task = match helper.tasks.iter_mut().find(|t| t.id == *parent) {
+                        Some(task) => task,
+                        None => {
+                            helper.tasks.push(Task {
+                                id: parent.clone(),
+                                title: None,
+                                started: Instant::now(),
+                                calls: 0,
+                                seen: Default::default(),
+                                doing: None,
+                            });
+                            helper.tasks.last_mut().expect("just pushed")
                         }
+                    };
+                    if task.seen.insert(update.id.clone()) {
+                        task.calls += 1;
+                    }
+                    task.doing = if done {
+                        None
+                    } else {
+                        what.or(task.doing.take())
+                    };
+                    return;
+                }
+                if done {
+                    helper.doing = None;
+                    helper.tasks.retain(|t| t.id != update.id);
+                    return;
+                }
+                if what.is_some() {
+                    helper.doing = what;
+                }
+                if matches!(update.tool_name.as_deref(), Some("Task" | "Agent")) {
+                    let title = update
+                        .title
+                        .as_deref()
+                        .map(|t| t.trim().trim_matches('`'))
+                        .map(|t| t.strip_prefix("Task:").map_or(t, str::trim).to_owned());
+                    match helper.tasks.iter_mut().find(|t| t.id == update.id) {
+                        Some(task) => task.title = title.or(task.title.take()),
+                        None => helper.tasks.push(Task {
+                            id: update.id.clone(),
+                            title,
+                            started: Instant::now(),
+                            calls: 0,
+                            seen: Default::default(),
+                            doing: None,
+                        }),
                     }
                 }
             }
@@ -336,6 +406,7 @@ impl<'a> Background<'a> {
             name: helper.name,
             title: helper.title,
             elapsed: helper.started.elapsed(),
+            started_at: helper.started_at,
             route: helper.route,
             ending,
             descriptor: helper.descriptor,

@@ -21,7 +21,8 @@ const PANE_KEY: &str = "ORCA_PANE_KEY";
 const PREFIX: &str = "\x1b]9999;";
 const BEL: &str = "\x07";
 /// A report is a state change, not a stream: at most this often, except that a change of
-/// `state` itself is never held back.
+/// `state`, or of who is seated and what state each seat is in, is never held back — a seat
+/// taken and given back inside one interval would otherwise never have been reported.
 const INTERVAL: Duration = Duration::from_millis(500);
 /// The host keeps at most this many seats per pane.
 const MAX_SEATS: usize = 32;
@@ -56,7 +57,9 @@ pub enum SeatState {
     Idle,
 }
 
-/// One seat beside the lead, as the host lists it under the pane.
+/// One seat beside the lead, as the host lists it under the pane. The host's list is flat
+/// (read from Orca 1.4.224: `id`, `state`, `startedAt`, `agentType`, `model`, `description`,
+/// nothing naming a parent), so whatever runs under a seat is a row beside it, not below it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Seat {
@@ -69,6 +72,10 @@ pub struct Seat {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// A seat of the turn under way — one beside the lead, or an agent the lead's own CLI
+    /// runs inside it — goes when the turn ends. A helper's does not: it outlives the turn.
+    #[serde(skip)]
+    pub of_turn: bool,
 }
 
 /// What the pane says. It never carries the user's request or an agent's reply: the host keeps
@@ -153,11 +160,25 @@ pub fn now_millis() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// What is never held back: the pane's state and the seats with theirs.
+type Shape = (State, Vec<(String, SeatState)>);
+
+fn shape(report: &Report) -> Shape {
+    (
+        report.state,
+        report
+            .subagents
+            .iter()
+            .map(|s| (s.id.clone(), s.state))
+            .collect(),
+    )
+}
+
 /// Holds what the pane last said and decides when to say it again.
 pub struct Reporter {
     enabled: bool,
     sent: Option<String>,
-    sent_state: Option<State>,
+    sent_shape: Option<Shape>,
     sent_at: Option<Instant>,
     held: Option<String>,
     pub report: Report,
@@ -171,7 +192,7 @@ impl Reporter {
         Self {
             enabled,
             sent: None,
-            sent_state: None,
+            sent_shape: None,
             sent_at: None,
             held: None,
             report: Report::default(),
@@ -195,7 +216,7 @@ impl Reporter {
             return None;
         }
         let soon = self.sent_at.is_some_and(|at| at.elapsed() < INTERVAL);
-        if soon && self.sent_state == Some(self.report.state) {
+        if soon && self.sent_shape.as_ref() == Some(&shape(&self.report)) {
             self.held = Some(encoded);
             return None;
         }
@@ -211,17 +232,27 @@ impl Reporter {
     }
     fn mark(&mut self, encoded: String) -> Option<String> {
         self.sent = Some(encoded.clone());
-        self.sent_state = Some(self.report.state);
+        self.sent_shape = Some(shape(&self.report));
         self.sent_at = Some(Instant::now());
         self.held = None;
         Some(encoded)
     }
-    /// Sets or replaces one seat by name.
+    /// Sets or replaces one seat by name. A seat already listed keeps its state: what it is
+    /// doing is said by `seat_state`, and a listing rebuilt from the roster must not turn a
+    /// seat waiting on the user back into one that is working.
     pub fn seat(&mut self, seat: Seat) {
         match self.report.subagents.iter_mut().find(|s| s.id == seat.id) {
-            Some(existing) => *existing = seat,
+            Some(existing) => {
+                let state = existing.state;
+                *existing = seat;
+                existing.state = state;
+            }
             None => self.report.subagents.push(seat),
         }
+    }
+    /// The turn is over: its seats go, and the seats that outlive a turn stay.
+    pub fn clear_turn(&mut self) {
+        self.report.subagents.retain(|s| !s.of_turn);
     }
     pub fn seat_state(&mut self, id: &str, state: SeatState) {
         if let Some(seat) = self.report.subagents.iter_mut().find(|s| s.id == id) {

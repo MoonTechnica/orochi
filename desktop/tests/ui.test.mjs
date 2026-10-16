@@ -1504,6 +1504,49 @@ test("a thread's row says what its lead is doing and lists the helpers still wor
   assert.equal(el("projects").querySelectorAll(".member").length, 2, "the lead and the helper, each a member");
 });
 
+test("an agent a seat's CLI runs inside a Task is a row under that seat, in the sidebar, the Activity screen and the timeline", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const thread = projects[0].threads[0];
+  thread.status = "background";
+  const live_seats = [
+    { seat_id: "b", thread_id: thread.id, project_id: projects[0].id, turn: "t", ordinal: 1, role: "spec", lead: false,
+      read_only: true, title: "Research Agents API model support", background: true, state: "working",
+      started_at: Date.now() - 5 * 60 * 1000, agent: "codex", model: "gpt", doing: null, usage: null },
+  ];
+  const live_tasks = [
+    { item_id: 9, thread_id: thread.id, project_id: projects[0].id, turn: "t", seat_id: "b", role: "spec", key: "task-1",
+      title: "Task: Audit the parser", started_at: Date.now() - 2 * 60 * 1000, calls: 3, doing: "src/parser.rs" },
+  ];
+  thread.agents = [
+    { role: "fixer", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 0, lead: true, background: false, last_at: 1 },
+    { role: "spec", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: false, background: true, last_at: 1 },
+  ];
+  const detail = structuredClone(recorded.thread);
+  const lane = detail.items.find((i) => i.kind === "agent_message");
+  detail.items.push(
+    { ...lane, seq: 90, kind: "tool_call", status: "in_progress", text: "", key: "task-1",
+      data: { title: "Task: Audit the parser", tool_name: "Task" } },
+    { ...lane, seq: 91, kind: "tool_call", status: "completed", text: "", key: "inner-1",
+      data: { title: "Read", detail: "src/parser.rs", parent: "task-1" } },
+    { ...lane, seq: 92, kind: "tool_call", status: "in_progress", text: "", key: "inner-2",
+      data: { title: "Grep", detail: "parse", parent: "task-1" } },
+  );
+  const { el } = await open({ sidebar: projects, live_seats, live_tasks, thread: detail });
+  const side = el("projects");
+  const rows = side.querySelectorAll(".member");
+  assert.equal(rows.length, 3, "the lead, the helper, and the agent inside the helper");
+  const inner = rows[2];
+  assert.ok(inner.className.includes("task"), "drawn as what runs inside a seat");
+  assert.match(inner.render(), /sub-agent[\s\S]*Audit the parser[\s\S]*src\/parser\.rs[\s\S]*2m/, "what it was asked, what it is doing, for how long");
+  assert.doesNotMatch(inner.render(), /Task:/, "the Task's own word for itself is dropped");
+  el("activity").dispatch("click");
+  const bucket = el("panel-body").querySelectorAll(".bucket").find((b) => b.dataset.bucket === "In the background");
+  assert.match(bucket.render(), /spec[\s\S]*Research Agents API model support[\s\S]*sub-agent[\s\S]*Audit the parser/);
+  const timeline = el("timeline").render();
+  assert.match(timeline, /Audit the parser · 2 calls inside/, "the Task counts what ran inside it");
+  assert.match(timeline, /div\.inside Grep parse/, "and each inner call sits under it");
+});
+
 test("the Activity screen sorts every conversation by what it needs, and puts done ones away until they change", async () => {
   const projects = structuredClone(recorded.sidebar);
   const [asking, background, ...rest] = projects.flatMap((p) => p.threads);

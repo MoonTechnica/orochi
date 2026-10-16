@@ -746,6 +746,7 @@ async fn attempt(
             candidate.agent,
             candidate.model
         ));
+        cx.member(&participant.id, Some((&candidate.agent, &candidate.model)));
         let slot = (turn.index, number);
         let mut session = SessionResult {
             stage: turn.stage,
@@ -793,6 +794,7 @@ async fn attempt(
         )
         .await;
         client.stop().await;
+        cx.member(&participant.id, None);
         scheduler::save_quota(store, &client)?;
         session.usage = client.usage();
         session.duration_ms = start.elapsed().as_millis() as u64;
