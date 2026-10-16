@@ -3266,3 +3266,100 @@ fn a_local_model_through_opencode_takes_small_work_and_is_not_offered_hard_work(
         "one account's limit is the agent's"
     );
 }
+
+/// The roster is a hard gate before scoring, and the mirror of a preference is a tilt after
+/// it: what the user took off the roster is gone, what they would rather not use is dearer.
+/// A model named for one run is the user's later word and is taken whether it is on the
+/// roster or not.
+#[test]
+fn the_roster_keeps_the_scheduler_to_the_models_the_user_chose_and_a_dislike_only_costs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let registry = Registry::bundled().unwrap();
+    let mut agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
+    let capabilities = caps(&["gpt-sol", "gpt-astra", "gpt-luna"]);
+    let task = profiler::profile("add a health endpoint to the server", dir.path());
+    let (config, runtime) = (Config::default(), RuntimeMap::new());
+    let rank = |agent: &AgentConfig, task: &TaskDescriptor, overrides: &Overrides| {
+        scorer::candidates(
+            &[(agent, &capabilities)],
+            &ScoringContext {
+                task,
+                difficulty: None,
+                overrides,
+                config: &config,
+                policies: &registry,
+                store: &store,
+                runtime: &runtime,
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap()
+    };
+    let models = |ranked: &[ExecutionCandidate]| -> Vec<String> {
+        ranked.iter().map(|c| c.model.clone()).collect()
+    };
+    assert_eq!(models(&rank(&agent, &task, &Overrides::default())).len(), 3);
+    agent.models = vec!["SOL".into(), "luna".into()];
+    assert!(agent.admits("gpt-sol") && agent.admits("gpt-luna") && !agent.admits("gpt-astra"));
+    let rostered = models(&rank(&agent, &task, &Overrides::default()));
+    assert!(
+        rostered.contains(&"gpt-sol".to_owned())
+            && rostered.contains(&"gpt-luna".to_owned())
+            && !rostered.contains(&"gpt-astra".to_owned()),
+        "{rostered:?}"
+    );
+    let named = Overrides {
+        model: Some("gpt-astra".into()),
+        ..Overrides::default()
+    };
+    assert_eq!(models(&rank(&agent, &task, &named)), ["gpt-astra"]);
+    let mut invalid = Config::default();
+    invalid.agents[0].models = vec![" ".into()];
+    assert!(
+        invalid.validate().is_err(),
+        "an empty pattern is a mistake, not every model"
+    );
+
+    agent.models.clear();
+    let plain = rank(&agent, &task, &Overrides::default());
+    let mut disliked = task.clone();
+    disliked.avoided = Some("astra".into());
+    let tilted = rank(&agent, &disliked, &Overrides::default());
+    let cost = |ranked: &[ExecutionCandidate], model: &str| {
+        ranked
+            .iter()
+            .find(|c| c.model == model)
+            .map(|c| c.expected_cost)
+            .unwrap()
+    };
+    assert!(cost(&tilted, "gpt-astra") > cost(&plain, "gpt-astra"));
+    assert_eq!(cost(&tilted, "gpt-sol"), cost(&plain, "gpt-sol"));
+    assert!(
+        tilted
+            .iter()
+            .find(|c| c.model == "gpt-astra")
+            .unwrap()
+            .reasons
+            .iter()
+            .any(|r| r.contains("rather not use astra"))
+    );
+    assert_eq!(
+        classifier::parse(r#"{"task_type":"test","complexity":"simple","avoid":"Fable 5"}"#)
+            .unwrap()
+            .avoid,
+        None,
+        "a dislike is a name fragment or nothing, like a preference"
+    );
+    assert_eq!(
+        classifier::parse(r#"{"task_type":"test","complexity":"simple","avoid":"fable"}"#)
+            .unwrap()
+            .avoid
+            .as_deref(),
+        Some("fable")
+    );
+}

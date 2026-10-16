@@ -422,6 +422,13 @@ pub struct AgentConfig {
     /// Only consulted as a routing adviser; never discovered or selected to execute tasks.
     #[serde(default)]
     pub routing_only: bool,
+    /// The roster: which of this agent's models the scheduler may route to, as case-insensitive
+    /// fragments of the IDs it advertises over ACP (a policy pattern's shape, so `opus` still
+    /// names the next Opus). Empty, every model it advertises. What `orochi roster` and the
+    /// window write; a model named on the command line for one run is taken whether it is
+    /// here or not, being the user's later word.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
     /// Set on a launch Orochi wrapped into a project's sandbox (`sandbox::Placement::launch`),
     /// never read from configuration: stdio servers that name this machine's executables
     /// cannot start inside it.
@@ -534,11 +541,20 @@ impl AgentConfig {
             web: false,
             image: false,
             routing_only: false,
+            models: vec![],
             sandboxed: false,
             sandbox_files: vec![],
             sandbox_env: vec![],
             lean: None,
         }
+    }
+    /// Whether the roster lets this agent run a model it advertised.
+    pub fn admits(&self, model: &str) -> bool {
+        self.models.is_empty()
+            || self
+                .models
+                .iter()
+                .any(|pattern| crate::policy::matches(pattern, model))
     }
     /// How this agent is asked a bare question: what the user wrote, else what Orochi knows
     /// about the command.
@@ -842,6 +858,26 @@ impl Config {
         config.validate()?;
         Ok(config)
     }
+    /// Writes the configuration as it is now, the presets `load` filled in included, in the
+    /// shape `orochi config show` prints: what the window has always done when it saves. A
+    /// file written by hand loses its comments here, so the callers say which file they wrote.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        let parent = path.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.as_file()
+                .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        use std::io::Write;
+        file.write_all(toml::to_string_pretty(self)?.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(path)?;
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
         let mut ids = std::collections::BTreeSet::new();
         for agent in &self.agents {
@@ -855,6 +891,13 @@ impl Config {
             );
             ensure!(ids.insert(&agent.id), "duplicate agent id: {}", agent.id);
             ensure!(!agent.command.trim().is_empty(), "agent command is empty");
+            for pattern in &agent.models {
+                ensure!(
+                    !pattern.trim().is_empty() && pattern.chars().count() <= 64,
+                    "invalid model pattern for agent {}",
+                    agent.id
+                );
+            }
             ensure!(
                 Path::new(&agent.command).is_absolute()
                     || Path::new(&agent.command).components().count() == 1,

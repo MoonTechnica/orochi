@@ -559,6 +559,10 @@ for line in sys.stdin:
             send({"method": "session/update", "params": {"sessionId": session, "update": {
                 "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ["MOCK_CLASSIFICATION"]}}}})
             result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 20, "inputTokens": 15, "outputTokens": 5}})
+        elif os.environ.get("MOCK_SUGGESTION") and "You are choosing which models" in request["params"]["prompt"][0]["text"]:
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ["MOCK_SUGGESTION"]}}}})
+            result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 20, "inputTokens": 15, "outputTokens": 5}})
         elif os.environ.get("MOCK_REVIEW_REPLY") and "You are a task classifier" not in request["params"]["prompt"][0]["text"] and "Review (レビュー) the work just done" in request["params"]["prompt"][0]["text"]:
             send({"method": "session/update", "params": {"sessionId": session, "update": {
                 "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ["MOCK_REVIEW_REPLY"]}}}})

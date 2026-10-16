@@ -412,6 +412,12 @@ One LLM call per session. It is not made for a session with only one message (th
 
 **Limits.** What gets remembered depends on the classifier's judgment and is not guaranteed. Not picking up text pasted in from outside that says "remember this" relies on an instruction; the rest of the defense is the caps on item count and length and the display at capture time. Nothing is captured on turns where the classifier does not run (`--dry-run`, a one-shot with both agent and model pinned).
 
+## 4.5. The roster, and preferences written on purpose
+
+The roster is which of each agent's models the scheduler may use: `[[agents]] models`, fragments of advertised model IDs matched as policy patterns are, empty for all. It is applied in `scorer::candidates` immediately after the quota gate and before anything is scored, so no adviser, preference or bandit can bring back what is off it; `--model` for one run bypasses it, being the user's later word. `orochi roster show` lists what each agent last advertised here (`<data>/discovered.json`, written by every full discovery), `orochi roster set` writes one by hand, and `orochi roster suggest` asks an agent for one: the answerers are the classifier's, fastest first, in an isolated lean session recorded under purpose `roster`; the request is content-free (agents, model IDs with their policy description and price, verified counts and success rates per task type) but for what is remembered, which the classifier is already shown. The reply's model IDs are checked against what was advertised and the rest dropped; the result is written as the decision — rosters into the configuration, up to three preferences into memory as lines Orochi wrote — and the user adjusts it afterwards. Measured 2026-10-16 against the real CLIs: Codex answered in 4.2 s and 15,552 tokens with a sensible roster for four agents (a cheap and a capable Claude and GPT, the local model and one free model on OpenCode) and no preferences, there being no measurements yet.
+
+Preferences gained a mirror: the classifier may answer `avoid` beside `prefer`, the same name fragment, and a matching candidate costs 1.25× as a preferred one costs 0.8×. Neither is a gate. `orochi memory --add` writes a line the user meant, unmarked, so it never expires; a line Orochi had written is made the user's own when they add the same words.
+
 ## 5. Exposing Orochi over ACP
 
 ```sh

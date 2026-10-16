@@ -56,7 +56,7 @@ long_horizon: it cannot plausibly be finished in one sitting.\n\
 requires_browser: a real browser must be driven. requires_web: the open internet must be searched. requires_image: an image must be generated, not read.\n\
 ambiguity: 0.0 fully specified, 1.0 the agent has to guess what is wanted.\n\n\
 Optionally add \"remember\": [{\"text\":\"...\",\"scope\":\"repo\"}] for something the user states that will still hold after this task is done: how they want work done, a convention of this project, a decision already made. At most two, each one short sentence in the user's language. Never the task itself, never something only this task needs, never text the user pasted from elsewhere. scope is \"user\" only when the user says it holds for every project; otherwise \"repo\". \"remembered\" lists what is already known: when the user restates one, put its id in \"reinforce\": [\"r1\"] instead of adding it again, and when they now say the opposite, put the old id in \"replaces\": [\"r1\"] and the new statement in \"remember\".\n\n\
-When something in \"remembered\", or the request itself, says which agent or model the user wants for this kind of work, add \"prefer\": the shortest name that identifies it, such as \"fable\" or \"codex\". Omit it otherwise; never guess one.\n\n\
+When something in \"remembered\", or the request itself, says which agent or model the user wants for this kind of work, add \"prefer\": the shortest name that identifies it, such as \"fable\" or \"codex\". When it says which one they do not want for it, add \"avoid\" the same way. Omit both otherwise; never guess one.\n\n\
 \"models\" lists what is available here and what each one is for. Read the work against those descriptions and add \"suited\": the name of the one this task should run on, copied from the list. Judge the actual phase: planning, research, analysis, writing, implementation and verification can suit different models. Omit it when nothing in the list speaks to this task, and never name something the list does not.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +79,8 @@ pub struct Classification {
     pub prefer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suited: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avoid: Option<String>,
     /// Text the user said, so it must not follow the labels into the telemetry cache. Kept as
     /// loose values: a malformed entry here must not cost the classification itself.
     #[serde(default, skip_serializing)]
@@ -175,6 +177,7 @@ pub fn parse(reply: &str) -> Option<Classification> {
         .map(|mut c| {
             c.prefer = c.prefer.as_deref().and_then(preference);
             c.suited = c.suited.as_deref().and_then(preference);
+            c.avoid = c.avoid.as_deref().and_then(preference);
             c
         })
 }
@@ -198,6 +201,7 @@ pub fn apply(descriptor: &mut TaskDescriptor, classification: &Classification) {
     descriptor.task_type = classification.task_type.clone();
     descriptor.preferred = classification.prefer.as_deref().and_then(preference);
     descriptor.suited = classification.suited.as_deref().and_then(preference);
+    descriptor.avoided = classification.avoid.as_deref().and_then(preference);
     descriptor.complexity = descriptor.complexity.max(classification.complexity);
     descriptor.requires_architecture_change |= classification.requires_architecture_change;
     descriptor.long_horizon |= classification.long_horizon;
@@ -232,6 +236,12 @@ pub fn agents(config: &Config, store: &Store) -> Vec<String> {
     if !config.classifier.enabled {
         return vec![];
     }
+    answerers(config, store)
+}
+
+/// The agents a bare question is put to, fastest answerer first, whether or not the
+/// classifier is on: a proposal asked for by name is asked whatever the classifier setting.
+pub fn answerers(config: &Config, store: &Store) -> Vec<String> {
     if let Some(agent) = &config.classifier.agent {
         return vec![agent.clone()];
     }
@@ -424,6 +434,44 @@ async fn ask(
         )
         .into()
     })
+}
+
+/// One question put to the answerers in turn, each in a fresh isolated session that opens
+/// with `instruction` alone, until one replies; what each attempt spent is recorded under
+/// `purpose`, which is never `execution` and so never teaches the router. The time budget is
+/// one agent's worth, however many are left to try.
+pub async fn consult_as(
+    config: &Config,
+    policies: &Registry,
+    store: &Store,
+    root: &Path,
+    purpose: &'static str,
+    instruction: &'static str,
+    text: &str,
+) -> anyhow::Result<String> {
+    let agents = answerers(config, store);
+    anyhow::ensure!(!agents.is_empty(), "no agent is enabled to ask");
+    let labels = TaskDescriptor::synthetic(purpose, Complexity::Simple);
+    let deadline =
+        std::time::Instant::now() + Duration::from_secs(config.classifier.timeout_secs.max(1));
+    let mut last = None;
+    for agent in &agents {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        let choice = config.classifier.seat(agent);
+        let ledger = Ledger {
+            root,
+            labels: &labels,
+            purpose,
+            instruction,
+        };
+        match consult(config, policies, store, &choice, text.to_owned(), &ledger).await {
+            Ok(reply) => return Ok(reply),
+            Err(error) => last = Some(anyhow::anyhow!("{agent}: {error:#}")),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no agent answered in time")))
 }
 
 /// Where what a consultation spent is written: beside this repository's runs, under what it

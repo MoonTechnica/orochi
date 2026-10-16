@@ -296,6 +296,28 @@ impl Memory {
         Ok(added)
     }
 
+    /// A line the user wrote on purpose: unmarked, so it never expires and nothing replaces
+    /// it. Said again, a line Orochi had written becomes the user's own.
+    pub fn add(&self, scope: Scope, repository: &str, text: &str, now: i64) -> Result<String> {
+        let text = clean(text, MAX_ITEM_CHARS);
+        anyhow::ensure!(!text.is_empty(), "nothing to remember");
+        let mut lines = self.load(scope, repository, now);
+        let same = |item: &Item| item.text.to_lowercase() == text.to_lowercase();
+        if let Some(Line::Item(item)) = lines
+            .iter_mut()
+            .find(|line| matches!(line, Line::Item(item) if same(item)))
+        {
+            item.auto = None;
+        } else {
+            lines.push(Line::Item(Item {
+                text: text.clone(),
+                auto: None,
+            }));
+        }
+        self.save(scope, repository, &lines)?;
+        Ok(text)
+    }
+
     /// Removes one item, the user's own included: this is the user asking.
     pub fn forget(
         &self,

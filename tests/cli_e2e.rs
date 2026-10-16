@@ -3886,3 +3886,99 @@ fn an_apply_asked_for_inside_a_polling_turn_runs_before_the_lead_is_woken() {
         "an applied worktree is not left for the sweep: {stderr}"
     );
 }
+
+/// The roster is set by hand or proposed, and either way it is what the scheduler sees. A
+/// proposal names only models the agent advertised here, is written down as the decision,
+/// and leaves its preferences in memory as lines Orochi wrote; a line the user adds is theirs.
+#[test]
+fn the_roster_is_set_by_hand_or_proposed_and_a_proposal_names_only_models_that_exist() {
+    let mut w = Workspace::new();
+    w.config.agents[0].env.insert(
+        "MOCK_SUGGESTION".into(),
+        r#"{"roster":{"test":["astra-test","made-up-model"],"nobody":["x"]},"preferences":[{"text":"Small edits go to the cheap model.","scope":"user"},{"text":"  "}],"why":"astra measured best here"}"#.into(),
+    );
+    // Nothing has been discovered yet: there is nothing to propose from.
+    let output = w.run(&["roster", "suggest"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("agents --discover"));
+
+    let output = w.run(&["roster", "set", "test", "sol"]);
+    success(&output);
+    let written = std::fs::read_to_string(w.dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("models = [\"sol\"]"), "{written}");
+    // The workspace rewrites its config from `w.config` on every command: carry the change.
+    w.config.agents[0].models = vec!["sol".into()];
+    let output = w.run(&["--dry-run", "--json", "Implement the endpoint"]);
+    success(&output);
+    let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let models: Vec<&str> = dry["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["model"].as_str().unwrap())
+        .collect();
+    assert_eq!(models, ["sol-test"], "{models:?}");
+    let output = w.run(&[
+        "--model",
+        "astra-test",
+        "--dry-run",
+        "--json",
+        "Implement it",
+    ]);
+    success(&output);
+    let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        dry["candidates"][0]["model"], "astra-test",
+        "named for the run, it is taken"
+    );
+    let output = w.run(&["roster", "show"]);
+    success(&output);
+    let shown = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        shown.contains("* sol-test") && shown.contains("  astra-test"),
+        "{shown}"
+    );
+
+    let output = w.run(&["roster", "suggest"]);
+    success(&output);
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(printed.contains("astra measured best here"), "{printed}");
+    assert!(printed.contains("test: astra-test"), "{printed}");
+    assert!(
+        !printed.contains("made-up-model") && !printed.contains("nobody"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("remembered: Small edits go to the cheap model."),
+        "{printed}"
+    );
+    let written = std::fs::read_to_string(w.dir.path().join("config.toml")).unwrap();
+    assert!(written.contains("models = [\"astra-test\"]"), "{written}");
+    let user = std::fs::read_to_string(w.dir.path().join("data/memory/USER.md")).unwrap();
+    assert!(
+        user.contains("Small edits go to the cheap model.") && user.contains("<!-- auto"),
+        "{user}"
+    );
+    let runs = w.store().recent_runs(10).unwrap();
+    assert!(
+        runs.iter().any(|r| r.purpose == "roster"),
+        "what asking cost is recorded"
+    );
+
+    let output = w.run(&["memory", "--add", "Tests always go to sol."]);
+    success(&output);
+    let output = w.run(&["memory", "--json"]);
+    success(&output);
+    let listing: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let items = listing[0]["items"].as_array().unwrap();
+    let mine = items
+        .iter()
+        .find(|i| i["text"] == "Tests always go to sol.")
+        .unwrap();
+    assert_eq!(mine["yours"], true);
+    let proposed = items
+        .iter()
+        .find(|i| i["text"] == "Small edits go to the cheap model.")
+        .unwrap();
+    assert_eq!(proposed["yours"], false);
+}

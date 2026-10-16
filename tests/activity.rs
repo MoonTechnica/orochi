@@ -613,6 +613,7 @@ fn an_older_binarys_writes_still_work_after_the_telemetry_migration() {
         long_horizon: false,
         preferred: None,
         suited: None,
+        avoided: None,
     };
     let runs = store
         .learning_runs(&candidate("claude", "opus"), &task)

@@ -4,7 +4,7 @@ use crate::{
     config::{AgentConfig, DiscoveryConfig, LeanConfig},
     types::Provider,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
     ffi::OsString,
@@ -54,6 +54,40 @@ impl Bridge {
     fn binary_at(self, directory: &Path) -> PathBuf {
         directory.join("node_modules/.bin").join(self.binary)
     }
+}
+
+/// What an agent advertised the last time every model of it was enumerated here, kept so a
+/// roster can be offered without starting every agent again. Written by a full discovery
+/// only: a run pinned to one model enumerates one and would otherwise forget the rest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Known {
+    pub models: Vec<String>,
+    pub at: i64,
+}
+fn known_path(data: &Path) -> PathBuf {
+    data.join("discovered.json")
+}
+pub fn known(data: &Path) -> std::collections::BTreeMap<String, Known> {
+    std::fs::read(known_path(data))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+pub fn remember(data: &Path, agent: &str, models: &[String], at: i64) -> anyhow::Result<()> {
+    let mut all = known(data);
+    all.insert(
+        agent.to_owned(),
+        Known {
+            models: models.to_vec(),
+            at,
+        },
+    );
+    std::fs::create_dir_all(data)?;
+    let mut file = tempfile::NamedTempFile::new_in(data)?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec_pretty(&all)?)?;
+    file.persist(known_path(data))?;
+    Ok(())
 }
 
 /// What an isolated session that only answers a question is given so it costs like one.

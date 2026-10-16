@@ -285,7 +285,7 @@ impl ProviderPolicy {
     }
 }
 
-fn matches(pattern: &str, model: &str) -> bool {
+pub(crate) fn matches(pattern: &str, model: &str) -> bool {
     pattern == "*" || model.to_lowercase().contains(&pattern.to_lowercase())
 }
 impl ProviderPolicy {

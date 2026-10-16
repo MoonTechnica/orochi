@@ -213,9 +213,18 @@ pub enum Command {
         /// Remove one item by its id (`u1`, `r3`) as the listing shows it.
         #[arg(long)]
         forget: Option<String>,
+        /// Write a line of your own: a preference, a convention, a decision. It never expires.
+        #[arg(long, value_name = "TEXT")]
+        add: Option<String>,
+        /// With --add: keep it for this repository only, not for every project.
+        #[arg(long)]
+        repo: bool,
         #[arg(long)]
         json: bool,
     },
+    /// Which of each agent's models the scheduler may use: shown, set by hand, or proposed.
+    #[command(subcommand)]
+    Roster(RosterCommand),
     /// Compare frozen predictions with local observed outcomes.
     Calibrate {
         #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u32).range(1..=100000))]
@@ -346,6 +355,27 @@ pub enum SecretCommand {
     },
     /// The names stored, never the values.
     List,
+}
+#[derive(Debug, Subcommand)]
+pub enum RosterCommand {
+    /// Every agent, what of it is on the roster, and the models it last advertised here.
+    Show,
+    /// Set one agent's roster: fragments of model IDs, or none for every model it has.
+    Set {
+        agent: String,
+        /// Case-insensitive fragments of model IDs, as `orochi roster show` lists them.
+        models: Vec<String>,
+        /// Take the agent out of the field altogether.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Ask an agent to propose a roster from what each model is for and what it has measured
+    /// here, write it down as the decision, and show it; adjust it with `set` afterwards.
+    Suggest {
+        /// Show the proposal and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -1509,12 +1539,95 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 serde_json::to_string_pretty(&json!({"probes":probes,"snapshots":snapshots}))?
             );
         }
-        Some(Command::Memory { forget, json }) => {
+        Some(Command::Roster(command)) => {
+            let policies = Registry::load(&paths.data)?;
+            match command {
+                RosterCommand::Show => {
+                    let listing = crate::roster::listing(&config, &policies, &paths.data);
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&listing)?);
+                    } else {
+                        print_roster(&listing);
+                    }
+                }
+                RosterCommand::Set { agent, models, off } => {
+                    let mut config = config;
+                    crate::roster::set(&mut config, &agent, &models, off)?;
+                    config.save(&paths.config)?;
+                    let entry = config.agents.iter().find(|a| a.id == agent).unwrap();
+                    println!(
+                        "{agent}: {}{}",
+                        if entry.enabled { "" } else { "off; " },
+                        if entry.models.is_empty() {
+                            "every model it advertises".to_owned()
+                        } else {
+                            entry.models.join(", ")
+                        }
+                    );
+                    println!("wrote {}", paths.config.display());
+                }
+                RosterCommand::Suggest { dry_run } => {
+                    let suggestion = tokio::select! {
+                        result = crate::roster::suggest(&config, &policies, &store, &root) => result?,
+                        _ = tokio::signal::ctrl_c() => return Ok(130),
+                    };
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&suggestion)?);
+                    } else {
+                        if let Some(why) = &suggestion.why {
+                            println!("{why}");
+                        }
+                        for (agent, models) in &suggestion.roster {
+                            println!("{agent}: {}", models.join(", "));
+                        }
+                        for preference in &suggestion.preferences {
+                            println!("remember: {}", preference.text);
+                        }
+                    }
+                    if dry_run {
+                        return Ok(0);
+                    }
+                    let mut config = config;
+                    let memory = crate::memory::Memory::open(&paths.data, &config.memory);
+                    let repository = store.repository_id(&root)?;
+                    let applied = crate::roster::apply(
+                        &mut config,
+                        &suggestion,
+                        memory.as_ref().map(|m| (m, repository.as_str())),
+                        now(),
+                    )?;
+                    if !applied.rosters.is_empty() {
+                        config.save(&paths.config)?;
+                        if !cli.json {
+                            println!("wrote {}", paths.config.display());
+                        }
+                    }
+                    if !cli.json {
+                        for text in &applied.remembered {
+                            println!("remembered: {text}");
+                        }
+                        println!("adjust it with `orochi roster set <agent> <models...>`");
+                    }
+                }
+            }
+        }
+        Some(Command::Memory {
+            forget,
+            add,
+            repo,
+            json,
+        }) => {
             use crate::memory::{Memory, Scope};
             let memory = Memory::open(&paths.data, &config.memory)
                 .context("memory is off (memory.enabled = false)")?;
             let repository = store.repository_id(&root)?;
             let time = now();
+            if let Some(text) = add {
+                let scope = if repo { Scope::Repo } else { Scope::User };
+                let text = memory.add(scope, &repository, &text, time)?;
+                println!("remembered: {text}");
+                return Ok(0);
+            }
             if let Some(id) = forget {
                 let (scope, position) = crate::memory::position(&id)
                     .with_context(|| format!("invalid memory id {id}; use u1, r2, ..."))?;
@@ -2199,4 +2312,35 @@ async fn sandbox(
         }
     }
     Ok(0)
+}
+
+fn print_roster(listing: &crate::roster::Listing) {
+    for agent in &listing.agents {
+        let state = match (agent.enabled, agent.routing_only) {
+            (false, _) => "off",
+            (true, true) => "adviser",
+            (true, false) => "on",
+        };
+        println!(
+            "{:<16} {:<8} {}",
+            agent.id,
+            state,
+            if agent.models.is_empty() {
+                "every model it advertises".to_owned()
+            } else {
+                agent.models.join(", ")
+            }
+        );
+        if agent.known.is_empty() {
+            println!("  (not discovered here yet: `orochi agents --discover`)");
+        }
+        for model in &agent.known {
+            println!(
+                "  {} {:<40} {}",
+                if model.chosen { "*" } else { " " },
+                model.id,
+                model.about
+            );
+        }
+    }
 }

@@ -85,3 +85,21 @@ run.
   list; everything else (Kimi, GLM, Qwen, DeepSeek, MiniMax paid) is the `*` row, since the
   catalog says nothing about what they are for and a `-free` suffix would otherwise be
   outscored by a family pattern.
+
+## Roster proposal
+
+`orochi roster suggest --dry-run` with the four presets discovered (Antigravity not installed,
+so no models), no runs measured and nothing remembered. Codex answered first, in **4.2 s and
+15,552 tokens** (recorded as a `roster` run):
+
+> Kept a low-cost and capable option for each agent, retained the local model, and removed
+> duplicate or older variants; Antigravity lists no models.
+
+| Agent | Proposed |
+|---|---|
+| claude | sonnet, opus, haiku |
+| codex | gpt-6.1-sol, gpt-6-astra, gpt-6-luna |
+| opencode | lmstudio/qwen/qwen3.8-27b, opencode/big-pickle |
+
+No preferences were proposed, which is right with nothing measured. Every ID named was one the
+agent advertised. Not applied here; the real configuration was not touched.

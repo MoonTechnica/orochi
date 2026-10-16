@@ -180,6 +180,16 @@ async fn discover_agents(
         match result {
             Ok(client) => {
                 save_quota(store, &client)?;
+                if model.is_none() {
+                    let models: Vec<String> = client
+                        .capabilities
+                        .models
+                        .iter()
+                        .map(|m| m.model.clone())
+                        .collect();
+                    let _ =
+                        discovery::remember(store.data_dir(), &client.config.id, &models, now());
+                }
                 clients.push(client);
             }
             Err(error) => {

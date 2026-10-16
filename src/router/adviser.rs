@@ -80,27 +80,7 @@ fn choose(
 ) -> Result<(String, Option<String>)> {
     let mut scoring = selection.config.clone();
     scoring.learning.strategy = LearningStrategy::Static;
-    let task = TaskDescriptor {
-        task_type: "routing".into(),
-        language: "none".into(),
-        framework: None,
-        repo_size: 0,
-        candidate_files: vec![],
-        estimated_scope: 1,
-        estimated_context: 2000,
-        complexity: selection.complexity,
-        requires_architecture_change: false,
-        requires_browser: false,
-        requires_web: false,
-        requires_image: false,
-        collaborative: false,
-        seats: None,
-        tests_available: false,
-        ambiguity: 0.0,
-        long_horizon: false,
-        preferred: None,
-        suited: None,
-    };
+    let task = TaskDescriptor::synthetic("routing", selection.complexity);
     let overrides = Overrides {
         reasoning: choice.reasoning.clone(),
         ..Overrides::default()

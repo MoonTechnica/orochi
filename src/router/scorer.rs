@@ -96,6 +96,11 @@ pub fn candidates(
             {
                 continue;
             }
+            // The roster: what the user said this agent may run. A model named for this run
+            // is the user's word too, and the later one.
+            if overrides.model.is_none() && !agent.admits(&model.model) {
+                continue;
+            }
             let reasoning = if let Some(explicit) = &overrides.reasoning {
                 if model
                     .reasoning
@@ -293,6 +298,16 @@ pub fn candidates(
                 c.expected_cost *= SUITED;
                 c.reasons
                     .push(format!("{name} is what this kind of work is for"));
+            }
+            // The mirror of a preference, and bounded the same way: dearer, never gone.
+            if let Some(name) = &task.avoided
+                && (c.model.to_lowercase().contains(name.as_str())
+                    || c.agent.to_lowercase().contains(name.as_str()))
+            {
+                c.expected_cost /= PREFERENCE;
+                c.reasons.push(format!(
+                    "you said you would rather not use {name} for this kind of work"
+                ));
             }
             if cx.busy.contains(&c.agent) {
                 // Another run holds this account; leave it room instead of racing for quota.

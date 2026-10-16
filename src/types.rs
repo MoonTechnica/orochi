@@ -227,8 +227,38 @@ pub struct TaskDescriptor {
     /// `preferred` it only reorders candidates that already passed every gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suited: Option<String>,
+    /// The mirror of `preferred`: a name fragment of what the user said they would rather not
+    /// use for work like this, read by the classifier from memory. A tilt, never a gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avoided: Option<String>,
 }
 impl TaskDescriptor {
+    /// A descriptor for a decision that is not a task: what an adviser's or a proposal's own
+    /// session is recorded under. Nothing in it is read from a repository.
+    pub fn synthetic(task_type: &str, complexity: Complexity) -> Self {
+        Self {
+            task_type: task_type.into(),
+            language: "none".into(),
+            framework: None,
+            repo_size: 0,
+            candidate_files: vec![],
+            estimated_scope: 1,
+            estimated_context: 2000,
+            complexity,
+            requires_architecture_change: false,
+            requires_browser: false,
+            requires_web: false,
+            requires_image: false,
+            collaborative: false,
+            seats: None,
+            tests_available: false,
+            ambiguity: 0.0,
+            long_horizon: false,
+            preferred: None,
+            suited: None,
+            avoided: None,
+        }
+    }
     pub fn is_coding(&self) -> bool {
         matches!(
             self.task_type.as_str(),
