@@ -275,6 +275,7 @@ const WORDS = {
     "No worktrees in this conversation.": "この会話に worktree はありません。",
     "How the worktrees branched from your tree and came back": "worktree があなたのツリーから分かれ、戻ってきた流れ",
     "Hide flow": "流れを隠す",
+    opened: "開始",
     "Show flow": "流れを表示",
     you: "あなた",
     "your tree": "あなたのツリー",
@@ -3063,37 +3064,64 @@ function showTurn(id) {
   el("timeline").querySelectorAll(".turn").find((node) => node.dataset.turn === id)?.scrollIntoView?.({ block: "start" });
 }
 
-/// The worktrees over time: the lead's lane on top, a branch leaving it where each worktree
-/// was opened and rejoining it where its merge was applied; a pull request leaves to the
-/// right, and a worktree kept as a patch ends in a cross. Drawn from the same rows as the tree
-/// beneath it, so the lanes place in time what the tree lists, and nothing is a second source.
+/// The worktrees over time, read downwards as a git graph is: the person's own tree is the
+/// first column, each worktree a column of its own, and every event a row with its words to
+/// the right — a turn beginning, a worktree opened (a branch leaving the first column), its
+/// report, each merge trial, and its end: an applied merge rejoins the first column, a pull
+/// request leaves to the right, a worktree kept as a patch ends in a cross. Rows are in the
+/// order things happened, not to scale: the pane is narrow and tall, and what matters is the
+/// order and the branches. Drawn from the same rows as the tree beneath, so the two cannot
+/// disagree.
 function drawLanes(thread, worktrees, trials) {
   const now = Date.now();
   const turns = new Map();
   for (const item of thread.items) {
     if (!item.at) continue;
-    const turn = turns.get(item.turn) || { id: item.turn, from: item.at, to: item.at, origin: item.turn_origin, ordinal: item.turn_ordinal };
+    const turn = turns.get(item.turn) || { id: item.turn, from: item.at, to: item.at, origin: item.turn_origin, text: "" };
     turn.from = Math.min(turn.from, item.at);
     turn.to = Math.max(turn.to, item.at);
+    if (item.kind === "user_message" && !turn.text) turn.text = item.text.split("\n")[0];
     turns.set(item.turn, turn);
   }
   const ordered = [...turns.values()].sort((a, b) => a.from - b.from);
   const last = ordered[ordered.length - 1];
   if (last && thread.thread.status === "working") last.to = now;
   const ending = (row) => row.closed_at || (row.state === "open" ? now : row.created_at);
-  const times = [];
-  for (const turn of ordered) times.push(turn.from, turn.to);
-  for (const row of worktrees) times.push(row.created_at, ending(row), row.started_at || row.created_at, row.ended_at || ending(row));
-  for (const trial of trials) times.push(trial.created_at);
-  const t0 = Math.min(...times);
-  const t1 = Math.max(...times, t0 + 1);
-  const W = 760;
-  const LEFT = 112;
-  const RIGHT = 48;
-  const LANE = 36;
-  const TOP = 8;
-  const x = (at) => LEFT + ((Math.max(t0, Math.min(t1, at)) - t0) / (t1 - t0)) * (W - LEFT - RIGHT);
-  const H = TOP + LANE * (worktrees.length + 1) + 8;
+
+  // Every row of the graph, in the order it happened.
+  const events = [];
+  for (const turn of ordered) events.push({ at: turn.from, kind: "turn", turn });
+  worktrees.forEach((row, index) => {
+    const column = index + 1;
+    events.push({ at: row.created_at, kind: "open", row, column });
+    if (row.reported && row.ended_at) events.push({ at: row.ended_at, kind: "report", row, column });
+    for (const trial of trials.filter((m) => m.workspace === row.name && m.created_at >= row.created_at)) {
+      events.push({ at: trial.created_at, kind: "trial", row, column, trial });
+    }
+    if (row.state !== "open") events.push({ at: ending(row), kind: "close", row, column });
+  });
+  events.sort((a, b) => a.at - b.at);
+  const ROW = 24;
+  const TOP = 10;
+  const COL = 20;
+  const LEFT = 14;
+  const W = 320;
+  const H = TOP + ROW * Math.max(events.length, 1) + 8;
+  const columns = worktrees.length + 1;
+  const cx = (column) => LEFT + COL * column;
+  const textX = cx(columns) + 4;
+  // A time between two rows lands between them, so bars and strokes keep their order.
+  const y = (at) => {
+    if (!events.length) return TOP;
+    if (at <= events[0].at) return TOP + ROW / 2;
+    for (let i = 1; i < events.length; i += 1) {
+      if (at <= events[i].at) {
+        const span = events[i].at - events[i - 1].at || 1;
+        return TOP + ROW * (i - 1) + ROW / 2 + (ROW * (at - events[i - 1].at)) / span;
+      }
+    }
+    return TOP + ROW * (events.length - 1) + ROW / 2 + (at > events[events.length - 1].at ? ROW / 2 : 0);
+  };
   const svg = svgNode(
     "svg",
     { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": t("How the worktrees branched from your tree and came back") },
@@ -3112,68 +3140,87 @@ function drawLanes(thread, worktrees, trials) {
     node.append(title);
     return node;
   };
-  const label = (y, name, detail) => {
-    const head = svgNode("text", { x: 8, y: y - 2 }, "lane-name");
+  const words = (rowY, name, detail) => {
+    const node = svgNode("text", { x: textX, y: rowY + 4 }, "lane-words");
+    const head = svgNode("tspan", {}, "lane-name");
     head.textContent = name;
-    svg.append(head);
+    node.append(head);
     if (detail) {
-      const sub = svgNode("text", { x: 8, y: y + 10 }, "lane-title");
-      sub.textContent = detail.length > 18 ? `${detail.slice(0, 17)}…` : detail;
-      svg.append(sub);
+      const sub = svgNode("tspan", { dx: 6 }, "lane-title");
+      sub.textContent = detail.length > 42 ? `${detail.slice(0, 41)}…` : detail;
+      node.append(sub);
     }
+    svg.append(node);
   };
 
-  const leadY = TOP + LANE / 2;
-  svg.append(svgNode("line", { x1: LEFT, y1: leadY, x2: W - RIGHT, y2: leadY }, "lane-idle"));
+  // The person's column: dashed throughout, solid while a turn runs.
+  const leadX = cx(0);
+  svg.append(svgNode("line", { x1: leadX, y1: TOP, x2: leadX, y2: H - 8 }, "lane-idle"));
   for (const turn of ordered) {
-    svg.append(svgNode("line", { x1: x(turn.from), y1: leadY, x2: Math.max(x(turn.to), x(turn.from) + 2), y2: leadY }, "lane-turn"));
-    const node = svgNode("circle", { cx: x(turn.from), cy: leadY, r: turn.origin ? 4 : 5 }, turn.origin ? "lane-node from" : "lane-node you");
-    titled(node, turn.origin ? `${t("from the helpers")} · ${clock(turn.from)}` : `${t("you")} · ${clock(turn.from)}`);
-    node.addEventListener("click", () => showTurn(turn.id));
-    svg.append(node);
+    svg.append(svgNode("line", { x1: leadX, y1: y(turn.from), x2: leadX, y2: Math.max(y(turn.to), y(turn.from) + 3) }, "lane-turn"));
   }
-  label(leadY, t("your tree"), thread.thread.branch || "");
-
+  // Each worktree's column, from where it was opened to where it ended.
   worktrees.forEach((row, index) => {
-    const y = TOP + LANE * (index + 1) + LANE / 2;
-    const open = x(row.created_at);
-    const end = x(ending(row));
-    const ownTrials = trials.filter((m) => m.workspace === row.name && m.created_at >= row.created_at);
-    svg.append(svgNode("path", { d: `M${open},${leadY} C${open},${(leadY + y) / 2 + 6} ${open + 4},${y} ${open + 14},${y}` }, "lane-branch"));
-    svg.append(svgNode("line", { x1: open + 14, y1: y, x2: Math.max(end, open + 14), y2: y }, "lane-idle"));
-    const from = x(row.started_at || row.created_at);
-    const to = x(row.ended_at || (row.state === "open" && !row.reported ? now : row.started_at || row.created_at));
-    const work = svgNode("rect", { x: from, y: y - 6, width: Math.max(to - from, 2), height: 12, rx: 2 }, row.ended_at ? "lane-work" : "lane-work live");
+    const x = cx(index + 1);
+    const top = y(row.created_at);
+    const bottom = y(ending(row));
+    svg.append(svgNode("path", { d: `M${leadX},${top} C${leadX + COL / 2},${top} ${x - COL / 2},${top} ${x},${top + 6}` }, "lane-branch"));
+    svg.append(svgNode("line", { x1: x, y1: top + 6, x2: x, y2: Math.max(bottom, top + 6) }, "lane-idle"));
+    const from = y(row.started_at || row.created_at);
+    const to = y(row.ended_at || (row.state === "open" && !row.reported ? now : row.started_at || row.created_at));
+    const work = svgNode("rect", { x: x - 4, y: from, width: 8, height: Math.max(to - from, 2), rx: 2 }, row.ended_at ? "lane-work" : "lane-work live");
     titled(work, [row.agent, row.model, row.started_at ? span((row.ended_at || now) - row.started_at) : null].filter(Boolean).join(" · "));
     svg.append(work);
-    if (row.reported && row.ended_at) {
-      svg.append(titled(svgNode("rect", { x: x(row.ended_at) - 4, y: y - 4, width: 8, height: 8 }, "lane-report"), `${t("reported")} · ${clock(row.ended_at)}`));
+  });
+  // The rows.
+  events.forEach((event, index) => {
+    const rowY = TOP + ROW * index + ROW / 2;
+    if (event.kind === "turn") {
+      const { turn } = event;
+      const node = svgNode("circle", { cx: leadX, cy: rowY, r: turn.origin ? 4 : 5 }, turn.origin ? "lane-node from" : "lane-node you");
+      const who = turn.origin === "merge" ? t("from the merge") : turn.origin ? t("from the helpers") : t("you");
+      titled(node, `${who} · ${clock(turn.from)}`);
+      node.addEventListener("click", () => showTurn(turn.id));
+      svg.append(node);
+      words(rowY, who, turn.origin ? clock(turn.from) : turn.text || clock(turn.from));
+      return;
     }
-    for (const trial of ownTrials) {
-      const node = svgNode("circle", { cx: x(trial.created_at), cy: y, r: 5 }, `lane-trial ${trial.state}`);
-      const words = [`${t("trial")} #${trial.n} · ${t(trial.state)}`, files(trial.files.length), checksPhrase(trial.checks)];
-      if (trial.overlap.length) words.push(`${t("overlap")} ${trial.overlap.join(", ")}`);
-      svg.append(titled(node, words.join(" · ")));
-    }
-    if (row.state === "applied" || row.state === "merged") {
-      const path = svgNode("path", { d: `M${end - 14},${y} C${end - 4},${y} ${end},${(leadY + y) / 2 - 6} ${end},${leadY}`, "marker-end": "url(#lane-arrow-ok)" }, "lane-apply");
+    const { row, column } = event;
+    const x = cx(column);
+    if (event.kind === "open") {
+      svg.append(titled(svgNode("circle", { cx: x, cy: rowY, r: 4 }, "lane-open"), `${row.name} · ${t("opened")} · ${clock(row.created_at)}`));
+      words(rowY, row.name, row.title || t("opened"));
+    } else if (event.kind === "report") {
+      svg.append(titled(svgNode("rect", { x: x - 4, y: rowY - 4, width: 8, height: 8 }, "lane-report"), `${t("reported")} · ${clock(row.ended_at)}`));
+      words(rowY, row.name, `${t("reported")} · ${row.started_at ? span(row.ended_at - row.started_at) : clock(row.ended_at)}`);
+    } else if (event.kind === "trial") {
+      const { trial } = event;
+      const node = svgNode("circle", { cx: x, cy: rowY, r: 5 }, `lane-trial ${trial.state}`);
+      const parts = [files(trial.files.length), checksPhrase(trial.checks)];
+      if (trial.overlap.length) parts.push(`${t("overlap")} ${trial.overlap.join(", ")}`);
+      if (trial.conflicts.length) parts.push(`${t("conflicts")} ${trial.conflicts.join(", ")}`);
+      titled(node, `${t("trial")} #${trial.n} · ${t(trial.state)} · ${parts.join(" · ")}`);
+      svg.append(node);
+      words(rowY, `${t("trial")} #${trial.n}`, `${t(trial.state)} · ${parts.join(" · ")}`);
+    } else if (row.state === "applied" || row.state === "merged") {
+      const path = svgNode("path", { d: `M${x},${rowY - 6} C${x},${rowY} ${leadX + COL / 2},${rowY} ${leadX + 2},${rowY}`, "marker-end": "url(#lane-arrow-ok)" }, "lane-apply");
       titled(path, `${t(row.state)} · ${files((row.closed?.merged || []).length)} · ${clock(row.closed_at)}`);
       svg.append(path);
+      words(rowY, t(row.state), `${files((row.closed?.merged || []).length)} → ${t("your tree")}`);
     } else if (row.state === "pr") {
-      const out = svgNode("line", { x1: end, y1: y, x2: end + 22, y2: y, "marker-end": "url(#lane-arrow)" }, "lane-out");
+      const out = svgNode("line", { x1: x, y1: rowY, x2: textX - 4, y2: rowY, "marker-end": "url(#lane-arrow)" }, "lane-out");
       titled(out, `${t("pull request")} ${row.closed?.pr || row.closed?.branch || ""}`.trim());
       svg.append(out);
-      const pr = svgNode("text", { x: end + 26, y: y + 4 }, "lane-title");
-      pr.textContent = "PR";
-      svg.append(pr);
-    } else if (row.state !== "open") {
+      words(rowY, t("pull request"), row.closed?.pr || row.closed?.branch || "");
+    } else {
       const cross = svgNode("g", {}, "lane-end");
-      cross.append(svgNode("line", { x1: end - 4, y1: y - 4, x2: end + 4, y2: y + 4 }));
-      cross.append(svgNode("line", { x1: end - 4, y1: y + 4, x2: end + 4, y2: y - 4 }));
-      titled(cross, `${t(row.state)}${row.closed?.patch ? ` · ${String(row.closed.patch).split("/").pop()}` : ""}`);
+      cross.append(svgNode("line", { x1: x - 4, y1: rowY - 4, x2: x + 4, y2: rowY + 4 }));
+      cross.append(svgNode("line", { x1: x - 4, y1: rowY + 4, x2: x + 4, y2: rowY - 4 }));
+      const patch = row.closed?.patch ? String(row.closed.patch).split("/").pop() : "";
+      titled(cross, `${t(row.state)}${patch ? ` · ${patch}` : ""}`);
       svg.append(cross);
+      words(rowY, t(row.state), patch || (row.closed?.error ?? ""));
     }
-    label(y, row.name, row.title);
   });
   return svg;
 }

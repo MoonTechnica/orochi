@@ -1285,11 +1285,13 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .pill[data-tone="danger"] { color: var(--danger); border-color: transparent; background: color-mix(in srgb, var(--danger) 15%, transparent); }
 .pill[data-tone="ask"] { color: var(--brand); border-color: var(--brand); }
 
-/* The lanes above the tree: time runs to the right, the person's tree on top. */
+/* The lanes above the tree, read downwards as a git graph: the person's tree is the first
+   column, each worktree a column, each event a row with its words to the right. */
 .work-lanes { margin-bottom: 10px; }
 .lane-toggle { font-size: 11px; padding: 2px 8px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; }
 .work-lanes-figure { overflow-x: auto; }
-.lanes { display: block; width: 100%; min-width: 440px; height: auto; font-size: 11px; }
+.lanes { display: block; width: 100%; min-width: 240px; max-width: 480px; height: auto; font-size: 11px; }
+.lanes .lane-words { fill: var(--text); }
 .lanes .lane-name { fill: var(--text); font-weight: 600; }
 .lanes .lane-title { fill: var(--muted); font-size: 10px; }
 .lanes .lane-idle { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 3; fill: none; }
@@ -1297,6 +1299,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .lanes .lane-node { fill: var(--panel); stroke: var(--text); stroke-width: 2; cursor: pointer; }
 .lanes .lane-node.you { fill: var(--text); }
 .lanes .lane-branch { fill: none; stroke: var(--muted); stroke-width: 1.5; }
+.lanes .lane-open { fill: var(--panel); stroke: var(--muted); stroke-width: 1.5; }
 .lanes .lane-work { fill: var(--text); opacity: .18; }
 .lanes .lane-work.live { fill: var(--ok); opacity: .35; }
 .lanes .lane-report { fill: var(--text); }

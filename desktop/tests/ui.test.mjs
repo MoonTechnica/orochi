@@ -1259,7 +1259,10 @@ test("the lanes above the tree place each worktree in time, leaving the person's
   assert.equal(figure.querySelectorAll(".lane-trial").length, 1, "each trial is a node on its worktree's lane");
   assert.equal(figure.querySelectorAll(".lane-node").length, 2, "and the conversation's turns are nodes on the person's lane");
   assert.ok(figure.querySelectorAll(".lane-work.live").length === 1, "a worktree still worked in is drawn live");
-  assert.match(figure.render(), /your tree[\s\S]*backend[\s\S]*docs[\s\S]*cleanup[\s\S]*spike/, "lanes are labeled in the order the worktrees were opened");
+  const rows = figure.querySelectorAll(".lane-words").map((node) => node.textContent);
+  assert.equal(rows.length, 2 + 4 + 3 + 1 + 3, "a row per turn, opening, report, trial and end");
+  assert.match(rows.join("\n"), /you[\s\S]*backend[\s\S]*docs[\s\S]*cleanup[\s\S]*spike/, "read downwards, in the order things happened");
+  assert.ok(rows.some((row) => /^applied/.test(row)) && rows.some((row) => /^pull request/.test(row)), `each end is said in words: ${rows}`);
 
   const toggle = work.querySelectorAll("button").find((b) => b.className === "lane-toggle");
   assert.equal(toggle.textContent, "Hide flow");

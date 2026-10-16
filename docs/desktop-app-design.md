@@ -599,17 +599,20 @@ followed by eye; the proposal and its mockups are the drawn tree this pane folds
   *Apply*, so the same `answer` the permission card uses answers it. The timeline card still
   shows it too.
 - **The plan heads the pane** (`threads.management`): the steps numbered and the next step.
-- **The lanes above the tree** (built the same day, after the rows): one inline SVG, time on
-  the horizontal axis from the first turn to now, the person's lane on top with each turn a
-  node (filled for a message typed, hollow for one Orochi wrote back) and a thick stroke while
-  it ran; one lane per worktree below, a branch leaving the person's lane where it was opened,
-  a bar while its seat worked (green while it still does), a square at its report, a node per
-  merge trial coloured by its state, and then one of three ends: a green arrow rejoining the
-  person's lane where the merge was applied, a grey arrow leaving to the right for a pull
-  request, or a cross where it was kept as a patch. Hovering a mark says what it is and when;
-  a turn's node scrolls the conversation to that turn. The lanes are drawn from the same
-  `team` answer as the rows, so they can never disagree with them, and a *Hide flow* switch
-  folds them away for this window (`localStorage`, a per-viewer convenience).
+- **The graph above the tree** (built the same day, after the rows): one inline SVG read
+  downwards as a git graph is, because the side pane is narrow and tall — a first horizontal
+  draft was turned on its side on 2026-10-16 at the user's request. The person's own tree is
+  the first column, each worktree a column of its own, and every event a row with its words to
+  the right: a turn beginning (filled node for a message typed, hollow for one Orochi wrote
+  back, the column solid while the turn ran), a worktree opened (a branch leaving the first
+  column, its title), its report, each merge trial (a node coloured by its state, with files,
+  checks and overlap), and its end — an applied merge as a green arrow back into the first
+  column, a pull request as a grey arrow out to its words, a worktree kept as a patch as a
+  cross. A bar on the column shows the seat at work, green while it still is. Rows are in the
+  order things happened and not to scale; the clock is in the words. Hovering a mark says what
+  it is and when; a turn's node scrolls the conversation to that turn. Drawn from the same
+  `team` answer as the rows, so the two cannot disagree; a *Hide flow* switch folds it away
+  for this window (`localStorage`, a per-viewer convenience).
 
 Tauri command `team(thread)` returns `Activity::team`: the plan, the `v_team` rows and the
 `v_merges` rows. `orochi threads team <id>` prints the same, which is what keeps the pane a
