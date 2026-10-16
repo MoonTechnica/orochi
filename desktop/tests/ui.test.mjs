@@ -2558,3 +2558,62 @@ test("later closes the setup dialog and the window carries on", async () => {
   assert.equal(el("setup").open, false);
   assert.notEqual(el("thread-title").textContent, "");
 });
+
+test("the agents screen is the roster: a checkbox per model, kept the moment it changes", async () => {
+  const roster = {
+    agents: [
+      {
+        id: "claude", provider: "anthropic", enabled: true, routing_only: false, models: ["opus"],
+        known: [
+          { id: "opus", chosen: true, tier: "frontier", about: "Complex agentic coding" },
+          { id: "sonnet", chosen: false, tier: "standard", about: "Everyday coding" },
+        ],
+        discovered_at: 5,
+      },
+      { id: "judge", provider: "openai", enabled: true, routing_only: true, models: [], known: [], discovered_at: null },
+      { id: "codex", provider: "openai", enabled: true, routing_only: false, models: [], known: [], discovered_at: null },
+    ],
+  };
+  const { el, calls } = await open({
+    agents: [],
+    roster,
+    suggest_roster: { roster: { claude: ["sonnet"] }, preferences: [], why: "sonnet measured best here" },
+  });
+  el("account").dispatch("click");
+  el("account-menu").querySelectorAll("button")
+    .find((b) => b.dataset.screen === "agents")
+    .dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const host = el("panel-body");
+  const drawn = host.render();
+  assert.match(drawn, /opus/);
+  assert.match(drawn, /Everyday coding/, "what a model is for is beside its name");
+  assert.doesNotMatch(drawn, /judge/, "an adviser runs no work and has no roster");
+  assert.match(drawn, /Not discovered here yet/, "an agent never started here says so");
+
+  const boxes = host.querySelectorAll("input").filter((b) => b.dataset.model);
+  assert.equal(boxes.length, 2);
+  const opus = boxes.find((b) => b.dataset.model === "opus");
+  const sonnet = boxes.find((b) => b.dataset.model === "sonnet");
+  assert.equal(opus.checked, true);
+  assert.equal(sonnet.checked, false);
+  sonnet.checked = true;
+  sonnet.dispatch("change");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  let set = calls.filter(([name]) => name === "set_roster").at(-1);
+  assert.deepEqual(set[1], { agent: "claude", models: [], off: false }, "every model checked is no roster at all");
+
+  const again = el("panel-body").querySelectorAll("input").filter((b) => b.dataset.model);
+  const opusAgain = again.find((b) => b.dataset.model === "opus");
+  opusAgain.checked = false;
+  opusAgain.dispatch("change");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  set = calls.filter(([name]) => name === "set_roster").at(-1);
+  assert.deepEqual(set[1], { agent: "claude", models: [], off: true }, "nothing checked takes the agent out");
+
+  const propose = el("panel-body").querySelectorAll("button").find((b) => b.dataset.action === "propose");
+  propose.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(calls.some(([name]) => name === "suggest_roster"));
+  assert.match(el("notice").render(), /sonnet measured best here/, "why it was proposed is said");
+});

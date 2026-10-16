@@ -3323,6 +3323,107 @@ async function drawPlan(thread) {
 // Screens --------------------------------------------------------------------
 // Everything that is not one conversation: what is working anywhere, which agents are ready,
 // and what the routes have actually done.
+// The roster: which of each agent's models the scheduler may use. A checkbox per model the
+// agent last advertised here, and one per agent; unchecking every model takes the agent out,
+// as `orochi roster set --off` does. A proposal is written down as the decision the moment it
+// comes back, so the screen redraws from the roster as it now is rather than previewing it.
+function drawRoster(host, roster) {
+  const section = text("div", "roster-screen");
+  const head = text("div", "roster-head");
+  head.append(text("h3", null, "Which models may be used"));
+  const propose = text("button", null, "Propose a roster");
+  propose.dataset.action = "propose";
+  propose.addEventListener("click", async () => {
+    propose.disabled = true;
+    report("Asking an agent for a roster…");
+    try {
+      const proposal = await call("suggest_roster", {});
+      report(proposal?.why ? `Proposed: ${proposal.why}` : "Proposed.");
+      await drawScreen();
+    } catch (error) {
+      report(`No proposal: ${error}`);
+      propose.disabled = false;
+    }
+  });
+  const refresh = text("button", null, "Refresh models");
+  refresh.dataset.action = "refresh";
+  refresh.addEventListener("click", async () => {
+    refresh.disabled = true;
+    report("Starting every agent once to read what it offers…");
+    try {
+      await call("refresh_models", {});
+      report("");
+      await drawScreen();
+    } catch (error) {
+      report(`Could not refresh: ${error}`);
+      refresh.disabled = false;
+    }
+  });
+  head.append(propose, refresh);
+  section.append(head);
+  const entries = (roster?.agents || []).filter((a) => !a.routing_only);
+  if (!entries.length) {
+    section.append(text("p", "empty", "No agents are configured."));
+    host.append(section);
+    return;
+  }
+  for (const agent of entries) {
+    const card = text("div", "card roster-agent");
+    card.dataset.agent = agent.id;
+    const who = text("label", "who");
+    const on = document.createElement("input");
+    on.type = "checkbox";
+    on.checked = agent.enabled;
+    on.dataset.agent = agent.id;
+    on.addEventListener("change", async () => {
+      await call("set_roster", { agent: agent.id, models: agent.models, off: !on.checked });
+      await drawScreen();
+    });
+    who.append(on, text("strong", null, agent.id), text("span", "where", agent.provider));
+    card.append(who);
+    if (!agent.known.length) {
+      card.append(text("p", "caveat", "Not discovered here yet — Refresh models."));
+      section.append(card);
+      continue;
+    }
+    const list = text("div", "roster-models");
+    const boxes = [];
+    for (const model of agent.known) {
+      const row = text("label", "roster-model");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = model.chosen;
+      box.disabled = !agent.enabled;
+      box.dataset.model = model.id;
+      boxes.push(box);
+      box.addEventListener("change", async () => {
+        const chosen = boxes.filter((b) => b.checked).map((b) => b.dataset.model);
+        // Every model checked is the same as no roster at all, and is written as such, so a
+        // model the agent adds later is not left out by a list that happened to be complete.
+        const every = chosen.length === boxes.length;
+        await call("set_roster", {
+          agent: agent.id,
+          models: every ? [] : chosen,
+          off: chosen.length === 0,
+        });
+        await drawScreen();
+      });
+      row.append(box, text("code", null, model.id), text("span", "where", model.about));
+      list.append(row);
+    }
+    card.append(list);
+    section.append(card);
+  }
+  section.append(
+    text(
+      "p",
+      "caveat",
+      "What is unchecked is never used, whatever a preference or an adviser says; a model named for one run is. A proposal is kept as written and adjusted here.",
+    ),
+  );
+  host.append(section);
+}
+
 function screenRows(head, rows) {
   const table = document.createElement("table");
   const header = document.createElement("tr");
@@ -3397,23 +3498,24 @@ async function drawScreen() {
     return;
   }
   if (state.panel === "agents") {
-    const agents = (await call("agents", {})) || [];
-    if (!agents.length) {
+    const [agents, roster] = await Promise.all([call("agents", {}), call("roster", {})]);
+    if (!(agents || []).length) {
       host.append(text("p", "empty", "Nothing has been run yet."));
-      return;
+    } else {
+      host.append(
+        screenRows(
+          [["Agent"], ["Model"], ["State"], ["Cooling", true], ["Quota"]],
+          agents.map((a) => [
+            [a.agent],
+            [a.model === "*" ? "whole account" : a.model],
+            [a.status],
+            [a.cooling ? `${a.cooling}s` : "—", true],
+            [a.windows.length ? gauge(a.windows[0][1]) : "—"],
+          ]),
+        ),
+      );
     }
-    host.append(
-      screenRows(
-        [["Agent"], ["Model"], ["State"], ["Cooling", true], ["Quota"]],
-        agents.map((a) => [
-          [a.agent],
-          [a.model === "*" ? "whole account" : a.model],
-          [a.status],
-          [a.cooling ? `${a.cooling}s` : "—", true],
-          [a.windows.length ? gauge(a.windows[0][1]) : "—"],
-        ]),
-      ),
-    );
+    drawRoster(host, roster);
     return;
   }
   if (state.panel === "sandboxes") {

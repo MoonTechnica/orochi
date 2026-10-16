@@ -449,6 +449,49 @@ fn save_settings(open: State<'_, Open>, settings: serde_json::Value) -> Result<(
 }
 
 #[tauri::command]
+fn roster(open: State<'_, Open>) -> Result<orochi::roster::Listing, String> {
+    open.0.lock().unwrap().roster().map_err(fail)
+}
+
+#[tauri::command]
+fn set_roster(
+    open: State<'_, Open>,
+    agent: String,
+    models: Vec<String>,
+    off: bool,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .set_roster(&agent, &models, off)
+        .map_err(fail)
+}
+
+/// Asks an agent for a roster and writes it down; a few seconds, off the window's connection.
+#[tauri::command]
+async fn suggest_roster(open: State<'_, Open>) -> Result<orochi::roster::Suggestion, String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    tauri::async_runtime::spawn_blocking(move || {
+        orochi_desktop::view::suggest_roster(&orochi(), &config, &data)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(fail)
+}
+
+/// Starts every agent once so the roster has their models; tens of seconds, off the connection.
+#[tauri::command]
+async fn refresh_models(open: State<'_, Open>) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    tauri::async_runtime::spawn_blocking(move || {
+        orochi_desktop::view::refresh_models(&orochi(), &config, &data)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(fail)
+}
+
+#[tauri::command]
 fn memory(open: State<'_, Open>) -> Result<Remembered, String> {
     open.0.lock().unwrap().memory().map_err(fail)
 }
@@ -646,6 +689,10 @@ fn main() {
             comment,
             settings,
             save_settings,
+            roster,
+            set_roster,
+            suggest_roster,
+            refresh_models,
             memory,
             save_memory,
             forget_all,

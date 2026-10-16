@@ -1271,3 +1271,48 @@ fn the_work_pane_reads_worktrees_trials_and_the_apply_question_from_the_views_al
     );
     assert_eq!(apply.workspace.as_deref(), Some("backend"));
 }
+
+/// The roster the screen draws is the configuration's `models` against what each agent last
+/// advertised here, and what the screen writes goes through the same validation and the
+/// same whole-file save as the settings.
+#[test]
+fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[discovery]\nauto_add = false\n[[agents]]\nid = \"claude\"\nprovider = \"anthropic\"\ncommand = \"claude-agent-acp\"\nmodels = [\"opus\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("discovered.json"),
+        r#"{"claude":{"models":["opus","sonnet"],"at":5}}"#,
+    )
+    .unwrap();
+    let client = Client::open(dir.path()).unwrap().with_config(&config);
+    let listing = client.roster().unwrap();
+    let claude = &listing.agents[0];
+    assert_eq!(claude.models, ["opus"]);
+    assert_eq!(claude.discovered_at, Some(5));
+    let chosen: Vec<(&str, bool)> = claude
+        .known
+        .iter()
+        .map(|m| (m.id.as_str(), m.chosen))
+        .collect();
+    assert_eq!(chosen, [("opus", true), ("sonnet", false)]);
+    assert!(claude.known[0].about.contains("agentic coding"), "{:?}", claude.known[0]);
+
+    client.set_roster("claude", &["sonnet".into()], false).unwrap();
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("models = [\"sonnet\"]")
+    );
+    client.set_roster("claude", &[], true).unwrap();
+    let listing = client.roster().unwrap();
+    assert!(!listing.agents[0].enabled && listing.agents[0].models.is_empty());
+    client.set_roster("claude", &["opus".into()], false).unwrap();
+    assert!(client.roster().unwrap().agents[0].enabled, "naming a model puts the agent back");
+    assert!(client.set_roster("nobody", &[], false).is_err());
+}

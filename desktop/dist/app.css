@@ -1301,3 +1301,15 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .gutter .lane-landed { fill: var(--ok); stroke: var(--ok); }
 .work-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
 .work-legend .item { display: inline-flex; align-items: center; gap: 4px; }
+
+/* The roster on the Agents screen: one card per agent, one line per model. */
+.roster-screen { margin-top: 16px; }
+.roster-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.roster-head h3 { flex: 1; margin: 0; }
+.roster-agent .who { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.roster-agent .who .where { color: var(--muted); font-size: 11px; }
+.roster-models { display: flex; flex-direction: column; gap: 4px; margin: 8px 0 0 24px; }
+.roster-model { display: flex; align-items: baseline; gap: 8px; cursor: pointer; font-size: 13px; }
+.roster-model code { white-space: nowrap; }
+.roster-model .where { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel-body .roster-model input[type="checkbox"] { margin-top: 0; width: 14px; height: 14px; flex: none; }

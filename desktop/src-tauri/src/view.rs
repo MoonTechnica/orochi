@@ -392,6 +392,56 @@ pub fn terminal_command(
 }
 
 /// Starts one sandbox operation in the background, as `orochi sandbox …`.
+/// A proposal, asked for through the CLI as `orochi roster suggest --json`: it starts an agent
+/// and records what asking cost, which is the CLI's job (process supervision, the ledger), not
+/// the window's. The proposal is written down as the decision before it comes back, as the
+/// command does; the screen then shows the roster as it now is.
+pub fn suggest_roster(
+    binary: &Path,
+    config: &Path,
+    data: &Path,
+) -> Result<orochi::roster::Suggestion> {
+    let output = std::process::Command::new(binary)
+        .args(["--config"])
+        .arg(config)
+        .arg("--data-dir")
+        .arg(data)
+        .arg("--cwd")
+        .arg(data)
+        .args(["--json", "roster", "suggest"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("starting {}", binary.display()))?;
+    ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    serde_json::from_slice(&output.stdout).context("the proposal could not be read")
+}
+
+/// Starts every agent once so the roster has its models to choose from; what each advertised
+/// is kept by the core (`discovered.json`).
+pub fn refresh_models(binary: &Path, config: &Path, data: &Path) -> Result<()> {
+    let output = std::process::Command::new(binary)
+        .args(["--config"])
+        .arg(config)
+        .arg("--data-dir")
+        .arg(data)
+        .arg("--cwd")
+        .arg(data)
+        .args(["agents", "--discover"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("starting {}", binary.display()))?;
+    ensure!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    Ok(())
+}
+
 pub fn sandbox_job(
     binary: &Path,
     config: &Path,
@@ -555,6 +605,23 @@ impl Client {
         }
         std::fs::write(&self.config, toml::to_string_pretty(&config)?)?;
         Ok(())
+    }
+
+    /// The roster as the core sees it: every agent, what of it is on, and the models it last
+    /// advertised here. The screen is this list as checkboxes.
+    pub fn roster(&self) -> Result<orochi::roster::Listing> {
+        let config = orochi::config::Config::load(&self.config)?;
+        let policies = orochi::policy::Registry::load(&self.data)?;
+        Ok(orochi::roster::listing(&config, &policies, &self.data))
+    }
+
+    /// One agent's roster, set from the screen: the exact IDs that are checked, none for every
+    /// model, `off` for an agent taken out of the field. Written through the same validation
+    /// and the same whole-file save as the settings.
+    pub fn set_roster(&self, agent: &str, models: &[String], off: bool) -> Result<()> {
+        let mut config = orochi::config::Config::load(&self.config)?;
+        orochi::roster::set(&mut config, agent, models, off)?;
+        config.save(&self.config)
     }
 
     pub fn memory(&self) -> Result<Remembered> {
