@@ -1835,8 +1835,13 @@ mod fit {
             "{line}"
         );
         assert_eq!(
-            noted.agents[0].note_for("claude-opus-5-20261001"),
+            noted.agents[0].note_for("claude-opus-5"),
             Some("design and review")
+        );
+        assert_eq!(
+            noted.agents[0].note_for("claude-opus-5-20261001"),
+            None,
+            "a note names one model; a family is written as a glob"
         );
         assert_eq!(noted.agents[0].note_for("sonnet"), None);
         let reply =
@@ -3328,8 +3333,19 @@ fn the_roster_keeps_the_scheduler_to_the_models_the_user_chose_and_a_dislike_onl
         ranked.iter().map(|c| c.model.clone()).collect()
     };
     assert_eq!(models(&rank(&agent, &task, &Overrides::default())).len(), 3);
-    agent.models = vec!["SOL".into(), "luna".into()];
+    agent.models = vec!["GPT-SOL".into(), "*luna".into()];
     assert!(agent.admits("gpt-sol") && agent.admits("gpt-luna") && !agent.admits("gpt-astra"));
+    // An entry names a whole ID, or a family through `*`; a fragment names nothing, because
+    // Claude advertises `opus` beside `claude-opus-5` and the one must not admit the other.
+    use orochi::config::names;
+    assert!(names("opus", "Opus") && !names("opus", "claude-opus-5"));
+    assert!(names("claude-opus-*", "claude-opus-5") && !names("claude-opus-*", "opus"));
+    assert!(names("*opus*", "claude-opus-5") && names("*opus*", "opus"));
+    assert!(names("gpt-*-sol", "gpt-6.1-sol") && !names("gpt-*-sol", "gpt-6-luna"));
+    assert!(
+        !names("*-sol", "sol"),
+        "the glob's own letters are not matched twice"
+    );
     let rostered = models(&rank(&agent, &task, &Overrides::default()));
     assert!(
         rostered.contains(&"gpt-sol".to_owned())

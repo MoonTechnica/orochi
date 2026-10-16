@@ -945,10 +945,10 @@ class Roster(unittest.TestCase):
             c.key(b"\r")
             c.wait("* sol-test")
             self.assertTrue(c.shown("* astra-test"), c.rows())
-            c.type("/roster set test astra")
+            c.type("/roster set test astra-test")
             c.key(b"\r")
             c.wait("applies when an agent is next chosen")
-            self.assertIn('models = ["astra"]', (c.dir / "config.toml").read_text())
+            self.assertIn('models = ["astra-test"]', (c.dir / "config.toml").read_text())
             # The conversation keeps its session until an agent is chosen again.
             c.type("/reroute")
             c.key(b"\r")

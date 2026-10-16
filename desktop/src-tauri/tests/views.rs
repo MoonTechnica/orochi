@@ -1348,6 +1348,15 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
         .find(|m| m.id == "opus")
         .unwrap();
     assert_eq!(opus.note.as_deref(), Some("design and review"));
+    let sonnet = listing.agents[0]
+        .known
+        .iter()
+        .find(|m| m.id == "sonnet")
+        .unwrap();
+    assert_eq!(
+        sonnet.note, None,
+        "a note names one model, not every model like it"
+    );
     assert!(
         std::fs::read_to_string(&config)
             .unwrap()

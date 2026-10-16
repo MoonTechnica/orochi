@@ -422,15 +422,16 @@ pub struct AgentConfig {
     /// Only consulted as a routing adviser; never discovered or selected to execute tasks.
     #[serde(default)]
     pub routing_only: bool,
-    /// The roster: which of this agent's models the scheduler may route to, as case-insensitive
-    /// fragments of the IDs it advertises over ACP (a policy pattern's shape, so `opus` still
-    /// names the next Opus). Empty, every model it advertises. What `orochi roster` and the
-    /// window write; a model named on the command line for one run is taken whether it is
-    /// here or not, being the user's later word.
+    /// The roster: which of this agent's models the scheduler may route to. Each entry is a
+    /// model ID as advertised over ACP (case-insensitive, whole), or a glob with `*` for a
+    /// family (`claude-opus-*`): never a bare fragment, because Claude advertises `opus` beside
+    /// `claude-opus-5`, and a fragment that admits one admits the other. Empty, every model it
+    /// advertises. What `orochi roster` and the window write; a model named on the command
+    /// line for one run is taken whether it is here or not, being the user's later word.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
-    /// What the user wants each model for, in their own words, keyed like `models` (a fragment
-    /// of the ID; the longest that matches a model is its note). Shown to the classifier
+    /// What the user wants each model for, in their own words, keyed like `models` (an ID or a
+    /// glob; the longest key that matches a model is its note). Shown to the classifier
     /// beside the provider's description of the model, so work that fits goes there sooner;
     /// a tilt, never a gate.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -453,6 +454,29 @@ pub struct AgentConfig {
     /// (`LeanConfig::known`); an empty table asks this agent as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lean: Option<LeanConfig>,
+}
+/// Whether a roster entry names a model: the whole ID, case-insensitive, or a glob where `*`
+/// stands for any run of characters. A bare fragment names nothing on its own — `opus` is a
+/// model ID here, not a family — so a family is written as a glob.
+pub fn names(entry: &str, model: &str) -> bool {
+    let (entry, model) = (entry.trim().to_lowercase(), model.to_lowercase());
+    if !entry.contains('*') {
+        return entry == model;
+    }
+    let parts: Vec<&str> = entry.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if !model.starts_with(first) || model.len() < first.len() + last.len() || !model.ends_with(last)
+    {
+        return false;
+    }
+    let mut rest = &model[first.len()..model.len() - last.len()];
+    for part in &parts[1..parts.len() - 1] {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    true
 }
 fn yes() -> bool {
     true
@@ -555,21 +579,17 @@ impl AgentConfig {
             lean: None,
         }
     }
-    /// The user's note for a model: the longest note key that matches its ID.
+    /// The user's note for a model: the longest note key that names it.
     pub fn note_for(&self, model: &str) -> Option<&str> {
         self.notes
             .iter()
-            .filter(|(key, _)| crate::policy::matches(key, model))
+            .filter(|(key, _)| names(key, model))
             .max_by_key(|(key, _)| key.len())
             .map(|(_, note)| note.as_str())
     }
     /// Whether the roster lets this agent run a model it advertised.
     pub fn admits(&self, model: &str) -> bool {
-        self.models.is_empty()
-            || self
-                .models
-                .iter()
-                .any(|pattern| crate::policy::matches(pattern, model))
+        self.models.is_empty() || self.models.iter().any(|entry| names(entry, model))
     }
     /// How this agent is asked a bare question: what the user wrote, else what Orochi knows
     /// about the command.

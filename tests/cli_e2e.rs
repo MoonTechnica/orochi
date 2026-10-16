@@ -3902,12 +3902,12 @@ fn the_roster_is_set_by_hand_or_proposed_and_a_proposal_names_only_models_that_e
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("agents --discover"));
 
-    let output = w.run(&["roster", "set", "test", "sol"]);
+    let output = w.run(&["roster", "set", "test", "sol-*"]);
     success(&output);
     let written = std::fs::read_to_string(w.dir.path().join("config.toml")).unwrap();
-    assert!(written.contains("models = [\"sol\"]"), "{written}");
+    assert!(written.contains("models = [\"sol-*\"]"), "{written}");
     // The workspace rewrites its config from `w.config` on every command: carry the change.
-    w.config.agents[0].models = vec!["sol".into()];
+    w.config.agents[0].models = vec!["sol-*".into()];
     let output = w.run(&["--dry-run", "--json", "Implement the endpoint"]);
     success(&output);
     let dry: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

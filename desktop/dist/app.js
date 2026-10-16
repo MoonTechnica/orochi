@@ -3405,7 +3405,8 @@ function drawRoster(host, roster) {
     const list = text("div", "roster-models");
     const boxes = [];
     for (const model of agent.known) {
-      const row = text("label", "roster-model");
+      const row = text("div", "roster-model");
+      const pick = text("label", "pick");
       const box = document.createElement("input");
       box.type = "checkbox";
       box.checked = model.chosen;
@@ -3424,16 +3425,17 @@ function drawRoster(host, roster) {
         });
         await drawScreen();
       });
-      row.append(box, text("code", null, model.id), text("span", "where", model.about));
+      pick.append(box, text("code", null, model.id), text("span", "where", model.about));
+      row.append(pick);
       // What this model is for, in the person's own words: kept as typed, read when a task
-      // is routed, and a tilt toward this model for work that fits rather than a rule.
+      // is routed, and a tilt toward this model for work that fits rather than a rule. It is
+      // beside the label, not inside it: a click in it must not be a click on the checkbox.
       const note = document.createElement("input");
       note.type = "text";
       note.className = "note";
       note.placeholder = "what you want it for…";
       note.value = model.note || "";
       note.dataset.model = model.id;
-      note.addEventListener("click", (event) => event.preventDefault?.());
       note.addEventListener("change", async () => {
         await call("set_roster_note", { agent: agent.id, model: model.id, text: note.value });
         await drawScreen();
