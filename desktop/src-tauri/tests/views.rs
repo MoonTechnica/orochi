@@ -1318,6 +1318,12 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
     client.set_roster("claude", &[], true).unwrap();
     let listing = client.roster().unwrap();
     assert!(!listing.agents[0].enabled && listing.agents[0].models.is_empty());
+    client.set_roster("claude", &[], false).unwrap();
+    assert!(
+        client.roster().unwrap().agents[0].enabled,
+        "checking the agent again puts it back, every model included"
+    );
+    client.set_roster("claude", &[], true).unwrap();
     client
         .set_roster("claude", &["opus".into()], false)
         .unwrap();

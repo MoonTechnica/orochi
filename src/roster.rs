@@ -80,7 +80,8 @@ pub fn listing(config: &Config, policies: &Registry, data: &Path) -> Listing {
 }
 
 /// Sets one agent's roster by hand. An empty list is every model; `off` takes the agent out
-/// of the field altogether, and naming a model puts it back in.
+/// of the field altogether, and setting a roster at all, even the empty one, puts it back in:
+/// choosing what an agent may run is wanting it in the field.
 pub fn set(config: &mut Config, agent: &str, models: &[String], off: bool) -> Result<()> {
     let entry = config
         .agents
@@ -94,11 +95,7 @@ pub fn set(config: &mut Config, agent: &str, models: &[String], off: bool) -> Re
         .collect();
     patterns.dedup();
     entry.models = patterns;
-    if off {
-        entry.enabled = false;
-    } else if !entry.models.is_empty() {
-        entry.enabled = true;
-    }
+    entry.enabled = !off;
     config.validate()
 }
 
