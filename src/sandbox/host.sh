@@ -84,6 +84,12 @@ fi
 # raw.idmap may only name IDs root is delegated.
 grep -qx "root:${SBX_UID}:1" /etc/subuid || echo "root:${SBX_UID}:1" >> /etc/subuid
 grep -qx "root:${SBX_GID}:1" /etc/subgid || echo "root:${SBX_GID}:1" >> /etc/subgid
+# Unattended upgrades inside the VM restart systemd and Incus under running agents: measured
+# 2026-10-16, an upgrade of systemd re-executed it and restarted incus, closing every agent's
+# exec mid-turn. The VM is Orochi's own and is upgraded when its image is rebuilt, not by a timer.
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+systemctl mask apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+systemctl disable --now unattended-upgrades 2>/dev/null || true
 systemctl enable incus 2>/dev/null || true
 systemctl restart incus 2>/dev/null || true
 incus admin waitready --timeout=60

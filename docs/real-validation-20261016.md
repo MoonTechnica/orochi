@@ -164,6 +164,68 @@ The terminal form of the same question — the dialog drawn in the console's pin
 not driven live; it is the same `Ask` queue the seats' permission questions use, pinned by
 `tests/test_chat_terminal.py`.
 
+## Runs F and G — the project in its sandbox (container mode, Codex inside)
+
+The sandbox host of [real-validation-20261005.md](real-validation-20261005.md) brought back by
+`orochi setup --sandbox` into the private data directory (Lima 2.2.1 installed there, the
+existing `sbx-host` VM started, the golden image reused), a copy of the repository under the
+home directory the VM mounts, `orochi sandbox create` (container, Docker inside), and the same
+task with one more ask: the hostname of the machine the lead runs on. Claude Code keeps its
+sign-in in the macOS keychain, which `sandbox auth` reports as "nothing to carry" without
+`orochi sandbox login claude`, so these two runs were Codex only, lead and helpers.
+
+**Run F** got as far as the trial and then lost its lead: the trial read *clean · 2 files ·
+checks failed* because the validation config named the check's interpreter by its path on the
+Mac, which does not exist inside — the check had run **inside** the conversation's container
+(this is the departure §14 of the design named, closed the same day: a trial's checks now go
+through the session's placement as the scheduler's do). Then the lead's ACP process died
+mid-turn: *Incoming transport closed*. The VM's journal says why: Ubuntu's `apt-daily-upgrade`
+ran at 09:24:20, upgraded systemd, re-executed it and restarted `incus.service`, closing every
+agent's `incus exec`. Not Orochi's code, but Orochi's VM: `host.sh` now disables the apt timers
+and unattended-upgrades in it (`orochi sandbox up` re-applies the script).
+
+**Run G**, on the repaired VM with the check as `python3`:
+
+| Turn | Origin | Seats | Wall | Reported total | Weighted | Requests |
+|---|---|---|---|---|---|---|
+| 1 | user | lead `tester` (inside) | 60 s | 23,701 | 17,232 | 6 |
+| 1 | — | helper `calc-ops` (writes, inside) | 91 s | 23,709 | 3,043 | 13 |
+| 2 | background | lead | 37 s | 26,487 | 4,688 | 5 |
+| 3 | merge | lead | 24 s | 27,766 | 3,516 | 3 |
+| 4 | merge | lead | 30 s | 29,775 | 4,053 | 4 |
+
+The lead reported its hostname as `fdb83a46f1c4…`, the name of the conversation's own session
+container (`orochi sandbox status` lists it beside the project's); the helper ran inside it
+through the mailbox relay; the trial's `unittest` ran inside and passed; the apply wrote the two
+files onto the mounted tree, where the Mac sees them and the tests pass; the helper's worktree
+was closed by the apply and nothing was left for the sweep. The lead's first `start_agent` used
+an underscore in the name and was refused; it read the reason and retried. Codex also noted its
+own sandbox "hit the environment's sandbox networking setup" on a read-only command and
+retried; that is Codex's sandbox inside Orochi's, not Orochi's.
+
+## Run H — runner mode: a Claude lead on this machine, the runtime in the sandbox
+
+`orochi sandbox mode runner` on the same project: the agents run here, signed in as they are
+here (so Claude, keychain and all), and the project's runtime is the sandbox, reached through
+the `orochi-sandbox` MCP tools. The question was whether real agents use those tools for what
+runs code instead of their own shell. One more ask in the task: the hostname of the machine
+where the tests actually ran.
+
+| Turn | Origin | Seats | Wall | Reported total | Weighted | Requests |
+|---|---|---|---|---|---|---|
+| 1 | user | lead `implementer` (sonnet-5, here) | 30 s | 335,536 | 65,902 | 15 |
+| 1 | — | helper `calc-ops` (sonnet-5, here, writes) | 53 s | 436,674 | 74,258 | 19 |
+| 2 | background | lead | 12 s | 206,075 | 25,812 | 10 |
+| 3 | merge | lead | 10 s | 160,639 | 19,317 | 8 |
+| 4 | merge | lead | 11 s | 165,050 | 19,774 | 8 |
+
+Every shell-shaped call of the run, from the store: the lead's own shell twice, both read-only
+(`find` over the tree, `git diff` in the helper's worktree); the helper's own shell once, to
+`cat` the file; and the helper's tests through **`sandbox_exec`**, whose output begins with the
+container's hostname `p-03bec0…` — the conversation's own session sandbox, made on the first
+turn. The trial's `unittest` ran inside too; the apply wrote the two files here, where the
+tests pass; the lead answered the hostname question with the sandbox's name and said so.
+
 ## What it costs
 
 A wake is a resumed session. On haiku, the three Orochi-written turns of run B cost 16,660 to
@@ -186,7 +248,12 @@ through `claude-agent-acp`, which accumulates the turn.
 | `manager.apply = "ask"` as the console's own dialog | Automated tests only (runs A–D were piped) |
 | A conflicted trial with `resolve = true` | **Held** (run D): the lead asked for it on reading the conflict, the resolution seat kept the user's side and cleared the markers, the recheck ran the project's check, and the lead reviewed before applying |
 | A restarted host resuming with plan and trials | **Held** (run E): the second host loaded the session and the lead recalled plan, helper and trial without a tool |
+| The same flow with the project in its sandbox | **Held** (run G, container mode, Codex): lead and helper inside, the trial's checks inside, the apply on the mounted tree. Run F found the VM's unattended upgrades restart Incus under running agents; fixed in `host.sh` |
+| Claude inside a container | **Not run**: its sign-in is in the keychain; `orochi sandbox login claude` is interactive |
+| Runner mode: the agent here, code run through the `orochi-sandbox` tools | **Held** (run H, Claude): the helper ran its tests with `sandbox_exec`, the agents' own shells were used only to read; the trial's checks ran inside |
 
 Nothing was committed to any repository by the agents; the validation directory
 (`.orochi/live-validation-20261016/`) keeps the private config, data, the five repositories
-as the runs left them, every transcript, run D's sidecar, run E's client and `analyze.py`.
+as the runs left them (the sandbox runs' repository is `~/orochi-sbx-validation/repo`), every
+transcript, run D's sidecar, run E's client and `analyze.py`. The sandbox VM and the three
+session containers were left as they were; `orochi sandbox gc` or `sandbox down` takes them.

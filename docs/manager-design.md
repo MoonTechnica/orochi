@@ -7,7 +7,7 @@ no tool named to them, a helper's message woke the idle lead, a conflict was res
 worktree on the lead's `resolve = true` and applied after the lead's review, the apply's
 race with the exit found there is fixed, `ask` was answered from a client through the
 `prompts` row, and a restarted host resumed the session with the lead recalling its plan and
-trials. Only the console's own `ask` dialog is automated tests only.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and
+trials. With the project in its sandbox (container mode, Codex inside; runner mode, Claude here) the same flow held, the trial's checks running inside. Only the console's own `ask` dialog is automated tests only.** Everything in §3 ("Where Orochi stands") was read from the code at `8d7dead` and
 is cited; §14 says where the implementation departed from the design and why.
 
 One goal: **the agents Orochi starts for one conversation work as one team.** One of them — the
@@ -395,7 +395,7 @@ re-trial count (1) are constants until measured.
 | A stale trial re-run once, then applied | As designed, inside the apply: a tree that moved is tried again on the tree as it is now, checks run again, and only a clean, passing result is written; the stale trial and the new one are both recorded | Measured in the fixture: a lead's own turn moves the tree (it writes its completion marker), so without the retry no apply would ever land |
 | Piped console (no terminal, not a host) asked to apply under `ask` | Declined, reported to the lead as declined | Nobody can answer; the lead is told to use `auto` or a terminal |
 | `orochi threads team <id>` | Not built; `v_merges` is readable with `--json` through the store | Nothing on the client side reads it yet |
-| Checks of a trial under a project sandbox | Run where the console runs, not in the session's container | `evaluate` is called outside the scheduler's placement; a sandboxed project's trial checks are **unverified** |
+| Checks of a trial under a project sandbox | Inside the conversation's sandbox, through the session's placement as the scheduler's checks go (`manager::checks`); measured in runs G and H | The first sandbox run (F) found them running on the Mac, where the check's interpreter was not what it is inside |
 | `alongside` says "start helpers only with `start_agent`" | As designed (the sentence the supervision design had planned) | — |
 | EOF, the exit and the wake counted only live helpers | After M6: an approved or running apply, a running trial and unreturned reports keep the console past EOF and hold the exit; an approved apply runs before the wake, and a wake waits for a running apply (it would take the lock the apply needs) | Run A: the apply raced the exit and the sweep closed the applied worktree as a patch |
 | `set_plan` took lists only | A paragraph is read line by line | A Claude lead wrote one |

@@ -317,12 +317,7 @@ impl<'a> Manager<'a> {
             let trial = match merged {
                 Ok(mut trial) => {
                     if trial.state == State::Clean {
-                        trial.checks = crate::evaluator::evaluate_with(
-                            &env.config.evaluator,
-                            &trial.root,
-                            false,
-                        )
-                        .await;
+                        trial.checks = checks(&env, &trial.root).await;
                     }
                     trial
                 }
@@ -393,12 +388,7 @@ impl<'a> Manager<'a> {
             let trial = match rechecked {
                 Ok((mut trial, Ok(()))) => {
                     if trial.state == State::Clean {
-                        trial.checks = crate::evaluator::evaluate_with(
-                            &env.config.evaluator,
-                            &trial.root,
-                            false,
-                        )
-                        .await;
+                        trial.checks = checks(&env, &trial.root).await;
                     }
                     trial
                 }
@@ -581,9 +571,7 @@ impl<'a> Manager<'a> {
                 }
             };
             if again.state == State::Clean {
-                again.checks =
-                    crate::evaluator::evaluate_with(&env.config.evaluator, &again.root, false)
-                        .await;
+                again.checks = checks(&env, &again.root).await;
             }
             if again.state != State::Clean || again.checks.iter().any(|c| !c.passed) {
                 let why = format!(
@@ -823,6 +811,31 @@ fn checks_phrase(checks: &[crate::types::CheckResult]) -> String {
     } else {
         format!("checks failed ({})", failed.join(", "))
     }
+}
+
+/// The project's checks on a trial's worktree, inside the conversation's sandbox where the
+/// project has one — the trial lives in the tree, which is mounted there at the same path —
+/// so passing means passing where the agents built it, as the scheduler's checks do.
+async fn checks(env: &Env<'_>, root: &Path) -> Vec<crate::types::CheckResult> {
+    let mut sandbox = env.config.sandbox.clone();
+    if crate::sandbox::placement(env.data, env.root, sandbox.force)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        sandbox.session_root = Some(env.workspace.clone());
+    }
+    let placement = crate::sandbox::placement_for(env.data, root, &sandbox)
+        .ok()
+        .flatten();
+    crate::evaluator::detailed_in(
+        &env.config.evaluator,
+        root,
+        false,
+        placement.as_ref().map(|p| (&sandbox, p)),
+    )
+    .await
+    .0
 }
 
 /// Writes one trial under the repository's exclusive lock, on a blocking thread.
