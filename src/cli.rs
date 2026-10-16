@@ -369,6 +369,13 @@ pub enum RosterCommand {
         #[arg(long)]
         off: bool,
     },
+    /// What you want one model for, in your words; no text removes the note.
+    Note {
+        agent: String,
+        /// The model ID, or a fragment of it as `orochi roster show` lists them.
+        model: String,
+        text: Vec<String>,
+    },
     /// Ask an agent to propose a roster from what each model is for and what it has measured
     /// here, write it down as the decision, and show it; adjust it with `set` afterwards.
     Suggest {
@@ -1567,6 +1574,18 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     );
                     println!("wrote {}", paths.config.display());
                 }
+                RosterCommand::Note { agent, model, text } => {
+                    let mut config = config;
+                    let text = text.join(" ");
+                    crate::roster::set_note(&mut config, &agent, &model, &text)?;
+                    config.save(&paths.config)?;
+                    let entry = config.agents.iter().find(|a| a.id == agent).unwrap();
+                    match entry.notes.get(model.trim()) {
+                        Some(note) => println!("{agent} {model}: {note}"),
+                        None => println!("{agent} {model}: no note"),
+                    }
+                    println!("wrote {}", paths.config.display());
+                }
                 RosterCommand::Suggest { dry_run } => {
                     let suggestion = tokio::select! {
                         result = crate::roster::suggest(&config, &policies, &store, &root) => result?,
@@ -2347,6 +2366,9 @@ fn print_roster(listing: &crate::roster::Listing) {
                 model.id,
                 model.about
             );
+            if let Some(note) = &model.note {
+                println!("    you said: {note}");
+            }
         }
     }
 }

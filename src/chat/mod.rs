@@ -160,7 +160,7 @@ const COMMANDS: [Command; 17] = [
     Command {
         name: "roster",
         aliases: &[],
-        usage: "[set <agent> [models…|off] | suggest]",
+        usage: "[set <agent> [models…|off] | note <agent> <model> [text] | suggest]",
         about: "Which of each agent's models may be used: show, set by hand, or have one proposed",
         anytime: false,
     },
@@ -2151,10 +2151,26 @@ impl Session<'_> {
             self.adopt(fresh);
             return;
         }
+        if let Some(rest) = argument.strip_prefix("note") {
+            let mut words = rest.split_whitespace();
+            let (Some(agent), Some(model)) = (words.next(), words.next()) else {
+                self.view
+                    .result(WARN, "/roster note <agent> <model> [what you want it for]");
+                return;
+            };
+            let text = words.collect::<Vec<_>>().join(" ");
+            let mut fresh = self.config.clone();
+            if let Err(error) = crate::roster::set_note(&mut fresh, agent, model, &text) {
+                self.view.result(ERR, &format!("✗ {error:#}"));
+                return;
+            }
+            self.adopt(fresh);
+            return;
+        }
         if !argument.is_empty() {
             self.view.result(
                 WARN,
-                "/roster · /roster set <agent> [models…|off] · /roster suggest",
+                "/roster · /roster set <agent> [models…|off] · /roster note <agent> <model> [text] · /roster suggest",
             );
             return;
         }
@@ -2187,6 +2203,9 @@ impl Session<'_> {
                     model.id,
                     self.view.paint(MUTED, &model.about)
                 ));
+                if let Some(note) = &model.note {
+                    rows.push(format!("      you said: {note}"));
+                }
             }
         }
         rows.push(self.view.paint(

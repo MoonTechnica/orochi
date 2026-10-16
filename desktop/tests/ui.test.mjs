@@ -2574,7 +2574,7 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
       {
         id: "claude", provider: "anthropic", enabled: true, routing_only: false, models: ["opus"],
         known: [
-          { id: "opus", chosen: true, tier: "frontier", about: "Complex agentic coding" },
+          { id: "opus", chosen: true, tier: "frontier", about: "Complex agentic coding", note: "design and review" },
           { id: "sonnet", chosen: false, tier: "standard", about: "Everyday coding" },
         ],
         discovered_at: 5,
@@ -2602,7 +2602,17 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   const cards = host.querySelectorAll("div").filter((d) => d.className.includes("roster-agent")).map((d) => d.dataset.agent);
   assert.deepEqual(cards, ["claude", "codex"]);
 
-  const boxes = host.querySelectorAll("input").filter((b) => b.dataset.model);
+  const notes = host.querySelectorAll("input").filter((i) => i.type === "text" && i.dataset.model);
+  assert.equal(notes.length, 2, "a note field beside every model");
+  assert.equal(notes.find((i) => i.dataset.model === "opus").value, "design and review");
+  const sonnetNote = notes.find((i) => i.dataset.model === "sonnet");
+  sonnetNote.value = "everyday edits";
+  sonnetNote.dispatch("change");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const noted = calls.find(([name]) => name === "set_roster_note");
+  assert.deepEqual(noted[1], { agent: "claude", model: "sonnet", text: "everyday edits" });
+
+  const boxes = host.querySelectorAll("input").filter((b) => b.type === "checkbox" && b.dataset.model);
   assert.equal(boxes.length, 2);
   const opus = boxes.find((b) => b.dataset.model === "opus");
   const sonnet = boxes.find((b) => b.dataset.model === "sonnet");
@@ -2614,7 +2624,7 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   let set = calls.filter(([name]) => name === "set_roster").at(-1);
   assert.deepEqual(set[1], { agent: "claude", models: [], off: false }, "every model checked is no roster at all");
 
-  const again = el("settings-body").querySelectorAll("input").filter((b) => b.dataset.model);
+  const again = el("settings-body").querySelectorAll("input").filter((b) => b.type === "checkbox" && b.dataset.model);
   const opusAgain = again.find((b) => b.dataset.model === "opus");
   opusAgain.checked = false;
   opusAgain.dispatch("change");

@@ -429,6 +429,12 @@ pub struct AgentConfig {
     /// here or not, being the user's later word.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
+    /// What the user wants each model for, in their own words, keyed like `models` (a fragment
+    /// of the ID; the longest that matches a model is its note). Shown to the classifier
+    /// beside the provider's description of the model, so work that fits goes there sooner;
+    /// a tilt, never a gate.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub notes: BTreeMap<String, String>,
     /// Set on a launch Orochi wrapped into a project's sandbox (`sandbox::Placement::launch`),
     /// never read from configuration: stdio servers that name this machine's executables
     /// cannot start inside it.
@@ -542,11 +548,20 @@ impl AgentConfig {
             image: false,
             routing_only: false,
             models: vec![],
+            notes: BTreeMap::new(),
             sandboxed: false,
             sandbox_files: vec![],
             sandbox_env: vec![],
             lean: None,
         }
+    }
+    /// The user's note for a model: the longest note key that matches its ID.
+    pub fn note_for(&self, model: &str) -> Option<&str> {
+        self.notes
+            .iter()
+            .filter(|(key, _)| crate::policy::matches(key, model))
+            .max_by_key(|(key, _)| key.len())
+            .map(|(_, note)| note.as_str())
     }
     /// Whether the roster lets this agent run a model it advertised.
     pub fn admits(&self, model: &str) -> bool {
@@ -895,6 +910,16 @@ impl Config {
                 ensure!(
                     !pattern.trim().is_empty() && pattern.chars().count() <= 64,
                     "invalid model pattern for agent {}",
+                    agent.id
+                );
+            }
+            for (key, note) in &agent.notes {
+                ensure!(
+                    !key.trim().is_empty()
+                        && key.chars().count() <= 64
+                        && !note.trim().is_empty()
+                        && note.chars().count() <= 200,
+                    "invalid model note for agent {}",
                     agent.id
                 );
             }

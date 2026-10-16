@@ -3425,6 +3425,20 @@ function drawRoster(host, roster) {
         await drawScreen();
       });
       row.append(box, text("code", null, model.id), text("span", "where", model.about));
+      // What this model is for, in the person's own words: kept as typed, read when a task
+      // is routed, and a tilt toward this model for work that fits rather than a rule.
+      const note = document.createElement("input");
+      note.type = "text";
+      note.className = "note";
+      note.placeholder = "what you want it for…";
+      note.value = model.note || "";
+      note.dataset.model = model.id;
+      note.addEventListener("click", (event) => event.preventDefault?.());
+      note.addEventListener("change", async () => {
+        await call("set_roster_note", { agent: agent.id, model: model.id, text: note.value });
+        await drawScreen();
+      });
+      row.append(note);
       list.append(row);
     }
     card.append(list);
@@ -3434,7 +3448,7 @@ function drawRoster(host, roster) {
     text(
       "p",
       "caveat",
-      "Orochi picks among what is checked, by cost and by what each has done here. Unchecked is never used. \"Propose a roster\" has an agent choose from what each model is for and what it has measured; the choice is kept and you adjust it here.",
+      "Orochi picks among what is checked, by cost and by what each has done here. Unchecked is never used. A note beside a model says what you want it for, in your words, and sends work that fits there sooner. \"Propose a roster\" has an agent choose from what each model is for and what it has measured; the choice is kept and you adjust it here.",
     ),
   );
   // An agent Orochi knows of but this machine does not have: nothing to choose, so it is not

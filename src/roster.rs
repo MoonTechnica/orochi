@@ -23,6 +23,8 @@ pub struct KnownModel {
     pub chosen: bool,
     pub tier: String,
     pub about: String,
+    /// What the user wrote they want it for, if anything.
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -74,6 +76,7 @@ pub fn listing(config: &Config, policies: &Registry, data: &Path) -> Listing {
                                     chosen: agent.admits(id),
                                     tier: rule.tier.clone(),
                                     about: rule.describe(),
+                                    note: agent.note_for(id).map(str::to_owned),
                                 }
                             })
                             .collect()
@@ -106,12 +109,31 @@ pub fn set(config: &mut Config, agent: &str, models: &[String], off: bool) -> Re
     config.validate()
 }
 
+/// Writes what the user wants one model for, in their words; empty text removes the note.
+/// The key is kept as given, so a fragment written by hand keeps matching the next version.
+pub fn set_note(config: &mut Config, agent: &str, model: &str, text: &str) -> Result<()> {
+    let entry = config
+        .agents
+        .iter_mut()
+        .find(|a| a.id == agent)
+        .with_context(|| format!("no agent {agent}"))?;
+    let model = model.trim();
+    ensure!(!model.is_empty(), "which model?");
+    let text = crate::memory::clean(text, 200);
+    if text.is_empty() {
+        entry.notes.remove(model);
+    } else {
+        entry.notes.insert(model.to_owned(), text);
+    }
+    config.validate()
+}
+
 /// What a proposal is asked for. The list it is given is content-free but for what is
 /// remembered, which the classifier is already shown: agents, their models with what each is
 /// for and what it costs, and what each route has measured here.
 pub const SUGGEST: &str = "You are choosing which models a routing scheduler may use on this machine. Do not read files, run commands or use any tool. \"agents\" lists each agent, the models it advertised, what each model is for and its price relative to the others (under 0.3 is nearly free: a model running on this machine, or a free tier), and what each has measured here (verified runs and their success rate, by kind of task). \"remembered\" is what the user has said they want. \"current\" is the roster as it stands. Reply ONLY with a JSON object:\n\
 {\"roster\":{\"<agent>\":[\"<model id>\"]},\"preferences\":[{\"text\":\"...\",\"scope\":\"user\"}],\"why\":\"...\"}\n\n\
-roster: for every agent, the models worth keeping, copied exactly from its own list and never a name that is not there, at least one per agent. Keep one cheap model and one capable model, keep a model that runs on this machine, keep what has measured well here, and drop the rest: older versions, duplicates of one tier, and variants nothing distinguishes.\n\
+roster: for every agent, the models worth keeping, copied exactly from its own list and never a name that is not there, at least one per agent; a model with \"you_said\" is one the user wants for something and stays. Keep one cheap model and one capable model, keep a model that runs on this machine, keep what has measured well here, and drop the rest: older versions, duplicates of one tier, and variants nothing distinguishes.\n\
 preferences: at most three short sentences, each saying what kind of work should go to which agent or model and why, drawn from the measurements and from what is remembered; in the user's language where they have written any. None where nothing supports one, and never one that repeats what is already remembered.\n\
 why: one sentence on what decided it.";
 
@@ -138,6 +160,9 @@ pub fn request(config: &Config, policies: &Registry, store: &Store, remembered: 
                         "about": rule.describe(),
                         "price": rule.relative_tokens * rule.price(),
                     });
+                    if let Some(note) = agent.note_for(id) {
+                        model["you_said"] = json!(note);
+                    }
                     let runs: Vec<&Value> = measured
                         .iter()
                         .filter(|m| m["agent"] == agent.id && m["model"] == *id)

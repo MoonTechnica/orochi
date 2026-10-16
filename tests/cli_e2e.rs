@@ -3931,6 +3931,16 @@ fn the_roster_is_set_by_hand_or_proposed_and_a_proposal_names_only_models_that_e
         dry["candidates"][0]["model"], "astra-test",
         "named for the run, it is taken"
     );
+    let output = w.run(&["roster", "note", "test", "astra-test", "big", "refactors"]);
+    success(&output);
+    let written = std::fs::read_to_string(w.dir.path().join("config.toml")).unwrap();
+    assert!(
+        written.contains("astra-test = \"big refactors\""),
+        "{written}"
+    );
+    w.config.agents[0]
+        .notes
+        .insert("astra-test".into(), "big refactors".into());
     let output = w.run(&["roster", "show"]);
     success(&output);
     let shown = String::from_utf8_lossy(&output.stdout);
@@ -3938,6 +3948,7 @@ fn the_roster_is_set_by_hand_or_proposed_and_a_proposal_names_only_models_that_e
         shown.contains("* sol-test") && shown.contains("  astra-test"),
         "{shown}"
     );
+    assert!(shown.contains("you said: big refactors"), "{shown}");
 
     let output = w.run(&["roster", "suggest"]);
     success(&output);

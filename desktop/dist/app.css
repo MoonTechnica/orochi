@@ -1341,3 +1341,5 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .roster-missing { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; color: var(--muted); }
 .roster-missing strong { color: var(--text); font-weight: 500; }
 .roster-missing button.link { border: 0; background: none; color: var(--brand); padding: 0; font: inherit; cursor: pointer; }
+.roster-model { display: grid; grid-template-columns: 14px auto minmax(0, 1fr) 220px; align-items: center; gap: 8px; }
+:is(#panel-body, #settings-body) .roster-model input.note { margin: 0; max-width: none; padding: 3px 6px; font-size: 12px; }

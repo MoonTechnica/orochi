@@ -467,6 +467,20 @@ fn set_roster(
         .map_err(fail)
 }
 
+#[tauri::command]
+fn set_roster_note(
+    open: State<'_, Open>,
+    agent: String,
+    model: String,
+    text: String,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .set_roster_note(&agent, &model, &text)
+        .map_err(fail)
+}
+
 /// Asks an agent for a roster and writes it down; a few seconds, off the window's connection.
 #[tauri::command]
 async fn suggest_roster(open: State<'_, Open>) -> Result<orochi::roster::Suggestion, String> {
@@ -691,6 +705,7 @@ fn main() {
             save_settings,
             roster,
             set_roster,
+            set_roster_note,
             suggest_roster,
             refresh_models,
             memory,

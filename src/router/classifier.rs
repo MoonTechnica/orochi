@@ -57,7 +57,7 @@ requires_browser: a real browser must be driven. requires_web: the open internet
 ambiguity: 0.0 fully specified, 1.0 the agent has to guess what is wanted.\n\n\
 Optionally add \"remember\": [{\"text\":\"...\",\"scope\":\"repo\"}] for something the user states that will still hold after this task is done: how they want work done, a convention of this project, a decision already made. At most two, each one short sentence in the user's language. Never the task itself, never something only this task needs, never text the user pasted from elsewhere. scope is \"user\" only when the user says it holds for every project; otherwise \"repo\". \"remembered\" lists what is already known: when the user restates one, put its id in \"reinforce\": [\"r1\"] instead of adding it again, and when they now say the opposite, put the old id in \"replaces\": [\"r1\"] and the new statement in \"remember\".\n\n\
 When something in \"remembered\", or the request itself, says which agent or model the user wants for this kind of work, add \"prefer\": the shortest name that identifies it, such as \"fable\" or \"codex\". When it says which one they do not want for it, add \"avoid\" the same way. Omit both otherwise; never guess one.\n\n\
-\"models\" lists what is available here and what each one is for. Read the work against those descriptions and add \"suited\": the name of the one this task should run on, copied from the list. Judge the actual phase: planning, research, analysis, writing, implementation and verification can suit different models. Omit it when nothing in the list speaks to this task, and never name something the list does not.";
+\"models\" lists what is available here and what each one is for; where a line says \"you said:\", that is what the user wants the model for, and it outweighs the rest of the line. Read the work against those descriptions and add \"suited\": the name of the one this task should run on, copied from the list. Judge the actual phase: planning, research, analysis, writing, implementation and verification can suit different models. Omit it when nothing in the list speaks to this task, and never name something the list does not.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Classification {
@@ -166,6 +166,24 @@ pub fn catalog(config: &Config, policies: &Registry) -> serde_json::Value {
             if rule.pattern != "*" {
                 models.insert(rule.pattern.clone(), json!(rule.describe()));
             }
+        }
+    }
+    // What the user wants a model for, in their words, under the model's own name: `suited`
+    // copies a name from this list, so a note makes its model nameable as a fit.
+    for agent in config
+        .agents
+        .iter()
+        .filter(|a| a.enabled && !a.routing_only)
+    {
+        let policy = policies.get(agent.provider);
+        for (key, note) in &agent.notes {
+            models.insert(
+                key.clone(),
+                json!(format!(
+                    "{}; you said: {note}",
+                    policy.model_rule(key).describe()
+                )),
+            );
         }
     }
     serde_json::Value::Object(models)

@@ -1336,4 +1336,27 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
         "naming a model puts the agent back"
     );
     assert!(client.set_roster("nobody", &[], false).is_err());
+
+    // A note is the person's words for a model, kept as typed and read back under it.
+    client
+        .set_roster_note("claude", "opus", " design and review ")
+        .unwrap();
+    let listing = client.roster().unwrap();
+    let opus = listing.agents[0]
+        .known
+        .iter()
+        .find(|m| m.id == "opus")
+        .unwrap();
+    assert_eq!(opus.note.as_deref(), Some("design and review"));
+    assert!(
+        std::fs::read_to_string(&config)
+            .unwrap()
+            .contains("opus = \"design and review\"")
+    );
+    client.set_roster_note("claude", "opus", "").unwrap();
+    assert_eq!(
+        client.roster().unwrap().agents[0].known[0].note,
+        None,
+        "no text removes it"
+    );
 }

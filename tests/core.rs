@@ -1821,6 +1821,30 @@ mod fit {
         let listed = catalog.as_object().unwrap();
         assert!(listed.contains_key("fable") && listed.contains_key("opus"));
         assert!(!listed.contains_key("*"), "the fallback is not a model");
+
+        // What the user wants a model for goes beside the provider's line, under the model's
+        // own name, so `suited` can name it; the name is all the reply may carry back.
+        let mut noted = anthropic_only.clone();
+        noted.agents[0]
+            .notes
+            .insert("claude-opus-5".into(), "design and review".into());
+        let catalog = classifier::catalog(&noted, &registry);
+        let line = catalog["claude-opus-5"].as_str().unwrap();
+        assert!(
+            line.contains("agentic coding") && line.ends_with("you said: design and review"),
+            "{line}"
+        );
+        assert_eq!(
+            noted.agents[0].note_for("claude-opus-5-20261001"),
+            Some("design and review")
+        );
+        assert_eq!(noted.agents[0].note_for("sonnet"), None);
+        let reply =
+            r#"{"task_type":"architecture","complexity":"normal","suited":"claude-opus-5"}"#;
+        assert_eq!(
+            classifier::parse(reply).unwrap().suited.as_deref(),
+            Some("claude-opus-5")
+        );
         assert!(
             !listed.contains_key("astra"),
             "a provider with no agent here"

@@ -624,6 +624,13 @@ impl Client {
         config.save(&self.config)
     }
 
+    /// What the user wants one model for, from the screen; empty text removes it.
+    pub fn set_roster_note(&self, agent: &str, model: &str, text: &str) -> Result<()> {
+        let mut config = orochi::config::Config::load(&self.config)?;
+        orochi::roster::set_note(&mut config, agent, model, text)?;
+        config.save(&self.config)
+    }
+
     pub fn memory(&self) -> Result<Remembered> {
         let path = self.data.join("memory/USER.md");
         Ok(Remembered {
