@@ -3364,15 +3364,17 @@ function drawRoster(host, roster) {
   });
   head.append(propose, refresh);
   section.append(head);
-  const entries = (roster?.agents || []).filter((a) => !a.routing_only);
-  if (!entries.length) {
+  const all = (roster?.agents || []).filter((a) => !a.routing_only);
+  const entries = all.filter((a) => a.installed !== false);
+  const absent = all.filter((a) => a.installed === false);
+  if (!entries.length && !absent.length) {
     section.append(text("p", "empty", "No agents are configured."));
     host.append(section);
     return;
   }
   // A first look, before any agent has been started here: say what the button does once,
   // rather than once per agent.
-  if (entries.every((a) => !a.known.length)) {
+  if (entries.length && entries.every((a) => !a.known.length)) {
     section.append(
       text(
         "p",
@@ -3435,6 +3437,22 @@ function drawRoster(host, roster) {
       "Orochi picks among what is checked, by cost and by what each has done here. Unchecked is never used. \"Propose a roster\" has an agent choose from what each model is for and what it has measured; the choice is kept and you adjust it here.",
     ),
   );
+  // An agent Orochi knows of but this machine does not have: nothing to choose, so it is not
+  // a card with a checkbox, only a line and the way to put it in.
+  if (absent.length) {
+    const missing = text("div", "roster-absent");
+    missing.append(text("div", "where", "Not on this machine"));
+    for (const agent of absent) {
+      const row = text("div", "roster-missing");
+      row.dataset.agent = agent.id;
+      row.append(text("strong", null, agent.id), text("span", "where", agent.provider));
+      const setup = text("button", "link", "Set up…");
+      setup.addEventListener("click", () => openSetup());
+      row.append(setup);
+      missing.append(row);
+    }
+    section.append(missing);
+  }
   host.append(section);
 }
 

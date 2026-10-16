@@ -35,6 +35,10 @@ pub struct Entry {
     pub models: Vec<String>,
     pub known: Vec<KnownModel>,
     pub discovered_at: Option<i64>,
+    /// Whether the agent is on this machine, as `orochi agents` reports it: an agent that is
+    /// not installed has no roster to choose, only a setup to run.
+    pub installed: bool,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,7 +54,10 @@ pub fn listing(config: &Config, policies: &Registry, data: &Path) -> Listing {
         .map(|agent| {
             let policy = policies.get(agent.provider);
             let seen = known.get(&agent.id);
+            let availability = discovery::inspect(agent, &config.discovery, data);
             Entry {
+                installed: matches!(availability.status, "ready" | "adapter_required"),
+                status: availability.status.to_owned(),
                 id: agent.id.clone(),
                 provider: agent.provider.to_string(),
                 enabled: agent.enabled,

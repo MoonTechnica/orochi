@@ -1336,3 +1336,8 @@ details[open] > summary .icon { transform: rotate(90deg); }
 #settings-close { margin-left: auto; border: 0; color: var(--muted); font-size: 20px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
 #settings-close:hover { color: var(--text); }
 #settings-body { overflow: auto; padding: var(--gutter); min-height: 0; }
+.roster-absent { margin-top: 14px; }
+.roster-absent .where { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.roster-missing { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; color: var(--muted); }
+.roster-missing strong { color: var(--text); font-weight: 500; }
+.roster-missing button.link { border: 0; background: none; color: var(--brand); padding: 0; font: inherit; cursor: pointer; }

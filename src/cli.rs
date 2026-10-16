@@ -2332,7 +2332,12 @@ fn print_roster(listing: &crate::roster::Listing) {
                 agent.models.join(", ")
             }
         );
-        if agent.known.is_empty() {
+        if !agent.installed {
+            println!(
+                "  ({}: `orochi setup --install {}`)",
+                agent.status, agent.id
+            );
+        } else if agent.known.is_empty() {
             println!("  (not discovered here yet: `orochi agents --discover`)");
         }
         for model in &agent.known {

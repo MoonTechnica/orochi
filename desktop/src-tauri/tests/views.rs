@@ -1295,6 +1295,10 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
     let claude = &listing.agents[0];
     assert_eq!(claude.models, ["opus"]);
     assert_eq!(claude.discovered_at, Some(5));
+    assert!(
+        !claude.status.is_empty(),
+        "whether it is on this machine is said"
+    );
     let chosen: Vec<(&str, bool)> = claude
         .known
         .iter()

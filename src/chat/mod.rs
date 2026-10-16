@@ -2175,7 +2175,9 @@ impl Session<'_> {
                     entry.models.join(", ")
                 }
             ));
-            if entry.known.is_empty() {
+            if !entry.installed {
+                rows.push(self.view.paint(MUTED, &format!("  {}", entry.status)));
+            } else if entry.known.is_empty() {
                 rows.push(self.view.paint(MUTED, "  not discovered here yet"));
             }
             for model in &entry.known {
