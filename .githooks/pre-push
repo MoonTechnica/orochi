@@ -1,7 +1,7 @@
 #!/bin/sh
-# The fast half of CI, before anything leaves this machine: formatting and clippy, about
-# twenty seconds once built. The tests run on CI, which nothing waits for. Enabled by
-# `mise run setup`; `git push --no-verify` skips it.
+# Formatting and clippy before anything leaves this machine, about twenty seconds once built.
+# CI runs only by hand, so the tests are this machine's to run: `mise run check` before a
+# push to main. Enabled by `mise run setup`; `git push --no-verify` skips it.
 set -eu
 
 pushing=false

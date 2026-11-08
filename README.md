@@ -82,7 +82,7 @@ cargo install --path . --locked
 orochi --help
 ```
 
-Rust is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` sets up the same Rust plus the Node and Python the tests need (`mise.toml`) and `mise run setup` turns on the pre-push hook (fmt and clippy). `mise run quick` is the loop while working, `mise run check` runs everything CI checks, the desktop crate included; `mise tasks` lists the rest.
+Rust is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` sets up the same Rust plus the Node and Python the tests need (`mise.toml`) and `mise run setup` turns on the pre-push hook (fmt and clippy). `mise run quick` is the loop while working, `mise run check` runs every check, the desktop crate included, and is run before pushing to main: CI runs only when started by hand from the Actions tab. `mise tasks` lists the rest.
 
 A release is cut by tagging: `scripts/version.sh <x.y.z>` sets the one version the CLI, the window and the bundle all carry, and `git push origin v<x.y.z>` builds and publishes it (`.github/workflows/release.yml`; running that workflow by hand builds everything and publishes nothing, which is how to find out whether a release would succeed before cutting one). The workflow refuses a tag that does not name the version in the manifests.
 
@@ -578,7 +578,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 ```
 
-The E2E tests start Python 3 ACP fixtures as real child processes. The adviser is also verified with an ACP fixture. No real account, external LLM or API billing is needed. CI targets Linux/macOS. Verification on real Windows machines and bulk termination of descendant processes on Windows are not supported.
+The E2E tests start Python 3 ACP fixtures as real child processes. The adviser is also verified with an ACP fixture. No real account, external LLM or API billing is needed. The suite targets Linux/macOS (CI, run by hand, covers both and compiles the CLI for Windows). Verification on real Windows machines and bulk termination of descendant processes on Windows are not supported.
 
 [examples/compare_live.py](examples/compare_live.py) runs the tasks of [examples/compare-suite.json](examples/compare-suite.json) three ways — each CLI alone as its owner configured it, and Orochi with both — scoring every arm by a hidden check and charging it every token its runs recorded, the classifier's included. `--validate` checks the suite without contacting an agent; `--execute` consumes quota.
 
