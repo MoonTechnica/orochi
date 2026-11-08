@@ -1855,32 +1855,66 @@ impl<'a> Session<'a> {
                     .unwrap_or_else(|| "/help for commands".into()),
             ),
         }
-        // The threads of the members the lead works with, where a terminal can keep them in
-        // view: running ones first, each with what it has held.
-        let mut shown: Vec<String> = vec![];
-        for helper in &self.background.helpers {
-            let replies = self.threads.get(&helper.name).map_or(0, |t| t.replies);
-            shown.push(if replies > 0 {
-                format!("{} ● {replies}", helper.name)
-            } else {
-                format!("{} ●", helper.name)
-            });
-        }
-        for (name, stat) in &self.threads {
-            if stat.replies > 0 && !self.background.helpers.iter().any(|h| h.name == *name) {
-                shown.push(format!("{name} {}", stat.replies));
-            }
-        }
-        if !shown.is_empty() {
-            shown.truncate(4);
-            parts.push(format!("💬 {}", shown.join(" │ ")));
-        }
         let status = fit(
             &parts.join(" · "),
             self.view.term.columns().saturating_sub(1),
         );
         self.view.term.status = self.view.paint(MUTED, &status);
+        self.view.term.threads = self.thread_row();
         self.view.term.render();
+    }
+
+    /// The members' threads in one row, pinned above the input: `💬 spec ● 3 │ explorer ✓ 1 @`,
+    /// a running member marked `●`, one that finished `✓`, its replies, and `@` where something
+    /// waits on the person. Empty, and so no row, while the conversation has no members.
+    fn thread_row(&self) -> String {
+        let mut shown: Vec<String> = vec![];
+        let mut named: BTreeSet<String> = BTreeSet::new();
+        if let Some(recorded) = &self.recorded
+            && let Some(thread) = &recorded.thread
+            && let Ok(members) = recorded.store().members(thread)
+        {
+            for member in members {
+                let running = member.live
+                    || self
+                        .background
+                        .helpers
+                        .iter()
+                        .any(|h| h.name == member.name);
+                let replies = member.replies.max(
+                    self.threads
+                        .get(&member.name)
+                        .map_or(0, |t| t.replies as i64),
+                );
+                let mut text = format!("{} {}", member.name, if running { "●" } else { "✓" });
+                if replies > 0 {
+                    text.push_str(&format!(" {replies}"));
+                }
+                if member.needs.is_some() {
+                    text.push_str(" @");
+                }
+                named.insert(member.name);
+                shown.push(text);
+            }
+        }
+        for helper in &self.background.helpers {
+            if !named.contains(&helper.name) {
+                shown.push(
+                    match self.threads.get(&helper.name).map_or(0, |t| t.replies) {
+                        0 => format!("{} ●", helper.name),
+                        replies => format!("{} ● {replies}", helper.name),
+                    },
+                );
+            }
+        }
+        if shown.is_empty() {
+            return String::new();
+        }
+        let line = format!("💬 {}", shown.join(" │ "));
+        self.view.paint(
+            MUTED,
+            &fit(&line, self.view.term.columns().saturating_sub(1)),
+        )
     }
 }
 

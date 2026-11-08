@@ -362,15 +362,21 @@ been run against a real agent CLI.
   `└ name's thread` line, what was sent to the channel and what mentions `@you` are written),
   `@you` is reverse video with a bell, `@` lists the members with the `/` list's keys, a message
   mentioning a member (and not the lead) is a note to it, `/thread [member]`, and the member
-  threads in the status row **as far as it fits** (`💬 spec ● 3 │ …` is cut off at 80 columns
-  while helpers are listed). ↓'s list holds every member, the running ones with `x` to stop and the
-  ones that finished below them; Enter opens a thread and a line typed there is a reply in it
-  (a finished member is continued by it). **Not built:** the separate pinned thread row.
+  threads in a row of their own pinned above the input (`💬 spec ● 3 │ explorer ✓ 1 @`: running
+  `●`, finished `✓`, its replies, `@` where something waits on the person; `Term::threads`, no
+  row while the conversation has no members). ↓'s list holds every member, the running ones with
+  `x` to stop and the ones that finished below them; Enter opens a thread and a line typed there
+  is a reply in it (a finished member is continued by it). Nothing in §3.1 is left unbuilt;
   `@channel`, `@you` and the lead's own name are never taken as a note to a member.
 - **Pane.** An agent's mention of `@you` puts the host pane in `waiting` with the text, until the
   person next types (`Session::mentioned`); it is not tied to the mention being marked seen.
-- **Desktop.** As §3, §5 and §6, built by `desktop/dist/app.js`; the lead is offered in the `@`
+- **Desktop.** As §3, §5 and §6, built by `desktop/dist/app.js`, except that a thread opens in a
+  column of its own inside the chat area, beside the body and left of the right section (whose
+  tabs it never replaces), with a draggable width; the lead is offered in the `@`
   list as `lead`. The window does not pass the name the lead has in the room, so `@lead` in a
   post is for the lead as a turn.
-- **Prompts as mentions (D5).** Permission and apply prompts keep their own rows and
-  notification; they are not also drawn as `@you` posts.
+- **Prompts as mentions (D5), decided against.** Permission and apply prompts keep their own
+  rows, buttons and notification; they are not also drawn as `@you` posts. A prompt already
+  notifies once (window, dock badge, pane `waiting`), marks its member's bar (`needs = asking`)
+  and sits in the body where the answer is given; a second post for the same question would be
+  the double notification D5 set out to avoid.

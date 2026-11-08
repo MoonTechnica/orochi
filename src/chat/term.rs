@@ -239,6 +239,9 @@ pub struct Term {
     pub color: bool,
     pub prompt: Prompt,
     pub status: String,
+    /// One row above the input naming the members' threads and what each holds; empty when the
+    /// conversation has none, and then it takes no row.
+    pub threads: String,
     /// Rows that take over the input area while a question is open.
     pub overlay: Option<Vec<String>>,
     /// Command candidates for what is being typed, drawn above the input line.
@@ -271,6 +274,7 @@ impl Term {
             color,
             prompt: Prompt::new(marker),
             status: String::new(),
+            threads: String::new(),
             overlay: None,
             suggestions: vec![],
             selected: 0,
@@ -468,13 +472,20 @@ impl Term {
             .take(self.rows.saturating_sub(MAX_INPUT_ROWS + 2).max(1))
             .cloned()
             .collect();
-        let (first, freed) = self.repin(suggestions.len() + rows.len() + attachments.len() + 1);
+        // The threads' row is the top of the pinned area, above what is being typed.
+        let threads: Vec<String> = Some(self.threads.clone())
+            .filter(|t| !t.is_empty())
+            .into_iter()
+            .collect();
+        let (first, freed) =
+            self.repin(threads.len() + suggestions.len() + rows.len() + attachments.len() + 1);
         let mut out = String::new();
         for row in freed..first {
             out.push_str(&format!("\x1b[{row};1H\x1b[K"));
         }
-        for (index, row) in suggestions
+        for (index, row) in threads
             .iter()
+            .chain(&suggestions)
             .chain(&rows)
             .chain(&attachments)
             .enumerate()
@@ -484,7 +495,7 @@ impl Term {
         out.push_str(&format!("\x1b[{};1H\x1b[K{}", self.rows, self.status));
         out.push_str(&format!(
             "\x1b[{};{}H\x1b[?25h",
-            first + suggestions.len() + caret.0,
+            first + threads.len() + suggestions.len() + caret.0,
             caret.1 + 1
         ));
         print!("{out}");

@@ -549,6 +549,11 @@ class BackgroundAgents(unittest.TestCase):
             c.wait("Waiting for 2 background agents to finish")
             # What the lead said to a member is one line in the channel, not the whole of it.
             self.assertTrue(c.shown("spec's thread") and c.shown("explorer's thread"), c.rows())
+            # The members' threads have a row of their own above the input, at 80 columns too.
+            rows = c.screen.text()
+            thread_row = [i for i, row in enumerate(rows) if row.startswith("💬 spec ●")]
+            self.assertTrue(thread_row and "explorer ●" in rows[thread_row[0]], c.rows())
+            self.assertLess(thread_row[0], max(i for i, row in enumerate(rows) if row.startswith(">")))
             def candidates(name):
                 return [row for row in c.screen.text() if row.startswith(f"  @{name}")]
 
