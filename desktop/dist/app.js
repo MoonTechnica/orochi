@@ -1272,6 +1272,8 @@ function drawTimeline(thread, said = []) {
   for (const item of stream) {
     if (item.kind === "said") {
       const key = item.member ? lowered(item.member) : null;
+      // A later assignment to a member that already has its thread continues that thread.
+      if (key && item.via === "handoff" && barred.has(key)) continue;
       // A reply in a thread is the thread's. A member that was never handed anything has no
       // parent post, so its bar stands where it first appears.
       if (key && item.via !== "handoff" && !item.broadcast) {
@@ -3470,17 +3472,10 @@ function reportsLine(origin, body, thread, said) {
 }
 
 /// The thread panel ----------------------------------------------------------
-function paneBefore() {
-  const open = [...document.querySelectorAll(".tab")].find((tab) => tab.getAttribute("aria-selected") === "true");
-  return open?.dataset.pane || "team";
-}
-
 async function showMember(name) {
-  if (!state.member) state.before = paneBefore();
   state.member = name;
-  el("tabs").hidden = true;
-  for (const tab of document.querySelectorAll(".tab")) el(`pane-${tab.dataset.pane}`).hidden = true;
-  el("member-panel").hidden = false;
+  // One thread column at a time, beside the body; the side pane is not touched.
+  el("member-col").hidden = false;
   el("threads-menu").hidden = true;
   el("threads-ctl").setAttribute("aria-expanded", "false");
   if (state.view) await drawMember(state.view);
@@ -3489,10 +3484,8 @@ async function showMember(name) {
 function closeMember() {
   if (!state.member) return;
   state.member = null;
-  el("member-panel").hidden = true;
-  el("tabs").hidden = false;
+  el("member-col").hidden = true;
   closeMentions();
-  showPane(state.before || "team", { draw: false });
 }
 el("member-close").addEventListener("click", closeMember);
 
@@ -3522,7 +3515,8 @@ async function drawMember(thread) {
   host.replaceChildren();
 
   // The parent: what the lead asked of the member.
-  const parent = said.find((l) => l.via === "handoff" && mine(l));
+  const handoffs = said.filter((l) => l.via === "handoff" && mine(l));
+  const parent = handoffs[0];
   const lead = leadOf(thread);
   const top = text("div", "thread-parent");
   if (parent) {
@@ -3535,6 +3529,7 @@ async function drawMember(thread) {
   // The thread: replies and the member's seats' work in the order they happened.
   const lines = [
     ...said.filter((l) => mine(l) && l.via !== "handoff").map((l) => ({ ...l, k: "said" })),
+    ...handoffs.slice(1).map((l) => ({ ...l, k: "again" })),
     ...thread.items.filter((i) => mine(i)).map((i) => ({ ...i, k: "item" })),
   ].sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0));
   const items = lines.filter((l) => l.k === "item");
@@ -3553,7 +3548,16 @@ async function drawMember(thread) {
     if (pending.length) body.append(work(pending));
     pending = [];
   };
+  let againAt = -Infinity;
   for (const line of lines) {
+    if (line.k === "again") {
+      flush();
+      body.append(text("div", "thread-divider", `${t("continued at")} ${hhmm(line.at)}`));
+      body.append(post({ who: named(line), at: line.at, text: line.text, agent: line.agent || lead.agent, provider: line.provider || lead.provider, mentions: line.mentions }, false));
+      againAt = line.at;
+      voice = null;
+      continue;
+    }
     if (line.k === "said") {
       flush();
       const who = named(line);
@@ -3568,7 +3572,7 @@ async function drawMember(thread) {
     flush();
     if (line.kind === "route") {
       // A later seat of the same member: the thread goes on where the earlier one stopped.
-      if (routed) {
+      if (routed && line.at - againAt > 120000) {
         const d = line.data || {};
         const where = [d.agent, d.model, d.reasoning].filter(Boolean).join(" · ");
         const divider = text("div", "thread-divider", `${t("continued at")} ${hhmm(line.at)}${where ? ` · ${where}` : ""}`);
@@ -5245,6 +5249,8 @@ async function openChangesAt(path) {
 const WIDTHS = {
   left: { handle: "sidebar-resizer", initial: 260, min: 180, max: 480 },
   right: { handle: "side-resizer", initial: 320, min: 240, max: 640 },
+  // The thread column takes its width from the body alone; the panels keep theirs.
+  thread: { handle: "member-resizer", initial: 380, min: 280, max: Infinity },
 };
 const CONVERSATION = 360;
 const widths = (() => {
@@ -5252,6 +5258,7 @@ const widths = (() => {
   return {
     left: Number.isFinite(stored?.left) ? stored.left : null,
     right: Number.isFinite(stored?.right) ? stored.right : null,
+    thread: Number.isFinite(stored?.thread) ? stored.thread : null,
   };
 })();
 
@@ -5259,6 +5266,12 @@ function widthOf(which) {
   return widths[which] ?? WIDTHS[which].initial;
 }
 function clampWidth(which, px) {
+  if (which === "thread") {
+    // At most 60% of the centre, and the body keeps a readable column.
+    const centre = (window.innerWidth || 1440) - widthOf("left") - widthOf("right");
+    const room = Math.min(Math.round(centre * 0.6), centre - CONVERSATION);
+    return Math.round(Math.max(WIDTHS.thread.min, Math.min(room, px)));
+  }
   const { min, max } = WIDTHS[which];
   const other = widthOf(which === "left" ? "right" : "left");
   const room = (window.innerWidth || Infinity) - other - CONVERSATION;
@@ -5270,6 +5283,11 @@ function applyWidth(which) {
   if (px === null) style.removeProperty(`--${which}`);
   else style.setProperty(`--${which}`, `${px}px`);
   el(WIDTHS[which].handle).setAttribute("aria-valuenow", String(widthOf(which)));
+  // Giving a panel more room takes it from the body, and the thread column with it.
+  if (which !== "thread" && widths.thread !== null) {
+    widths.thread = clampWidth("thread", widths.thread);
+    style.setProperty("--thread", `${widths.thread}px`);
+  }
 }
 function setWidth(which, px) {
   widths[which] = px === null ? null : clampWidth(which, px);
@@ -5289,7 +5307,9 @@ for (const which of Object.keys(WIDTHS)) {
     handle.classList?.add("active");
     document.body.classList?.add("resizing");
     const move = (moved) => {
-      const px = which === "left" ? moved.clientX : window.innerWidth - moved.clientX;
+      const px = which === "left" ? moved.clientX
+        : which === "right" ? window.innerWidth - moved.clientX
+        : window.innerWidth - widthOf("right") - moved.clientX;
       widths[which] = clampWidth(which, px);
       applyWidth(which);
     };

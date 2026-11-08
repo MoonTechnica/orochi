@@ -46,7 +46,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
-    "threads-ctl", "threads-menu", "mention-list", "member-panel", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
+    "threads-ctl", "threads-menu", "mention-list", "split", "chat", "member-col", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
     "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
@@ -57,7 +57,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "place", "place-head", "place-title", "place-close", "place-body", "place-root-label",
     "place-root", "place-modes-label", "place-modes", "place-note", "place-more",
     "place-advanced", "place-docker", "place-error", "place-foot", "place-cancel", "place-go",
-    "app", "side", "sidebar-resizer", "side-resizer",
+    "app", "side", "sidebar-resizer", "side-resizer", "member-resizer",
     "pane-files", "files-head", "files-where", "files-refresh",
     "tree-search", "tree-by", "tree", "viewer",
     "context-menu", "confirm", "confirm-title", "confirm-body", "confirm-foot", "confirm-cancel", "confirm-go",
@@ -2343,7 +2343,7 @@ test("each panel's inner edge drags to a width this window remembers, and never 
   // The right pane is measured from the window's right edge.
   drag("side-resizer", 1400 - 320, 1400 - 500);
   assert.equal(el("app").style["--right"], "500px");
-  assert.deepEqual(JSON.parse(localStorage.getItem("widths")), { left: 360, right: 500 });
+  assert.deepEqual(JSON.parse(localStorage.getItem("widths")), { left: 360, right: 500, thread: null });
 
   // Past its bounds a panel stops, and it stops before the conversation gets narrower than a
   // readable column: with the pane at 640, the sidebar gets 1400 - 640 - 360, under its cap.
@@ -2874,6 +2874,7 @@ test("thread replies stay out of the body; assignments, posts to the channel and
   assert.match(drawn, /also cover bool/, "and so is what the person said");
   assert.doesNotMatch(drawn, /Tests only, greet\.py left alone/, "a reply in a thread is not in the body");
   assert.doesNotMatch(drawn, /Tests only$/m, "nor is the lead's answer to it");
+  assert.doesNotMatch(drawn, /also cover the bool case/, "a later assignment to a member that has its bar continues the thread, not the body");
   assert.doesNotMatch(drawn, /float case/, "nor is a member's word to another");
   assert.doesNotMatch(drawn, /implementer joined|joined/, "arriving is not a post");
   assert.doesNotMatch(drawn, /Added the bool case/, "a member's own work and reports are its thread's");
@@ -2911,19 +2912,35 @@ test("a thread's bar says how many replies, the last one, and where the member s
   assert.match(done.el("timeline").render(), /applied/);
 });
 
-test("the bar opens the thread in the side pane in place of the tabs, and the cross brings them back", async () => {
+test("the bar opens the thread as a column beside the body, and the side pane is left exactly as it was", async () => {
   const { el, calls } = await open(channel());
-  assert.equal(el("tabs").hidden, false);
+  const fixed = () => el("tabs").querySelectorAll("button").filter((b) => b.dataset.pane).map((b) => b.dataset.pane);
+  const side = () => el("side").render();
+  const panes = () => ["team", "work", "changes", "plan", "files"].map((p) => el(`pane-${p}`).hidden);
+  assert.equal(el("member-col").hidden, true, "no thread column until one is opened");
+  assert.deepEqual(fixed(), ["team", "work", "changes", "plan", "files"]);
+  const before = { side: side(), panes: panes() };
   el("timeline").querySelectorAll(".thread-bar")[0].dispatch("click");
   await wait();
-  assert.equal(el("member-panel").hidden, false, "the panel is open");
-  assert.equal(el("tabs").hidden, true, "the tabs make way for it");
+  assert.equal(el("member-col").hidden, false, "the column is open");
+  assert.ok(el("thread").contains(el("member-col")), "inside the centre area");
+  assert.ok(el("split").contains(el("chat")) && el("split").contains(el("member-col")), "beside the body, in one row");
+  assert.ok(!el("side").contains(el("member-col")), "not inside the side pane");
+  assert.match(el("member-title").render(), /implementer/, "headed by the member's name");
+  assert.equal(el("tabs").hidden, false);
+  assert.deepEqual(fixed(), ["team", "work", "changes", "plan", "files"], "all five tabs, untouched");
+  assert.equal(side(), before.side, "and what the side pane draws is the same");
+  assert.deepEqual(panes(), before.panes, "with the same pane showing");
+  el("tabs").querySelectorAll("button").find((b) => b.dataset.pane === "work").dispatch("click");
+  assert.equal(el("pane-work").hidden, false, "tabs still work with the thread open");
+  assert.equal(el("member-col").hidden, false, "and do not close it");
+  assert.match(el("member-body").render(), /continued at \d\d:\d\d[\s\S]*also cover the bool case/, "a later assignment is in the thread");
   const drawn = el("member-body").render();
   assert.match(drawn, /tests: add tests for greet/, "the parent is first");
   assert.match(drawn, /Tests only, greet\.py left alone/, "then the replies");
   assert.match(drawn, /Tests only/, "of both sides");
   assert.match(drawn, /tool call/, "and the member's work, folded");
-  assert.match(drawn, /continued at \d\d:\d\d · opencode · qwen3\.8-27b/, "a later seat is a divider where it began");
+  assert.match(drawn, /continued at \d\d:\d\d/, "a later seat is a divider where it began");
   assert.match(drawn, /Added the bool case; 7\/7 pass/);
   assert.equal(el("member-body").querySelectorAll(".post").filter((p) => p.dataset.report === "true").length, 2, "each seat's last message is its report");
   assert.match(drawn, /trial #1/i, "and its worktree and trial are drawn as the Work pane draws one lane");
@@ -2931,9 +2948,14 @@ test("the bar opens the thread in the side pane in place of the tabs, and the cr
   assert.ok(calls.some(([name]) => name === "team"));
   // It follows the change feed.
   el("member-close").dispatch("click");
-  assert.equal(el("member-panel").hidden, true);
-  assert.equal(el("tabs").hidden, false, "the tabs are back");
-  assert.equal(el("pane-team").hidden, false, "on the pane that was open");
+  assert.equal(el("member-col").hidden, true, "closing gives the width back");
+  assert.equal(el("pane-work").hidden, false, "and the side pane is where it was");
+  // One thread column: another member's thread takes its place.
+  el("timeline").querySelectorAll(".thread-bar")[1].dispatch("click");
+  await wait();
+  assert.match(el("member-title").render(), /reviewer/);
+  assert.doesNotMatch(el("member-title").render(), /implementer/);
+  assert.equal(el("timeline").querySelectorAll(".thread-bar").length, 2);
 });
 
 test("a thread fills in as it is said, without being asked", async () => {
@@ -3124,7 +3146,7 @@ test("Threads (N) lists the members working or waiting on the person, each a way
   assert.match(rows[1].render(), /trial not applied/);
   rows[1].dispatch("click");
   await wait();
-  assert.equal(el("member-panel").hidden, false);
+  assert.equal(el("member-col").hidden, false);
   assert.equal(el("threads-menu").hidden, true, "the list closes on choosing");
   assert.match(el("member-title").render(), /implementer/);
   // Nothing running and nothing waiting: the count says so.
@@ -3140,4 +3162,59 @@ test("the channel speaks Japanese too", async () => {
   assert.match(drawn, /報告:/, "reports from");
   assert.match(drawn, /試行が未適用/);
   assert.equal(el("threads-ctl").textContent, "スレッド (2)");
+});
+
+test("the thread column's left edge drags, steps with the arrows, resets on a double-click, and is remembered", async () => {
+  const { el, window, localStorage } = await open(channel(), { stored: { widths: JSON.stringify({ thread: 420 }) } });
+  const handle = el("member-resizer");
+  assert.match(markup, /id="member-resizer" role="separator" aria-orientation="vertical"[^>]*tabindex="0"/, "a separator the keyboard can focus");
+  assert.match(css, /#member-resizer\s*\{\s*left:/, "on the column's left edge");
+  assert.equal(el("app").style["--thread"], "420px", "what was dragged last time is where it opens");
+  // Centre is 1400 - 260 - 320; the thread's edge is measured from the centre's right edge.
+  const right = 1400 - 320;
+  const cap = (centre) => Math.min(Math.round(centre * 0.6), centre - 360);
+  const drag = (to) => {
+    handle.dispatch("pointerdown", { button: 0, clientX: right - 420, pointerId: 1 });
+    assert.ok(document.body.classList.contains("resizing"));
+    assert.ok(handle.classList.contains("active"), "the edge is lit while it is held");
+    handle.dispatch("pointermove", { clientX: to });
+    handle.dispatch("pointerup", {});
+    assert.ok(!document.body.classList.contains("resizing"));
+  };
+  drag(right - 440);
+  assert.equal(el("app").style["--thread"], "440px");
+  assert.equal(JSON.parse(localStorage.getItem("widths")).thread, 440);
+  assert.equal(el("app").style["--right"], undefined, "the side pane keeps its own width");
+  assert.equal(el("app").style["--left"], undefined);
+  // Bounds: 280 at least; at most 60% of the centre, and the body keeps 360.
+  drag(right - 10);
+  assert.equal(el("app").style["--thread"], "280px");
+  drag(0);
+  assert.equal(el("app").style["--thread"], `${cap(1400 - 260 - 320)}px`, "60% of the centre, or what leaves the body 360");
+  // Keyboard: Left widens, Right narrows, Shift takes a bigger step.
+  handle.dispatch("keydown", { key: "ArrowRight", shiftKey: true });
+  assert.equal(el("app").style["--thread"], `${cap(1400 - 260 - 320) - 64}px`);
+  handle.dispatch("keydown", { key: "ArrowLeft" });
+  assert.equal(handle.getAttribute("aria-valuenow"), String(cap(1400 - 260 - 320) - 48));
+  // A double-click puts it back.
+  handle.dispatch("dblclick", {});
+  assert.equal(el("app").style["--thread"], undefined);
+  assert.equal(JSON.parse(localStorage.getItem("widths")).thread, null);
+  // A narrower window takes the room back from the thread, never from the body.
+  drag(right - 600);
+  window.innerWidth = 1000;
+  window.listeners.get("resize")();
+  assert.equal(el("app").style["--thread"], `${Math.max(280, cap(1000 - 260 - 320))}px`, "never under its own minimum");
+});
+
+test("a window that cannot read its storage still resizes the thread column", async () => {
+  const { el, localStorage } = await open(channel());
+  localStorage.setItem = () => { throw new Error("blocked"); };
+  el("member-resizer").dispatch("keydown", { key: "ArrowLeft" });
+  assert.ok(el("app").style["--thread"], "the width still moves");
+});
+
+test("the side pane's tabs stay on one line and scroll rather than wrap", async () => {
+  assert.match(css, /\.tab\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(css, /#tabs\s*\{[^}]*overflow-x:\s*auto/);
 });

@@ -38,46 +38,51 @@
       <button type="button" id="threads-ctl" aria-haspopup="menu" aria-expanded="false" hidden>Threads (0)</button>
       <div id="threads-menu" role="menu" hidden></div>
     </header>
-    <div id="timeline" role="log" aria-live="polite"></div>
-    <form id="composer" autocomplete="off">
-      <div id="mention-list" class="mention-list" role="listbox" hidden></div>
-      <textarea id="message" rows="1" placeholder="Message…" aria-label="Message"></textarea>
-      <div id="composer-row">
-        <div id="folder-picker">
-          <button type="button" id="folder" aria-haspopup="menu" aria-expanded="false">
-            <span id="folder-name">No folder</span>
-          </button>
-          <div id="folder-menu" role="menu" hidden></div>
+    <div id="split">
+      <div id="chat">
+      <div id="timeline" role="log" aria-live="polite"></div>
+      <form id="composer" autocomplete="off">
+        <div id="mention-list" class="mention-list" role="listbox" hidden></div>
+        <textarea id="message" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+        <div id="composer-row">
+          <div id="folder-picker">
+            <button type="button" id="folder" aria-haspopup="menu" aria-expanded="false">
+              <span id="folder-name">No folder</span>
+            </button>
+            <div id="folder-menu" role="menu" hidden></div>
+          </div>
+          <div id="route-picker">
+            <button type="button" id="route" aria-haspopup="menu" aria-expanded="false"><span id="route-name">Auto</span></button>
+            <div id="route-menu" role="menu" hidden></div>
+          </div>
+          <button type="button" id="effort" title="How hard the agent thinks"><span id="effort-name">default</span></button>
+          <span id="composer-hint">Cmd-Enter to send &middot; Enter for a new line</span>
+          <button type="button" id="interrupt" hidden>Stop</button>
+          <button type="submit" id="send">Send</button>
         </div>
-        <div id="route-picker">
-          <button type="button" id="route" aria-haspopup="menu" aria-expanded="false"><span id="route-name">Auto</span></button>
-          <div id="route-menu" role="menu" hidden></div>
-        </div>
-        <button type="button" id="effort" title="How hard the agent thinks"><span id="effort-name">default</span></button>
-        <span id="composer-hint">Cmd-Enter to send &middot; Enter for a new line</span>
-        <button type="button" id="interrupt" hidden>Stop</button>
-        <button type="submit" id="send">Send</button>
+      </form>
       </div>
-    </form>
+      <aside id="member-col" aria-label="Thread" hidden>
+        <div class="resizer" id="member-resizer" role="separator" aria-orientation="vertical" aria-label="Resize the thread" tabindex="0"></div>
+        <header id="member-head">
+          <span id="member-title"></span>
+          <button type="button" id="member-close" aria-label="Close" title="Close">×</button>
+        </header>
+        <div id="member-body"></div>
+        <form id="member-form" autocomplete="off">
+          <div id="member-mentions" class="mention-list" role="listbox" hidden></div>
+          <textarea id="member-reply" rows="1" placeholder="Reply in thread…" aria-label="Reply in thread"></textarea>
+          <div id="member-row">
+            <label id="member-also"><input type="checkbox" id="member-also-box"> <span id="member-also-label">also send to the channel</span></label>
+            <button type="submit" id="member-send">Reply</button>
+          </div>
+        </form>
+      </aside>
+    </div>
   </main>
 
   <aside id="side">
     <div class="resizer" id="side-resizer" role="separator" aria-orientation="vertical" aria-label="Resize the side pane" tabindex="0"></div>
-    <section id="member-panel" hidden>
-      <header id="member-head">
-        <span id="member-title"></span>
-        <button type="button" id="member-close" aria-label="Close">×</button>
-      </header>
-      <div id="member-body"></div>
-      <form id="member-form" autocomplete="off">
-        <div id="member-mentions" class="mention-list" role="listbox" hidden></div>
-        <textarea id="member-reply" rows="1" placeholder="Reply in thread…" aria-label="Reply in thread"></textarea>
-        <div id="member-row">
-          <label id="member-also"><input type="checkbox" id="member-also-box"> <span id="member-also-label">also send to the channel</span></label>
-          <button type="submit" id="member-send">Reply</button>
-        </div>
-      </form>
-    </section>
     <div id="tabs" role="tablist">
       <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
       <button class="tab" data-pane="work" role="tab" aria-selected="false">Work</button>

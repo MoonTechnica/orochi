@@ -1432,12 +1432,24 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .threads-row .state { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .threads-row .needs { margin-left: auto; color: var(--brand); }
 
-#member-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* The thread is a column of the centre, beside the body; the side pane is never touched. */
+#split { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; }
+#chat { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+#member-col {
+  position: relative; display: flex; flex-direction: column; flex: none; width: var(--thread, clamp(340px, 30%, 400px)); min-height: 0;
+  background: var(--panel); border-left: 1px solid var(--line);
+}
+/* Narrow: it lies over the body rather than squeezing it to nothing. */
+@media (max-width: 1250px) {
+  #member-col { position: absolute; right: 0; top: 0; bottom: 0; width: min(var(--thread, 400px), 92%); z-index: 8; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
+}
+#member-resizer { left: -4px; }
+#member-close { border: 0; background: none; color: var(--muted); font-size: 18px; line-height: 1; }
+#member-close:hover { color: var(--text); }
 #member-head { display: flex; align-items: center; gap: 8px; padding: 8px var(--gutter); border-bottom: 1px solid var(--line); }
 #member-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; font-size: 12px; }
 #member-title .name { font-weight: 700; font-size: 13px; }
 #member-title .route-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#member-close { border: 0; background: none; font-size: 18px; line-height: 1; color: var(--muted); }
 #member-body { flex: 1; overflow: auto; padding: var(--gutter); }
 .thread-parent { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .thread-parent .post { margin-top: 0; }
@@ -1470,3 +1482,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .face.channel { background: var(--muted); }
 .pill { white-space: nowrap; flex: none; }
 #member-title .pill { max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+
+/* The side pane keeps its width and its tabs stay on one line; too many scroll. */
+#tabs { overflow-x: auto; }
+.tab { white-space: nowrap; flex: none; }
