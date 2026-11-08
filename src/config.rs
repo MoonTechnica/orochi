@@ -15,6 +15,7 @@ pub struct Config {
     pub evaluator: EvaluatorConfig,
     pub router: Option<RouterConfig>,
     pub classifier: ClassifierConfig,
+    pub decision: DecisionConfig,
     pub roles: RolesConfig,
     pub manager: ManagerConfig,
     pub workspaces: WorkspacesConfig,
@@ -54,6 +55,7 @@ impl Default for Config {
             evaluator: EvaluatorConfig::default(),
             router: None,
             classifier: ClassifierConfig::default(),
+            decision: DecisionConfig::default(),
             roles: RolesConfig::default(),
             manager: ManagerConfig::default(),
             workspaces: WorkspacesConfig::default(),
@@ -725,9 +727,11 @@ impl RouterConfig {
             .min(10_000_000) as usize
     }
 }
-/// Classifying the request is what makes routing read what was asked rather than which words
-/// it happens to contain, so it runs by default. Without `agent` every enabled agent is tried
-/// in configured order until one answers; a failure only ever leaves the local heuristic.
+/// Asking a coding agent what the request is, in an ACP session of its own. Off by default
+/// since 2026-11-08: a decision model (`[decision]`) answers the same typed questions in
+/// a fraction of a second, and a whole session per turn was the price of every message.
+/// Without `agent` every enabled agent is tried, fastest answerer first; a failure only ever
+/// leaves the local heuristic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClassifierConfig {
@@ -763,7 +767,7 @@ pub struct ClassifierConfig {
 impl Default for ClassifierConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             agent: None,
             model: None,
             reasoning: None,
@@ -775,6 +779,51 @@ impl Default for ClassifierConfig {
             lean: true,
         }
     }
+}
+/// Where the typed questions about a request go (`decision.rs`): a decision model answers
+/// them with probabilities and no text, on this machine (a `llama-server` Orochi keeps) or in
+/// the cloud (each provider with its own key). `backend` unset means nobody has chosen yet,
+/// and the first interactive run asks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DecisionConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<DecisionBackend>,
+    /// A name from `decision::MODELS`, or with `endpoint` set, whatever that server calls it.
+    pub model: String,
+    /// Another System One server instead of the managed local one or the model's provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    /// Read before the stored key instead of the provider's own variable
+    /// (`TYPESAFE_API_KEY`, `OPENAI_API_KEY`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+    /// The stored key goes to the macOS keychain; off, a `0600` file beside the data.
+    pub keychain: bool,
+    /// One request, including a local server that is still loading.
+    pub timeout_ms: u64,
+    /// How long the local server stays up after its last question.
+    pub idle_secs: u64,
+}
+impl Default for DecisionConfig {
+    fn default() -> Self {
+        Self {
+            backend: None,
+            model: crate::decision::RECOMMENDED.into(),
+            endpoint: None,
+            api_key_env: None,
+            keychain: true,
+            timeout_ms: 20_000,
+            idle_secs: 1800,
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionBackend {
+    Local,
+    Cloud,
+    Off,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -914,6 +963,25 @@ impl Config {
         Ok(())
     }
     pub fn validate(&self) -> Result<()> {
+        let decision = &self.decision;
+        ensure!(
+            !decision.model.trim().is_empty() && decision.model.chars().count() <= 128,
+            "decision.model must name a model"
+        );
+        ensure!(
+            decision.timeout_ms > 0,
+            "decision.timeout_ms must be positive"
+        );
+        if let Some(endpoint) = &decision.endpoint {
+            let url = reqwest::Url::parse(endpoint).context("decision.endpoint is not a URL")?;
+            // The task text goes there, so plaintext only to this machine.
+            ensure!(
+                url.scheme() == "https"
+                    || (url.scheme() == "http"
+                        && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))),
+                "decision.endpoint must be https, or http to this machine"
+            );
+        }
         let mut ids = std::collections::BTreeSet::new();
         for agent in &self.agents {
             ensure!(

@@ -394,7 +394,7 @@ async fn run_recorded(
     } else {
         crate::interrupt::mark()
     };
-    let report = |progress: Progress| {
+    let mut report = |progress: Progress| {
         if let Some(events) = &events {
             let _ = events.send(ExecutionEvent::Progress(progress));
         }
@@ -420,8 +420,21 @@ async fn run_recorded(
             // Classification exists to choose. A read-only seat is handed a prompt Orochi
             // wrote for it; a dry run is an inspection; and a route pinned to one agent and
             // model has nothing left to decide, so none of them may start an agent to ask.
-            let decided = options.dry_run
-                || (options.overrides.agent.is_some() && options.overrides.model.is_some());
+            let pinned = options.overrides.agent.is_some() && options.overrides.model.is_some();
+            let decided = options.dry_run || pinned;
+            // A decision model starts no agent, so a dry run shows what it would decide.
+            if options.dry_run && !options.read_only && !pinned {
+                crate::decision::refine(
+                    config,
+                    policies,
+                    store,
+                    root,
+                    &options.task,
+                    &mut descriptor,
+                    &mut report,
+                )
+                .await;
+            }
             if !options.read_only && !decided {
                 crate::router::classifier::refine(
                     config,

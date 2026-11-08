@@ -69,6 +69,13 @@ async fn setup_status(open: State<'_, Open>) -> Result<orochi_desktop::view::Set
         .map_err(fail)
 }
 
+/// Stores the key a cloud decision model is reached with.
+#[tauri::command]
+fn decision_key(open: State<'_, Open>, provider: String, key: String) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::decision_key(&config, &data, &provider, &key).map_err(fail)
+}
+
 /// Opens Terminal on an agent's own sign-in command, with Orochi's toolchain in front.
 #[tauri::command]
 fn setup_login(open: State<'_, Open>, agent: String) -> Result<(), String> {
@@ -675,6 +682,7 @@ fn main() {
             sandboxes,
             sandbox_job,
             setup_status,
+            decision_key,
             setup_login,
             open_docs,
             cancel_job,

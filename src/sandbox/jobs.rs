@@ -19,6 +19,12 @@ pub enum Request {
         #[serde(default)]
         sandbox: bool,
     },
+    /// `orochi decision use <backend> [--model …]`: a local choice downloads the model.
+    Decision {
+        backend: String,
+        #[serde(default)]
+        model: Option<String>,
+    },
     Up,
     Down,
     Image {
@@ -63,10 +69,21 @@ impl Request {
             }
             return args;
         }
+        if let Request::Decision { backend, model } = self {
+            let backend = match backend.as_str() {
+                "local" | "cloud" => backend.clone(),
+                _ => "off".to_owned(),
+            };
+            let mut args = vec!["decision".to_owned(), "use".to_owned(), backend];
+            if let Some(model) = model.as_deref().and_then(crate::decision::model) {
+                args.extend(["--model".to_owned(), model.name.to_owned()]);
+            }
+            return args;
+        }
         let path = |p: &PathBuf| p.to_string_lossy().into_owned();
         let mut args = vec!["sandbox".to_owned()];
         match self {
-            Request::Setup | Request::Prepare { .. } => unreachable!(),
+            Request::Setup | Request::Prepare { .. } | Request::Decision { .. } => unreachable!(),
             Request::Up => args.push("up".into()),
             Request::Down => args.push("down".into()),
             Request::Image { vm } => {

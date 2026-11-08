@@ -584,6 +584,11 @@ fn the_classifier_asks_whichever_agent_has_answered_fastest() {
             AgentConfig::preset("claude", Provider::ANTHROPIC, "claude", &[]),
             AgentConfig::preset("codex", Provider::OPENAI, "codex", &[]),
         ],
+        // The agent classifier is opt-in since the decision model took its place.
+        classifier: orochi::config::ClassifierConfig {
+            enabled: true,
+            ..Default::default()
+        },
         ..Config::default()
     };
     let asked = |millis: u64, agent: &str, at: i64| {
@@ -631,6 +636,11 @@ fn a_question_that_costs_more_than_the_work_it_decides_is_not_asked() {
     let store = Store::open(dir.path()).unwrap();
     let config = Config {
         agents: vec![AgentConfig::preset("codex", Provider::OPENAI, "codex", &[])],
+        // The agent classifier is opt-in since the decision model took its place.
+        classifier: orochi::config::ClassifierConfig {
+            enabled: true,
+            ..Default::default()
+        },
         ..Config::default()
     };
     let small = profiler::profile("rename the header in the readme", dir.path());
@@ -881,6 +891,11 @@ fn what_asking_is_worth_is_weighed_against_this_task_and_not_only_against_its_ki
     let store = Store::open(dir.path()).unwrap();
     let config = Config {
         agents: vec![AgentConfig::preset("codex", Provider::OPENAI, "codex", &[])],
+        // The agent classifier is opt-in since the decision model took its place.
+        classifier: orochi::config::ClassifierConfig {
+            enabled: true,
+            ..Default::default()
+        },
         ..Config::default()
     };
     let base = profiler::profile("implement the thing", dir.path());

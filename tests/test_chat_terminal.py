@@ -43,6 +43,8 @@ def config(
 auto_add = false
 [evaluator]
 auto = false
+[decision]
+backend = "off"
 [classifier]
 enabled = false
 [mailbox]
@@ -218,6 +220,8 @@ auto = false
 name = "integrated"
 command = "python3"
 args = ["-c", "from pathlib import Path; assert Path('completed.txt').read_text() == 'integrated'"]
+[decision]
+backend = "off"
 [classifier]
 enabled = false
 [mailbox]
@@ -337,6 +341,8 @@ class Console:
 auto_add = false
 [evaluator]
 auto = false
+[decision]
+backend = "off"
 [classifier]
 enabled = {"true" if classifier else "false"}
 [mailbox]

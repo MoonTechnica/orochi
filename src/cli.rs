@@ -225,6 +225,9 @@ pub enum Command {
     /// Which of each agent's models the scheduler may use: shown, set by hand, or proposed.
     #[command(subcommand)]
     Roster(RosterCommand),
+    /// The decision model that reads each request: shown, chosen, its key, its local server.
+    #[command(subcommand)]
+    Decision(DecisionCommand),
     /// Compare frozen predictions with local observed outcomes.
     Calibrate {
         #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u32).range(1..=100000))]
@@ -355,6 +358,32 @@ pub enum SecretCommand {
     },
     /// The names stored, never the values.
     List,
+}
+#[derive(Debug, Subcommand)]
+pub enum DecisionCommand {
+    /// What is chosen, what is downloaded, whether the local server is up and a key is stored.
+    Status,
+    /// Choose interactively, as the first run asks.
+    Setup,
+    /// Choose without asking: `local` downloads the model now, `cloud` needs the model's
+    /// provider's key, stored with `orochi decision key <provider>` or in its variable.
+    Use {
+        #[arg(value_parser = ["local", "cloud", "off"])]
+        backend: String,
+        /// A model from `orochi decision status`; omitted, the one configured.
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Store a cloud provider's API key (typesafe, openai), read from the terminal without
+    /// echo or from stdin.
+    Key {
+        provider: String,
+        /// Forget the stored key instead.
+        #[arg(long)]
+        forget: bool,
+    },
+    /// Stop the local decision model server; the next request starts it again.
+    Stop,
 }
 #[derive(Debug, Subcommand)]
 pub enum RosterCommand {
@@ -672,6 +701,24 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             print!("{}", crate::setup::describe(&status));
         }
         return Ok(0);
+    }
+    if let Some(Command::Decision(command)) = cli.command {
+        return decision(&mut config, &paths.config, &paths.data, command, cli.json).await;
+    }
+    // The first conversation or task typed at a terminal asks which decision model to use;
+    // nothing that runs unattended stops to ask, and keeps the keyword profile until then.
+    if config.decision.backend.is_none()
+        && !cli.json
+        && !cli.dry_run
+        && (matches!(cli.command, Some(Command::Chat))
+            || (cli.command.is_none() && cli.task.is_some()))
+        && std::io::stdin().is_terminal()
+        && std::io::stderr().is_terminal()
+    {
+        tokio::select! {
+            asked = crate::decision::choose::interactive(&mut config, &paths.config, &paths.data) => { asked?; }
+            _ = tokio::signal::ctrl_c() => return Ok(130),
+        }
     }
     if let Some(Command::Sandbox(command)) = cli.command {
         return sandbox(&config, &paths.data, &root, command).await;
@@ -1780,7 +1827,8 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             | Command::Policy(_)
             | Command::Sandbox(_)
             | Command::Init { .. }
-            | Command::Setup { .. },
+            | Command::Setup { .. }
+            | Command::Decision(_),
         ) => unreachable!(),
         None => {
             let Some(task) = cli.task else {
@@ -2387,4 +2435,159 @@ fn print_roster(listing: &crate::roster::Listing) {
             }
         }
     }
+}
+
+async fn decision(
+    config: &mut Config,
+    path: &std::path::Path,
+    data: &std::path::Path,
+    command: DecisionCommand,
+    json: bool,
+) -> Result<u8> {
+    use crate::config::DecisionBackend;
+    use crate::decision::{choose, key, local};
+    match command {
+        DecisionCommand::Status => {
+            let status = crate::decision::status(&config.decision, data);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+                return Ok(0);
+            }
+            let backend = match status.backend {
+                None => "not chosen yet",
+                Some(DecisionBackend::Local) => "local",
+                Some(DecisionBackend::Cloud) => "cloud",
+                Some(DecisionBackend::Off) => "off (keyword profile only)",
+            };
+            println!("backend      {backend}");
+            println!("model        {}", status.model);
+            if let Some(endpoint) = &status.endpoint {
+                println!("endpoint     {endpoint}");
+            }
+            println!(
+                "downloaded   {}",
+                if status.installed { "yes" } else { "no" }
+            );
+            println!(
+                "server       {}",
+                status
+                    .running
+                    .map(|p| format!("up on 127.0.0.1:{p}"))
+                    .unwrap_or_else(|| "not running".into())
+            );
+            for p in &status.providers {
+                println!(
+                    "key          {:<11} {}",
+                    p.name,
+                    if status.keys.get(p.name).copied().unwrap_or(false) {
+                        "set"
+                    } else {
+                        "none"
+                    }
+                );
+            }
+            match status.recommendation.backend {
+                Some(_) => println!(
+                    "recommended  {} on this machine ({})",
+                    status.recommendation.model, status.recommendation.reason
+                ),
+                None => println!(
+                    "recommended  none ({} cannot run here: {})",
+                    status.recommendation.model, status.recommendation.reason
+                ),
+            }
+            println!();
+            for m in crate::decision::MODELS {
+                let mut places = vec![];
+                if let Some(g) = m.gguf {
+                    places.push(format!("this machine ({:.2} GB)", g.bytes as f64 / 1e9));
+                }
+                if let Some(c) = m.cloud {
+                    places.push(c.provider.to_owned());
+                }
+                println!("  {:<18} {} · {}", m.name, places.join(", "), m.summary);
+            }
+        }
+        DecisionCommand::Setup => {
+            ensure!(
+                std::io::stdin().is_terminal(),
+                "`orochi decision setup` asks at a terminal; use `orochi decision use`"
+            );
+            tokio::select! {
+                asked = choose::interactive(config, path, data) => { asked?; }
+                _ = tokio::signal::ctrl_c() => return Ok(130),
+            }
+        }
+        DecisionCommand::Use { backend, model } => {
+            let backend = match backend.as_str() {
+                "local" => DecisionBackend::Local,
+                "cloud" => DecisionBackend::Cloud,
+                _ => DecisionBackend::Off,
+            };
+            let name = model.unwrap_or_else(|| config.decision.model.clone());
+            let sources = choose::Sources::from_env();
+            tokio::select! {
+                adopted = choose::adopt(config, path, data, backend, &name, None, &sources) => adopted?,
+                _ = tokio::signal::ctrl_c() => return Ok(130),
+            }
+            println!(
+                "decision model: {name} ({})",
+                match backend {
+                    DecisionBackend::Local => "local",
+                    DecisionBackend::Cloud => "cloud",
+                    DecisionBackend::Off => "off",
+                }
+            );
+            println!("wrote {}", path.display());
+        }
+        DecisionCommand::Key { provider, forget } => {
+            let label = crate::decision::provider(&provider)
+                .map(|p| p.label)
+                .with_context(|| {
+                    format!(
+                        "no such provider: {provider} (one of {})",
+                        crate::decision::PROVIDERS
+                            .iter()
+                            .map(|p| p.name)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?;
+            if forget {
+                let removed = key::forget(data, &config.decision, &provider)?;
+                println!(
+                    "{}",
+                    if removed {
+                        "forgot the key"
+                    } else {
+                        "no key was stored"
+                    }
+                );
+                return Ok(0);
+            }
+            let Some(secret) = choose::secret(&format!("{label} API key: "))? else {
+                bail!("no key given");
+            };
+            key::put(data, &config.decision, &provider, &secret)?;
+            println!(
+                "stored in {}",
+                if config.decision.keychain && cfg!(target_os = "macos") {
+                    "the keychain"
+                } else {
+                    "the data directory"
+                }
+            );
+        }
+        DecisionCommand::Stop => {
+            println!(
+                "{}",
+                if local::stop(data) {
+                    "stopped"
+                } else {
+                    "no server was running"
+                }
+            );
+        }
+    }
+    Ok(0)
 }
