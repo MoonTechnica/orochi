@@ -7,6 +7,7 @@ pub mod cli;
 pub mod collaboration;
 pub mod config;
 pub mod context;
+pub mod decision;
 pub mod discovery;
 pub mod effort;
 pub mod evaluator;

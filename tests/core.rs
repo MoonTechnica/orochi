@@ -591,23 +591,29 @@ fn router_payload_excludes_task_text_and_filenames() {
 }
 
 /// Classification is the difference between routing on what was asked and routing on which
-/// words it contains, so it is on without being configured, and `[classifier]` exists to turn
-/// it off or send it somewhere specific.
+/// words it contains. A decision model does it (`[decision]`, chosen on the first interactive
+/// run); asking a coding agent in a session of its own is what `[classifier]` turns on by hand.
 #[test]
-fn classification_is_on_by_default_and_needs_no_configuration() {
+fn asking_an_agent_to_classify_is_opt_in_and_the_decision_model_is_chosen_not_assumed() {
     let config = Config::default();
-    assert!(config.classifier.enabled);
+    assert!(!config.classifier.enabled);
     assert_eq!(config.classifier.agent, None);
+    assert_eq!(config.decision.backend, None);
     config.validate().unwrap();
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let agents = "[[agents]]\nid = \"a\"\nprovider = \"anthropic\"\ncommand = \"x\"\n";
     std::fs::write(&path, agents).unwrap();
-    assert!(Config::load(&path).unwrap().classifier.enabled);
-
-    std::fs::write(&path, format!("{agents}[classifier]\nenabled = false\n")).unwrap();
     assert!(!Config::load(&path).unwrap().classifier.enabled);
+
+    std::fs::write(&path, format!("{agents}[classifier]\nenabled = true\n")).unwrap();
+    assert!(Config::load(&path).unwrap().classifier.enabled);
+    std::fs::write(&path, format!("{agents}[decision]\nbackend = \"local\"\n")).unwrap();
+    assert_eq!(
+        Config::load(&path).unwrap().decision.backend,
+        Some(orochi::config::DecisionBackend::Local)
+    );
 
     std::fs::write(
         &path,

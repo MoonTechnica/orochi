@@ -1,6 +1,13 @@
 use clap::Parser;
 
 fn main() -> std::process::ExitCode {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == orochi::decision::local::SERVE_FLAG)
+    {
+        let args: Vec<_> = std::env::args_os().collect();
+        return orochi::decision::local::serve(&args[2..]);
+    }
     #[cfg(unix)]
     {
         let args: Vec<_> = std::env::args_os().collect();

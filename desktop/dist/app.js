@@ -51,7 +51,8 @@ const state = {
   renaming: null,
   // First-launch setup: what this machine has of what Orochi needs, asked once when the window
   // opens and shown until something here can be routed to, or the person says later.
-  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set(), sandbox: null, details: false },
+  setup: { asked: false, open: false, at: 0, view: null, chosen: new Set(), sandbox: null, details: false,
+    decision: { place: null, model: null, key: {}, changing: false } },
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -157,6 +158,41 @@ const WORDS = {
     Sandboxes: "サンドボックス",
     Setup: "初期設定",
     "Set up Orochi": "Orochi の初期設定",
+    "Decision model": "決定モデル",
+    "Orochi reads each request with a decision model to choose who does it: what kind of work it is and how hard.":
+      "Orochi は依頼ごとに決定モデルで、どんな作業か・どれくらい難しいかを読み取り、担当を選びます。",
+    "On this machine": "このマシンで実行",
+    "In the cloud": "クラウドで実行",
+    None: "使わない",
+    "Downloaded now; requests never leave this machine.": "選ぶとすぐダウンロードします。依頼はこのマシンから出ません。",
+    "Each request's text is sent to the provider, with its API key.": "依頼の本文を提供元に送ります。提供元の API キーが必要です。",
+    "Route by keywords alone.": "キーワードだけで振り分けます。",
+    "on this machine": "このマシンで実行",
+    "on {provider}": "{provider} で実行",
+    "the cloud": "クラウド",
+    Recommended: "推奨",
+    "This machine has {memory} GB of memory and room for the {size} download.":
+      "このマシンはメモリが {memory} GB あり、{size} のダウンロードにも余裕があります。",
+    "This machine is short of memory or disk for the recommended model.":
+      "このマシンでは、推奨モデルを動かすにはメモリかディスクが足りません。",
+    "llama.cpp has no build for this machine.": "このマシン向けの llama.cpp がありません。",
+    "Measured here: kind of work right {right} of {of}": "Orochi の測定：作業の種類 {of} 件中 {right} 件正解",
+    "Not measured here": "Orochi では未測定",
+    "kev 4B, built on Qwen3.5; reads Japanese and English": "Qwen3.5 ベースの kev 4B。日本語と英語を読めます",
+    "lev, Interfaze's decision model": "Interfaze の決定モデル lev",
+    "Laya multilingual, an encoder that reads 100+ languages": "Laya の多言語版。100 以上の言語を読むエンコーダ",
+    "Laya, an English-only encoder": "Laya（英語専用のエンコーダ）",
+    "Julia-1, Supersonic Labs' small decision model": "Supersonic Labs の小さな決定モデル Julia-1",
+    "TypeSafe Jev; closed weights, hosted only": "TypeSafe の Jev。重みは非公開で、クラウドのみ",
+    "OpenAI gpt-6-luna on the Decisions API": "OpenAI の gpt-6-luna（Decisions API）",
+    "{provider} API key": "{provider} の API キー",
+    "Get a key": "キーを取得",
+    "Use this": "これを使う",
+    "Change…": "変更…",
+    "Downloading {file}": "{file} をダウンロードしています",
+    "Starting the decision model and asking it one question…": "決定モデルを起動して、1 問だけ試しています…",
+    "That did not work. Choose again, or go without one.": "うまくいきませんでした。選び直すか、使わない設定にしてください。",
+    "off · keyword profile only": "オフ（キーワードのみ）",
     "Orochi drives the coding CLIs installed and signed in on this computer. Nothing here can be used yet: choose what to install, then sign in.":
       "Orochi はこのコンピューターにインストールしてサインイン済みのコーディング CLI を動かします。まだ使えるものがありません。インストールするものを選び、サインインしてください。",
     "At least one agent is ready. Anything else can be added here later.":
@@ -1728,7 +1764,7 @@ async function checkSetup() {
   if (!view) return;
   state.setup.view = view;
   state.setup.at = Date.now();
-  if (!view.ready) await openSetup();
+  if (!view.ready || (view.decision && !view.decision.backend)) await openSetup();
 }
 
 async function openSetup() {
@@ -1879,6 +1915,7 @@ async function drawSetup(fresh) {
     ));
   }
   if (!live) body.append(rows);
+  if (!live && view.decision) body.append(decisionSection(view));
 
   if (last && progress && (live || state.setup.details)) {
     const cancelled = !running && last.exit === 130;
@@ -1937,6 +1974,184 @@ async function drawSetup(fresh) {
   const go = el("setup-go");
   go.textContent = t(running ? "Installing…" : setupFinished() ? "Done" : "Install");
   go.disabled = running;
+}
+
+// The decision model reads each request before routing. Choosing one is part of setup: a
+// local one downloads there and then (`orochi decision use local`, run as a job, its bytes in
+// `decision/download.json`), a cloud one takes the key there and then.
+function decisionJobRunning(view) {
+  return (view.decision_jobs || []).find((j) => j.exit === null || j.exit === undefined) || null;
+}
+
+function decisionSize(bytes) {
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round((bytes || 0) / 1e6)} MB`;
+}
+
+/// Why the recommendation is what it is, said here from the numbers the core measured.
+function decisionReason(rec, d) {
+  const main = d.models.find((m) => m.name === rec.model);
+  if (rec.fits) {
+    return t("This machine has {memory} GB of memory and room for the {size} download.")
+      .replace("{memory}", rec.memory_gb).replace("{size}", decisionSize(main?.bytes));
+  }
+  return t(rec.local_supported
+    ? "This machine is short of memory or disk for the recommended model."
+    : "llama.cpp has no build for this machine.");
+}
+
+/// The models offered where it runs. Only this machine has a recommended one, listed first; in
+/// the cloud which provider sees the request is the user's to choose, so nothing is.
+function decisionModels(d, place) {
+  if (place !== "local") return d.models.filter((m) => Boolean(m.cloud));
+  const list = d.models.filter((m) => m.local);
+  return [...list.filter((m) => m.name === d.recommendation.model), ...list.filter((m) => m.name !== d.recommendation.model)];
+}
+
+function decisionSection(view) {
+  const d = view.decision;
+  const ds = state.setup.decision;
+  const section = text("section", "decision");
+  section.append(text("h3", null, t("Decision model")));
+  const job = decisionJobRunning(view);
+  const lastJob = (view.decision_jobs || [])[0];
+  if (job) {
+    const dl = view.decision_download;
+    const mine = dl && dl.job === job.id && dl.state === "running";
+    section.append(text("p", "where", mine
+      ? `${t("Downloading {file}").replace("{file}", dl.file)} · ${(dl.done / 1e9).toFixed(2)} / ${(dl.total / 1e9).toFixed(2)} GB`
+      : t("Starting the decision model and asking it one question…")));
+    const bar = text("div", "setup-bar");
+    const fill = text("i");
+    fill.style.width = mine && dl.total ? `${Math.round((dl.done / dl.total) * 100)}%` : "100%";
+    if (!mine) bar.classList.add("busy");
+    bar.append(fill);
+    section.append(bar);
+    return section;
+  }
+  if (d.backend && !ds.changing) {
+    const model = d.models.find((m) => m.name === d.model);
+    const provider = model?.cloud && d.providers.find((p) => p.name === model.cloud.provider);
+    const where = d.backend === "local" ? t("on this machine")
+      : d.backend === "cloud" ? t("on {provider}").replace("{provider}", provider?.label || t("the cloud")) : null;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = t("Change…");
+    button.addEventListener("click", () => { ds.changing = true; drawSetup(false); });
+    section.append(setupRow(t("Decision model"), where ? `${d.model} · ${where}` : t("off · keyword profile only"), d.backend !== "off", button));
+    return section;
+  }
+  section.append(text("p", "where", t("Orochi reads each request with a decision model to choose who does it: what kind of work it is and how hard.")));
+  if (lastJob && lastJob.exit !== 0 && lastJob.exit !== null && lastJob.exit !== undefined) {
+    const lines = (lastJob.tail || "").trim().split("\n");
+    section.append(text("p", "where failed", `${t("That did not work. Choose again, or go without one.")} ${lines[lines.length - 1] || ""}`));
+  }
+  const rec = d.recommendation;
+  if (!ds.place) ds.place = rec.backend || "cloud";
+
+  // Where it runs.
+  const places = text("div", "decision-places");
+  const offered = [
+    ["local", t("On this machine"), t("Downloaded now; requests never leave this machine.")],
+    ["cloud", t("In the cloud"), t("Each request's text is sent to the provider, with its API key.")],
+    ["off", t("None"), t("Route by keywords alone.")],
+  ].filter(([place]) => place !== "local" || rec.local_supported);
+  for (const [place, name, note] of offered) {
+    const label = document.createElement("label");
+    label.className = "decision-place";
+    label.dataset.place = place;
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "decision-place";
+    radio.checked = ds.place === place;
+    radio.addEventListener("change", () => { ds.place = place; drawSetup(false); });
+    const words = text("span", "words");
+    const title = text("span", "name");
+    title.append(text("span", null, name));
+    if (place === rec.backend) title.append(text("span", "badge", t("Recommended")));
+    words.append(title, text("span", "note", note));
+    label.append(radio, words);
+    places.append(label);
+  }
+  section.append(places);
+  if (ds.place === "local" && rec.local_supported) section.append(text("p", "where", decisionReason(rec, d)));
+
+  // Which model there.
+  let chosen = null;
+  if (ds.place !== "off") {
+    const models = decisionModels(d, ds.place);
+    if (!ds.model || !models.some((m) => m.name === ds.model[ds.place])) {
+      ds.model = { ...(ds.model || {}), [ds.place]: ds.model?.[ds.place] && models.some((m) => m.name === ds.model[ds.place]) ? ds.model[ds.place] : models[0]?.name };
+    }
+    const list = text("div", "decision-choices");
+    for (const m of models) {
+      const label = document.createElement("label");
+      label.className = "decision-choice";
+      label.dataset.model = m.name;
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "decision-model";
+      radio.checked = ds.model[ds.place] === m.name;
+      radio.addEventListener("change", () => { ds.model[ds.place] = m.name; drawSetup(false); });
+      const words = text("span", "words");
+      const title = text("span", "name");
+      title.append(text("span", null, m.name));
+      if (ds.place === "local" && rec.backend === "local" && m.name === rec.model) {
+        title.append(text("span", "badge", t("Recommended")));
+      }
+      words.append(title);
+      const provider = m.cloud && d.providers.find((p) => p.name === m.cloud.provider);
+      const facts = ds.place === "local"
+        ? [decisionSize(m.bytes), m.license]
+        : [provider?.label || m.cloud.provider, m.license];
+      words.append(text("span", "note", `${t(m.summary)} · ${facts.join(" · ")}`));
+      words.append(text("span", "note measured", m.measured
+        ? t("Measured here: kind of work right {right} of {of}").replace("{right}", m.measured.right).replace("{of}", m.measured.of)
+        : t("Not measured here")));
+      label.append(radio, words);
+      list.append(label);
+    }
+    section.append(list);
+    chosen = models.find((m) => m.name === ds.model[ds.place]);
+  }
+
+  // A cloud model takes its own provider's key.
+  const provider = ds.place === "cloud" && chosen?.cloud ? d.providers.find((p) => p.name === chosen.cloud.provider) : null;
+  const needsKey = Boolean(provider) && !d.keys?.[provider.name];
+  const use = document.createElement("button");
+  use.type = "button";
+  use.textContent = t("Use this");
+  if (needsKey) {
+    const keyRow = text("div", "decision-key-row");
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.placeholder = t("{provider} API key").replace("{provider}", provider.label);
+    input.value = ds.key[provider.name] || "";
+    input.className = "decision-key";
+    input.dataset.provider = provider.name;
+    input.addEventListener("input", () => { ds.key[provider.name] = input.value; use.disabled = !input.value.trim(); });
+    const link = document.createElement("a");
+    link.href = provider.key_url;
+    link.textContent = t("Get a key");
+    link.addEventListener("click", (event) => { event.preventDefault(); call("open_docs", { url: provider.key_url }); });
+    keyRow.append(input, link);
+    section.append(keyRow);
+  }
+  use.disabled = needsKey && !(ds.key[provider.name] || "").trim();
+  use.addEventListener("click", async () => {
+    use.disabled = true;
+    if (needsKey) {
+      await call("decision_key", { provider: provider.name, key: ds.key[provider.name].trim() });
+      ds.key[provider.name] = "";
+    }
+    ds.changing = false;
+    await call("sandbox_job", { request: { op: "decision", backend: ds.place, model: chosen?.name || d.model } });
+    await drawSetup(true);
+  });
+  const foot = text("div", "decision-foot");
+  foot.append(use);
+  section.append(foot);
+  return section;
 }
 
 /// A step's name in the window's language. The agent's name inside it stays as it is.

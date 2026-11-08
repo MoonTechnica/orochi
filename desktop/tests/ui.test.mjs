@@ -154,7 +154,35 @@ const SETUP = {
   toolchain: "/home/me/.local/share/orochi/toolchain",
   jobs: [],
   progress: null,
+  decision: {
+    backend: "local", model: "lev", endpoint: null, installed: true, running: null,
+    keys: { typesafe: false, openai: false },
+    recommendation: { model: "lev", backend: "local", memory_gb: 64, free_disk_gb: 400, local_supported: true, fits: true,
+      reason: "this machine has 64 GB of memory and room for the 3.0 GB download" },
+    providers: [
+      { name: "typesafe", label: "TypeSafe", endpoint: "https://api.typesafe.ai/v1/systemone", api: "system_one",
+        key_env: "TYPESAFE_API_KEY", key_url: "https://console.typesafe.ai" },
+      { name: "openai", label: "OpenAI", endpoint: "https://api.openai.com/v1/decisions", api: "open_ai_decisions",
+        key_env: "OPENAI_API_KEY", key_url: "https://platform.openai.com/api-keys" },
+    ],
+    models: [
+      { name: "lev", summary: "lev, Interfaze's decision model", license: "Apache-2.0", local: true, bytes: 3032093632,
+        installed: true, cloud: null, measured: { right: 26, of: 30 } },
+      { name: "kev-4b", summary: "kev 4B, built on Qwen3.5; reads Japanese and English", license: "Apache-2.0", local: true,
+        bytes: 3033489824, installed: false, cloud: null, measured: { right: 25, of: 30 } },
+      { name: "laya-multilingual", summary: "Laya multilingual, an encoder that reads 100+ languages", license: "Apache-2.0",
+        local: true, bytes: 356866496, installed: false, cloud: null, measured: { right: 11, of: 30 } },
+      { name: "jev", summary: "TypeSafe Jev; closed weights, hosted only", license: "proprietary", local: false, bytes: null,
+        installed: false, cloud: { provider: "typesafe", id: "jev-1.14.0" }, measured: null },
+      { name: "gpt-6-luna", summary: "OpenAI gpt-6-luna on the Decisions API", license: "proprietary", local: false, bytes: null,
+        installed: false, cloud: { provider: "openai", id: "gpt-6-luna" }, measured: null },
+    ],
+  },
+  decision_download: null,
+  decision_jobs: [],
 };
+const UNCHOSEN = { ...SETUP, ready: true, agents: [{ ...SETUP.agents[0], status: "ready", signed_in: true, usable: true }],
+  sandbox: { ...SETUP.sandbox, vm: "Stopped", ready: true }, decision: { ...SETUP.decision, backend: null, installed: false } };
 
 /// Every test here builds rows by hand, and a name invented in one of them is a name the page
 /// can then read for ever without anything failing: `seats[].turn_id` did not exist, the page
@@ -2680,6 +2708,104 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(calls.some(([name]) => name === "suggest_roster"));
   assert.match(el("notice").render(), /sonnet measured best here/, "why it was proposed is said");
+});
+
+test("a window whose decision model is not chosen asks where it runs, then which model, and a local one downloads", async () => {
+  const { el, calls } = await open({ setup_status: UNCHOSEN, sandbox_job: "job-9" });
+  assert.equal(el("setup").open, true, "a usable agent is not enough: the decision model is still to choose");
+  const body = el("setup-body");
+  const places = body.querySelectorAll("label").filter((l) => l.className === "decision-place");
+  assert.deepEqual(places.map((p) => p.dataset.place), ["local", "cloud", "off"]);
+  assert.match(places[0].render(), /On this machine[\s\S]*Recommended/);
+  assert.equal(places[1].render().includes("Recommended"), false, "the cloud is never recommended");
+  assert.match(body.render(), /64 GB of memory and room for the 3.0 GB download/);
+  // On this machine: every model that runs here, the recommended one first, with what was measured of it.
+  let models = body.querySelectorAll("label").filter((l) => l.className === "decision-choice");
+  assert.deepEqual(models.map((m) => m.dataset.model), ["lev", "kev-4b", "laya-multilingual"]);
+  assert.match(models[0].render(), /Recommended[\s\S]*3.0 GB · Apache-2.0[\s\S]*right 26 of 30/);
+  assert.doesNotMatch(models[1].render(), /Recommended/);
+  models[1].querySelectorAll("input")[0].checked = true;
+  models[1].querySelectorAll("input")[0].dispatch("change");
+  await settle();
+  body.querySelectorAll("button").find((b) => b.textContent === "Use this").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request),
+    [{ op: "decision", backend: "local", model: "kev-4b" }]);
+});
+
+test("in the cloud nothing is recommended, and each model asks for its own maker's key, in a hidden field, and the key never rides the job", async () => {
+  const { el, calls } = await open({ setup_status: UNCHOSEN, sandbox_job: "job-9", decision_key: null });
+  const body = el("setup-body");
+  const cloud = body.querySelectorAll("label").find((l) => l.dataset.place === "cloud");
+  cloud.querySelectorAll("input")[0].checked = true;
+  cloud.querySelectorAll("input")[0].dispatch("change");
+  await settle();
+  const models = body.querySelectorAll("label").filter((l) => l.className === "decision-choice");
+  assert.deepEqual(models.map((m) => m.dataset.model), ["jev", "gpt-6-luna"]);
+  assert.equal(cloud.render().includes("Recommended"), false);
+  assert.equal(models.some((m) => m.render().includes("Recommended")), false);
+  assert.match(models[0].render(), /TypeSafe/);
+  assert.match(models[1].render(), /OpenAI/);
+  let key = body.querySelectorAll("input").find((i) => i.className === "decision-key");
+  assert.equal(key.type, "password");
+  assert.equal(key.dataset.provider, "typesafe");
+  models[1].querySelectorAll("input")[0].checked = true;
+  models[1].querySelectorAll("input")[0].dispatch("change");
+  await settle();
+  key = body.querySelectorAll("input").find((i) => i.className === "decision-key");
+  assert.equal(key.dataset.provider, "openai", "gpt-6-luna is reached with OpenAI's key, not TypeSafe's");
+  const use = body.querySelectorAll("button").find((b) => b.textContent === "Use this");
+  assert.equal(use.disabled, true, "nothing to try without a key");
+  key.value = "sk-openai-secret";
+  key.dispatch("input");
+  assert.equal(use.disabled, false);
+  use.dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "decision_key").map(([, a]) => a), [{ provider: "openai", key: "sk-openai-secret" }]);
+  const jobs = calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request);
+  assert.deepEqual(jobs, [{ op: "decision", backend: "cloud", model: "gpt-6-luna" }]);
+  assert.equal(JSON.stringify(jobs).includes("secret"), false);
+});
+
+test("a provider whose key is already here asks for none", async () => {
+  const keyed = { ...UNCHOSEN, decision: { ...UNCHOSEN.decision, keys: { typesafe: true, openai: false } } };
+  const { el } = await open({ setup_status: keyed });
+  const body = el("setup-body");
+  const cloud = body.querySelectorAll("label").find((l) => l.dataset.place === "cloud");
+  cloud.querySelectorAll("input")[0].checked = true;
+  cloud.querySelectorAll("input")[0].dispatch("change");
+  await settle();
+  assert.equal(body.querySelectorAll("input").some((i) => i.className === "decision-key"), false);
+  assert.equal(body.querySelectorAll("button").find((b) => b.textContent === "Use this").disabled, false);
+});
+
+test("a decision model downloading shows how far it has come, and a chosen one can be changed", async () => {
+  const downloading = { ...UNCHOSEN,
+    decision_jobs: [{ id: "job-9", request: { op: "decision", backend: "local", model: "kev-4b" }, started_at: 1, exit: null, tail: "" }],
+    decision_download: { job: "job-9", model: "kev-4b", file: "Kev-4B-Q4_K_M.gguf", done: 1500000000, total: 3000000000, state: "running", detail: null } };
+  let { el } = await open({ setup_status: downloading });
+  assert.match(el("setup-body").render(), /Downloading Kev-4B-Q4_K_M.gguf · 1.50 \/ 3.00 GB/);
+
+  const chosen = { ...UNCHOSEN, decision: { ...SETUP.decision } };
+  ({ el } = await open({ setup_status: chosen }));
+  assert.equal(el("setup").open, false, "nothing is left to ask");
+  await openSettingsPage(el, "setup");
+  await settle();
+  const row = el("setup-body").querySelectorAll("div").find((d) => d.dataset.name === "Decision model");
+  assert.match(row.render(), /lev · on this machine/);
+  row.querySelectorAll("button")[0].dispatch("click");
+  await settle();
+  assert.equal(el("setup-body").querySelectorAll("label").filter((l) => l.className === "decision-place").length, 3);
+});
+
+test("a machine that cannot run the recommended model is recommended nothing, and starts on the cloud", async () => {
+  const small = { ...UNCHOSEN, decision: { ...UNCHOSEN.decision,
+    recommendation: { ...UNCHOSEN.decision.recommendation, backend: null, fits: false, memory_gb: 8 } } };
+  const { el } = await open({ setup_status: small });
+  const body = el("setup-body");
+  assert.equal(body.render().includes("Recommended"), false);
+  const cloud = body.querySelectorAll("label").find((l) => l.dataset.place === "cloud");
+  assert.equal(cloud.querySelectorAll("input")[0].checked, true);
 });
 
 test("a thread started in a worktree asks the core for one in the project clicked", async () => {

@@ -327,6 +327,14 @@ pub async fn refine(
     descriptor: &mut TaskDescriptor,
     mut report: impl FnMut(Progress),
 ) {
+    // A chosen decision model answers these questions in a fraction of a session's time, and
+    // where it cannot the heuristic stands: an agent is asked only where `[classifier]` was
+    // turned on by hand.
+    if crate::decision::refine(config, policies, store, root, task, descriptor, &mut report).await
+        || crate::decision::chosen(&config.decision)
+    {
+        return;
+    }
     let agents = agents(config, store);
     if agents.is_empty() {
         return;

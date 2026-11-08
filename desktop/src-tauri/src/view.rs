@@ -295,6 +295,11 @@ pub struct Setup {
     pub jobs: Vec<orochi::sandbox::jobs::Job>,
     /// The steps of the last run, as far as it got.
     pub progress: Option<orochi::setup::Progress>,
+    /// The decision model: what is chosen and recommended, its download, and the jobs that
+    /// chose it, newest first.
+    pub decision: orochi::decision::Status,
+    pub decision_download: Option<orochi::decision::local::Download>,
+    pub decision_jobs: Vec<orochi::sandbox::jobs::Job>,
 }
 
 /// Reads the Setup screen. It runs `node --version` and looks for sign-ins, so it runs off
@@ -302,9 +307,16 @@ pub struct Setup {
 pub fn setup(config: &Path, data: &Path) -> Result<Setup> {
     let loaded = orochi::config::Config::load(config).unwrap_or_default();
     let status = orochi::setup::status(&loaded, config, data);
-    let jobs = orochi::sandbox::jobs::list(data, 20)?
-        .into_iter()
+    let all = orochi::sandbox::jobs::list(data, 20)?;
+    let jobs = all
+        .iter()
         .filter(|j| matches!(j.request, orochi::sandbox::jobs::Request::Prepare { .. }))
+        .take(3)
+        .cloned()
+        .collect();
+    let decision_jobs = all
+        .into_iter()
+        .filter(|j| matches!(j.request, orochi::sandbox::jobs::Request::Decision { .. }))
         .take(3)
         .collect();
     let progress = orochi::setup::Progress::read(data);
@@ -312,7 +324,17 @@ pub fn setup(config: &Path, data: &Path) -> Result<Setup> {
         status,
         jobs,
         progress,
+        decision: orochi::decision::status(&loaded.decision, data),
+        decision_download: orochi::decision::local::Download::read(data),
+        decision_jobs,
     })
+}
+
+/// Stores the cloud decision model's key, from the Setup screen's field; it never reaches a
+/// command line.
+pub fn decision_key(config: &Path, data: &Path, provider: &str, key: &str) -> Result<()> {
+    let loaded = orochi::config::Config::load(config).unwrap_or_default();
+    orochi::decision::key::put(data, &loaded.decision, provider, key)
 }
 
 /// Stops a setup job the window started.

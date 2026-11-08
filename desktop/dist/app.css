@@ -1178,7 +1178,8 @@ details[open] > summary .icon { transform: rotate(90deg); }
 
 /* Setup: what the window asks first, when nothing here can be routed to. */
 #setup {
-  width: min(560px, calc(100vw - 32px));
+  width: min(880px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1190,7 +1191,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 #setup-head { display: flex; align-items: center; padding: 14px var(--gutter) 6px; }
 #setup-title { margin: 0; font-size: 15px; }
 #setup-close { margin-left: auto; border: 0; color: var(--muted); padding: 2px 8px; }
-#setup-body { padding: 4px var(--gutter) 8px; display: grid; gap: 8px; max-height: calc(85vh - 120px); overflow: auto; }
+#setup-body { padding: 4px var(--gutter) 8px; display: grid; gap: 8px; max-height: calc(100vh - 170px); overflow: auto; }
 #setup-body .where { color: var(--muted); font-size: 12px; margin: 0; }
 .setup-rows { display: grid; gap: 4px; }
 .setup-row {
@@ -1210,6 +1211,41 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .setup-row label { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .setup-row input[type="checkbox"] { accent-color: var(--brand); width: 14px; height: 14px; margin: 0; }
 .setup-row a { color: var(--brand); font-size: 12px; }
+/* The decision model: one choice among a few, the recommended one first. */
+#setup-body .decision { display: grid; gap: 6px; margin-top: 6px; }
+#setup-body .decision h3 { margin: 0; font-size: 13px; }
+#setup-body .where.failed { color: var(--danger); }
+.decision-places { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 6px; }
+.decision-choices { display: grid; gap: 4px; }
+.decision-place,
+.decision-choice {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  column-gap: 10px;
+  align-items: start;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.decision-place:has(input:checked),
+.decision-choice:has(input:checked) { border-color: var(--brand); }
+.decision-place input,
+.decision-choice input { accent-color: var(--brand); margin: 2px 0 0; }
+.decision .words { display: grid; gap: 2px; }
+.decision .words .name { font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.decision .words .note { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.decision .words .note.measured { font-size: 11px; }
+.decision .badge {
+  font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 8px;
+  background: var(--brand); color: var(--on-brand, #fff);
+}
+.decision-key-row { display: flex; gap: 8px; align-items: center; }
+.decision-key-row a { color: var(--brand); font-size: 12px; white-space: nowrap; }
+.decision-key { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); color: var(--text); }
+.decision-foot { display: flex; justify-content: flex-end; }
+.setup-bar.busy i { width: 30% !important; animation: decision-busy 1.2s ease-in-out infinite; }
+@keyframes decision-busy { from { transform: translateX(-100%); } to { transform: translateX(330%); } }
 #setup-log {
   margin: 0;
   max-height: 160px;

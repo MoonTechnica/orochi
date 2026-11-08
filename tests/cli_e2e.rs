@@ -33,8 +33,11 @@ impl Workspace {
         config.discovery.auto_add = false;
         config.evaluator.auto = false;
         config.classifier.enabled = false;
+        // Chosen, so a console on a pty is not stopped by the first-run question.
+        config.decision.backend = Some(orochi::config::DecisionBackend::Off);
         // A test never touches the keychain of the machine it runs on.
         config.mcp.keychain = false;
+        config.decision.keychain = false;
         config.scheduler.discovery_timeout_secs = 5;
         config.scheduler.prompt_timeout_secs = 5;
         config.agents = vec![fixture(

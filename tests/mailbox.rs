@@ -841,7 +841,9 @@ fn a_chat_turn_is_seated_by_the_classifier_not_by_the_keyword_profile() {
     config.scheduler.discovery_timeout_secs = 10;
     config.scheduler.prompt_timeout_secs = 60;
     config.agents = vec![agent];
+    // The agent classifier is opt-in since the decision model took its place.
     config.classifier = orochi::config::ClassifierConfig {
+        enabled: true,
         agent: Some("test".into()),
         model: Some("sol-test".into()),
         timeout_secs: 30,
@@ -991,7 +993,9 @@ fn a_session_is_looked_back_over_once_at_its_end() {
     config.scheduler.discovery_timeout_secs = 10;
     config.scheduler.prompt_timeout_secs = 60;
     config.agents = vec![agent];
+    // The agent classifier is opt-in since the decision model took its place.
     config.classifier = orochi::config::ClassifierConfig {
+        enabled: true,
         agent: Some("test".into()),
         model: Some("sol-test".into()),
         timeout_secs: 30,
