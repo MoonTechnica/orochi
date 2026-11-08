@@ -1441,7 +1441,7 @@ test("everything that is not a conversation lives behind the row at the foot", a
   const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
   assert.deepEqual(
     pages,
-    ["roster", "preferences", "accounts", "insights", "sandboxes", "storage", "conversations", "notifications", "setup"],
+    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "conversations", "notifications", "setup"],
     "every former panel is a page of it",
   );
   el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === "insights").dispatch("click");
@@ -2491,9 +2491,11 @@ test("a window that can route to nothing asks to set up first, and installs what
   el("setup-go").dispatch("click");
   await settle();
   const asked = calls.filter(([name]) => name === "sandbox_job").map(([, a]) => a.request);
-  // The sandbox host is offered too, unticked: it comes down when a project first uses one.
-  assert.match(drawn, /span.name Sandbox\n\s+span.note not set up · comes down when a project first runs in one/);
   assert.deepEqual(asked, [{ op: "prepare", install: ["claude"], sandbox: false }]);
+  // The sandbox host is on a page of its own, unticked: it comes down when a project first uses one.
+  assert.doesNotMatch(drawn, /comes down when a project first runs in one/);
+  await setupPage(el, "sandbox");
+  assert.match(el("setup-body").render(), /span.name Sandbox\n\s+span.note not set up · comes down when a project first runs in one/);
   // Nothing on the conversation side is touched by the dialog.
   assert.equal(calls.some(([name]) => name === "send"), false);
 });
@@ -2501,14 +2503,19 @@ test("a window that can route to nothing asks to set up first, and installs what
 test("a sandbox already set up is reported and not offered again, and one is set up only when ticked", async () => {
   const running = { ...SETUP, sandbox: { ...SETUP.sandbox, limactl: "/x/limactl", vm: "Running", ready: true } };
   let { el, calls } = await open({ setup_status: running, sandbox_job: "job-1" });
+  await setupPage(el, "sandbox");
   const row = el("setup-body").querySelectorAll("div").find((d) => d.dataset.name === "Sandbox");
   assert.match(row.render(), /VM running/);
   assert.equal(row.querySelectorAll("input").length, 0);
+  // Nothing ticked: the button goes on to the next page and starts nothing.
+  assert.equal(el("setup-go").textContent, "Next");
   el("setup-go").dispatch("click");
   await settle();
-  assert.deepEqual(calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request), [{ op: "prepare", install: [], sandbox: false }]);
+  assert.deepEqual(calls.filter(([n]) => n === "sandbox_job"), []);
+  assert.match(el("setup-body").render(), /Decision model/);
 
   ({ el, calls } = await open({ setup_status: SETUP, sandbox_job: "job-1" }));
+  await setupPage(el, "sandbox");
   const box = el("setup-body").querySelectorAll("div").find((d) => d.dataset.name === "Sandbox").querySelectorAll("input")[0];
   assert.equal(box.checked, false, "not downloaded unless asked for");
   box.checked = true;
@@ -2520,6 +2527,7 @@ test("a sandbox already set up is reported and not offered again, and one is set
 
   const unsupported = { ...SETUP, sandbox: { ...SETUP.sandbox, supported: false } };
   ({ el } = await open({ setup_status: unsupported }));
+  await setupPage(el, "sandbox");
   assert.match(el("setup-body").render(), /not available on this machine/);
 });
 
@@ -2532,6 +2540,12 @@ test("an installed agent that is not signed in offers a sign-in that opens Termi
   await settle();
   assert.deepEqual(calls.filter(([name]) => name === "setup_login").map(([, a]) => a), [{ agent: "codex" }]);
 });
+
+/// Goes to one of the setup dialog's pages by its step at the top.
+async function setupPage(el, page) {
+  el("setup-body").querySelectorAll("button").find((b) => b.dataset.page === page).dispatch("click");
+  await settle();
+}
 
 /// A run two steps in: what `orochi setup` wrote to progress.json for the job "1".
 const PROGRESS = {
@@ -2626,7 +2640,21 @@ test("a window with a usable agent is not asked to set up, and Setup stays in th
   assert.equal(el("setup").open, true);
   assert.match(el("setup-body").render(), /At least one agent is ready/);
   assert.match(el("setup-body").render(), /span.name codex\n\s+span.note installed · signed in/);
+  // Page by page: Next, Next, then Done on the last, with Back on every page but the first.
+  assert.equal(el("setup-back").hidden, true);
+  assert.equal(el("setup-go").textContent, "Next");
+  el("setup-go").dispatch("click");
+  await settle();
+  assert.equal(el("setup-back").hidden, false);
+  assert.match(el("setup-body").render(), /span.name Sandbox/);
+  el("setup-go").dispatch("click");
+  await settle();
   assert.equal(el("setup-go").textContent, "Done");
+  el("setup-back").dispatch("click");
+  await settle();
+  assert.match(el("setup-body").render(), /span.name Sandbox/);
+  el("setup-go").dispatch("click");
+  await settle();
   el("setup-go").dispatch("click");
   assert.equal(el("setup").open, false);
 });
@@ -2727,7 +2755,10 @@ test("a window whose decision model is not chosen asks where it runs, then which
   models[1].querySelectorAll("input")[0].checked = true;
   models[1].querySelectorAll("input")[0].dispatch("change");
   await settle();
-  body.querySelectorAll("button").find((b) => b.textContent === "Use this").dispatch("click");
+  // One button applies it: the dialog's own, never a second one inside the page.
+  assert.equal(body.querySelectorAll("button").some((b) => b.textContent === "Use this"), false);
+  assert.equal(el("setup-go").textContent, "Use this");
+  el("setup-go").dispatch("click");
   await settle();
   assert.deepEqual(calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request),
     [{ op: "decision", backend: "local", model: "kev-4b" }]);
@@ -2754,7 +2785,8 @@ test("in the cloud nothing is recommended, and each model asks for its own maker
   await settle();
   key = body.querySelectorAll("input").find((i) => i.className === "decision-key");
   assert.equal(key.dataset.provider, "openai", "gpt-6-luna is reached with OpenAI's key, not TypeSafe's");
-  const use = body.querySelectorAll("button").find((b) => b.textContent === "Use this");
+  const use = el("setup-go");
+  assert.equal(use.textContent, "Use this");
   assert.equal(use.disabled, true, "nothing to try without a key");
   key.value = "sk-openai-secret";
   key.dispatch("input");
@@ -2776,7 +2808,7 @@ test("a provider whose key is already here asks for none", async () => {
   cloud.querySelectorAll("input")[0].dispatch("change");
   await settle();
   assert.equal(body.querySelectorAll("input").some((i) => i.className === "decision-key"), false);
-  assert.equal(body.querySelectorAll("button").find((b) => b.textContent === "Use this").disabled, false);
+  assert.equal(el("setup-go").disabled, false);
 });
 
 test("a decision model downloading shows how far it has come, and a chosen one can be changed", async () => {
@@ -2791,6 +2823,7 @@ test("a decision model downloading shows how far it has come, and a chosen one c
   assert.equal(el("setup").open, false, "nothing is left to ask");
   await openSettingsPage(el, "setup");
   await settle();
+  await setupPage(el, "decision");
   const row = el("setup-body").querySelectorAll("div").find((d) => d.dataset.name === "Decision model");
   assert.match(row.render(), /lev · on this machine/);
   row.querySelectorAll("button")[0].dispatch("click");
@@ -2849,4 +2882,40 @@ test("the storage page shows where each big thing goes, and a folder chosen ther
     { which: "worktrees", path: "/Volumes/Big/worktrees/{name}", force: false },
     { which: "vm", path: null, force: false },
   ]);
+});
+
+test("the decision model has a settings page of its own, with the same choice the setup dialog offers", async () => {
+  const chosen = { ...UNCHOSEN, decision: { ...SETUP.decision } };
+  const { el, calls } = await open({ setup_status: chosen, sandbox_job: "job-9" });
+  await openSettingsPage(el, "decision");
+  await settle();
+  assert.equal(el("setup").open, false, "it is a page, not the dialog");
+  const body = el("settings-body");
+  const row = body.querySelectorAll("div").find((d) => d.dataset.name === "Decision model");
+  assert.match(row.render(), /lev · on this machine/);
+  row.querySelectorAll("button")[0].dispatch("click");
+  await settle();
+  const places = body.querySelectorAll("label").filter((l) => l.className === "decision-place");
+  assert.equal(places.length, 3, "Change… opens the choice in place");
+  const off = places.find((p) => p.dataset.place === "off");
+  off.querySelectorAll("input")[0].checked = true;
+  off.querySelectorAll("input")[0].dispatch("change");
+  await settle();
+  body.querySelectorAll("button").find((b) => b.textContent === "Use this").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request),
+    [{ op: "decision", backend: "off", model: "lev" }]);
+});
+
+test("the setup dialog is three pages with a step for each, and opens on the one that needs you", async () => {
+  // Nothing usable: it opens on the agents.
+  let { el } = await open({ setup_status: SETUP });
+  const steps = () => el("setup-body").querySelectorAll("button").filter((b) => b.dataset.page);
+  assert.deepEqual(steps().map((b) => b.dataset.page), ["agents", "sandbox", "decision"]);
+  assert.equal(steps().find((b) => b.getAttribute("aria-current") === "step").dataset.page, "agents");
+  // Agents ready and the decision model unchosen: it opens on that.
+  ({ el } = await open({ setup_status: UNCHOSEN }));
+  assert.equal(steps().find((b) => b.getAttribute("aria-current") === "step").dataset.page, "decision");
+  assert.match(el("setup-body").render(), /decision-place/);
+  assert.doesNotMatch(el("setup-body").render(), /span.name Node.js/, "one page at a time");
 });
