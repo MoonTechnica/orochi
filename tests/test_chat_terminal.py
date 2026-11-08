@@ -409,6 +409,16 @@ MOCK_LOG = "{self.log}"
         self.pump(seconds, until=lambda s: self.shown(text))
         assert self.shown(text), f"never showed {text!r}:\n" + "\n".join(self.screen.text())
 
+    def flows(self, text):
+        """`text` read across the rows it wrapped onto: where a line breaks depends on what
+        precedes it (a temporary directory's length, say), which differs by platform."""
+        joined = " ".join(" ".join(row.split()) for row in self.screen.text())
+        return " ".join(text.split()) in joined
+
+    def wait_flowing(self, text, seconds=TURN):
+        self.pump(seconds, until=lambda s: self.flows(text))
+        assert self.flows(text), f"never showed {text!r}:\n" + "\n".join(self.screen.text())
+
     def type(self, text):
         for start in range(0, len(text), 8):
             os.write(self.master, text[start:start + 8].encode())
@@ -1070,7 +1080,7 @@ class Roster(unittest.TestCase):
             self.assertTrue(c.shown("* astra-test"), c.rows())
             c.type("/roster set test astra-test")
             c.key(b"\r")
-            c.wait("applies when an agent is next chosen")
+            c.wait_flowing("applies when an agent is next chosen")
             self.assertIn('models = ["astra-test"]', (c.dir / "config.toml").read_text())
             # The conversation keeps its session until an agent is chosen again.
             c.type("/reroute")

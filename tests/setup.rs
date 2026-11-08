@@ -196,7 +196,8 @@ impl Drop for Served {
 }
 
 /// The binary, with nothing of this machine's environment but what the test gives it: a
-/// `PATH` holding only `tar`, a home of its own, and no login shell to ask (`SHLVL` set).
+/// `PATH` holding only `tar`, a home of its own, no login shell to ask (`SHLVL` set) and no
+/// fixed directories after them (`OROCHI_SEARCH_DIRS` empty).
 struct Machine {
     dir: tempfile::TempDir,
 }
@@ -229,6 +230,9 @@ impl Machine {
             .env("PATH", self.dir.path().join("bin"))
             .env("HOME", self.home())
             .env("SHLVL", "1")
+            // Nor this machine's Homebrew or system directories, which hold a Node.js on a
+            // developer's Mac and on CI's macOS runner alike.
+            .env("OROCHI_SEARCH_DIRS", "")
             .env("OROCHI_NODE_DIST", dist)
             .env("OROCHI_GH_RELEASES", format!("{dist}/gh"))
             .args(["--config", self.config().to_str().unwrap()])

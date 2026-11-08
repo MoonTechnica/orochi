@@ -221,10 +221,13 @@ pub fn search_path(data: Option<&Path>) -> OsString {
         // Where `curl -fsSL https://opencode.ai/install | bash` puts the binary.
         dirs.push(home.join(".opencode/bin"));
     }
-    dirs.push("/opt/homebrew/bin".into());
-    dirs.push("/usr/local/bin".into());
-    dirs.push("/usr/bin".into());
-    dirs.push("/bin".into());
+    // `OROCHI_SEARCH_DIRS` replaces these: a test that clears the environment to stand for a
+    // machine with nothing installed cannot otherwise keep this machine's Homebrew out.
+    match std::env::var_os("OROCHI_SEARCH_DIRS") {
+        Some(given) => dirs.extend(std::env::split_paths(&given)),
+        None => dirs
+            .extend(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from)),
+    }
     let mut seen = std::collections::HashSet::new();
     let dirs: Vec<PathBuf> = dirs
         .into_iter()

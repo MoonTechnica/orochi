@@ -950,7 +950,11 @@ fn installed_vendor_icons_come_back_as_small_data_urls() {
 fn a_folder_nobody_worked_in_is_asked_where_it_runs_and_a_known_or_sandboxed_one_is_not() {
     use orochi::sandbox::{Mode, Project, State};
     let dir = tempfile::tempdir().unwrap();
-    let client = Client::open(dir.path()).unwrap();
+    // A configuration of its own: where a folder runs is read from it, and this machine's
+    // own file is not the test's to read.
+    let client = Client::open(dir.path())
+        .unwrap()
+        .with_config(&dir.path().join("config.toml"));
     let fresh = tempfile::tempdir().unwrap();
     let asked = client.placement(fresh.path()).unwrap();
     assert!(asked.ask);

@@ -11,11 +11,11 @@ Rust 1.96.0 is pinned in `rust-toolchain.toml`; edition 2024. `Cargo.lock` is co
 ## Commands
 
 ```sh
-mise install && mise run check             # every check CI runs, CLI and desktop crate; `mise tasks` lists the rest
+mise install && mise run check             # every check, CLI and desktop crate; run it before pushing to main; `mise tasks` lists the rest
 cargo build --locked                       # debug binary (examples/demo.py expects target/debug/orochi)
 cargo build --release --locked
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings   # warnings are errors in CI
+cargo clippy --locked --all-targets -- -D warnings   # warnings are errors
 cargo test --locked                        # requires python3 on PATH
 ```
 
@@ -29,9 +29,9 @@ python3 -m unittest discover -s tests -p test_quota_terminal.py   # also run by 
 
 End-to-end smoke without any account: `cargo build --locked && python3 examples/demo.py`.
 
-CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests — not on every branch push — with dependencies cached: fmt / clippy / test on ubuntu + macOS through `mise.toml` (the same Rust, Node and Python as `mise install` gives locally), the desktop crate's clippy and tests (`desktop:lint`, `desktop:test`, which build the sidecar first), a Windows clippy of the CLI and the Windows launcher test. No account, network LLM call, or API billing is needed for any test.
+CI (`.github/workflows/ci.yml`) runs **by hand only** (`workflow_dispatch`; the user's decision 2026-11-09 — Actions minutes cost too much to spend on every push): fmt / clippy / test on ubuntu + macOS through `mise.toml`, the desktop crate's clippy and tests, a Windows clippy of the CLI and the Windows launcher test. **So the tests are run here**: `mise run check` before pushing to `main`, and nothing is pushed red. Dispatch the workflow only for what this Mac cannot check (the Windows jobs) or before a release, and only when the user asks. No account, network LLM call, or API billing is needed for any test.
 
-**Keep the loop fast.** Waiting is what slows the work, so: run what the change touches locally (`cargo test --test <file> <name>`, or `mise run quick` — fmt, clippy and every test but the pty-driven `cli_e2e`, ~2½ minutes), push to `main` (`.githooks/pre-push`, enabled by `mise run setup`, runs fmt and clippy), and **do not wait on CI**: carry on and look at the run when it has finished. A red `main` is still fixed before anything else lands on it — it was red for nine days once, and every push after it hid behind that red. `desktop/src-tauri` is outside the workspace, so a root `cargo` command never sees it; `mise run check` does. Code under `#[cfg(unix)]` is built for Windows only on CI, so compile its non-Unix side in your head.
+**Keep the loop fast.** Waiting is what slows the work, so: run what the change touches locally (`cargo test --test <file> <name>`, or `mise run quick` — fmt, clippy and every test but the pty-driven `cli_e2e`, ~2½ minutes), then `mise run check` once before pushing to `main` (`.githooks/pre-push`, enabled by `mise run setup`, runs fmt and clippy). A red `main` is fixed before anything else lands on it — it was red for nine days once, and from 2026-10-16 to 2026-11-09 again, every push hiding behind a test that broke only on Linux (a wrapped line: `tests/test_chat_terminal.py`'s `wait_flowing`) and one that broke only where Homebrew has Node (`OROCHI_SEARCH_DIRS`). `TMPDIR=/tmp` gives a Mac Linux's temporary-path lengths. `desktop/src-tauri` is outside the workspace, so a root `cargo` command never sees it; `mise run check` does. Code under `#[cfg(unix)]` is built for Windows only by the hand-run CI, so compile its non-Unix side in your head.
 
 ## Execution pipeline
 
