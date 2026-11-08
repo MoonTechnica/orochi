@@ -1,5 +1,6 @@
-"""A stand-in for `limactl`: one VM whose state is a file, `start` / `stop` / `list --json`,
-and `shell … incus …` handed to the fake `incus` beside it."""
+"""A stand-in for `limactl`: one VM whose state is a file (`absent` before it is created),
+`start` / `stop` / `list --json`, `shell … incus …` handed to the fake `incus` beside it, and
+any other `shell` command (the host setup script) taken as done."""
 import json
 import os
 import sys
@@ -11,7 +12,8 @@ with open(log, "a") as f:
     f.write(json.dumps(args) + "\n")
 status = open(state).read().strip() if os.path.exists(state) else "Stopped"
 if args[:1] == ["list"]:
-    print(json.dumps({"name": "sbx-host", "status": status}))
+    if status != "absent":
+        print(json.dumps({"name": "sbx-host", "status": status}))
 elif args[:1] == ["start"]:
     open(state, "w").write("Running")
 elif args[:1] == ["stop"]:
@@ -20,6 +22,9 @@ elif args[:1] == ["shell"]:
     if status != "Running":
         sys.stderr.write("instance is not running\n")
         sys.exit(1)
+    if "incus" not in args:
+        sys.stdin.read()
+        sys.exit(0)
     rest = args[args.index("incus") + 1:]
     os.execv(os.environ["FAKE_INCUS"], [os.environ["FAKE_INCUS"]] + rest)
 else:

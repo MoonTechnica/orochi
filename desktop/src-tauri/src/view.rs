@@ -120,15 +120,38 @@ pub struct Placement {
 /// Records where a folder's agents run, creating or recreating its sandbox where the choice
 /// needs one. Slow (an instance is made) and needs no window state, so the shell runs it off
 /// the window's connection.
-pub fn place(config: &Path, data: &Path, root: &Path, mode: &str, docker: bool) -> Result<()> {
-    use orochi::sandbox::{Mode, State, ops};
-    let mode = match mode {
+fn place_mode(mode: &str) -> Result<orochi::sandbox::Mode> {
+    use orochi::sandbox::Mode;
+    Ok(match mode {
         "host" => Mode::Host,
         "container" => Mode::Container,
         "vm" => Mode::Vm,
         "runner" => Mode::Runner,
         other => bail!("no such place to run: {other}"),
+    })
+}
+
+/// What `place` needs on this machine before it can make a sandbox, put in the first time a
+/// project is given one: Lima, the VM and the image (`orochi::setup::sandbox_on_demand`).
+pub async fn prepare_place(config: &Path, data: &Path, mode: &str) -> Result<()> {
+    use orochi::sandbox::Mode;
+    let mode = place_mode(mode)?;
+    if !mode.sandboxed() {
+        return Ok(());
+    }
+    let config = orochi::config::Config::load(config)?;
+    let tier = if mode == Mode::Vm {
+        Mode::Vm
+    } else {
+        Mode::Container
     };
+    orochi::setup::sandbox_on_demand(&config.sandbox, data, tier, orochi::setup::LIMA_RELEASES)
+        .await
+}
+
+pub fn place(config: &Path, data: &Path, root: &Path, mode: &str, docker: bool) -> Result<()> {
+    use orochi::sandbox::{State, ops};
+    let mode = place_mode(mode)?;
     let root = root.canonicalize()?;
     let config = orochi::config::Config::load(config)?;
     let sandbox = &config.sandbox;

@@ -2463,14 +2463,14 @@ test("a window that can route to nothing asks to set up first, and installs what
   el("setup-go").dispatch("click");
   await settle();
   const asked = calls.filter(([name]) => name === "sandbox_job").map(([, a]) => a.request);
-  // The sandbox host is offered too, ticked where this machine can have one and does not.
-  assert.match(drawn, /span.name Sandbox\n\s+span.note not set up/);
-  assert.deepEqual(asked, [{ op: "prepare", install: ["claude"], sandbox: true }]);
+  // The sandbox host is offered too, unticked: it comes down when a project first uses one.
+  assert.match(drawn, /span.name Sandbox\n\s+span.note not set up · comes down when a project first runs in one/);
+  assert.deepEqual(asked, [{ op: "prepare", install: ["claude"], sandbox: false }]);
   // Nothing on the conversation side is touched by the dialog.
   assert.equal(calls.some(([name]) => name === "send"), false);
 });
 
-test("a sandbox already set up is reported and not offered again, and one unticked is not asked for", async () => {
+test("a sandbox already set up is reported and not offered again, and one is set up only when ticked", async () => {
   const running = { ...SETUP, sandbox: { ...SETUP.sandbox, limactl: "/x/limactl", vm: "Running", ready: true } };
   let { el, calls } = await open({ setup_status: running, sandbox_job: "job-1" });
   const row = el("setup-body").querySelectorAll("div").find((d) => d.dataset.name === "Sandbox");
@@ -2482,13 +2482,13 @@ test("a sandbox already set up is reported and not offered again, and one untick
 
   ({ el, calls } = await open({ setup_status: SETUP, sandbox_job: "job-1" }));
   const box = el("setup-body").querySelectorAll("div").find((d) => d.dataset.name === "Sandbox").querySelectorAll("input")[0];
-  assert.equal(box.checked, true);
-  box.checked = false;
+  assert.equal(box.checked, false, "not downloaded unless asked for");
+  box.checked = true;
   box.dispatch("change");
   await settle();
   el("setup-go").dispatch("click");
   await settle();
-  assert.deepEqual(calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request), [{ op: "prepare", install: [], sandbox: false }]);
+  assert.deepEqual(calls.filter(([n]) => n === "sandbox_job").map(([, a]) => a.request), [{ op: "prepare", install: [], sandbox: true }]);
 
   const unsupported = { ...SETUP, sandbox: { ...SETUP.sandbox, supported: false } };
   ({ el } = await open({ setup_status: unsupported }));

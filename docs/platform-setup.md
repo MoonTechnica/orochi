@@ -7,6 +7,14 @@ working-directory/config/data paths. This is WSL support, not a native Windows e
 All platforms keep one Incus sandbox per conversation and independent Git worktrees for
 writable agents in that conversation.
 
+On macOS nothing has to be run first. Neither the desktop app nor the CLI ships Lima: the
+first time a project is given a sandbox (`orochi sandbox create`, `orochi sandbox mode`, or
+choosing a sandbox for a project in the desktop), whatever of Lima (downloaded from its GitHub
+release into Orochi's data directory, checksum verified), the VM with Incus and the image is
+missing is set up first, then reused. `orochi init`, `orochi setup --sandbox` and the desktop
+setup dialog's (unticked) Sandbox row do the same ahead of time. On Linux, preparing Incus
+needs administrator authorization, so it is never started on its own.
+
 ## Linux
 
 From a source checkout:

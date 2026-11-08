@@ -184,8 +184,10 @@ const WORDS = {
       "サインインはターミナルで開きます。CLI がブラウザを開き、結果をキーボードで受け取ります。",
     Sandbox: "サンドボックス",
     "Set up": "セットアップ",
-    "not set up · Lima, a Linux VM, Incus and the container image; a download of a few hundred MB":
-      "未セットアップ · Lima・Linux VM・Incus・コンテナイメージを導入します（数百 MB のダウンロード）",
+    "Setting up the sandbox host, then the sandbox (several minutes the first time)…":
+      "サンドボックスのホストを準備してから作成しています（初回は数分かかります）…",
+    "not set up · comes down when a project first runs in one (Lima, a Linux VM, Incus and the image, a few hundred MB); tick to have it now":
+      "未セットアップ · プロジェクトで初めて使うときに導入します（Lima・Linux VM・Incus・イメージ、数百 MB）。今入れるならチェック",
     "VM running": "VM 稼働中",
     "VM stopped": "VM 停止中",
     "not available on this machine": "このマシンでは利用できません",
@@ -1687,7 +1689,12 @@ function askPlace(root, where) {
         if (!root) return;
         if (known) return finish(root);
         go.disabled = true;
-        if (mode !== "host") go.textContent = t("Creating the sandbox…");
+        // The first sandbox also sets up the host: Lima, the VM and the image come down now.
+        if (mode !== "host") {
+          go.textContent = t(state.setup.view?.sandbox?.ready === false
+            ? "Setting up the sandbox host, then the sandbox (several minutes the first time)…"
+            : "Creating the sandbox…");
+        }
         try {
           await invoke("place", { root, mode, docker: docker && (mode === "container" || mode === "runner") });
           finish(root);
@@ -1844,10 +1851,10 @@ async function drawSetup(fresh) {
     rows.append(setupRow(agent.id, note, done, action));
   }
   // The sandbox host is offered beside the agents: a project's tests, servers and Docker run
-  // in it. Ticked by default where this machine can have one and does not yet.
+  // in it. Unticked: it is set up the first time a project is given one, since most never are.
   const sandbox = view.sandbox;
   if (sandbox) {
-    if (state.setup.sandbox === null) state.setup.sandbox = sandbox.supported && !sandbox.ready;
+    if (state.setup.sandbox === null) state.setup.sandbox = false;
     let action = null;
     if (!sandbox.ready && sandbox.supported) {
       const label = document.createElement("label");
@@ -1865,7 +1872,7 @@ async function drawSetup(fresh) {
     rows.append(setupRow(
       t("Sandbox"),
       t(sandbox.vm ? (sandbox.vm === "Running" ? "VM running" : "VM stopped")
-        : sandbox.supported ? "not set up · Lima, a Linux VM, Incus and the container image; a download of a few hundred MB"
+        : sandbox.supported ? "not set up · comes down when a project first runs in one (Lima, a Linux VM, Incus and the image, a few hundred MB); tick to have it now"
           : "not available on this machine"),
       sandbox.ready,
       action,

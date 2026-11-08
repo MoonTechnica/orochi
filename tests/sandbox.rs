@@ -1456,3 +1456,46 @@ fn deleting_a_thread_deletes_the_sandbox_its_conversation_was_given_and_no_other
             .is_empty()
     );
 }
+
+#[test]
+fn the_first_sandbox_on_a_machine_without_the_vm_creates_the_vm_first_and_the_next_reuses_it() {
+    let w = Workspace::new().behind_a_vm(false);
+    // Nothing was set up at first launch: Lima is here, the VM is not.
+    w.set_vm("absent");
+    let output = w.run(&["sandbox", "create", "--no-docker"]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Creating the sandbox VM"), "{stdout}");
+    assert!(stdout.contains("Sandbox repo ready"), "{stdout}");
+    let created: Vec<String> = std::fs::read_to_string(w.dir.path().join("limactl.jsonl"))
+        .unwrap()
+        .lines()
+        .filter(|l| l.contains("\"--name\""))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(created.len(), 1, "the VM is created once");
+    assert_eq!(w.vm(), "Running");
+    assert!(State::load(&w.data()).unwrap().exact(&w.repo()).is_some());
+
+    // A machine that has it pays one look and sets nothing up again.
+    std::fs::create_dir(w.dir.path().join("other")).unwrap();
+    let output = w.run(&[
+        "sandbox",
+        "create",
+        "--no-docker",
+        w.dir.path().join("other").to_str().unwrap(),
+    ]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("once"), "{stdout}");
+}
+
+#[test]
+fn a_machine_whose_sandbox_host_is_ready_creates_without_setting_anything_up() {
+    let w = Workspace::new().behind_a_vm(true);
+    let output = w.run(&["sandbox", "create", "--no-docker"]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("once"), "{stdout}");
+    assert_eq!(w.starts(), 0);
+}

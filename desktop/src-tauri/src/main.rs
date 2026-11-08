@@ -255,6 +255,9 @@ async fn place(
     docker: bool,
 ) -> Result<(), String> {
     let (config, data) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::prepare_place(&config, &data, &mode)
+        .await
+        .map_err(fail)?;
     tauri::async_runtime::spawn_blocking(move || {
         orochi_desktop::view::place(&config, &data, std::path::Path::new(&root), &mode, docker)
     })

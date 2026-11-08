@@ -2079,6 +2079,23 @@ async fn sandbox(
 ) -> Result<u8> {
     use crate::sandbox::{self as sbx, Mode, ops};
     let sandbox = &config.sandbox;
+    // Lima, the VM and the image come down the first time a sandbox is asked for, not at
+    // first launch: most projects never need one.
+    let on_demand = |mode: Mode| {
+        let releases = std::env::var("OROCHI_LIMA_RELEASES")
+            .unwrap_or_else(|_| crate::setup::LIMA_RELEASES.to_owned());
+        async move {
+            if !mode.sandboxed() {
+                return Ok(());
+            }
+            let tier = if mode == Mode::Vm {
+                Mode::Vm
+            } else {
+                Mode::Container
+            };
+            crate::setup::sandbox_on_demand(sandbox, data, tier, &releases).await
+        }
+    };
     let at = |path: Option<PathBuf>| -> Result<PathBuf> {
         match path {
             Some(path) => path
@@ -2158,6 +2175,7 @@ async fn sandbox(
             ports,
         } => {
             let root = at(path)?;
+            on_demand(mode).await?;
             let project = ops::create(
                 sandbox,
                 data,
@@ -2202,6 +2220,7 @@ async fn sandbox(
             {
                 return Ok(1);
             }
+            on_demand(mode).await?;
             let project = ops::set_mode(sandbox, data, &root, mode)?;
             println!(
                 "{}: agents now run {}",

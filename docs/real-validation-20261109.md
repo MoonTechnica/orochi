@@ -43,3 +43,14 @@ background reclaim; the quiet reclaim at a console's end with the VM stopped (it
 sandbox for a later call, which is covered only by the code path, not observed here);
 whether the Lima disk image on this machine shrinks after instances are deleted (it is a
 sparse 100 GB file using 17 GB, and was not measured before and after).
+
+## The sandbox host on first use
+
+Later the same day, after the setup dialog stopped ticking the sandbox host by default and
+`setup::sandbox_on_demand` was added: with a fresh data directory holding no Lima and the
+existing `sbx-host` VM stopped (its image already built), `orochi sandbox create --no-docker`
+downloaded Lima 2.2.1 from its GitHub release into `<data>/toolchain/` (checksum verified),
+started the VM and created the sandbox, in 20 s. A second `sandbox create` set nothing up and
+created at once. Both sandboxes were removed and the VM stopped again. Creating the VM itself
+on first use was exercised only against the fake `limactl` (`tests/sandbox.rs`), not on a
+machine without one.
