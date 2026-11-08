@@ -62,7 +62,7 @@ const state = {
   // First-launch setup: what this machine has of what Orochi needs, asked once when the window
   // opens and shown until something here can be routed to, or the person says later.
   setup: { asked: false, open: false, at: 0, view: null, chosen: new Set(), sandbox: null, details: false,
-    decision: { place: null, model: null, key: {}, changing: false } },
+    decision: { place: null, model: null, key: {}, changing: false }, page: "agents" },
 };
 
 /// What this window remembered, if its storage can be read at all.
@@ -199,6 +199,11 @@ const WORDS = {
       "今のサンドボックス VM は元の場所に残り、次にサンドボックスが必要になったとき新しい場所に VM を作ります。続けますか？",
     "Saved. It applies from the next run.": "保存しました。次の実行から反映されます。",
     "Decision model": "決定モデル",
+    Agents: "エージェント",
+    Back: "戻る",
+    Next: "次へ",
+    "A project's tests, servers and Docker can run in a Linux sandbox of its own instead of on this computer.":
+      "プロジェクトのテストやサーバー、Docker を、このコンピューターではなく専用の Linux サンドボックスで動かせます。",
     "Orochi reads each request with a decision model to choose who does it: what kind of work it is and how hard.":
       "Orochi は依頼ごとに決定モデルで、どんな作業か・どれくらい難しいかを読み取り、担当を選びます。",
     "On this machine": "このマシンで実行",
@@ -1878,8 +1883,18 @@ async function checkSetup() {
   if (!view.ready || (view.decision && !view.decision.backend)) await openSetup();
 }
 
+/// The dialog's pages, in order: what is installed, the sandbox, the decision model.
+const SETUP_PAGES = [
+  ["agents", "Agents"],
+  ["sandbox", "Sandbox"],
+  ["decision", "Decision model"],
+];
+
 async function openSetup() {
   state.setup.open = true;
+  // It opens where something is asked of you: nothing usable yet, then a decision model.
+  const view = state.setup.view;
+  state.setup.page = view && view.ready && view.decision && !view.decision.backend ? "decision" : "agents";
   el("setup-title").textContent = t("Set up Orochi");
   el("setup-close").replaceChildren(drawn("x"));
   el("setup-later").textContent = t("Later");
@@ -1927,13 +1942,43 @@ async function drawSetup(fresh) {
   // While a run is under way, or when one failed, the steps are the whole dialog, as an
   // installer's are; what is installed and signed in is shown once it has finished.
   const live = Boolean(progress) && (running || failed);
-  if (!live) {
+  const page = state.setup.page || "agents";
+
+  // Which page this is, and what each has come to; any of them can be gone to directly.
+  const nav = text("nav", "setup-pages");
+  const done = {
+    agents: view.ready,
+    sandbox: Boolean(view.sandbox?.ready),
+    decision: Boolean(view.decision?.backend),
+  };
+  SETUP_PAGES.forEach(([key, label], i) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.dataset.page = key;
+    if (key === page) tab.setAttribute("aria-current", "step");
+    const mark = text("span", "mark");
+    if (done[key]) mark.append(drawn("check", "icon"));
+    else mark.textContent = String(i + 1);
+    tab.append(mark, text("span", "name", t(label)));
+    tab.addEventListener("click", () => {
+      state.setup.page = key;
+      drawSetup(false);
+    });
+    nav.append(tab);
+  });
+  body.append(nav);
+
+  if (!live && page === "agents") {
     body.append(text("p", "where", t(view.ready
       ? "At least one agent is ready. Anything else can be added here later."
       : "Orochi drives the coding CLIs installed and signed in on this computer. Nothing here can be used yet: choose what to install, then sign in.")));
   }
+  if (!live && page === "sandbox") {
+    body.append(text("p", "where", t("A project's tests, servers and Docker can run in a Linux sandbox of its own instead of on this computer.")));
+  }
 
   const rows = text("div", "setup-rows");
+  const sandboxRows = text("div", "setup-rows");
   rows.append(setupRow(
     t("Node.js"),
     view.node.ok
@@ -2016,7 +2061,7 @@ async function drawSetup(fresh) {
       label.append(box, text("span", null, t("Set up")));
       action = label;
     }
-    rows.append(setupRow(
+    sandboxRows.append(setupRow(
       t("Sandbox"),
       t(sandbox.vm ? (sandbox.vm === "Running" ? "VM running" : "VM stopped")
         : sandbox.supported ? "not set up · comes down when a project first runs in one (Lima, a Linux VM, Incus and the image, a few hundred MB); tick to have it now"
@@ -2025,10 +2070,13 @@ async function drawSetup(fresh) {
       action,
     ));
   }
-  if (!live) body.append(rows);
-  if (!live && view.decision) body.append(decisionSection(view));
+  if (!live && page === "agents") body.append(rows);
+  if (!live && page === "sandbox") body.append(sandboxRows);
+  state.setup.decision.apply = null;
+  if (page === "decision" && view.decision) body.append(decisionSection(view));
+  const installing = page !== "decision";
 
-  if (last && progress && (live || state.setup.details)) {
+  if (installing && last && progress && (live || state.setup.details)) {
     const cancelled = !running && last.exit === 130;
     const steps = progress.steps;
     const finished = steps.filter((s) => s.state === "done" || s.state === "skipped").length;
@@ -2064,27 +2112,35 @@ async function drawSetup(fresh) {
     }
     section.append(list);
     body.append(section);
-  } else if (last && (running || failed || !state.setup.details)) {
+  } else if (installing && last && (running || failed || !state.setup.details)) {
     body.append(text("p", "where", t(running
       ? "Installing. Node.js and the CLIs chosen go under Orochi's data directory; nothing on the system is changed."
       : last.exit === 0 ? "Setup finished." : last.exit === 130 ? "Setup was cancelled." : "Setup failed. Fix what it says below and try again.")));
   }
-  if (last && state.setup.details) {
+  if (installing && last && state.setup.details) {
     const log = text("pre", null, last.tail);
     log.id = "setup-log";
     if (!running && last.exit !== 0) log.className = "failed";
     body.append(log);
   }
-  el("setup-details").hidden = !last;
+  el("setup-details").hidden = !last || !installing;
   el("setup-details").textContent = t(state.setup.details ? "Hide details" : "Show details");
   el("setup-details").setAttribute("aria-expanded", String(state.setup.details));
-  el("setup-cancel").hidden = !running;
+  el("setup-cancel").hidden = !running || !installing;
   el("setup-cancel").textContent = t("Cancel");
   el("setup-cancel").dataset.job = running ? view.jobs.find((j) => j.exit === null || j.exit === undefined).id : "";
 
+  const index = SETUP_PAGES.findIndex(([key]) => key === page);
+  const back = el("setup-back");
+  back.hidden = index <= 0;
+  back.textContent = t("Back");
+  // Install where something is ticked; otherwise on to the next page, and Done on the last.
   const go = el("setup-go");
-  go.textContent = t(running ? "Installing…" : setupFinished() ? "Done" : "Install");
-  go.disabled = running;
+  const choosing = page === "decision" && Boolean(state.setup.decision.apply);
+  go.dataset.action = choosing ? "use"
+    : page === "decision" ? "done" : running ? "wait" : somethingToInstall() ? "install" : "next";
+  go.textContent = t({ use: "Use this", done: "Done", wait: "Installing…", install: "Install", next: "Next" }[go.dataset.action]);
+  go.disabled = go.dataset.action === "wait" || (choosing && !state.setup.decision.ready);
 }
 
 // The decision model reads each request before routing. Choosing one is part of setup: a
@@ -2118,9 +2174,16 @@ function decisionModels(d, place) {
   return [...list.filter((m) => m.name === d.recommendation.model), ...list.filter((m) => m.name !== d.recommendation.model)];
 }
 
-function decisionSection(view) {
+/// The decision model's choice, drawn in the setup dialog and on its own settings page; `redraw`
+/// is how the one it is in draws itself again (`fresh` re-reads what the core says).
+/// In the setup dialog (`inDialog`) the choice is applied by the dialog's own button, so the
+/// section draws none: one button at the foot, never two that look alike. `ds.apply` is what
+/// that button does, and `ds.ready` whether it can yet (a cloud model waits for its key).
+function decisionSection(view, redraw = (fresh) => drawSetup(fresh), inDialog = true) {
   const d = view.decision;
   const ds = state.setup.decision;
+  ds.apply = null;
+  ds.ready = false;
   const section = text("section", "decision");
   section.append(text("h3", null, t("Decision model")));
   const job = decisionJobRunning(view);
@@ -2147,7 +2210,7 @@ function decisionSection(view) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = t("Change…");
-    button.addEventListener("click", () => { ds.changing = true; drawSetup(false); });
+    button.addEventListener("click", () => { ds.changing = true; redraw(false); });
     section.append(setupRow(t("Decision model"), where ? `${d.model} · ${where}` : t("off · keyword profile only"), d.backend !== "off", button));
     return section;
   }
@@ -2174,7 +2237,7 @@ function decisionSection(view) {
     radio.type = "radio";
     radio.name = "decision-place";
     radio.checked = ds.place === place;
-    radio.addEventListener("change", () => { ds.place = place; drawSetup(false); });
+    radio.addEventListener("change", () => { ds.place = place; redraw(false); });
     const words = text("span", "words");
     const title = text("span", "name");
     title.append(text("span", null, name));
@@ -2202,7 +2265,7 @@ function decisionSection(view) {
       radio.type = "radio";
       radio.name = "decision-model";
       radio.checked = ds.model[ds.place] === m.name;
-      radio.addEventListener("change", () => { ds.model[ds.place] = m.name; drawSetup(false); });
+      radio.addEventListener("change", () => { ds.model[ds.place] = m.name; redraw(false); });
       const words = text("span", "words");
       const title = text("span", "name");
       title.append(text("span", null, m.name));
@@ -2240,7 +2303,12 @@ function decisionSection(view) {
     input.value = ds.key[provider.name] || "";
     input.className = "decision-key";
     input.dataset.provider = provider.name;
-    input.addEventListener("input", () => { ds.key[provider.name] = input.value; use.disabled = !input.value.trim(); });
+    input.addEventListener("input", () => {
+      ds.key[provider.name] = input.value;
+      use.disabled = !input.value.trim();
+      ds.ready = !use.disabled;
+      if (inDialog) el("setup-go").disabled = !ds.ready;
+    });
     const link = document.createElement("a");
     link.href = provider.key_url;
     link.textContent = t("Get a key");
@@ -2249,7 +2317,7 @@ function decisionSection(view) {
     section.append(keyRow);
   }
   use.disabled = needsKey && !(ds.key[provider.name] || "").trim();
-  use.addEventListener("click", async () => {
+  const apply = async () => {
     use.disabled = true;
     if (needsKey) {
       await call("decision_key", { provider: provider.name, key: ds.key[provider.name].trim() });
@@ -2257,11 +2325,16 @@ function decisionSection(view) {
     }
     ds.changing = false;
     await call("sandbox_job", { request: { op: "decision", backend: ds.place, model: chosen?.name || d.model } });
-    await drawSetup(true);
-  });
-  const foot = text("div", "decision-foot");
-  foot.append(use);
-  section.append(foot);
+    await redraw(true);
+  };
+  ds.apply = apply;
+  ds.ready = !use.disabled;
+  if (!inDialog) {
+    use.addEventListener("click", apply);
+    const foot = text("div", "decision-foot");
+    foot.append(use);
+    section.append(foot);
+  }
   return section;
 }
 
@@ -2287,18 +2360,37 @@ el("setup-cancel").addEventListener("click", async () => {
   await drawSetup(true);
 });
 
-/// Nothing is left to ask for: something here is usable and nothing more was chosen.
-function setupFinished() {
+/// Whether anything is ticked to be put in: an agent's CLI, or the sandbox host.
+function somethingToInstall() {
   const view = state.setup.view;
   const sandbox = Boolean(state.setup.sandbox) && !view?.sandbox?.ready;
-  return Boolean(view?.ready) && state.setup.chosen.size === 0 && !sandbox;
+  return state.setup.chosen.size > 0 || sandbox;
 }
 
+function setupPage(step) {
+  const index = SETUP_PAGES.findIndex(([key]) => key === state.setup.page);
+  const next = SETUP_PAGES[Math.min(SETUP_PAGES.length - 1, Math.max(0, index + step))];
+  state.setup.page = next[0];
+  drawSetup(false);
+}
+
+el("setup-back").addEventListener("click", () => setupPage(-1));
+
 el("setup-go").addEventListener("click", async () => {
-  if (setupFinished()) {
+  const action = el("setup-go").dataset.action;
+  if (action === "done") {
     closeSetup();
     return;
   }
+  if (action === "use") {
+    await state.setup.decision.apply?.();
+    return;
+  }
+  if (action === "next") {
+    setupPage(1);
+    return;
+  }
+  if (action !== "install") return;
   const install = [...state.setup.chosen];
   const sandbox = Boolean(state.setup.sandbox) && !state.setup.view?.sandbox?.ready;
   state.setup.chosen.clear();
@@ -4397,6 +4489,7 @@ const SETTINGS_PAGES = [
   ["preferences", "Preferences"],
   ["accounts", "Accounts"],
   ["insights", "Insights"],
+  ["decision", "Decision model"],
   ["sandboxes", "Sandboxes"],
   ["storage", "Storage"],
   ["sep"],
@@ -4661,6 +4754,21 @@ async function drawSettingsPage(page, host) {
   }
   if (page === "storage") {
     await drawStorage(host);
+    return;
+  }
+  if (page === "decision") {
+    // The same choice the setup dialog offers, on a page of its own.
+    const view = await call("setup_status", {});
+    state.decisionView = view;
+    state.decisionAt = Date.now();
+    if (!view?.decision) return;
+    const redraw = async (fresh) => {
+      if (state.settings !== "decision") return;
+      if (fresh) return drawScreen();
+      // A choice clicked: drawn again from what was read, without asking the core.
+      host.replaceChildren(decisionSection(state.decisionView, redraw, false));
+    };
+    host.append(decisionSection(view, redraw, false));
     return;
   }
   if (page === "notifications") {
@@ -5495,9 +5603,14 @@ el("interrupt").addEventListener("click", () => call("interrupt", { thread: stat
 // the feed says this thread moved.
 setInterval(async () => {
   // A setup job writes a log, not rows: while one runs, the dialog re-reads it now and then.
+  const running = (jobs) => (jobs || []).some((j) => j.exit === null || j.exit === undefined);
   if (state.setup.open && Date.now() - state.setup.at > 1500
-    && state.setup.view?.jobs.some((j) => j.exit === null || j.exit === undefined)) {
+    && (running(state.setup.view?.jobs) || running(state.setup.view?.decision_jobs))) {
     await drawSetup(true);
+  }
+  if (state.settings === "decision" && Date.now() - (state.decisionAt || 0) > 1500
+    && running(state.decisionView?.decision_jobs)) {
+    await drawScreen();
   }
   const changed = await call("changed", {});
   if (!changed) return;

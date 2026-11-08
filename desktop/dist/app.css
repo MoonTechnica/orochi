@@ -1486,3 +1486,17 @@ details[open] > summary .icon { transform: rotate(90deg); }
 /* The side pane keeps its width and its tabs stay on one line; too many scroll. */
 #tabs { overflow-x: auto; }
 .tab { white-space: nowrap; flex: none; }
+
+/* The setup dialog's pages: numbered steps, the current one marked, each a way to it. */
+.setup-pages { display: flex; gap: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.setup-pages button {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 8px;
+  border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px;
+}
+.setup-pages button[aria-current="step"] { border-color: var(--brand); color: var(--text); }
+.setup-pages .mark {
+  display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--line); color: var(--text); font-size: 11px; font-weight: 600;
+}
+.setup-pages button[aria-current="step"] .mark { background: var(--brand); color: var(--on-brand, #111); }
+.setup-pages .mark .icon { width: 12px; height: 12px; }
