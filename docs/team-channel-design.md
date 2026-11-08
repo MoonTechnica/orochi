@@ -372,7 +372,5 @@ been run against a real agent CLI.
 - **Desktop.** As §3, §5 and §6, built by `desktop/dist/app.js`; the lead is offered in the `@`
   list as `lead`. The window does not pass the name the lead has in the room, so `@lead` in a
   post is for the lead as a turn.
-- **`@` for agents the conversation does not have yet** is not offered; calling one in stays the
-  lead's `start_agent`.
 - **Prompts as mentions (D5).** Permission and apply prompts keep their own rows and
   notification; they are not also drawn as `@you` posts.
