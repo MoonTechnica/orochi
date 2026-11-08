@@ -901,6 +901,60 @@ pub fn lima_platform() -> Option<&'static str> {
     }
 }
 
+/// What a sandbox of `tier` needs on this machine, put in the first time one is asked for
+/// rather than at first launch: Lima (downloaded under the data directory), the VM with Incus,
+/// and the tier's image. Each part already there is reused, so a machine that has them pays
+/// one look. Only for the Lima client: an Incus host elsewhere, or this Linux machine's own,
+/// is prepared with root, which Orochi never asks for on its own.
+pub async fn sandbox_on_demand(
+    config: &crate::config::SandboxConfig,
+    data: &Path,
+    tier: crate::sandbox::Mode,
+    lima_releases: &str,
+) -> Result<()> {
+    use crate::{config::SandboxClient, sandbox};
+    if config.client != SandboxClient::Lima {
+        return Ok(());
+    }
+    if sandbox::setup::locate(&config.limactl).is_none() {
+        ensure!(
+            config.limactl == "limactl",
+            "configured Lima executable {} was not found; correct sandbox.limactl",
+            config.limactl
+        );
+        println!("Lima is not on this machine; downloading it once into Orochi's data directory…");
+        install_lima(data, lima_releases).await?;
+    }
+    let image = sandbox::ops::image(tier);
+    let has = |image: &str| {
+        sandbox::Incus::new(config)
+            .run(&["image", "show", image])
+            .is_ok()
+    };
+    let config_owned = config.clone();
+    let data_owned = data.to_path_buf();
+    let created = sandbox::ops::vm_status(config)?.is_some();
+    if !created || {
+        sandbox::ops::ensure_vm(config, true)?;
+        !has(sandbox::ops::image(sandbox::Mode::Container))
+    } {
+        if created {
+            println!("The sandbox image is missing; building it once…");
+        } else {
+            println!("Creating the sandbox VM and its image once; this takes several minutes…");
+        }
+        tokio::task::spawn_blocking(move || sandbox::setup::run(&config_owned, &data_owned, false))
+            .await??;
+    }
+    if tier == sandbox::Mode::Vm && !has(image) {
+        println!("Building the VM image once…");
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || sandbox::ops::build_image(&config, sandbox::Mode::Vm))
+            .await??;
+    }
+    Ok(())
+}
+
 /// Lima into `<data>/toolchain/lima/<version>/` (its archive unpacks as `bin/` and `share/`,
 /// which `limactl` finds beside itself), `current` pointing at it and `limactl` linked into
 /// the toolchain's `bin`. The archive is checked against the release's SHA256SUMS before

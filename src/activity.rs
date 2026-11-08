@@ -416,6 +416,13 @@ pub struct SeatRow {
     pub reported: bool,
 }
 
+/// Every thread as `(id, cwd)`, and every project's root.
+#[derive(Debug, Default)]
+pub struct Places {
+    pub threads: Vec<(String, String)>,
+    pub roots: Vec<String>,
+}
+
 /// A helper's worktree as the team view shows it (`v_team`): the manifest's row, the seat
 /// that worked in it, and where its latest merge trial stands.
 #[derive(Debug, Clone, Serialize)]
@@ -763,6 +770,22 @@ impl Activity {
             .connection
             .execute("DELETE FROM threads WHERE id=?1", [id])?
             == 1)
+    }
+
+    /// Where every thread works and every project's root: what `reclaim` needs to tell what a
+    /// deleted thread left on disk from what a live one still uses.
+    pub fn places(&self) -> Result<Places> {
+        let mut statement = self.connection.prepare("SELECT id, cwd FROM threads")?;
+        let threads = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT root FROM projects")?;
+        let roots = statement
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Places { threads, roots })
     }
 
     /// Every thread there is, archived and in hidden projects included: what `delete --all`

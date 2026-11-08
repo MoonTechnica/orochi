@@ -91,6 +91,51 @@ One-shot runs and the separate `collaborate` command keep their existing behavio
 latter uses workspace copies and its own merge pipeline; this change targets the console
 and headless conversations' `start_agent` execution path.
 
+## Thread worktrees
+
+Written 2026-11-08. Besides the helpers' worktrees above, a whole thread can work in a
+worktree of its own: `orochi --worktree` (a new one with a generated name) or
+`orochi --worktree=NAME` (that one, made or joined) before `chat`, a task or `threads new`,
+and **New thread in a worktree** in the window's project menu. Orochi makes it with
+`git worktree add` at `<repository>/.orochi/worktrees/<name>` on the branch
+`<workspaces.branch_prefix><name>`, taken as it is when it exists and otherwise started at
+the current HEAD, and adds `.orochi/` to the repository's `info/exclude`. It requires
+`activity.enabled`.
+
+Only Orochi makes these and only Orochi works in them, so every user is one it can see: a
+thread whose `cwd` lies inside one, or a process working there, which holds a shared lock
+beside it (`.<name>.live`) for as long as it runs — several may, and the lock is held before
+any thread records the worktree. A worktree another tool made (Orca's, a hand-made one) is
+never treated as one of these.
+
+A thread worktree lasts until the **last thread working in it is deleted** (the user's
+decision, 2026-11-08: a checkout per conversation is what fills the disk). It is then removed
+with `git worktree remove`; what it had not committed is kept as the ref
+`refs/orochi/kept/<name>`, and its branch is kept unless `git branch -d` finds it merged
+(a branch with no commits of its own is). Asking for the same name again checks that branch
+out again.
+
+## What a deleted thread leaves
+
+`reclaim.rs` takes back what belongs to no thread that still exists and that no process
+holds: a session directory whose key names no thread (helper worktrees removed through git,
+then the directory with its patches and trials — deleting a thread is the user deleting
+everything in it), the session sandbox registered for such a directory or for one already
+gone (`ops::retire`; a project's own sandbox is never one), and a thread worktree no
+thread's `cwd` lies in. A thread is deleted by `orochi threads delete`, by the window, and by
+`activity.retention_days` inside every open of the store, so reclaim does not follow
+deletions: it compares the disk with the threads, and running it again is always safe.
+
+It runs after `orochi threads delete` and the window's delete (both may start the sandbox
+VM to delete a sandbox), at the start of `orochi workspaces prune`, and quietly when a
+console conversation ends, which never starts the VM: a sandbox that has to wait for it is
+counted and taken by the next call that may start it. A console conversation holds its
+session directory from the moment it is given a sandbox, so a conversation that is running is
+never taken.
+
+Deleting an instance frees space in the VM's storage pool, which later instances reuse;
+whether the Lima disk image on this machine shrinks with it was not measured.
+
 ## Validation
 
 Automated tests cover dirty snapshots, source index preservation, subdirectory cwd, read-only
@@ -99,7 +144,13 @@ ACP agents and a fake Incus client; closing by merge (three-way beside a concurr
 HEAD and index untouched), a conflict and a discard kept as patches, a pull request replayed
 onto HEAD and pushed to a local bare remote with a stand-in `gh`, the sweep at a
 conversation's end, and `prune` leaving a held session alone (`tests/workspaces.rs`,
-`tests/cli_e2e.rs`). Whether a real lead closes its worktrees sensibly is unverified. Real Incus provisioning and container-side ACP execution with the validation agent were
+`tests/cli_e2e.rs`); a thread worktree kept while any thread or holder uses it and removed
+with its last thread, its uncommitted changes kept as a ref and a branch with commits kept,
+a deleted thread's session directory removed whole beside a held one, `--worktree` with
+`threads new` and `threads delete` through the binary, and a deleted thread's session
+sandbox deleted beside the project's own (`tests/workspaces.rs`, `tests/sandbox.rs`, against
+the fake Incus client). The whole lifecycle ran on the real `sbx-host` VM on 2026-11-09 with
+the fixture agent: [Real validation 2026-11-09](real-validation-20261109.md). Whether a real lead closes its worktrees sensibly is unverified. Real Incus provisioning and container-side ACP execution with the validation agent were
 verified on 2026-10-05; see [the live validation record](real-validation-20261005.md).
 Real provider agents still require separate validation.
 

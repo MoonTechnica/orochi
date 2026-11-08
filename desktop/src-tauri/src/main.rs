@@ -22,11 +22,15 @@ fn folders(open: State<'_, Open>) -> Result<Vec<Folder>, String> {
 }
 
 #[tauri::command]
-fn new_thread(open: State<'_, Open>, root: String) -> Result<String, String> {
+fn new_thread(
+    open: State<'_, Open>,
+    root: String,
+    worktree: Option<bool>,
+) -> Result<String, String> {
     open.0
         .lock()
         .unwrap()
-        .new_thread(std::path::Path::new(&root))
+        .new_thread(std::path::Path::new(&root), worktree.unwrap_or(false))
         .map_err(fail)
 }
 
@@ -258,6 +262,9 @@ async fn place(
     docker: bool,
 ) -> Result<(), String> {
     let (config, data) = open.0.lock().unwrap().paths();
+    orochi_desktop::view::prepare_place(&config, &data, &mode)
+        .await
+        .map_err(fail)?;
     tauri::async_runtime::spawn_blocking(move || {
         orochi_desktop::view::place(&config, &data, std::path::Path::new(&root), &mode, docker)
     })

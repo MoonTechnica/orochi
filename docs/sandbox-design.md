@@ -4,7 +4,10 @@ Written: 2026-09-30.
 
 Console and headless conversations now allocate a sandbox per conversation, inheriting the
 project configuration. See [Session workspaces](session-workspaces.md); the project sandbox
-behavior below still describes one-shot runs and project management commands.
+behavior below still describes one-shot runs and project management commands. A
+conversation's sandbox is deleted with its thread (2026-11-08,
+[Session workspaces](session-workspaces.md#what-a-deleted-thread-leaves)); a project's own
+sandbox is deleted only by `orochi sandbox rm`.
 
 **Status (2026-09-30): S1–S3 implemented, with focus (S2), snapshots and idle stop (S5 in part)
 and the desktop (S6). Verified on a real Lima VM the same day** for the host, the image, Docker

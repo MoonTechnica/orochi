@@ -1389,3 +1389,113 @@ fn sandboxed_leads_can_start_writable_helpers_through_the_portable_mailbox_relay
     assert_eq!(paths.len(), 2);
     assert_ne!(paths[0], paths[1]);
 }
+
+#[test]
+fn deleting_a_thread_deletes_the_sandbox_its_conversation_was_given_and_no_other() {
+    use orochi::activity::{Activity, Origin};
+    let w = Workspace::new();
+    success(&w.run(&["sandbox", "create", "--no-docker"]));
+    let source = w.repo();
+    let activity = Activity::open(&w.data(), 0).unwrap();
+    let project = activity.project_for(&source, "salt").unwrap();
+    let thread = || {
+        activity
+            .create_thread(
+                &project,
+                &source,
+                None,
+                "repo",
+                Origin::Desktop,
+                &orochi::types::Overrides::default(),
+                "ask",
+            )
+            .unwrap()
+    };
+    let (gone, kept) = (thread(), thread());
+    for id in [&gone, &kept] {
+        let work = orochi::workspaces::Workspaces::open(
+            &source,
+            &orochi::workspaces::directory(&source, id),
+        )
+        .unwrap();
+        orochi::sandbox::ops::session(&w.config.sandbox, &w.data(), &work).unwrap();
+    }
+    let names: Vec<String> = State::load(&w.data())
+        .unwrap()
+        .projects
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    assert_eq!(names.len(), 3);
+    assert!(activity.delete_thread(&gone).unwrap());
+    let taken = orochi::reclaim::reclaim(&w.config, &w.data(), &activity, true).unwrap();
+    assert_eq!(taken.sandboxes.len(), 1, "{:?}", taken.lines());
+    let state = State::load(&w.data()).unwrap();
+    assert_eq!(state.projects.len(), 2);
+    assert!(
+        state.exact(&source).is_some(),
+        "the project's own sandbox stays"
+    );
+    assert!(
+        state
+            .exact(
+                &orochi::workspaces::directory(&source, &kept)
+                    .canonicalize()
+                    .unwrap()
+            )
+            .is_some()
+    );
+    assert!(!orochi::workspaces::directory(&source, &gone).exists());
+    let deleted: Vec<_> = w.calls().into_iter().filter(|c| c[0] == "delete").collect();
+    assert_eq!(deleted.len(), 1);
+    assert!(deleted[0].contains(&taken.sandboxes[0]));
+    // Again: nothing is left to take.
+    assert!(
+        orochi::reclaim::reclaim(&w.config, &w.data(), &activity, true)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_first_sandbox_on_a_machine_without_the_vm_creates_the_vm_first_and_the_next_reuses_it() {
+    let w = Workspace::new().behind_a_vm(false);
+    // Nothing was set up at first launch: Lima is here, the VM is not.
+    w.set_vm("absent");
+    let output = w.run(&["sandbox", "create", "--no-docker"]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Creating the sandbox VM"), "{stdout}");
+    assert!(stdout.contains("Sandbox repo ready"), "{stdout}");
+    let created: Vec<String> = std::fs::read_to_string(w.dir.path().join("limactl.jsonl"))
+        .unwrap()
+        .lines()
+        .filter(|l| l.contains("\"--name\""))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(created.len(), 1, "the VM is created once");
+    assert_eq!(w.vm(), "Running");
+    assert!(State::load(&w.data()).unwrap().exact(&w.repo()).is_some());
+
+    // A machine that has it pays one look and sets nothing up again.
+    std::fs::create_dir(w.dir.path().join("other")).unwrap();
+    let output = w.run(&[
+        "sandbox",
+        "create",
+        "--no-docker",
+        w.dir.path().join("other").to_str().unwrap(),
+    ]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("once"), "{stdout}");
+}
+
+#[test]
+fn a_machine_whose_sandbox_host_is_ready_creates_without_setting_anything_up() {
+    let w = Workspace::new().behind_a_vm(true);
+    let output = w.run(&["sandbox", "create", "--no-docker"]);
+    success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("once"), "{stdout}");
+    assert_eq!(w.starts(), 0);
+}
