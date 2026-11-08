@@ -35,7 +35,7 @@ fn workers_snapshot_dirty_files_without_changing_the_source_index_and_keep_resul
     std::fs::write(root.join("ignored"), "ignore").unwrap();
     let index = std::fs::read(root.join(".git/index")).unwrap();
     let head = git(&root, &["rev-parse", "HEAD"]);
-    let directory = directory(&root, "one");
+    let directory = directory(&Default::default(), &root, "one");
     let mut state = Workspaces::open(&root, &directory).unwrap();
     let a = state.create("worker").unwrap();
     let b = state.create("worker").unwrap();
@@ -64,14 +64,22 @@ fn workers_snapshot_dirty_files_without_changing_the_source_index_and_keep_resul
         std::fs::read_to_string(resumed.workspaces[0].root.join("tracked")).unwrap(),
         "worker a"
     );
-    let other = Workspaces::open(&root, &orochi::workspaces::directory(&root, "two")).unwrap();
+    let other = Workspaces::open(
+        &root,
+        &orochi::workspaces::directory(&Default::default(), &root, "two"),
+    )
+    .unwrap();
     assert_ne!(resumed.directory, other.directory);
     assert!(other.workspaces.is_empty());
 }
 #[test]
 fn invalid_names_and_non_git_sources_fail_without_modifying_source() {
     let dir = tempfile::tempdir().unwrap();
-    let mut state = Workspaces::open(dir.path(), &directory(dir.path(), "one")).unwrap();
+    let mut state = Workspaces::open(
+        dir.path(),
+        &directory(&Default::default(), dir.path(), "one"),
+    )
+    .unwrap();
     for name in ["../escape", "/tmp/escape", "", "has space"] {
         assert!(state.create(name).is_err());
     }
@@ -85,7 +93,8 @@ fn a_session_started_inside_a_subdirectory_runs_workers_in_that_subdirectory() {
     std::fs::create_dir(root.join("package")).unwrap();
     std::fs::write(root.join("package/new"), "package").unwrap();
     let source = root.join("package");
-    let mut state = Workspaces::open(&source, &directory(&source, "one")).unwrap();
+    let mut state =
+        Workspaces::open(&source, &directory(&Default::default(), &source, "one")).unwrap();
     let worker = state.create("writer").unwrap();
     assert!(worker.ends_with("writer/package"));
     assert_eq!(
@@ -104,7 +113,8 @@ fn a_session_can_start_from_a_linked_worktree_with_external_git_metadata() {
         &["worktree", "add", "--detach", linked.to_str().unwrap()],
     );
     let linked = linked.canonicalize().unwrap();
-    let mut state = Workspaces::open(&linked, &directory(&linked, "session")).unwrap();
+    let mut state =
+        Workspaces::open(&linked, &directory(&Default::default(), &linked, "session")).unwrap();
     assert_eq!(
         state.git_common().unwrap(),
         repo.path().canonicalize().unwrap().join(".git")
@@ -139,7 +149,7 @@ fn closing_a_worktree_merges_its_changes_three_way_into_the_tree_and_removes_it(
     git(&root, &["commit", "-m", "lines"]);
     let head = git(&root, &["rev-parse", "HEAD"]);
     let index = std::fs::read(root.join(".git/index")).unwrap();
-    let directory = directory(&root, "one");
+    let directory = directory(&Default::default(), &root, "one");
     let mut state = Workspaces::open(&root, &directory).unwrap();
     let worker = state.create("worker").unwrap();
     // The helper changes the last line and adds a file; meanwhile the user changes the first
@@ -202,7 +212,7 @@ fn a_conflicting_or_discarded_worktree_is_kept_as_a_patch_and_removed() {
     std::fs::write(root.join("lines"), "one\ntwo\nthree\n").unwrap();
     git(&root, &["add", "lines"]);
     git(&root, &["commit", "-m", "lines"]);
-    let directory = directory(&root, "one");
+    let directory = directory(&Default::default(), &root, "one");
     let mut state = Workspaces::open(&root, &directory).unwrap();
     let worker = state.create("worker").unwrap();
     std::fs::write(worker.join("lines"), "one\ntwo\nTHREE\n").unwrap();
@@ -272,7 +282,7 @@ fn a_worktree_closed_as_a_pull_request_is_replayed_onto_head_pushed_and_opened_w
     // The user's uncommitted edit is in the helper's snapshot but must not reach the pull
     // request: only what the helper changed is replayed onto the current HEAD.
     std::fs::write(root.join("tracked"), "user's unfinished edit").unwrap();
-    let directory = directory(&root, "one");
+    let directory = directory(&Default::default(), &root, "one");
     let mut state = Workspaces::open(&root, &directory).unwrap();
     let worker = state.create("feature").unwrap();
     std::fs::write(worker.join("feature.txt"), "implemented").unwrap();
@@ -349,7 +359,7 @@ fn a_worktree_closed_as_a_pull_request_is_replayed_onto_head_pushed_and_opened_w
 fn a_conversations_leftover_worktrees_are_closed_and_dead_sessions_are_pruned_but_live_ones_kept() {
     let repo = repository();
     let root = repo.path().canonicalize().unwrap();
-    let one = directory(&root, "one");
+    let one = directory(&Default::default(), &root, "one");
     let mut first = Workspaces::open(&root, &one).unwrap();
     let a = first.create("a").unwrap();
     std::fs::write(a.join("a.txt"), "a").unwrap();
@@ -366,16 +376,16 @@ fn a_conversations_leftover_worktrees_are_closed_and_dead_sessions_are_pruned_bu
     assert!(!root.join("a.txt").exists(), "nothing is merged unasked");
 
     // Two more sessions: one held by a live process, one whose process is gone.
-    let two = directory(&root, "two");
+    let two = directory(&Default::default(), &root, "two");
     let live = orochi::workspaces::hold(&two).unwrap().unwrap();
     let mut second = Workspaces::open(&root, &two).unwrap();
     let kept = second.create("kept").unwrap();
-    let three = directory(&root, "three");
+    let three = directory(&Default::default(), &root, "three");
     let mut third = Workspaces::open(&root, &three).unwrap();
     let gone = third.create("gone").unwrap();
     std::fs::write(gone.join("g.txt"), "g").unwrap();
     assert_eq!(worktrees(&root), 3);
-    let report = orochi::workspaces::prune(&root, &Tools::default()).unwrap();
+    let report = orochi::workspaces::prune(&Default::default(), &root, &Tools::default()).unwrap();
     let pruned: Vec<_> = report.iter().map(|(d, _)| d.clone()).collect();
     assert!(pruned.contains(&three), "{pruned:?}");
     assert!(
@@ -395,7 +405,7 @@ fn a_conversations_leftover_worktrees_are_closed_and_dead_sessions_are_pruned_bu
     );
     assert_eq!(worktrees(&root), 2);
     drop(live);
-    orochi::workspaces::prune(&root, &Tools::default()).unwrap();
+    orochi::workspaces::prune(&Default::default(), &root, &Tools::default()).unwrap();
     assert!(!kept.exists());
     assert!(
         !two.exists(),
@@ -544,7 +554,7 @@ mod thread_worktrees {
         let running = thread(&activity, &root);
         let mut sessions = vec![];
         for id in [&gone, &kept, &running] {
-            let dir = directory(&root, id);
+            let dir = directory(&Default::default(), &root, id);
             let mut work = Workspaces::open(&root, &dir).unwrap();
             work.create("helper").unwrap();
             std::fs::write(dir.join("helper.patch"), "x").unwrap();

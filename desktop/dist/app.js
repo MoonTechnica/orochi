@@ -158,6 +158,34 @@ const WORDS = {
     Sandboxes: "サンドボックス",
     Setup: "初期設定",
     "Set up Orochi": "Orochi の初期設定",
+    Storage: "保存場所",
+    "Helpers' worktrees": "ヘルパーのワークツリー",
+    "Each conversation's writing helpers work in worktrees here, one folder per repository. Ones already open stay where they are.":
+      "会話のヘルパーが書き込み作業をするワークツリーを、リポジトリごとのフォルダに作ります。すでに開いているものは今の場所に残ります。",
+    "Decision model downloads": "決定モデルのダウンロード先",
+    "llama.cpp and a decision model run on this machine are downloaded here. One downloaded elsewhere is downloaded again when it is next used.":
+      "このマシンで動かす決定モデルと llama.cpp をここにダウンロードします。別の場所にあるものは、次に使うときにダウンロードし直します。",
+    "Sandbox VM": "サンドボックスの VM",
+    "The Lima VM that runs Incus, with every sandbox's disk. A VM already made stays where it is; the new place starts without one.":
+      "Incus を動かす Lima の VM と、各サンドボックスのディスクを置きます。作成済みの VM は今の場所に残り、新しい場所では VM を作り直します。",
+    default: "既定",
+    "{n} GB free": "空き {n} GB",
+    "{n} GB used": "使用 {n} GB",
+    "VM: {state}": "VM: {state}",
+    "not used with this sandbox client": "このサンドボックスの方式では使いません",
+    "Use the default": "既定に戻す",
+    "Each conversation's writing helpers work in worktrees here. Ones already open stay where they are.":
+      "会話のヘルパーが書き込み作業をするワークツリーをここに作ります。すでに開いているものは今の場所に残ります。",
+    Save: "保存",
+    Default: "既定",
+    "the repository's path": "リポジトリのパス",
+    "its folder name": "リポジトリのフォルダ名",
+    "a short digest of its path": "パスから作る短いハッシュ",
+    "A folder naming no variable gets {name}-{hash} added, so two repositories never share one.":
+      "変数を含まないフォルダには {name}-{hash} を付け足し、リポジトリ同士が同じフォルダを使わないようにします。",
+    "The sandbox VM stays where it is, and a new one will be made in the new place when a sandbox is next needed. Continue?":
+      "今のサンドボックス VM は元の場所に残り、次にサンドボックスが必要になったとき新しい場所に VM を作ります。続けますか？",
+    "Saved. It applies from the next run.": "保存しました。次の実行から反映されます。",
     "Decision model": "決定モデル",
     "Orochi reads each request with a decision model to choose who does it: what kind of work it is and how hard.":
       "Orochi は依頼ごとに決定モデルで、どんな作業か・どれくらい難しいかを読み取り、担当を選びます。",
@@ -3813,6 +3841,7 @@ const SETTINGS_PAGES = [
   ["accounts", "Accounts"],
   ["insights", "Insights"],
   ["sandboxes", "Sandboxes"],
+  ["storage", "Storage"],
   ["sep"],
   ["conversations", "Conversations"],
   ["notifications", "Notifications"],
@@ -3882,6 +3911,100 @@ async function drawScreen() {
   if (state.panel === "search") {
     drawSearch(host);
   }
+}
+
+// Storage: where the big things go. Each row is one place (`orochi places`), with where it is,
+// what is free there, and a folder picker; nothing already there is moved, and the page says so.
+const STORAGE_PLACES = {
+  worktrees: ["Helpers' worktrees", "Each conversation's writing helpers work in worktrees here. Ones already open stay where they are."],
+  models: ["Decision model downloads", "llama.cpp and a decision model run on this machine are downloaded here. One downloaded elsewhere is downloaded again when it is next used."],
+  vm: ["Sandbox VM", "The Lima VM that runs Incus, with every sandbox's disk. A VM already made stays where it is; the new place starts without one."],
+};
+
+async function drawStorage(host) {
+  const places = (await call("places", {})) || [];
+  for (const place of places) {
+    const [title, about] = STORAGE_PLACES[place.which] || [place.which, ""];
+    const card = text("div", "card storage");
+    card.dataset.which = place.which;
+    card.append(text("div", "where", t(title)));
+    if (place.variables?.length) {
+      // A template, typed: the variables are filled in per repository.
+      const row = text("div", "template");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "place-template";
+      input.spellcheck = false;
+      input.value = place.configured || "";
+      input.placeholder = place.default;
+      const save = document.createElement("button");
+      save.type = "button";
+      save.textContent = t("Save");
+      save.addEventListener("click", () => setPlace(place, input.value.trim() || null));
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") setPlace(place, input.value.trim() || null);
+      });
+      row.append(input, save);
+      card.append(row);
+      if (!place.configured) card.append(text("div", "note", `${t("Default")}: ${place.default}`));
+      const help = text("div", "variables");
+      for (const [name, about] of [
+        ["{repository}", t("the repository's path")],
+        ["{name}", t("its folder name")],
+        ["{hash}", t("a short digest of its path")],
+      ]) {
+        const item = text("span", "variable");
+        item.append(text("code", null, name), text("span", null, about));
+        help.append(item);
+      }
+      card.append(help);
+      card.append(text("div", "note", t("A folder naming no variable gets {name}-{hash} added, so two repositories never share one.")));
+    } else {
+      const path = text("div", "path");
+      path.append(text("span", null, place.configured || place.default));
+      if (!place.configured) path.append(text("span", "badge muted", t("default")));
+      card.append(path);
+    }
+    const facts = [];
+    if (place.free_gb !== null && place.free_gb !== undefined) facts.push(t("{n} GB free").replace("{n}", place.free_gb));
+    if (place.used_bytes) facts.push(t("{n} GB used").replace("{n}", (place.used_bytes / 1e9).toFixed(1)));
+    if (place.vm) facts.push(t("VM: {state}").replace("{state}", place.vm));
+    if (!place.applies) facts.push(t("not used with this sandbox client"));
+    if (facts.length) card.append(text("div", "note", facts.join(" · ")));
+    card.append(text("p", "caveat", t(about)));
+    const buttons = text("div", "row");
+    const change = document.createElement("button");
+    change.type = "button";
+    change.textContent = t("Choose a folder…");
+    change.disabled = !place.applies;
+    change.addEventListener("click", async () => {
+      const chosen = await pickFolder();
+      if (!chosen) return;
+      // For worktrees a folder is the start of a template: one folder per repository inside it.
+      await setPlace(place, place.variables?.length ? `${chosen}/{name}` : chosen);
+    });
+    buttons.append(change);
+    if (place.configured) {
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.textContent = t("Use the default");
+      reset.addEventListener("click", () => setPlace(place, null));
+      buttons.append(reset);
+    }
+    card.append(buttons);
+    host.append(card);
+  }
+}
+
+/// Moving the VM's home while a VM exists is refused by the core unless asked twice: the VM
+/// stays where it is and the new place starts without one.
+async function setPlace(place, path) {
+  let force = false;
+  if (place.which === "vm" && place.vm && !window.confirm(t("The sandbox VM stays where it is, and a new one will be made in the new place when a sandbox is next needed. Continue?"))) return;
+  if (place.which === "vm" && place.vm) force = true;
+  const done = await call("set_place", { which: place.which, path, force });
+  if (done !== undefined) report(t("Saved. It applies from the next run."));
+  await drawScreen();
 }
 
 async function drawSettingsPage(page, host) {
@@ -3977,6 +4100,10 @@ async function drawSettingsPage(page, host) {
       await refresh(true);
     });
     host.append(field("History", wipe));
+    return;
+  }
+  if (page === "storage") {
+    await drawStorage(host);
     return;
   }
   if (page === "notifications") {

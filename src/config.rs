@@ -218,6 +218,10 @@ pub struct SandboxConfig {
     pub remote: String,
     pub limactl: String,
     pub lima_instance: String,
+    /// Where Lima keeps its VMs, and with them every sandbox's disk (`LIMA_HOME`). Unset,
+    /// Lima's own `~/.lima`. A VM made under one place is not seen from another.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lima_home: Option<PathBuf>,
     /// The Incus project every sandbox lives in, so `incus list` elsewhere is not cluttered.
     pub project: String,
     /// The host VM (Lima), applied when `orochi sandbox up` creates it.
@@ -266,6 +270,21 @@ pub enum SandboxClient {
     Lima,
     Incus,
 }
+impl SandboxConfig {
+    /// `LIMA_HOME` for every `limactl` Orochi runs, where one is set: Lima reads its VMs from
+    /// there, so a command without it would not find the VM.
+    pub fn lima_env(&self) -> Option<(&'static str, &Path)> {
+        self.lima_home.as_deref().map(|home| ("LIMA_HOME", home))
+    }
+    /// The disk Lima's VMs live on, for the free-space checks before one is made or grown.
+    pub fn lima_disk(&self) -> PathBuf {
+        self.lima_home.clone().unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/"))
+        })
+    }
+}
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
@@ -278,6 +297,7 @@ impl Default for SandboxConfig {
             remote: String::new(),
             limactl: "limactl".into(),
             lima_instance: "sbx-host".into(),
+            lima_home: None,
             project: "sbx".into(),
             cpus: 6,
             memory_gib: 8,
@@ -318,6 +338,12 @@ pub struct WorkspacesConfig {
     pub finish: String,
     /// What a pull request's branch is named after, followed by the helper's name.
     pub branch_prefix: String,
+    /// Where helpers' worktrees go, as a template (`workspaces::sessions_dir`): `{repository}`
+    /// is the repository's path, `{name}` its folder name, `{hash}` a short digest of its path.
+    /// A template naming none of them gets `{name}-{hash}` appended, so two repositories never
+    /// share a folder. Unset, `{repository}/.orochi/sessions`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 impl Default for WorkspacesConfig {
     fn default() -> Self {
@@ -325,6 +351,7 @@ impl Default for WorkspacesConfig {
             enabled: true,
             finish: "merge".into(),
             branch_prefix: "orochi/".into(),
+            root: None,
         }
     }
 }
@@ -800,6 +827,10 @@ pub struct DecisionConfig {
     pub api_key_env: Option<String>,
     /// The stored key goes to the macOS keychain; off, a `0600` file beside the data.
     pub keychain: bool,
+    /// Where a local decision model and llama.cpp are downloaded and run from. Unset,
+    /// `<data>/decision/`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_dir: Option<PathBuf>,
     /// One request, including a local server that is still loading.
     pub timeout_ms: u64,
     /// How long the local server stays up after its last question.
@@ -813,6 +844,7 @@ impl Default for DecisionConfig {
             endpoint: None,
             api_key_env: None,
             keychain: true,
+            models_dir: None,
             timeout_ms: 20_000,
             idle_secs: 1800,
         }
@@ -963,6 +995,17 @@ impl Config {
         Ok(())
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(template) = &self.workspaces.root {
+            crate::workspaces::check_template(template)?;
+        }
+        for (name, place) in [
+            ("decision.models_dir", &self.decision.models_dir),
+            ("sandbox.lima_home", &self.sandbox.lima_home),
+        ] {
+            if let Some(place) = place {
+                ensure!(place.is_absolute(), "{name} must be an absolute path");
+            }
+        }
         let decision = &self.decision;
         ensure!(
             !decision.model.trim().is_empty() && decision.model.chars().count() <= 128,

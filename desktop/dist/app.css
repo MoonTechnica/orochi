@@ -1386,3 +1386,15 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .roster-model { display: grid; grid-template-columns: 14px auto minmax(0, 1fr) 220px; align-items: center; gap: 8px; }
 .roster-model .pick { display: contents; }
 :is(#panel-body, #settings-body) .roster-model input.note { margin: 0; max-width: none; padding: 3px 6px; font-size: 12px; }
+
+/* Storage: one card per place, its path in full. */
+#settings-body .card.storage .path { font-family: var(--mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; display: flex; gap: 8px; align-items: center; }
+#settings-body .card.storage .note { color: var(--muted); font-size: 12px; margin-top: 4px; }
+#settings-body .card.storage .row { display: flex; gap: 8px; }
+#settings-body .badge.muted { font-size: 10px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); }
+#settings-body .card.storage .template { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+#settings-body .card.storage .template input { flex: 1; min-width: 0; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--raised); color: var(--text); }
+#settings-body .card.storage .template button { margin-top: 0; }
+#settings-body .card.storage .variables { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+#settings-body .card.storage .variable { display: inline-flex; gap: 6px; align-items: baseline; }
+#settings-body .card.storage .variable code { color: var(--text); font-size: 11px; }

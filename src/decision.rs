@@ -439,7 +439,7 @@ pub async fn target(config: &DecisionConfig, data: &Path) -> Result<Target> {
                             config.model
                         )
                     })?;
-                    local::ensure(data, config, known).await?
+                    local::ensure(&local::home(data, config), config, known).await?
                 }
             };
             Ok(Target {
@@ -710,10 +710,12 @@ pub struct Recommendation {
     pub reason: String,
 }
 
-pub fn recommend(data: &Path) -> Recommendation {
+/// `home` is where a local model would be downloaded (`local::home`), whose disk is the one
+/// that has to have room.
+pub fn recommend(home: &Path) -> Recommendation {
     let default = model(RECOMMENDED).expect("the recommended model is listed");
     let memory_gb = local::memory_gb();
-    let free_disk_gb = local::free_disk_gb(data);
+    let free_disk_gb = local::free_disk_gb(home);
     let local_supported = local::platform().is_some();
     let disk = default
         .gguf
@@ -748,6 +750,8 @@ pub fn recommend(data: &Path) -> Recommendation {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Status {
     pub backend: Option<DecisionBackend>,
+    /// Where a local model is downloaded to.
+    pub home: std::path::PathBuf,
     pub model: String,
     pub endpoint: Option<String>,
     pub installed: bool,
@@ -761,17 +765,19 @@ pub struct Status {
 
 pub fn status(config: &DecisionConfig, data: &Path) -> Status {
     let known = model(&config.model);
+    let home = local::home(data, config);
     Status {
+        home: home.clone(),
         backend: config.backend,
         model: config.model.clone(),
         endpoint: config.endpoint.clone(),
-        installed: known.is_some_and(|m| local::installed(data, m)),
-        running: local::running(data, &config.model),
+        installed: known.is_some_and(|m| local::installed(&home, m)),
+        running: local::running(&home, &config.model),
         keys: PROVIDERS
             .iter()
             .map(|p| (p.name.to_owned(), key::get(data, config, p.name).is_some()))
             .collect(),
-        recommendation: recommend(data),
+        recommendation: recommend(&home),
         providers: PROVIDERS.to_vec(),
         models: MODELS
             .iter()
@@ -782,7 +788,7 @@ pub fn status(config: &DecisionConfig, data: &Path) -> Status {
                     "license": m.license,
                     "local": m.gguf.is_some(),
                     "bytes": m.gguf.map(|g| g.bytes),
-                    "installed": local::installed(data, m),
+                    "installed": local::installed(&home, m),
                     "cloud": m.cloud.map(|c| json!({"provider": c.provider, "id": c.id})),
                     "measured": m.measured.map(|(right, of)| json!({"right": right, "of": of})),
                 })

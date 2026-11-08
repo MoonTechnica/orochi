@@ -1,5 +1,5 @@
 //! The decision model on this machine: llama.cpp's `llama-server` and a GGUF, both put under
-//! `<data>/decision/` and checked against pinned SHA-256s, and one server kept running for
+//! `decision.models_dir` (`<data>/decision/` unset, `home`) and checked against pinned SHA-256s, and one server kept running for
 //! every Orochi process on the machine. A server takes seconds to load its model (measured
 //! 2026-11-08: 8.7 s for kev-4b, cold), which no turn should wait for twice, so it outlives
 //! the process that started it: `orochi --internal-decision-server` leads its own process
@@ -77,8 +77,16 @@ pub fn platform() -> Option<(&'static str, &'static str)> {
         .map(|(_, _, archive, sum)| (*archive, *sum))
 }
 
-fn dir(data: &Path) -> PathBuf {
-    data.join("decision")
+/// Where a local decision model lives: `decision.models_dir`, else `<data>/decision/`. Every
+/// function here takes this directory, never the data directory.
+pub fn home(data: &Path, config: &DecisionConfig) -> PathBuf {
+    config
+        .models_dir
+        .clone()
+        .unwrap_or_else(|| data.join("decision"))
+}
+fn dir(home: &Path) -> PathBuf {
+    home.to_path_buf()
 }
 fn server_binary(data: &Path) -> PathBuf {
     let name = if cfg!(windows) {

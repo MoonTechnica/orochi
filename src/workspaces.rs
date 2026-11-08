@@ -1,6 +1,8 @@
 //! Worktrees owned by one Orochi conversation, and the rule that none of them outlives it.
 //!
-//! A writing helper gets a detached worktree of its own under `.orochi/sessions/<key>/`,
+//! A writing helper gets a detached worktree of its own under `.orochi/sessions/<key>/` of
+//! the repository, or wherever the `workspaces.root` template puts that repository's
+//! (`sessions_dir`), so a disk other than the repository's can hold them,
 //! started from a snapshot of the tree as it was when the helper was launched. The lead that
 //! started it closes it (`close`): its changes are merged into the user's tree three-way,
 //! opened as a pull request on a branch, or dropped — and in every case the worktree goes.
@@ -147,9 +149,73 @@ pub struct Workspace {
     pub title: String,
 }
 
-pub fn directory(root: &Path, id: &str) -> PathBuf {
-    root.join(".orochi/sessions")
-        .join(crate::context::hash(&[id.as_bytes()]))
+pub const DEFAULT_TEMPLATE: &str = "{repository}/.orochi/sessions";
+const VARIABLES: [&str; 3] = ["{repository}", "{name}", "{hash}"];
+
+/// A template's variables filled in for one repository; one naming none of them gets
+/// `/{name}-{hash}` after it, so two repositories never share a folder.
+pub fn expand(template: &str, root: &Path) -> PathBuf {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repository")
+        .to_owned();
+    let digest = crate::context::hash(&[canonical.as_os_str().as_encoded_bytes()]);
+    let hash = &digest[..digest.len().min(12)];
+    let template = if VARIABLES.iter().any(|v| template.contains(v)) {
+        template.to_owned()
+    } else {
+        format!("{}/{{name}}-{{hash}}", template.trim_end_matches('/'))
+    };
+    PathBuf::from(
+        template
+            .replace("{repository}", &canonical.to_string_lossy())
+            .replace("{name}", &name)
+            .replace("{hash}", hash),
+    )
+}
+
+/// A template must come out an absolute path and name no variable Orochi does not fill.
+pub fn check_template(template: &str) -> Result<()> {
+    ensure!(!template.trim().is_empty(), "workspaces.root is empty");
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..]
+            .find('}')
+            .map(|c| open + c)
+            .with_context(|| format!("workspaces.root has an unclosed brace: {template}"))?;
+        let variable = &rest[open..=close];
+        ensure!(
+            VARIABLES.contains(&variable),
+            "workspaces.root names {variable}; the variables are {}",
+            VARIABLES.join(", ")
+        );
+        rest = &rest[close + 1..];
+    }
+    ensure!(
+        expand(template, Path::new("/repository")).is_absolute(),
+        "workspaces.root must be an absolute path or start with {{repository}}"
+    );
+    Ok(())
+}
+
+/// Where a repository's conversations keep their session directories: the `workspaces.root`
+/// template filled in for it, or inside the repository.
+pub fn sessions_dir(config: &crate::config::WorkspacesConfig, root: &Path) -> PathBuf {
+    expand(config.root.as_deref().unwrap_or(DEFAULT_TEMPLATE), root)
+}
+
+/// Every place a repository's session directories may be: where they go now, and inside the
+/// repository, where they went before `workspaces.root` was set.
+pub fn sessions_dirs(config: &crate::config::WorkspacesConfig, root: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![sessions_dir(config, root), root.join(".orochi/sessions")];
+    dirs.dedup();
+    dirs
+}
+
+pub fn directory(config: &crate::config::WorkspacesConfig, root: &Path, id: &str) -> PathBuf {
+    sessions_dir(config, root).join(crate::context::hash(&[id.as_bytes()]))
 }
 fn git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(git_bytes(root, args)?)?.trim().to_owned())
@@ -714,15 +780,21 @@ pub fn summary(root: &Path) -> Option<String> {
     })
 }
 
-/// Closes every worktree of every session under `root` that no process holds, and removes a
-/// session directory left with nothing in it. What was closed is reported per session.
-pub fn prune(root: &Path, tools: &Tools) -> Result<Vec<(PathBuf, Vec<Closed>)>> {
-    let sessions = root.join(".orochi/sessions");
+/// Closes every worktree of every session of the repository at `root` that no process holds,
+/// wherever its session directories are (`sessions_dirs`), and removes a session directory
+/// left with nothing in it. What was closed is reported per session.
+pub fn prune(
+    config: &crate::config::WorkspacesConfig,
+    root: &Path,
+    tools: &Tools,
+) -> Result<Vec<(PathBuf, Vec<Closed>)>> {
     let mut report = vec![];
-    let Ok(entries) = std::fs::read_dir(&sessions) else {
-        return Ok(report);
-    };
-    for entry in entries.filter_map(|e| e.ok()) {
+    let entries: Vec<_> = sessions_dirs(config, root)
+        .iter()
+        .filter_map(|sessions| std::fs::read_dir(sessions).ok())
+        .flat_map(|entries| entries.filter_map(|e| e.ok()))
+        .collect();
+    for entry in entries {
         let directory = entry.path();
         let manifest = directory.join("workspaces.json");
         if !manifest.is_file() {
