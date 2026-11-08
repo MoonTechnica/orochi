@@ -467,6 +467,31 @@ fn roster(open: State<'_, Open>) -> Result<orochi::roster::Listing, String> {
     open.0.lock().unwrap().roster().map_err(fail)
 }
 
+/// Where worktrees, a local decision model and the sandbox VM are kept. Reading the VM's
+/// state runs `limactl`, so it is off the window's connection.
+#[tauri::command]
+async fn places(open: State<'_, Open>) -> Result<Vec<orochi::places::Place>, String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    tauri::async_runtime::spawn_blocking(move || orochi_desktop::view::places(&config, &data))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn set_place(
+    open: State<'_, Open>,
+    which: String,
+    path: Option<String>,
+    force: bool,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .set_place(&which, path.as_deref(), force)
+        .map_err(fail)
+}
+
 #[tauri::command]
 fn set_roster(
     open: State<'_, Open>,
@@ -690,6 +715,8 @@ fn main() {
             sandbox_job,
             setup_status,
             decision_key,
+            places,
+            set_place,
             setup_login,
             open_docs,
             cancel_job,

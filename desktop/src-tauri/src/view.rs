@@ -325,9 +325,18 @@ pub fn setup(config: &Path, data: &Path) -> Result<Setup> {
         jobs,
         progress,
         decision: orochi::decision::status(&loaded.decision, data),
-        decision_download: orochi::decision::local::Download::read(data),
+        decision_download: orochi::decision::local::Download::read(&orochi::decision::local::home(
+            data,
+            &loaded.decision,
+        )),
         decision_jobs,
     })
+}
+
+/// Where the big things go: the Storage page. Reading the VM's state runs `limactl`.
+pub fn places(config: &Path, data: &Path) -> Result<Vec<orochi::places::Place>> {
+    let loaded = orochi::config::Config::load(config).unwrap_or_default();
+    Ok(orochi::places::read(&loaded, data))
 }
 
 /// Stores the cloud decision model's key, from the Setup screen's field; it never reaches a
@@ -667,6 +676,19 @@ impl Client {
         let mut config = orochi::config::Config::load(&self.config)?;
         orochi::roster::set(&mut config, agent, models, off)?;
         config.save(&self.config)
+    }
+
+    /// One place, from the Storage page; `None` puts it back to the default.
+    pub fn set_place(&self, which: &str, path: Option<&str>, force: bool) -> Result<()> {
+        let mut config = orochi::config::Config::load(&self.config).unwrap_or_default();
+        orochi::places::set(
+            &mut config,
+            &self.config,
+            &self.data,
+            orochi::places::Which::parse(which)?,
+            path.map(str::to_owned),
+            force,
+        )
     }
 
     /// What the user wants one model for, from the screen; empty text removes it.

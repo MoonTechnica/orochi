@@ -39,7 +39,7 @@ fn read(path: &Path) -> String {
 fn a_trial_merges_a_worktree_against_the_tree_as_it_is_now_and_apply_writes_only_the_difference() {
     let repo = repository();
     let root = repo.path().canonicalize().unwrap();
-    let session = directory(&root, "one");
+    let session = directory(&Default::default(), &root, "one");
     let mut work = Workspaces::open(&root, &session).unwrap();
     let worktree = work.create("backend").unwrap();
     // The helper edits the end of the file and adds one; the user edits its start meanwhile,
@@ -102,7 +102,7 @@ fn a_trial_merges_a_worktree_against_the_tree_as_it_is_now_and_apply_writes_only
 fn a_conflict_is_reported_with_markers_in_the_trial_worktree_and_resolved_there() {
     let repo = repository();
     let root = repo.path().canonicalize().unwrap();
-    let session = directory(&root, "one");
+    let session = directory(&Default::default(), &root, "one");
     let mut work = Workspaces::open(&root, &session).unwrap();
     let worktree = work.create("backend").unwrap();
     std::fs::write(worktree.join("tracked"), "a\nb\nTHEIRS\nd\ne\n").unwrap();
@@ -151,7 +151,7 @@ fn a_conflict_is_reported_with_markers_in_the_trial_worktree_and_resolved_there(
 fn an_apply_refuses_a_tree_that_moved_since_the_trial_and_writes_nothing() {
     let repo = repository();
     let root = repo.path().canonicalize().unwrap();
-    let session = directory(&root, "one");
+    let session = directory(&Default::default(), &root, "one");
     let mut work = Workspaces::open(&root, &session).unwrap();
     let worktree = work.create("backend").unwrap();
     std::fs::write(worktree.join("feature"), "new\n").unwrap();
@@ -183,7 +183,7 @@ fn an_apply_refuses_a_tree_that_moved_since_the_trial_and_writes_nothing() {
 fn the_sweep_closes_trials_and_worktrees_without_touching_the_tree() {
     let repo = repository();
     let root = repo.path().canonicalize().unwrap();
-    let session = directory(&root, "one");
+    let session = directory(&Default::default(), &root, "one");
     let mut work = Workspaces::open(&root, &session).unwrap();
     let worktree = work.create("backend").unwrap();
     std::fs::write(worktree.join("feature"), "new\n").unwrap();

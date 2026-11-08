@@ -378,6 +378,34 @@ apply = "ask"         # who approves a merge into the working tree: "ask" the us
 
 Specifying `agents` replaces the default 4 entries. Multiple custom IDs can be registered. If an Agent can use a browser or web search, declare `browser` / `web` explicitly. These two items are not inferred from ACP's standard capabilities alone.
 
+### Where things are kept
+
+Three things Orochi keeps can be large, and each can be put on a disk of your choosing: helpers'
+worktrees (`[workspaces] root`, a template filled in per repository — `{repository}` its path,
+`{name}` its folder name, `{hash}` a short digest of its path; a folder naming none of them gets
+`{name}-{hash}` added; default `{repository}/.orochi/sessions`), a decision
+model run on this machine with llama.cpp (`[decision] models_dir`; default `<data>/decision/`),
+and the sandbox VM, which holds Incus and every sandbox's disk (`[sandbox] lima_home`, passed to
+every `limactl` Orochi runs as `LIMA_HOME`; default Lima's own `~/.lima`). The window's
+**Settings → Storage** page shows each with the free space where it is and a folder picker, and
+`orochi places` does the same from a terminal:
+
+```sh
+orochi places                               # where each one is, free and used space
+orochi places set models /Volumes/Big/orochi-models
+orochi places set worktrees '/Volumes/Big/worktrees/{name}' 
+orochi places reset vm                      # back to the default
+```
+
+A place must be an absolute directory Orochi can create and write in. **Nothing already there is
+moved**: a worktree open in the old place stays and is still found, closed and pruned there; a
+model downloaded to the old place is downloaded again when it is next used (and a server running
+from the old place is stopped); a VM made under the old Lima home stays there, so moving the VM's
+home while a VM exists is refused unless asked for outright (`--force`, or confirming in the
+window) — the new place starts without one. A sandbox can mount only what the VM mounts
+(`sandbox.mounts`), so worktrees put outside them cannot be sandboxed. Automated tests only
+(`tests/places.rs`).
+
 ### Sandboxes
 
 A project can run its agents and checks in a Linux sandbox of its own instead of on this machine, with a Docker daemon inside it (so `supabase start` runs there). One Lima VM holds Incus; each project is an Incus system container (or VM) made from a golden image. The project's directory is mounted into its sandbox **at the same path**, not copied, so switching a project between the sandbox and this machine moves no file. Orochi itself stays on this machine: only the agent process (over `incus exec`, whose stdio carries ACP) and the evaluator's checks start inside. Designed in [Per-Project Sandboxes](docs/sandbox-design.md).
@@ -606,6 +634,7 @@ The tests verify against the ACP contract. Compatibility with each real Provider
 src/acp.rs          ACP connection, sessions, dynamic configuration, streams, permissions
 src/discovery.rs    CLI detection, resolving the ACP connection method, preparing missing adapters
 src/agents.rs       Per-Provider error / quota / usage normalization
+src/places.rs       Where worktrees, a local decision model and the sandbox VM are kept (`orochi places`, Settings → Storage)
 src/decision.rs     The decision model: typed questions over /v1/systemone, the local llama-server it puts in and shares, the cloud key
 src/router/         Task Profiler and task classification over ACP, candidate generation and scoring, Router / Judge / Council via ACP advisers
 src/scheduler/      Execution, fallback, quota / circuit breaker
@@ -707,7 +736,8 @@ repository has open or left as patches, and `orochi workspaces prune` closes the
 every conversation no process is running any more. `/worktrees on|off` turns worktrees off for
 one conversation (a writing helper is then refused, and the lead is told to do the work
 itself); `[workspaces] enabled`, `finish` (`merge` or `pr`, what `finish_workspace` does when
-the lead does not say) and `branch_prefix` are the defaults. `collaborate` keeps its own copies
+the lead does not say) and `branch_prefix` are the defaults. `[workspaces] root` puts the
+worktrees on another disk, a template such as `/Volumes/Big/worktrees/{name}` (see [Where things are kept](#where-things-are-kept)). `collaborate` keeps its own copies
 and merge pipeline. **Automated tests only** (`tests/workspaces.rs`, `tests/cli_e2e.rs`):
 whether a real lead closes its worktrees sensibly is unverified. See
 [Session workspaces](docs/session-workspaces.md).

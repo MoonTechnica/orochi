@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod memory;
 pub mod merge;
 pub mod pane;
+pub mod places;
 pub mod policy;
 #[cfg(unix)]
 pub mod process;

@@ -1200,12 +1200,12 @@ fn conversations_get_distinct_sandboxes_and_all_their_workspaces_share_one() {
     let source = w.repo();
     let first = orochi::workspaces::Workspaces::open(
         &source,
-        &orochi::workspaces::directory(&source, "first"),
+        &orochi::workspaces::directory(&Default::default(), &source, "first"),
     )
     .unwrap();
     let second = orochi::workspaces::Workspaces::open(
         &source,
-        &orochi::workspaces::directory(&source, "second"),
+        &orochi::workspaces::directory(&Default::default(), &source, "second"),
     )
     .unwrap();
     orochi::sandbox::ops::session(&w.config.sandbox, &w.data(), &first).unwrap();
@@ -1415,7 +1415,7 @@ fn deleting_a_thread_deletes_the_sandbox_its_conversation_was_given_and_no_other
     for id in [&gone, &kept] {
         let work = orochi::workspaces::Workspaces::open(
             &source,
-            &orochi::workspaces::directory(&source, id),
+            &orochi::workspaces::directory(&Default::default(), &source, id),
         )
         .unwrap();
         orochi::sandbox::ops::session(&w.config.sandbox, &w.data(), &work).unwrap();
@@ -1439,13 +1439,13 @@ fn deleting_a_thread_deletes_the_sandbox_its_conversation_was_given_and_no_other
     assert!(
         state
             .exact(
-                &orochi::workspaces::directory(&source, &kept)
+                &orochi::workspaces::directory(&Default::default(), &source, &kept)
                     .canonicalize()
                     .unwrap()
             )
             .is_some()
     );
-    assert!(!orochi::workspaces::directory(&source, &gone).exists());
+    assert!(!orochi::workspaces::directory(&Default::default(), &source, &gone).exists());
     let deleted: Vec<_> = w.calls().into_iter().filter(|c| c[0] == "delete").collect();
     assert_eq!(deleted.len(), 1);
     assert!(deleted[0].contains(&taken.sandboxes[0]));

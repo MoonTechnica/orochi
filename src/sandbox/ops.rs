@@ -30,6 +30,13 @@ pub fn image(tier: Mode) -> &'static str {
 }
 const POOL: &str = "sbx-pool";
 
+/// `limactl`, with `LIMA_HOME` where `sandbox.lima_home` is set.
+fn lima(config: &SandboxConfig, program: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    command.envs(config.lima_env());
+    command
+}
+
 fn limactl(config: &SandboxConfig) -> Result<PathBuf> {
     super::setup::locate(&config.limactl).with_context(|| {
         format!(
@@ -41,7 +48,7 @@ fn limactl(config: &SandboxConfig) -> Result<PathBuf> {
 
 /// The Lima instance's state: `Running`, `Stopped`, or `None` where it does not exist.
 pub fn vm_status(config: &SandboxConfig) -> Result<Option<String>> {
-    let output = std::process::Command::new(limactl(config)?)
+    let output = lima(config, &limactl(config)?)
         .args(["list", "--json"])
         .stderr(Stdio::null())
         .output()?;
@@ -87,7 +94,7 @@ pub fn ensure_vm(config: &SandboxConfig, announce: bool) -> Result<()> {
                     config.lima_instance
                 );
             }
-            let started = std::process::Command::new(limactl(config)?)
+            let started = lima(config, &limactl(config)?)
                 .args(["start", "--tty=false", &config.lima_instance])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -116,7 +123,7 @@ pub fn idle_report(config: &SandboxConfig) -> Option<String> {
     if config.client != SandboxClient::Lima {
         return None;
     }
-    let output = std::process::Command::new(limactl(config).ok()?)
+    let output = lima(config, &limactl(config).ok()?)
         .args([
             "shell",
             "--workdir",
@@ -235,7 +242,7 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
         Some(_) => {
             println!("Starting {}…", config.lima_instance);
             ensure!(
-                std::process::Command::new(&limactl)
+                lima(config, &limactl)
                     .args(["start", "--tty=false", &config.lima_instance])
                     .status()?
                     .success(),
@@ -243,7 +250,7 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
             );
         }
         None => {
-            let free = super::free_gib(&home());
+            let free = super::free_gib(&config.lima_disk());
             if let Some(free) = free {
                 ensure!(
                     free >= config.min_free_gib + 5,
@@ -262,7 +269,7 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
                 config.lima_instance, config.cpus, config.memory_gib, config.disk_gib
             );
             ensure!(
-                std::process::Command::new(&limactl)
+                lima(config, &limactl)
                     .args(["start", "--tty=false", "--name", &config.lima_instance])
                     .arg(&template)
                     .status()?
@@ -276,7 +283,7 @@ pub fn up(config: &SandboxConfig, data: &Path) -> Result<()> {
     // configuration from a stdin that is not a terminal, so a script piped into `bash -s`
     // was being swallowed by the first `incus network create` in it.
     let shell = |args: &[&str]| {
-        let mut command = std::process::Command::new(&limactl);
+        let mut command = lima(config, &limactl);
         command.args(["shell", "--workdir", "/", &config.lima_instance]);
         command.args(args);
         command
@@ -329,19 +336,13 @@ pub fn down(config: &SandboxConfig) -> Result<()> {
         "the Incus host is not this machine's to stop"
     );
     ensure!(
-        std::process::Command::new(limactl(config)?)
+        lima(config, &limactl(config)?)
             .args(["stop", &config.lima_instance])
             .status()?
             .success(),
         "limactl stop failed"
     );
     Ok(())
-}
-
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn reclaim_hint() -> String {
@@ -480,7 +481,7 @@ pub fn create(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        if let Some(free) = super::free_gib(&home()) {
+        if let Some(free) = super::free_gib(&config.lima_disk()) {
             ensure!(
                 free >= config.min_free_gib,
                 "only {free} GiB free (sandbox.min_free_gib = {}). {}",
@@ -566,12 +567,15 @@ pub fn session(
 }
 
 /// Whether a recorded sandbox is one a conversation was given (`session`), not a project's
-/// own: its root is that conversation's session directory.
+/// own: its root is that conversation's session directory, which can be anywhere
+/// `workspaces.root` puts it, and it mounts the repository it works on, which a project's own
+/// sandbox never does.
 pub fn is_session(project: &Project) -> bool {
-    project
-        .root
-        .parent()
-        .is_some_and(|p| p.ends_with(".orochi/sessions"))
+    !project.mounts.is_empty()
+        || project
+            .root
+            .parent()
+            .is_some_and(|p| p.ends_with(".orochi/sessions"))
 }
 
 /// What `retire` took, and how many it had to leave because the VM was stopped.

@@ -47,8 +47,9 @@ pub async fn adopt(
                 let known = model(name)
                     .filter(|m| m.gguf.is_some())
                     .with_context(|| format!("{name} does not run on this machine"))?;
-                if !local::installed(data, known) {
-                    download(data, known, sources).await?;
+                let home = local::home(data, &decision);
+                if !local::installed(&home, known) {
+                    download(&home, known, sources).await?;
                 }
             }
             eprintln!("  starting {name} and asking it one question…");
@@ -74,11 +75,12 @@ pub async fn adopt(
     Ok(())
 }
 
-pub async fn download(data: &Path, model: &Model, sources: &Sources) -> Result<()> {
+/// `home` is the directory a local model goes in (`local::home`).
+pub async fn download(home: &Path, model: &Model, sources: &Sources) -> Result<()> {
     let terminal = std::io::stderr().is_terminal();
     let mut last = String::new();
     let result = local::install(
-        data,
+        home,
         model,
         &sources.llama_releases,
         sources.gguf.as_deref(),
@@ -182,7 +184,7 @@ fn pick(count: usize, default: usize) -> Result<Option<usize>> {
 /// provider's key. `Ok(false)` when it was left unanswered (end of input), so it is asked
 /// again next time; choosing none saves `off` and is not asked again.
 pub async fn interactive(config: &mut Config, path: &Path, data: &Path) -> Result<bool> {
-    let advice = recommend(data);
+    let advice = recommend(&local::home(data, &config.decision));
     let sources = Sources::from_env();
     eprintln!(
         "\nOrochi reads each request with a decision model to choose who does it: what kind of work it is and how hard."

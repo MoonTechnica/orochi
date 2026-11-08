@@ -1441,7 +1441,7 @@ test("everything that is not a conversation lives behind the row at the foot", a
   const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
   assert.deepEqual(
     pages,
-    ["roster", "preferences", "accounts", "insights", "sandboxes", "conversations", "notifications", "setup"],
+    ["roster", "preferences", "accounts", "insights", "sandboxes", "storage", "conversations", "notifications", "setup"],
     "every former panel is a page of it",
   );
   el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === "insights").dispatch("click");
@@ -2817,4 +2817,36 @@ test("a thread started in a worktree asks the core for one in the project clicke
     calls.find(([name]) => name === "new_thread")?.[1],
     { root: recorded.sidebar[0].root, worktree: true },
   );
+});
+
+test("the storage page shows where each big thing goes, and a folder chosen there is saved", async () => {
+  const places = [
+    { which: "worktrees", configured: null, default: "{repository}/.orochi/sessions", variables: ["{repository}", "{name}", "{hash}"], effective: null, free_gb: null, used_bytes: null, applies: true, vm: null },
+    { which: "models", configured: null, variables: [], default: "/home/me/.local/share/orochi/decision", effective: "/home/me/.local/share/orochi/decision", free_gb: 400, used_bytes: 3033489824, applies: true, vm: null },
+    { which: "vm", configured: "/Volumes/Big/lima", variables: [], default: "/home/me/.lima", effective: "/Volumes/Big/lima", free_gb: 900, used_bytes: null, applies: true, vm: null },
+  ];
+  const { el, calls } = await open({ places, set_place: null }, { pick: () => "/Volumes/Big/worktrees" });
+  await openSettingsPage(el, "storage");
+  await settle();
+  const cards = el("settings-body").querySelectorAll("div").filter((d) => d.className === "card storage");
+  assert.deepEqual(cards.map((c) => c.dataset.which), ["worktrees", "models", "vm"]);
+  assert.match(cards[0].render(), /Default: \{repository\}\/.orochi\/sessions/);
+  assert.match(cards[0].render(), /\{repository\}[\s\S]*\{name\}[\s\S]*\{hash\}/);
+  // A template is typed and saved as it is.
+  const template = cards[0].querySelectorAll("input").find((i) => i.className === "place-template");
+  template.value = "/Volumes/Big/worktrees/{name}";
+  cards[0].querySelectorAll("button").find((b) => b.textContent === "Save").dispatch("click");
+  await settle();
+  assert.match(cards[1].render(), /400 GB free · 3.0 GB used/);
+  assert.match(cards[2].render(), /\/Volumes\/Big\/lima/);
+  assert.equal(cards[0].querySelectorAll("button").some((b) => b.textContent === "Use the default"), false);
+  cards[0].querySelectorAll("button").find((b) => b.textContent === "Choose a folder…").dispatch("click");
+  await settle();
+  cards[2].querySelectorAll("button").find((b) => b.textContent === "Use the default").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "set_place").map(([, a]) => a), [
+    { which: "worktrees", path: "/Volumes/Big/worktrees/{name}", force: false },
+    { which: "worktrees", path: "/Volumes/Big/worktrees/{name}", force: false },
+    { which: "vm", path: null, force: false },
+  ]);
 });

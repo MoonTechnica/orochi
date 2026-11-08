@@ -297,7 +297,7 @@ impl<'a> Incus<'a> {
     pub fn command(&self, args: &[String]) -> Result<std::process::Command> {
         let (program, argv) = self.argv(args)?;
         let mut command = std::process::Command::new(program);
-        command.args(argv);
+        command.args(argv).envs(self.config.lima_env());
         Ok(command)
     }
     /// Runs and returns stdout; a failure carries what Incus said.
@@ -562,6 +562,11 @@ impl Placement {
         launch.command = program.to_string_lossy().into_owned();
         launch.args = argv;
         launch.env = Default::default();
+        if let Some((name, home)) = config.sandbox.lima_env() {
+            launch
+                .env
+                .insert(name.into(), home.to_string_lossy().into_owned());
+        }
         launch.sandboxed = true;
         Ok(launch)
     }
@@ -589,7 +594,7 @@ impl Placement {
         let inner = self.exec_args(config, cwd, &env, command, args, false);
         let (program, argv) = Incus::new(config).argv(&inner)?;
         let mut command = tokio::process::Command::new(program);
-        command.args(argv);
+        command.args(argv).envs(config.lima_env());
         Ok(command)
     }
 }

@@ -234,6 +234,11 @@ pub enum Command {
     /// The decision model that reads each request: shown, chosen, its key, its local server.
     #[command(subcommand)]
     Decision(DecisionCommand),
+    /// Where helpers' worktrees, a local decision model and the sandbox VM are kept.
+    Places {
+        #[command(subcommand)]
+        command: Option<PlacesCommand>,
+    },
     /// Compare frozen predictions with local observed outcomes.
     Calibrate {
         #[arg(long, default_value_t = 10000, value_parser = clap::value_parser!(u32).range(1..=100000))]
@@ -364,6 +369,24 @@ pub enum SecretCommand {
     },
     /// The names stored, never the values.
     List,
+}
+#[derive(Debug, Subcommand)]
+pub enum PlacesCommand {
+    /// Put one of them in a directory: worktrees, models or vm. For worktrees this is a
+    /// template: `{repository}`, `{name}` and `{hash}` are filled in per repository.
+    Set {
+        which: String,
+        path: String,
+        /// Move the VM's home even though a VM exists under the current one; it stays there.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Put one back where it goes by default.
+    Reset {
+        which: String,
+        #[arg(long)]
+        force: bool,
+    },
 }
 #[derive(Debug, Subcommand)]
 pub enum DecisionCommand {
@@ -707,6 +730,9 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             print!("{}", crate::setup::describe(&status));
         }
         return Ok(0);
+    }
+    if let Some(Command::Places { command }) = cli.command {
+        return places(&mut config, &paths.config, &paths.data, command, cli.json);
     }
     if let Some(Command::Decision(command)) = cli.command {
         return decision(&mut config, &paths.config, &paths.data, command, cli.json).await;
@@ -1243,7 +1269,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                             eprintln!("{line}");
                         }
                     }
-                    let report = crate::workspaces::prune(&root, &tools)?;
+                    let report = crate::workspaces::prune(&config.workspaces, &root, &tools)?;
                     // The conversations these belonged to are not known here; their rows are,
                     // by the worktree's path.
                     if config.activity.enabled
@@ -1278,9 +1304,11 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     }
                 }
                 None => {
-                    let sessions = root.join(".orochi/sessions");
                     let mut rows = vec![];
-                    if let Ok(entries) = std::fs::read_dir(&sessions) {
+                    for sessions in crate::workspaces::sessions_dirs(&config.workspaces, &root) {
+                        let Ok(entries) = std::fs::read_dir(&sessions) else {
+                            continue;
+                        };
                         for entry in entries.filter_map(|e| e.ok()) {
                             let dir = entry.path();
                             let manifest = dir.join("workspaces.json");
@@ -1897,7 +1925,8 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             | Command::Sandbox(_)
             | Command::Init { .. }
             | Command::Setup { .. }
-            | Command::Decision(_),
+            | Command::Decision(_)
+            | Command::Places { .. },
         ) => unreachable!(),
         None => {
             let Some(task) = cli.task else {
@@ -2669,13 +2698,87 @@ async fn decision(
         DecisionCommand::Stop => {
             println!(
                 "{}",
-                if local::stop(data) {
+                if local::stop(&local::home(data, &config.decision)) {
                     "stopped"
                 } else {
                     "no server was running"
                 }
             );
         }
+    }
+    Ok(0)
+}
+
+fn places(
+    config: &mut Config,
+    path: &std::path::Path,
+    data: &std::path::Path,
+    command: Option<PlacesCommand>,
+    json: bool,
+) -> Result<u8> {
+    use crate::places::{self, Which};
+    match command {
+        Some(PlacesCommand::Set {
+            which,
+            path: place,
+            force,
+        }) => {
+            // A relative folder is taken from here; a template starting with a variable is not.
+            let place = if place.starts_with('{') || std::path::Path::new(&place).is_absolute() {
+                place
+            } else {
+                std::env::current_dir()?.join(place).display().to_string()
+            };
+            places::set(
+                config,
+                path,
+                data,
+                Which::parse(&which)?,
+                Some(place),
+                force,
+            )?;
+        }
+        Some(PlacesCommand::Reset { which, force }) => {
+            places::set(config, path, data, Which::parse(&which)?, None, force)?;
+        }
+        None => {}
+    }
+    let listed = places::read(config, data);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&listed)?);
+        return Ok(0);
+    }
+    for place in listed {
+        let name = match place.which {
+            Which::Worktrees => "worktrees",
+            Which::Models => "models",
+            Which::Vm => "vm",
+        };
+        let at = place
+            .configured
+            .clone()
+            .unwrap_or_else(|| format!("{} (default)", place.default));
+        let mut notes = vec![];
+        if let Some(free) = place.free_gb {
+            notes.push(format!("{free} GB free"));
+        }
+        if let Some(used) = place.used_bytes {
+            notes.push(format!("{:.1} GB used", used as f64 / 1e9));
+        }
+        if let Some(vm) = &place.vm {
+            notes.push(format!("VM {}", vm.to_lowercase()));
+        }
+        if !place.applies {
+            notes.push("not used with this sandbox client".into());
+        }
+        println!(
+            "{name:<10} {at}{}",
+            if notes.is_empty() {
+                String::new()
+            } else {
+                format!("  ({})", notes.join(", "))
+            }
+        );
     }
     Ok(0)
 }

@@ -99,8 +99,12 @@ pub fn reclaim(
 
     // A session directory nobody's thread names and nobody holds, held here while it goes.
     let mut orphans: Vec<(PathBuf, workspaces::Live)> = vec![];
-    for checkout in &checkouts {
-        let Ok(entries) = std::fs::read_dir(checkout.join(".orochi/sessions")) else {
+    let sessions: Vec<PathBuf> = checkouts
+        .iter()
+        .flat_map(|c| workspaces::sessions_dirs(&config.workspaces, c))
+        .collect();
+    for dir in &sessions {
+        let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in entries.filter_map(|e| e.ok()) {
@@ -155,9 +159,9 @@ pub fn reclaim(
             continue;
         }
         // Still on disk because a session in it is held: its process holds the worktree too.
-        if worktree.join(".orochi/sessions").is_dir()
-            && std::fs::read_dir(worktree.join(".orochi/sessions"))
-                .is_ok_and(|mut e| e.next().is_some())
+        if workspaces::sessions_dirs(&config.workspaces, &worktree)
+            .iter()
+            .any(|dir| std::fs::read_dir(dir).is_ok_and(|mut e| e.next().is_some()))
         {
             continue;
         }

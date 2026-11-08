@@ -394,14 +394,25 @@ async fn a_model_whose_download_does_not_match_its_pinned_checksum_is_never_kept
     )
     .unwrap();
     let url = format!("{}/files/model.gguf", server.url);
-    let error = local::install(data.path(), model, &server.url, Some(&url), |_| {})
-        .await
-        .unwrap_err();
+    let error = local::install(
+        &data.path().join("decision"),
+        model,
+        &server.url,
+        Some(&url),
+        |_| {},
+    )
+    .await
+    .unwrap_err();
     assert!(format!("{error:#}").contains("checksum"), "{error:#}");
     let models = data.path().join("decision/models");
     assert!(!models.join("model.gguf").exists());
     assert!(!models.join("model.part").exists());
-    assert_eq!(local::Download::read(data.path()).unwrap().state, "failed");
+    assert_eq!(
+        local::Download::read(&data.path().join("decision"))
+            .unwrap()
+            .state,
+        "failed"
+    );
 }
 
 #[cfg(unix)]
@@ -452,17 +463,30 @@ async fn a_local_model_downloads_resumes_after_a_cut_starts_one_shared_server_an
     );
     let releases = format!("{}/files", server.url);
     let url = format!("{}/files/model.gguf", server.url);
-    let first = local::install(data.path(), model, &releases, Some(&url), |_| {}).await;
+    let first = local::install(
+        &data.path().join("decision"),
+        model,
+        &releases,
+        Some(&url),
+        |_| {},
+    )
+    .await;
     assert!(first.is_err(), "the cut download cannot pass its checksum");
     let part = data.path().join("decision/models/model.part");
     assert!(
         part.metadata().unwrap().len() > 0,
         "what arrived is kept to resume from"
     );
-    local::install(data.path(), model, &releases, Some(&url), |_| {})
-        .await
-        .unwrap();
-    assert!(local::installed(data.path(), model));
+    local::install(
+        &data.path().join("decision"),
+        model,
+        &releases,
+        Some(&url),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert!(local::installed(&data.path().join("decision"), model));
     assert_eq!(
         std::fs::read(data.path().join("decision/models/model.gguf")).unwrap(),
         gguf
@@ -472,16 +496,17 @@ async fn a_local_model_downloads_resumes_after_a_cut_starts_one_shared_server_an
     let mut config = Config::default();
     config.decision.model = "tiny".into();
     config.decision.timeout_ms = 30_000;
-    let endpoint = local::ensure(data.path(), &config.decision, model)
+    let endpoint = local::ensure(&data.path().join("decision"), &config.decision, model)
         .await
         .unwrap();
-    let port = local::running(data.path(), "tiny").expect("the server is recorded");
+    let port =
+        local::running(&data.path().join("decision"), "tiny").expect("the server is recorded");
     assert!(endpoint.ends_with(&format!(":{port}/v1/systemone")));
-    let again = local::ensure(data.path(), &config.decision, model)
+    let again = local::ensure(&data.path().join("decision"), &config.decision, model)
         .await
         .unwrap();
     assert_eq!(again, endpoint, "a second run shares the server");
-    assert!(local::stop(data.path()));
+    assert!(local::stop(&data.path().join("decision")));
     for _ in 0..50 {
         if std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
             break;
@@ -489,7 +514,7 @@ async fn a_local_model_downloads_resumes_after_a_cut_starts_one_shared_server_an
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
-    assert_eq!(local::running(data.path(), "tiny"), None);
+    assert_eq!(local::running(&data.path().join("decision"), "tiny"), None);
 }
 
 #[tokio::test]

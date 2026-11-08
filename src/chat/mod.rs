@@ -1063,6 +1063,7 @@ impl<'a> Session<'a> {
             headless: self.headless,
             permission: self.approval.confirm,
             workspace: crate::workspaces::directory(
+                &self.config.workspaces,
                 self.root,
                 self.recorded
                     .as_ref()
