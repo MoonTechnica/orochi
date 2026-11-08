@@ -697,6 +697,17 @@ impl Client {
         )?;
         ensure!(!running, "stop the agent before deleting this conversation");
         ensure!(self.activity.delete_thread(thread)?, "no thread {thread}");
+        // Its sandbox, session directory and a worktree no other thread uses go too. Deleting
+        // a sandbox can take a while, and the window is not held for it.
+        let (config, data) = self.paths();
+        std::thread::spawn(move || {
+            let config = orochi::config::Config::load(&config).unwrap_or_default();
+            if let Ok(activity) =
+                orochi::activity::Activity::open(&data, config.activity.retention_days)
+            {
+                let _ = orochi::reclaim::reclaim(&config, &data, &activity, true);
+            }
+        });
         Ok(())
     }
 
@@ -818,13 +829,20 @@ impl Client {
     /// Starts a thread in a folder the user chose. The project is identified the way the
     /// mailbox identifies a room, so this thread and a terminal run in the same repository
     /// land in one section of the sidebar.
-    pub fn new_thread(&self, root: &Path) -> Result<String> {
+    pub fn new_thread(&self, root: &Path, worktree: bool) -> Result<String> {
         ensure!(
             root.is_dir(),
             "{} is not a directory this window can work in",
             root.display()
         );
-        let root = root.canonicalize()?;
+        let mut root = root.canonicalize()?;
+        // A worktree of Orochi's own, removed when the last thread in it is deleted.
+        if worktree {
+            let config = orochi::config::Config::load(&self.config).unwrap_or_default();
+            let main = orochi::worktrees::main_checkout(&root)?;
+            let name = orochi::worktrees::fresh_name(&main);
+            root = orochi::worktrees::create(&root, &name, &config.workspaces.branch_prefix)?;
+        }
         let project = self
             .activity
             .project_for(&root, &self.store.salt()?)

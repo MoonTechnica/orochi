@@ -107,6 +107,7 @@ const LABELS = {
 const WORDS = {
   ja: {
     "New thread": "新しいスレッド",
+    "New thread in a worktree": "worktree で新しいスレッド",
     "New conversation": "新しい会話",
     Projects: "プロジェクト",
     "Add a project": "プロジェクトを追加",
@@ -379,8 +380,8 @@ const WORDS = {
     "stop it first": "先に停止してください",
     "open in a terminal": "ターミナルで開いています",
     "Delete this conversation?": "この会話を削除しますか？",
-    "Everything said in it is deleted for good. Orochi keeps what it learned from the runs.":
-      "会話の内容はすべて完全に削除されます。実行から学習した内容は残ります。",
+    "Everything said in it is deleted for good, with its sandbox and a worktree no other conversation works in. Orochi keeps what it learned from the runs.":
+      "会話の内容はすべて完全に削除されます。サンドボックスと、ほかの会話が使っていない worktree も一緒に削除します。実行から学習した内容は残ります。",
     "Delete this project?": "このプロジェクトを削除しますか？",
     "{n} conversations are deleted for good. The folder and its sandbox are kept.":
       "{n} 件の会話が完全に削除されます。フォルダとサンドボックスは残ります。",
@@ -924,7 +925,7 @@ function threadMenu(project, thread) {
       run: async () => {
         const sure = await ask({
           title: t("Delete this conversation?"),
-          body: t("Everything said in it is deleted for good. Orochi keeps what it learned from the runs."),
+          body: t("Everything said in it is deleted for good, with its sandbox and a worktree no other conversation works in. Orochi keeps what it learned from the runs."),
           verb: t("Delete"),
         });
         if (!sure) return;
@@ -942,6 +943,7 @@ function projectMenu(project) {
   );
   return [
     { key: "new", label: "New thread", icon: "plus", run: () => startIn(project.root) },
+    { key: "new-worktree", label: "New thread in a worktree", icon: "git-branch", run: () => startIn(project.root, true) },
     {
       key: "rename", label: "Rename", icon: "pencil",
       run: () => {
@@ -1555,15 +1557,16 @@ async function chooseFolder() {
   if (root) await startIn(root);
 }
 
-async function startIn(root) {
+async function startIn(root, worktree = false) {
   closeFolders();
   const where = await call("placement", { root });
   if (where?.ask && !(await askPlace(root, where))) return;
-  await openThreadIn(root);
+  await openThreadIn(root, worktree);
 }
 
-async function openThreadIn(root) {
-  const id = await call("new_thread", { root });
+/// `worktree`: in a worktree of Orochi's own, on its own branch, removed with its last thread.
+async function openThreadIn(root, worktree = false) {
+  const id = await call("new_thread", worktree ? { root, worktree } : { root });
   if (!id) return;
   state.thread = id;
   await refresh(true);

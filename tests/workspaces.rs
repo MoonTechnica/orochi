@@ -403,3 +403,207 @@ fn a_conversations_leftover_worktrees_are_closed_and_dead_sessions_are_pruned_bu
     );
     assert_eq!(worktrees(&root), 1);
 }
+
+mod thread_worktrees {
+    use super::{git, repository};
+    use orochi::{
+        activity::{Activity, Origin},
+        config::Config,
+        reclaim::reclaim,
+        types::Overrides,
+        workspaces::{Workspaces, directory, hold},
+        worktrees,
+    };
+    use std::path::Path;
+
+    fn thread(activity: &Activity, cwd: &Path) -> String {
+        let project = activity.project_for(cwd, "salt").unwrap();
+        activity
+            .create_thread(
+                &project,
+                cwd,
+                None,
+                "repo",
+                Origin::Desktop,
+                &Overrides::default(),
+                "ask",
+            )
+            .unwrap()
+    }
+    fn listed(root: &Path) -> String {
+        git(root, &["worktree", "list", "--porcelain"])
+    }
+
+    #[test]
+    fn a_thread_worktree_lasts_until_the_last_thread_working_in_it_is_deleted() {
+        let repo = repository();
+        let root = repo.path().canonicalize().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let activity = Activity::open(data.path(), 0).unwrap();
+        let tree = worktrees::create(&root, "feature", "orochi/").unwrap();
+        assert_eq!(tree, root.join(".orochi/worktrees/feature"));
+        assert!(
+            !tree.to_string_lossy().ends_with('/'),
+            "the thread's cwd is the worktree itself, with no trailing separator"
+        );
+        assert_eq!(git(&tree, &["branch", "--show-current"]), "orochi/feature");
+        assert!(
+            std::fs::read_to_string(root.join(".git/info/exclude"))
+                .unwrap()
+                .lines()
+                .any(|l| l == ".orochi/"),
+            "the checkouts under .orochi/ stay out of git status"
+        );
+        // Two conversations in one worktree: the first one's deletion leaves it for the second.
+        let first = thread(&activity, &tree);
+        let second = thread(&activity, &tree);
+        std::fs::write(tree.join("tracked"), "unfinished").unwrap();
+        assert!(activity.delete_thread(&first).unwrap());
+        let taken = reclaim(&config, data.path(), &activity, true).unwrap();
+        assert!(taken.worktrees.is_empty(), "{:?}", taken.lines());
+        assert!(tree.exists());
+        assert!(activity.delete_thread(&second).unwrap());
+        let taken = reclaim(&config, data.path(), &activity, true).unwrap();
+        assert_eq!(taken.worktrees.len(), 1, "{:?}", taken.lines());
+        assert!(!tree.exists());
+        assert!(!listed(&root).contains("feature"));
+        // Nothing was lost: what it had not committed is a ref, and an unmerged-nothing branch
+        // (no commits of its own) is gone with it.
+        let kept = taken.worktrees[0].kept.clone().unwrap();
+        assert_eq!(
+            git(&root, &["show", &format!("{kept}:tracked")]),
+            "unfinished"
+        );
+        assert!(taken.worktrees[0].branch_deleted);
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked")).unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    fn a_thread_worktree_with_commits_of_its_own_keeps_its_branch() {
+        let repo = repository();
+        let root = repo.path().canonicalize().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let activity = Activity::open(data.path(), 0).unwrap();
+        let tree = worktrees::create(&root, "work", "orochi/").unwrap();
+        std::fs::write(tree.join("tracked"), "committed").unwrap();
+        git(&tree, &["commit", "-am", "work"]);
+        let id = thread(&activity, &tree);
+        activity.delete_thread(&id).unwrap();
+        let taken = reclaim(&Config::default(), data.path(), &activity, true).unwrap();
+        assert_eq!(taken.worktrees.len(), 1);
+        assert!(!taken.worktrees[0].branch_deleted);
+        assert!(taken.worktrees[0].kept.is_none());
+        assert_eq!(git(&root, &["show", "orochi/work:tracked"]), "committed");
+        // Asked for by name again, the worktree comes back on that branch.
+        let again = worktrees::create(&root, "work", "orochi/").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(again.join("tracked")).unwrap(),
+            "committed"
+        );
+    }
+
+    #[test]
+    fn a_held_thread_worktree_is_not_taken_even_before_a_thread_records_it() {
+        let repo = repository();
+        let root = repo.path().canonicalize().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let activity = Activity::open(data.path(), 0).unwrap();
+        // The project is known, as it is once anything ran there.
+        let id = thread(&activity, &root);
+        let tree = worktrees::create(&root, "starting", "orochi/").unwrap();
+        let held = worktrees::hold(&tree).unwrap();
+        let also = worktrees::hold(&tree).unwrap();
+        let taken = reclaim(&Config::default(), data.path(), &activity, true).unwrap();
+        assert!(taken.worktrees.is_empty());
+        drop(held);
+        let taken = reclaim(&Config::default(), data.path(), &activity, true).unwrap();
+        assert!(
+            taken.worktrees.is_empty(),
+            "a second holder still works there"
+        );
+        drop(also);
+        let taken = reclaim(&Config::default(), data.path(), &activity, true).unwrap();
+        assert_eq!(taken.worktrees.len(), 1);
+        assert!(!tree.exists());
+        assert!(root.exists(), "the project itself is never one of them");
+        assert!(activity.delete_thread(&id).unwrap());
+    }
+
+    #[test]
+    fn a_deleted_threads_session_directory_goes_whole_and_a_live_ones_stays() {
+        let repo = repository();
+        let root = repo.path().canonicalize().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let activity = Activity::open(data.path(), 0).unwrap();
+        let gone = thread(&activity, &root);
+        let kept = thread(&activity, &root);
+        let running = thread(&activity, &root);
+        let mut sessions = vec![];
+        for id in [&gone, &kept, &running] {
+            let dir = directory(&root, id);
+            let mut work = Workspaces::open(&root, &dir).unwrap();
+            work.create("helper").unwrap();
+            std::fs::write(dir.join("helper.patch"), "x").unwrap();
+            sessions.push(dir.canonicalize().unwrap());
+        }
+        let live = hold(&sessions[2]).unwrap().unwrap();
+        for id in [&gone, &running] {
+            activity.delete_thread(id).unwrap();
+        }
+        let taken = reclaim(&Config::default(), data.path(), &activity, true).unwrap();
+        assert_eq!(
+            taken.sessions,
+            vec![sessions[0].clone()],
+            "{:?}",
+            taken.lines()
+        );
+        assert!(!sessions[0].exists());
+        assert!(sessions[1].join("helper").exists());
+        assert!(
+            sessions[2].join("helper").exists(),
+            "a process still holds it"
+        );
+        let worktrees = listed(&root);
+        assert!(!worktrees.contains(sessions[0].to_str().unwrap()));
+        assert!(worktrees.contains(sessions[1].to_str().unwrap()));
+        drop(live);
+        let taken = reclaim(&Config::default(), data.path(), &activity, true).unwrap();
+        assert_eq!(taken.sessions, vec![sessions[2].clone()]);
+        assert!(sessions[1].exists());
+    }
+
+    #[test]
+    fn a_thread_started_with_worktree_works_there_and_deleting_it_removes_the_worktree() {
+        let repo = repository();
+        let root = repo.path().canonicalize().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let config = data.path().join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let orochi = |args: &[&str]| {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_orochi"))
+                .args(["--config", config.to_str().unwrap()])
+                .args(["--data-dir", data.path().join("data").to_str().unwrap()])
+                .args(["-C", root.to_str().unwrap()])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let id = orochi(&["--worktree=fix", "threads", "new"]);
+        let tree = root.join(".orochi/worktrees/fix");
+        let shown = orochi(&["threads", "--json"]);
+        assert!(shown.contains(tree.to_str().unwrap()), "{shown}");
+        orochi(&["threads", "delete", &id]);
+        assert!(!tree.exists());
+        assert!(!listed(&root).contains("fix"));
+    }
+}

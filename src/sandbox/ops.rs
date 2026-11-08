@@ -565,6 +565,61 @@ pub fn session(
     Ok(())
 }
 
+/// Whether a recorded sandbox is one a conversation was given (`session`), not a project's
+/// own: its root is that conversation's session directory.
+pub fn is_session(project: &Project) -> bool {
+    project
+        .root
+        .parent()
+        .is_some_and(|p| p.ends_with(".orochi/sessions"))
+}
+
+/// What `retire` took, and how many it had to leave because the VM was stopped.
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Retired {
+    pub removed: Vec<String>,
+    pub waiting: usize,
+}
+
+/// Deletes the conversation sandboxes `gone` picks, with their volumes. A project's own sandbox
+/// is never one of them. Deleting needs the VM: with it stopped and `start` false they are
+/// left for a later call, counted in `waiting`.
+pub fn retire(
+    config: &SandboxConfig,
+    data: &Path,
+    gone: &dyn Fn(&Project) -> bool,
+    start: bool,
+) -> Result<Retired> {
+    let _lock = crate::storage::workspace_lock(data, "sandbox-sessions", false)?;
+    let mut state = State::load(data)?;
+    let doomed: Vec<Project> = state
+        .projects
+        .iter()
+        .filter(|p| is_session(p) && gone(p))
+        .cloned()
+        .collect();
+    let mut retired = Retired::default();
+    if doomed.is_empty() {
+        return Ok(retired);
+    }
+    let running =
+        config.client != SandboxClient::Lima || vm_status(config)?.as_deref() == Some("Running");
+    if !running && !start {
+        retired.waiting = doomed.len();
+        return Ok(retired);
+    }
+    ensure_vm(config, false)?;
+    for project in doomed {
+        unfocus_if(config, &mut state, &project.name)?;
+        destroy(config, &project)?;
+        super::auth::forget(data, &project.name);
+        state.projects.retain(|p| p.name != project.name);
+        state.save(data)?;
+        retired.removed.push(project.name);
+    }
+    Ok(retired)
+}
+
 /// Makes the instance for a recorded project: from the tier's image, with its volumes.
 fn provision(config: &SandboxConfig, project: &Project) -> Result<()> {
     let incus = Incus::new(config);

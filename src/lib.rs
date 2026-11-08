@@ -35,6 +35,7 @@ pub mod process {
     }
 }
 pub mod quota_sources;
+pub mod reclaim;
 pub mod roster;
 pub mod router;
 pub mod sandbox;
@@ -44,3 +45,4 @@ pub mod storage;
 pub mod types;
 
 pub mod workspaces;
+pub mod worktrees;

@@ -290,7 +290,7 @@ fn a_thread_can_be_started_in_a_folder_the_window_chooses() {
         "the folders offered are the ones already worked in"
     );
 
-    let thread = client.new_thread(&repo).unwrap();
+    let thread = client.new_thread(&repo, false).unwrap();
     let projects = client.sidebar(20, false).unwrap();
     let section = projects
         .iter()
@@ -317,7 +317,9 @@ fn a_folder_that_is_not_a_directory_is_refused_rather_than_recorded() {
     fixture(dir.path());
     let client = Client::open(dir.path()).unwrap();
     assert!(
-        client.new_thread(&dir.path().join("nowhere")).is_err(),
+        client
+            .new_thread(&dir.path().join("nowhere"), false)
+            .is_err(),
         "a thread whose directory does not exist could never run"
     );
 }
@@ -337,7 +339,7 @@ fn sending_starts_a_host_only_when_the_thread_has_none() {
         "a thread a terminal is holding is not the window's to run"
     );
 
-    let idle = client.new_thread(dir.path()).unwrap();
+    let idle = client.new_thread(dir.path(), false).unwrap();
     assert!(
         client.needs_host(&idle).unwrap(),
         "a thread nobody owns needs one before its messages can run"
@@ -523,7 +525,7 @@ fn the_changes_pane_reads_the_working_tree_as_well_as_what_was_recorded() {
     std::fs::write(repo.join("kept.txt"), "one\nchanged\n").unwrap();
 
     let client = Client::open(dir.path()).unwrap();
-    let thread = client.new_thread(&repo).unwrap();
+    let thread = client.new_thread(&repo, false).unwrap();
 
     let unstaged = client.tree_files(&thread, "unstaged").unwrap();
     assert_eq!(unstaged.len(), 1);
@@ -956,7 +958,7 @@ fn a_folder_nobody_worked_in_is_asked_where_it_runs_and_a_known_or_sandboxed_one
         asked.mode, "host",
         "nothing moves into a sandbox unless chosen"
     );
-    client.new_thread(fresh.path()).unwrap();
+    client.new_thread(fresh.path(), false).unwrap();
     assert!(
         !client.placement(fresh.path()).unwrap().ask,
         "once worked in, it is known"

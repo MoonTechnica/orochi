@@ -69,6 +69,12 @@ pub struct Cli {
     /// Not global: `orochi host` has a `--thread` of its own.
     #[arg(long, value_name = "ID", conflicts_with_all = ["continue_last", "resume"])]
     pub thread: Option<String>,
+    /// Work in a worktree of Orochi's own under `.orochi/worktrees/`, on its own branch: a new
+    /// one, or the one called NAME (`--worktree=NAME`). It is removed once every thread that
+    /// works in it has been deleted.
+    #[arg(long, global = true, value_name = "NAME", num_args = 0..=1, require_equals = true,
+          default_missing_value = "")]
+    pub worktree: Option<String>,
     /// How to answer ACP permission requests; defaults to ask (denies without a TTY).
     #[arg(long, value_enum)]
     pub permission: Option<PermissionMode>,
@@ -676,6 +682,49 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     if let Some(Command::Sandbox(command)) = cli.command {
         return sandbox(&config, &paths.data, &root, command).await;
     }
+    let root = match cli.worktree.take() {
+        Some(name) => {
+            ensure!(
+                cli.thread.is_none(),
+                "--thread continues a conversation where it already works; --worktree starts one"
+            );
+            ensure!(
+                matches!(
+                    cli.command,
+                    None | Some(Command::Chat)
+                        | Some(Command::Threads {
+                            command: Some(ThreadCommand::New),
+                            ..
+                        })
+                ),
+                "--worktree starts a conversation: `orochi`, `orochi chat`, a task, or `orochi threads new`"
+            );
+            ensure!(
+                config.activity.enabled,
+                "a worktree Orochi makes lasts as long as the threads working in it, and with activity.enabled = false no thread is recorded"
+            );
+            let main = crate::worktrees::main_checkout(&root)?;
+            let name = if name.is_empty() {
+                crate::worktrees::fresh_name(&main)
+            } else {
+                name
+            };
+            let inside = crate::worktrees::create(&root, &name, &config.workspaces.branch_prefix)?;
+            eprintln!(
+                "Working in {} on branch {}{name}",
+                inside.display(),
+                config.workspaces.branch_prefix
+            );
+            inside
+        }
+        None => root,
+    };
+    // Working in a thread worktree holds it, so it is not taken while this runs even before
+    // a thread records it. Looking at threads or deleting them does not.
+    let _worktree_held = match (&cli.command, crate::worktrees::owning(&root)) {
+        (Some(Command::Threads { .. } | Command::Workspaces { .. }), _) | (_, None) => None,
+        (_, Some(worktree)) => Some(crate::worktrees::hold(&worktree)?),
+    };
     let store = Store::open(&paths.data)?;
     #[cfg(unix)]
     {
@@ -1133,6 +1182,20 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             };
             match command {
                 Some(WorkspacesCommand::Prune) => {
+                    // Deleted threads first: what they left is removed whole, not kept as a
+                    // patch for a conversation nobody can open again.
+                    if config.activity.enabled
+                        && let Ok(activity) = crate::activity::Activity::open(
+                            &paths.data,
+                            config.activity.retention_days,
+                        )
+                    {
+                        let reclaimed =
+                            crate::reclaim::reclaim(&config, &paths.data, &activity, true)?;
+                        for line in reclaimed.lines() {
+                            eprintln!("{line}");
+                        }
+                    }
                     let report = crate::workspaces::prune(&root, &tools)?;
                     // The conversations these belonged to are not known here; their rows are,
                     // by the worktree's path.
@@ -1431,6 +1494,12 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     } else {
                         let id = named(&activity, &id)?;
                         ensure!(activity.delete_thread(&id)?, "no thread {id}");
+                    }
+                    // What the thread had on disk goes with it: its sandbox, its session
+                    // directory, and a worktree no other thread works in.
+                    let reclaimed = crate::reclaim::reclaim(&config, &paths.data, &activity, true)?;
+                    for line in reclaimed.lines() {
+                        eprintln!("{line}");
                     }
                 }
             }

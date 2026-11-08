@@ -624,6 +624,8 @@ src/learning.rs     EWMA, Bandit, prediction calibration
 src/benchmark.rs    Time-series comparison of measured candidates, holdout coefficient search
 src/collaboration/  Steps of independent ACP sessions, team composition from the task, the order of the work (parts in waves, graph.rs), merging parallel implementations, messages, applying to the working tree
 src/workspaces.rs   The worktrees a conversation opens for its writing helpers, how each is closed (merged, a pull request, or a patch) and the sweeps that leave none behind
+src/worktrees.rs    The worktrees Orochi makes for threads to work in (`--worktree`), held while a process works there
+src/reclaim.rs      What deleted threads leave on disk, taken back: session directories, conversation sandboxes, unused thread worktrees
 src/setup.rs        First-run setup: what this machine has, and Node.js, the CLIs, the GitHub CLI and Lima put in under the data directory from checked downloads
 src/quota_terminal.py Read-only quota retrieval from native CLIs
 src/quota_sources.rs CLI quota retrieval, statusline ingestion

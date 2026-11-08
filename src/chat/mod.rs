@@ -619,6 +619,13 @@ pub async fn run_with(
     session.sweep_workspaces("still open");
     session.distill().await;
     session.view.term.restore();
+    // What deleted threads left behind goes when a conversation ends, quietly and without
+    // starting the sandbox VM for it: `threads delete` and `workspaces prune` say what they took.
+    if config.activity.enabled
+        && let Ok(activity) = crate::activity::Activity::open(data, config.activity.retention_days)
+    {
+        let _ = crate::reclaim::reclaim(config, data, &activity, false);
+    }
     code
 }
 
@@ -3139,6 +3146,10 @@ impl Session<'_> {
         let directory = self.env().workspace;
         if crate::sandbox::placement(self.data, self.root, self.config.sandbox.force)?.is_some() {
             let work = crate::workspaces::Workspaces::open(self.root, &directory)?;
+            // Held from the moment it has a sandbox, so a reclaim elsewhere never takes the
+            // sandbox of a conversation that is running. Held by another process means that
+            // process is hosting this very thread, and its hold does the same.
+            let _ = hold_live(&self.env());
             crate::sandbox::ops::session(&self.config.sandbox, self.data, &work)?;
             execution_config.sandbox.session_root = Some(directory);
         }

@@ -1921,8 +1921,8 @@ test("a right-click on a project offers its own verbs, and hiding it keeps its c
   const head = el("projects").querySelectorAll("summary")[0];
   rightClick(head);
   assert.deepEqual(menuLabels(el), [
-    "New thread", "Rename", "Pin", "Where it runs…", "Reveal in Finder", "Copy path",
-    "Show archived conversations", "Hide project", "Delete project",
+    "New thread", "New thread in a worktree", "Rename", "Pin", "Where it runs…", "Reveal in Finder",
+    "Copy path", "Show archived conversations", "Hide project", "Delete project",
   ]);
   menuItem(el, "hide").dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -2680,4 +2680,15 @@ test("settings hold the roster: a checkbox per model, kept the moment it changes
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(calls.some(([name]) => name === "suggest_roster"));
   assert.match(el("notice").render(), /sonnet measured best here/, "why it was proposed is said");
+});
+
+test("a thread started in a worktree asks the core for one in the project clicked", async () => {
+  const { el, calls } = await open();
+  rightClick(el("projects").querySelectorAll("summary")[0]);
+  menuItem(el, "new-worktree").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    calls.find(([name]) => name === "new_thread")?.[1],
+    { root: recorded.sidebar[0].root, worktree: true },
+  );
 });

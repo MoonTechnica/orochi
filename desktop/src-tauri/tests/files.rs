@@ -77,7 +77,7 @@ fn tree() -> Tree {
 fn open(tree: &Tree) -> (Client, String) {
     std::fs::create_dir_all(&tree.data).unwrap();
     let client = Client::open(&tree.data).unwrap();
-    let thread = client.new_thread(&tree.repo).unwrap();
+    let thread = client.new_thread(&tree.repo, false).unwrap();
     (client, thread)
 }
 
@@ -335,7 +335,7 @@ fn outside_a_repository_names_are_still_found_and_content_search_says_it_cannot(
     write(&plain.join("node_modules/pkg/today.js"), "skip\n");
     std::fs::create_dir_all(&data).unwrap();
     let mut client = Client::open(&data).unwrap();
-    let thread = client.new_thread(&plain).unwrap();
+    let thread = client.new_thread(&plain, false).unwrap();
     let hits = client
         .tree_find(&thread, "today", "name", 50)
         .unwrap()
