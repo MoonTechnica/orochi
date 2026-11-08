@@ -1,10 +1,10 @@
 # The Conversation as a Team Channel: Design
 
-Written: 2026-11-09. **Status (2026-11-09): C1–C5 implemented, automated tests only; C6 was run only in part
-([real-validation-20261109-2.md](real-validation-20261109-2.md)): a real Claude lead started a
-member and a real Codex helper reported in its thread, but how real agents keep thread and
-channel apart, mention `@you` only when they need the user, or reuse a member's name is
-unverified.**
+Written: 2026-11-09. **Status (2026-11-09): C1–C5 implemented, automated tests only; C6 was run in part
+([real-validation-20261109-2.md](real-validation-20261109-2.md)): real Claude and Codex leads
+started a member, a real Codex helper reported in its thread, and the person's `@member` note
+continued it with the lead summarising both reports; how real agents keep thread and channel
+apart, whether a helper mentions `@you` by itself, and name reuse by a lead are unverified.**
 §12 lists where the implementation departed from this design and what is not built. Everything in
 §2 ("Where Orochi stands") was read from the code at `956f53a` and is cited.
 

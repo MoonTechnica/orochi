@@ -4819,8 +4819,14 @@ fn helper_seat(
     continues: Option<&str>,
 ) -> Option<crate::activity::SeatRef> {
     recorded.and_then(|recorded| {
-        let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
         let store = recorded.store();
+        // A member continued between turns sits under the turn its last seat did.
+        let turn = match (&recorded.turn, continues) {
+            (Some(turn), _) => turn.clone(),
+            (None, Some(previous)) => store.seat_turn(previous).ok()?,
+            (None, None) => return None,
+        };
+        let thread = recorded.thread.clone()?;
         let seat = store
             .create_seat(&turn, ordinal, name, false, !write, None, None)
             .ok()?;

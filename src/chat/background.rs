@@ -547,7 +547,10 @@ fn prompt(lead: &str, name: &str, title: &str, task: &str, workspace: Option<&Pa
          asked: {title}.\n\nYou can read everything and change nothing: write tools are refused \
          for this session. `{lead}` is not waiting on you turn by turn; your final reply is what \
          it receives, so end with the result — what you found, where, and what it means — in a \
-         few short paragraphs. Use send_message only for something `{lead}` needs before you \
-         finish. Never start another agent or another Orochi.\n\nYour task:\n{task}"
+         few short paragraphs. Use post (it is a reply in your thread) only for something `{lead}` \
+         needs before you finish. When you need an answer from the user, post with @you in the \
+         text and say plainly what you need from them: they are notified, and their reply \
+         reaches you through read_messages. Never start another agent or another Orochi.\n\n\
+         Your task:\n{task}"
     )
 }

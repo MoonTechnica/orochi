@@ -37,3 +37,42 @@ mentioned or continued in its thread, `read_channel` / `read_thread`, the notifi
 a lead reusing a member's name. They are covered only by the automated tests with the fixture
 agent, as `docs/team-channel-design.md` §12 says. The lead's own text in both runs was cut by the
 non-terminal console and is not evidence either way.
+
+## Second session, after the go-ahead to run again (same day)
+
+Three more runs against the same throwaway repository. Claude (haiku) was rate-limited by now
+(`claude unavailable: agent/account is in cooldown`), so two runs with a Claude lead stopped
+before the lead could start a helper or take its report. The third pinned **Codex as the lead**
+(`--agent codex`, `gpt-6-luna`), asked it to start `reader`, and fed a second line after the
+first report: `@reader please also say what a formal version would return`.
+
+### What held
+
+- **A Codex lead started the helper unprompted, summarised its report, and the person's
+  `@reader` note continued the member in its own thread.** The console printed
+  `continuing reader in its thread`, `reader finished · codex · gpt-6-luna · 6s` (against 32 s
+  for the first run: the session was picked up, not started cold) and the lead then answered the
+  question with the new report. The run exited 0.
+- **The note was a note to the member, not a turn for the lead**: a `via='user'` row in
+  `reader`'s thread with `mentions = ["reader"]`.
+
+### What the runs found, and what was fixed
+
+- **A continuation between turns left no seat behind.** `helper_seat` needed a running turn, so
+  a member continued from the idle prompt ran but had no `seats` row: no second seat, no
+  `continues`, nothing for its report. A continuation now sits under the turn of the member's
+  last seat (`Activity::seat_turn`); `tests/test_chat_terminal.py` checks the seat count and
+  `continues` after one.
+- **An assignment that told a member to "mention @you" counted as a mention of the user**, so
+  `v_mentions` listed the lead's instruction as unseen mail for the person. Assignments
+  (`via='handoff'`) are excluded from `v_mentions`; `tests/mailbox.rs` pins it.
+- **The helper's own instructions said "use send_message only…"** and never named `post` or
+  `@you`; they now do (`chat/background.rs::prompt`).
+
+### Still unverified
+
+The helper (Codex) did not `post` with `@you` in any run, even when the lead's task asked it to;
+the lead asked the user in its own text instead. With the corrected helper instructions it was
+run once (the Codex-lead run above), and still did not. So how a real helper decides to mention
+`@you`, `read_channel` / `read_thread`, a lead reusing a member's name by itself, and the
+notification path are unverified outside the automated tests.

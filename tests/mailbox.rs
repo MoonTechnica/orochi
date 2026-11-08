@@ -1997,3 +1997,25 @@ fn the_person_mentions_a_member_and_it_reaches_that_member_wherever_it_was_writt
         .unwrap();
     assert_eq!(ended.thread.as_deref(), Some("gone"));
 }
+
+#[test]
+fn an_assignment_that_tells_a_member_to_ask_the_user_is_not_a_question_to_the_user() {
+    let team = team();
+    team.mailbox
+        .assign(
+            "room",
+            Some(&team.thread),
+            (&team.lead, "lead"),
+            "implementer",
+            "Read greet.py, then mention @you and ask which style they prefer",
+        )
+        .unwrap();
+    assert!(
+        team.activity.mentions(None).unwrap().is_empty(),
+        "an instruction is not a mention of the person"
+    );
+    team.mailbox
+        .post(&team.helper, "@you formal or casual?", None, true)
+        .unwrap();
+    assert_eq!(team.activity.mentions(None).unwrap().len(), 1);
+}

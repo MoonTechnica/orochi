@@ -2058,6 +2058,15 @@ impl Activity {
         rows.map(|row| Ok(row?)).collect()
     }
 
+    /// The turn a seat sits under, for a member continued between turns.
+    pub fn seat_turn(&self, seat: &str) -> Result<String> {
+        Ok(self
+            .connection
+            .query_row("SELECT turn_id FROM seats WHERE id=?1", [seat], |r| {
+                r.get(0)
+            })?)
+    }
+
     /// What a seat was for and whether it wrote, so a continuation asks for the same.
     pub fn seat_title_and_write(&self, seat: &str) -> Result<(String, bool)> {
         Ok(self.connection.query_row(
@@ -3458,7 +3467,8 @@ SELECT m.id AS message_id, m.thread_id, t.project_id, t.title AS thread_title, p
 FROM messages m
 JOIN threads t ON t.id=m.thread_id
 JOIN projects p ON p.id=t.project_id
-WHERE m.mentions IS NOT NULL AND m.sender<>'user'
+-- An assignment is an instruction to a member, even where it says to ask the user.
+WHERE m.mentions IS NOT NULL AND m.sender<>'user' AND m.via<>'handoff'
   AND EXISTS (SELECT 1 FROM json_each(m.mentions) j WHERE lower(j.value)='you')
   AND m.id > COALESCE((SELECT u.seen_mention FROM ui_state u WHERE u.thread_id=m.thread_id),0);
 

@@ -591,6 +591,18 @@ class BackgroundAgents(unittest.TestCase):
             lead = [p for p in c.prompts() if "The user told `spec` directly" in p]
             self.assertEqual(len(lead), 1, [p[-200:] for p in c.prompts()])
             self.assertNotIn("A new request in your thread", lead[0])
+            # Between turns, and still one member with a second seat that continues the first.
+            import sqlite3
+            db = sqlite3.connect(str(c.dir / "data" / "activity.sqlite3"))
+            self.assertEqual(
+                db.execute("SELECT seats FROM v_members WHERE name='spec'").fetchall(), [(2,)]
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM seats WHERE member='spec' AND continues IS NOT NULL"
+                ).fetchone(),
+                (1,),
+            )
         finally:
             c.close()
 
