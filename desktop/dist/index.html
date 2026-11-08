@@ -35,9 +35,12 @@
       <span id="thread-where"></span>
       <span id="thread-title">Nothing selected</span>
       <span id="thread-status"></span>
+      <button type="button" id="threads-ctl" aria-haspopup="menu" aria-expanded="false" hidden>Threads (0)</button>
+      <div id="threads-menu" role="menu" hidden></div>
     </header>
     <div id="timeline" role="log" aria-live="polite"></div>
     <form id="composer" autocomplete="off">
+      <div id="mention-list" class="mention-list" role="listbox" hidden></div>
       <textarea id="message" rows="1" placeholder="Message…" aria-label="Message"></textarea>
       <div id="composer-row">
         <div id="folder-picker">
@@ -60,6 +63,21 @@
 
   <aside id="side">
     <div class="resizer" id="side-resizer" role="separator" aria-orientation="vertical" aria-label="Resize the side pane" tabindex="0"></div>
+    <section id="member-panel" hidden>
+      <header id="member-head">
+        <span id="member-title"></span>
+        <button type="button" id="member-close" aria-label="Close">×</button>
+      </header>
+      <div id="member-body"></div>
+      <form id="member-form" autocomplete="off">
+        <div id="member-mentions" class="mention-list" role="listbox" hidden></div>
+        <textarea id="member-reply" rows="1" placeholder="Reply in thread…" aria-label="Reply in thread"></textarea>
+        <div id="member-row">
+          <label id="member-also"><input type="checkbox" id="member-also-box"> <span id="member-also-label">also send to the channel</span></label>
+          <button type="submit" id="member-send">Reply</button>
+        </div>
+      </form>
+    </section>
     <div id="tabs" role="tablist">
       <button class="tab" data-pane="team" role="tab" aria-selected="true">Team</button>
       <button class="tab" data-pane="work" role="tab" aria-selected="false">Work</button>

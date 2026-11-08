@@ -43,7 +43,10 @@ When an agent session starts (ACP `session/new`), Orochi passes it the stdio MCP
 |---|---|
 | `list_peers` | Name, worktree, branch, route (Agent / model) and status of running peers. Your own entry has `you: true` |
 | `send_message` | Send to a peer name (case-insensitive) or to `all`. The body is limited to 8 KiB |
-| `read_messages` | Fetch up to 20 unread messages addressed to you or to everyone, and mark them read. `wait_seconds` (up to 120 seconds) waits for new arrivals |
+| `post` | Say something in the conversation's team channel, or reply in a member's thread (`thread`); `@name`, `@you` and `@channel` in the text are mentions, and a mention reaches whoever it names wherever it was written. A helper's post is a reply in its own thread unless `also_channel` is set. See [team-channel-design.md](team-channel-design.md) |
+| `read_channel` | Look at what was posted to the channel (not what was said in threads) without receiving it; nothing is marked read |
+| `read_thread` | Read one member's thread, for an agent mentioned into a conversation it was not in |
+| `read_messages` | Fetch up to 20 unread messages addressed to you or to everyone, and every post that mentions you, and mark them read. `wait_seconds` (up to 120 seconds) waits for new arrivals |
 | `set_status` | Tell others what you are doing, in one line (up to 200 bytes) |
 | `start_agent` | Lead of a console turn only: ask Orochi for a helper, read-only or (`write: true`) in a Git worktree of its own |
 | `finish_workspace` | Lead only: close a helper's worktree — `merge` into the working tree, `pr` on a pushed branch, or `discard`; the worktree goes in every case ([session workspaces](session-workspaces.md)) |

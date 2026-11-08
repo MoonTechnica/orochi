@@ -2513,6 +2513,102 @@ fn task_text_reaches_the_activity_store_and_never_telemetry() {
     );
 }
 
+/// The channel from a shell: a member's thread is read with `--member`, a message that mentions
+/// a member (or is sent `--thread`) is a note to that member and not a turn for the lead, and
+/// what an agent said to the user with `@you` is listed until the user has seen it.
+#[test]
+fn threads_reads_a_members_thread_and_sends_to_it_and_lists_what_mentions_the_user() {
+    let workspace = Workspace::new();
+    success(&workspace.run(&["Add a helper to src/lib.rs"]));
+    let listing: serde_json::Value =
+        serde_json::from_slice(&workspace.run(&["threads", "--json"]).stdout).unwrap();
+    let id = listing["projects"][0]["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let data = workspace.dir.path().join("data");
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let seat: String = activity
+        .connection()
+        .query_row("SELECT id FROM seats LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    activity.seat_member(&seat, "implementer", None).unwrap();
+    let project = activity.thread_project(&id).unwrap();
+
+    success(&workspace.run(&["threads", "send", &id, "@implementer redo the second test"]));
+    success(&workspace.run(&[
+        "threads",
+        "send",
+        &id,
+        "and keep it small",
+        "--thread",
+        "implementer",
+    ]));
+    let notes: Vec<String> = activity
+        .unheard_notes(&id)
+        .unwrap()
+        .into_iter()
+        .map(|(_, member, body)| format!("{member}: {body}"))
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            "implementer: @implementer redo the second test",
+            "implementer: and keep it small"
+        ],
+        "a mention or --thread reaches the member, and nobody queued a turn for the lead"
+    );
+    let turns: i64 = activity
+        .connection()
+        .query_row("SELECT count(*) FROM turns", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(turns, 1, "only the first task is a turn");
+
+    activity
+        .connection()
+        .execute(
+            "INSERT INTO messages (project_id, thread_id, sender, sender_name, recipient,
+                recipient_name, via, body, sent_at, member, mentions)
+             VALUES (?1,?2,'p','implementer','-','you','mailbox','@you apply the trial?',
+                     strftime('%s','now'),'implementer','[\"you\"]')",
+            [&project, &id],
+        )
+        .unwrap();
+    let mentions = workspace.run(&["threads", "mentions", "--json"]);
+    success(&mentions);
+    let mentions: serde_json::Value = serde_json::from_slice(&mentions.stdout).unwrap();
+    assert_eq!(mentions[0]["who"], "implementer");
+    assert_eq!(mentions[0]["text"], "@you apply the trial?");
+
+    let shown = workspace.run(&["threads", "show", &id, "--member", "implementer", "--json"]);
+    success(&shown);
+    let lines: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let texts: Vec<&str> = lines
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["text"].as_str().unwrap())
+        .collect();
+    assert!(
+        texts.contains(&"@you apply the trial?") && texts.contains(&"and keep it small"),
+        "the thread holds what was said in it: {texts:?}"
+    );
+    let after = workspace.run(&["threads", "mentions", "--json"]);
+    let after: serde_json::Value = serde_json::from_slice(&after.stdout).unwrap();
+    assert_eq!(
+        after.as_array().map(Vec::len),
+        Some(0),
+        "reading them is seeing them"
+    );
+    assert!(
+        !workspace
+            .run(&["threads", "show", &id, "--member", "nobody"])
+            .status
+            .success(),
+        "a member that is not there has no thread"
+    );
+}
+
 /// `orochi threads` reads the same views the app does. It is how P0 is tested without a GUI,
 /// and the check that keeps "the app is a view over SQLite" honest: a screen that cannot be
 /// produced here means a view is missing something.

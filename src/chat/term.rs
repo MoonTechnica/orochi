@@ -245,6 +245,10 @@ pub struct Term {
     pub suggestions: Vec<String>,
     /// Which of `suggestions` Tab and Enter would take.
     pub selected: usize,
+    /// The members `@` can mention, as (name, what to show beside it), and which of them the
+    /// rows in `suggestions` are while a mention is being typed; empty while a command is.
+    pub mention_names: Vec<(String, String)>,
+    pub mention_pick: Vec<String>,
     columns: usize,
     rows: usize,
     pinned: usize,
@@ -270,6 +274,8 @@ impl Term {
             overlay: None,
             suggestions: vec![],
             selected: 0,
+            mention_names: vec![],
+            mention_pick: vec![],
             columns: 80,
             rows: 24,
             pinned: 2,

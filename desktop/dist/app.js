@@ -43,6 +43,16 @@ const state = {
   expanded: new Map(),
   statuses: null,
   asked: new Set(),
+  // The channel: the conversation in view as the core last returned it, its members and the
+  // room, the thread panel that is open (a member's name), and the mentions of the person
+  // already announced.
+  view: null,
+  members: [],
+  said: [],
+  member: null,
+  before: null,
+  mentions: [],
+  mentionsSeen: new Set(),
   sound: remembered("sound") === true,
   // Archived conversations are kept out of the list until asked for; the asking is this
   // window's own, like a folded project.
@@ -100,6 +110,8 @@ const LABELS = {
   send: "Send",
   interrupt: "Stop",
   "say-hint": "Delivered when the agent next checks.",
+  "member-also-label": "also send to the channel",
+  "member-send": "Reply",
 };
 
 /// The window's own words. It says them in the language the machine is set to, because a
@@ -456,6 +468,32 @@ const WORDS = {
     "Nothing is in it yet. The folder and its sandbox are kept.":
       "まだ会話はありません。フォルダとサンドボックスは残ります。",
     archived: "アーカイブ済み",
+    asking: "確認待ち",
+    "patch kept": "パッチとして保持",
+    "trial clean": "試行は問題なし",
+    reply: "件の返信",
+    replies: "件の返信",
+    "last reply": "最終返信",
+    "asking you": "あなたに確認中",
+    "mentioned you": "あなたにメンション",
+    "worktree open": "worktree が開いたまま",
+    "trial not applied": "試行が未適用",
+    "from a message": "メッセージから",
+    "from the merge": "マージから",
+    "reports from": "報告:",
+    "the helpers": "ヘルパー",
+    "continued at": "再開",
+    report: "報告",
+    "Nothing said in this thread yet.": "このスレッドにはまだ発言がありません。",
+    Threads: "スレッド",
+    "No thread is running or waiting.": "実行中・対応待ちのスレッドはありません。",
+    lead: "リード",
+    "everyone in the conversation": "会話の全員",
+    "mention to continue": "メンションで再開",
+    "{who} mentioned you": "{who} があなたにメンションしました",
+    "also send to the channel": "チャンネルにも送信",
+    Reply: "返信",
+    "Reply in thread…": "スレッドに返信…",
   },
 };
 
@@ -747,6 +785,12 @@ function place(project, cwd, threads) {
     const mark = drawn(MARKS[thread.status] || "circle", "state");
     mark.setAttribute("title", t(STATES[thread.status] || thread.status));
     row.append(mark);
+    // Something the person was mentioned in and has not seen: above the unread marker.
+    if (thread.mentions > 0) {
+      const at = text("span", "at-mark", "@");
+      at.setAttribute("title", t("mentioned you"));
+      row.append(at);
+    }
     const team = members(thread);
     // One agent is the conversation's own mark; several are listed under it instead, and the
     // row keeps its width for the title.
@@ -1203,13 +1247,23 @@ function drawTimeline(thread, said = []) {
     if (notes.length && turn) turn.append(aside(notes));
     notes = [];
   };
-  // One conversation. What the agents say to each other belongs in it, in the order it was
-  // said — a table where half the talk happens in another column is two rooms, not one.
+  // The channel: the person, the lead and what members posted to it. What a member and the lead
+  // say about the work is a reply in that member's thread, which the side pane opens; only the
+  // bar under the assignment shows it is there.
   const spoken = said
     .filter((line) => line.kind === "message")
     .map((line) => ({ ...line, kind: "said", at: line.at }));
+  const handedOff = new Set(
+    spoken.filter((l) => l.via === "handoff" && l.member).map((l) => lowered(l.member)),
+  );
   // Who each peer is, so the one it is speaking to is named the same way it is.
   const roles = new Map(said.map((line) => [line.who, line.role]).filter(([, r]) => r));
+  const barred = new Set();
+  const bar = (name) => {
+    if (barred.has(lowered(name))) return;
+    barred.add(lowered(name));
+    turn.append(threadBar(thread, name, said));
+  };
   const stream = [...thread.items, ...spoken].sort(
     (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
   );
@@ -1217,45 +1271,68 @@ function drawTimeline(thread, said = []) {
   const turns = new Map();
   for (const item of stream) {
     if (item.kind === "said") {
+      const key = item.member ? lowered(item.member) : null;
+      // A reply in a thread is the thread's. A member that was never handed anything has no
+      // parent post, so its bar stands where it first appears.
+      if (key && item.via !== "handoff" && !item.broadcast) {
+        if (!handedOff.has(key) && !barred.has(key)) {
+          flush();
+          if (!turn) {
+            turn = text("div", "turn loose");
+            host.append(turn);
+          }
+          bar(item.member);
+          voice = null;
+        }
+        continue;
+      }
       flush();
       if (!turn) {
         turn = text("div", "turn loose");
         host.append(turn);
       }
       const who = named(item);
-      const whom =
-        !item.whom || item.whom === "all"
-          ? t("everyone")
-          : `to ${roles.get(item.whom) || item.whom}`;
+      // Who it was for, in words: a post to the channel that names no one is for everyone.
+      const to = item.via === "handoff" ? null
+        : !item.whom || item.whom === "all" ? t("everyone") : `to ${roles.get(item.whom) || item.whom}`;
       turn.append(
         post(
           {
-            who, to: whom, model: item.model, at: item.at, text: item.text, mine: item.via === "user",
-            agent: item.agent, provider: item.provider,
+            who, to, model: item.model, at: item.at, text: item.text, mine: item.via === "user",
+            agent: item.agent, provider: item.provider, mentions: item.mentions,
           },
-          voice === who,
+          voice === who && item.via !== "handoff",
         ),
       );
       voice = who;
+      if (key && (item.via === "handoff" || !handedOff.has(key))) {
+        bar(item.member);
+        voice = null;
+      }
       continue;
     }
-    // A read-only seat's own working notes stay out; what it had to say it said in the room.
-    if (item.lane !== null && item.lane !== undefined && item.lane > 0) continue;
+    // A member's own working notes are its thread's; what it had to say reached the channel
+    // as a post or stands in its thread.
+    if (item.member || (item.lane !== null && item.lane !== undefined && item.lane > 0)) continue;
     if (item.kind === "user_message") {
       flush();
       turn = text("div", "turn");
       turn.dataset.turn = item.turn;
       turns.set(item.turn, turn);
-      // A turn Orochi wrote to hand the helpers' results back is theirs, not the person's.
-      const helpers = item.turn_origin === "background";
+      // A turn Orochi wrote to hand the helpers' results back is not the person's: one line
+      // naming whose reports it carries, each a way into that thread.
+      const origin = item.turn_origin;
+      if (origin === "background" || origin === "merge" || origin === "mail") {
+        turn.append(reportsLine(origin, item.text, thread, said));
+        host.append(turn);
+        voice = null;
+        continue;
+      }
       turn.append(
-        post(
-          { who: helpers ? t("from the helpers") : "you", at: item.at, text: item.text, mine: !helpers },
-          false,
-        ),
+        post({ who: "you", at: item.at, text: item.text, mine: true }, false),
       );
       host.append(turn);
-      voice = helpers ? null : "you";
+      voice = "you";
       continue;
     }
     if (!turn) {
@@ -1527,8 +1604,11 @@ function post(voice, run) {
     node.append(who);
   }
   const body = text("div", "body");
+  chipped = new Set((voice.mentions || []).map(lowered));
   body.append(markdown(voice.text));
+  chipped = new Set();
   node.append(body);
+  if ((voice.mentions || []).includes("you")) node.dataset.mentionsYou = "true";
   return node;
 }
 
@@ -1568,6 +1648,7 @@ function askCard(prompt) {
 
 async function answer(prompt, option) {
   await call("answer", { prompt, option });
+  if (state.thread) await call("see_mentions", { thread: state.thread });
   await refresh(true);
 }
 
@@ -2500,7 +2581,28 @@ async function notify() {
       if (th.status === "failed") said.push([t("Failed"), th.title || t("New conversation")]);
     }
   }
-  await call("badge", { count: state.prompts.length });
+  // A mention is addressed to the person, so it is announced whether or not the window is in
+  // front, unless it is in the conversation being looked at: there it is simply seen.
+  const mentioned = [];
+  for (const m of state.mentions) {
+    if (state.mentionsSeen.has(m.message_id)) continue;
+    state.mentionsSeen.add(m.message_id);
+    const inView = m.thread_id === state.thread && !away;
+    if (!first && !inView) {
+      mentioned.push([
+        t("{who} mentioned you").replace("{who}", m.member || m.who),
+        String(m.text || "").split("\n").find((line) => line.trim()) || "",
+      ]);
+    }
+  }
+  if (!away && state.thread && state.mentions.some((m) => m.thread_id === state.thread)) {
+    await call("see_mentions", { thread: state.thread });
+    state.mentions = state.mentions.filter((m) => m.thread_id !== state.thread);
+  }
+  await call("badge", { count: state.prompts.length + state.mentions.length });
+  for (const [title, body] of mentioned) {
+    await call("notify", { title, body, sound: state.sound });
+  }
   if (!away) return;
   for (const [title, body] of said) {
     await call("notify", { title, body, sound: state.sound });
@@ -2738,13 +2840,32 @@ function list(lines, start, host) {
   return index;
 }
 
+/// The names a post being drawn mentions: only a sent post shows them as chips, a draft stays
+/// the plain text it is typed as.
+let chipped = new Set();
+
+/// Text with the mentions of the post in hand drawn as chips.
+function plain(host, value) {
+  if (!chipped.size) return host.append(document.createTextNode(value));
+  let at = 0;
+  for (const match of value.matchAll(/(?<![\w@])@([\w][\w.-]*)/g)) {
+    if (!chipped.has(lowered(match[1]))) continue;
+    if (match.index > at) host.append(document.createTextNode(value.slice(at, match.index)));
+    const chip = text("span", "mention-chip", `@${match[1]}`);
+    if (lowered(match[1]) === "you") chip.dataset.you = "true";
+    host.append(chip);
+    at = match.index + match[0].length;
+  }
+  if (at < value.length) host.append(document.createTextNode(value.slice(at)));
+}
+
 /// Code, links, images, bold, italic and strikethrough within one line, as DOM elements.
 const INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|!?\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
 function inline(line, host) {
   let at = 0;
   for (const match of line.matchAll(INLINE)) {
-    if (match.index > at) host.append(document.createTextNode(line.slice(at, match.index)));
+    if (match.index > at) plain(host, line.slice(at, match.index));
     at = match.index + match[0].length;
     if (match[1]) {
       host.append(text("code", null, match[2].trim()));
@@ -2766,7 +2887,7 @@ function inline(line, host) {
       host.append(link(match[10], match[10]));
     }
   }
-  if (at < line.length) host.append(document.createTextNode(line.slice(at)));
+  if (at < line.length) plain(host, line.slice(at));
 }
 
 // Keep a few bounded file previews briefly, to avoid disk reads on every streamed token.
@@ -3241,6 +3362,432 @@ for (const button of document.querySelectorAll(".scope")) {
   });
 }
 
+// The channel ---------------------------------------------------------------
+// A conversation reads as a team channel (docs/team-channel-design.md): the body holds the
+// person's messages, the lead's replies, one assignment per member with a bar under it, and
+// what members posted to everyone. What a member and the lead say about the work is a reply in
+// that member's thread, which opens in the side pane in place of the tabs until it is closed.
+const lowered = (value) => String(value ?? "").toLowerCase();
+
+/// The lead as the channel names it: by its role, with the route it last ran on.
+function leadOf(thread) {
+  const row = (thread.thread.agents || []).find((a) => a.lead) || {};
+  const seat = (thread.seats || []).find((s) => s.lead);
+  return {
+    name: "lead",
+    agent: row.agent || seat?.agent || thread.thread.agent || null,
+    provider: row.provider || thread.thread.provider || null,
+    model: row.model || seat?.model || "",
+  };
+}
+
+const memberOf = (name) => (state.members || []).find((m) => lowered(m.name) === lowered(name));
+
+/// What waits on the person, in a few words.
+const NEEDS = {
+  asking: "asking you",
+  mention: "mentioned you",
+  worktree: "worktree open",
+  trial: "trial not applied",
+};
+
+/// Where a member stands, as its bar says it: working with what it is doing, asking, reported,
+/// what became of its worktree, stopped or failed.
+function memberState(m) {
+  if (!m) return { tone: "muted", label: t("done") };
+  const working = m.live || ["working", "choosing", "starting"].includes(m.state);
+  if (m.state === "asking") return { tone: "ask", label: t("asking") };
+  if (working) {
+    const doing = (m.doing || "").split("\n")[0];
+    return { tone: "live", label: doing ? `${t("working")} — ${doing}` : t("working") };
+  }
+  if (m.state === "failed") return { tone: "danger", label: t("failed") };
+  if (["interrupted", "cancelled", "stopped"].includes(m.state)) return { tone: "warn", label: t("stopped") };
+  const ws = m.workspace_state;
+  if (ws === "applied" || ws === "merged") return { tone: "ok", label: t("applied") };
+  if (ws === "patch") return { tone: "warn", label: t("patch kept") };
+  if (ws === "pr") return { tone: "ok", label: t("pull request") };
+  if (m.trial_state === "clean" && ws === "open") return { tone: "ask", label: t("trial clean") };
+  if (m.reported) return { tone: "muted", label: t("reported") };
+  return { tone: "muted", label: t("done") };
+}
+
+/// The bar under a member's assignment: who spoke in its thread, how many replies, when the
+/// last one came and where the member stands. Marked where something waits on the person.
+function threadBar(thread, name, said = state.said || []) {
+  const key = lowered(name);
+  const m = memberOf(name);
+  const rows = said.filter((l) => l.kind === "message" && lowered(l.member) === key && l.via !== "handoff");
+  const replies = m ? m.replies : rows.length;
+  const last = m?.last_reply_at ? m.last_reply_at * 1000 : rows.at(-1)?.at ?? null;
+  const node = text("button", "thread-bar");
+  node.type = "button";
+  node.dataset.member = name;
+  if (m?.needs) node.dataset.needs = m.needs;
+  const faces = text("span", "stack");
+  faces.append(face(m?.agent, m?.provider));
+  const seen = new Set([`${m?.agent}/${m?.provider}`]);
+  for (const row of rows) {
+    const id = `${row.agent}/${row.provider}`;
+    if (!row.agent || seen.has(id)) continue;
+    seen.add(id);
+    faces.append(face(row.agent, row.provider));
+  }
+  node.append(faces);
+  node.append(text("span", "name", name));
+  node.append(text("span", "replies", `${replies} ${t(replies === 1 ? "reply" : "replies")}`));
+  if (last) node.append(text("span", "last", `${t("last reply")} ${since(last)}`));
+  const status = memberState(m);
+  const pill = text("span", "pill", status.label);
+  pill.dataset.tone = status.tone;
+  node.append(pill);
+  if (m?.needs) node.append(text("span", "needs", t(NEEDS[m.needs] || m.needs)));
+  node.addEventListener("click", () => showMember(name));
+  return node;
+}
+
+/// What a completion turn is, in one line: whose reports it carries, each a way into that
+/// member's thread. The turn's text is Orochi's own, so it is never drawn as a post.
+function reportsLine(origin, body, thread, said) {
+  const line = text("div", "reports-line");
+  const names = new Map();
+  for (const m of state.members || []) names.set(lowered(m.name), m.name);
+  for (const l of said) if (l.via === "handoff" && l.member) names.set(lowered(l.member), l.member);
+  const named_ = [...names.entries()]
+    .filter(([key]) => new RegExp(`(^|[^\\w])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\w])`, "i").test(body || ""))
+    .map(([, name]) => name);
+  const head = origin === "merge" ? t("from the merge") : origin === "mail" ? t("from a message") : t("reports from");
+  line.append(text("span", "lead-in", head));
+  if (!named_.length && origin === "background") line.append(text("span", null, ` ${t("the helpers")}`));
+  named_.forEach((name, index) => {
+    line.append(text("span", null, index ? ", " : " "));
+    const link = text("button", "link", name);
+    link.type = "button";
+    link.addEventListener("click", () => showMember(name));
+    line.append(link);
+  });
+  return line;
+}
+
+/// The thread panel ----------------------------------------------------------
+function paneBefore() {
+  const open = [...document.querySelectorAll(".tab")].find((tab) => tab.getAttribute("aria-selected") === "true");
+  return open?.dataset.pane || "team";
+}
+
+async function showMember(name) {
+  if (!state.member) state.before = paneBefore();
+  state.member = name;
+  el("tabs").hidden = true;
+  for (const tab of document.querySelectorAll(".tab")) el(`pane-${tab.dataset.pane}`).hidden = true;
+  el("member-panel").hidden = false;
+  el("threads-menu").hidden = true;
+  el("threads-ctl").setAttribute("aria-expanded", "false");
+  if (state.view) await drawMember(state.view);
+}
+
+function closeMember() {
+  if (!state.member) return;
+  state.member = null;
+  el("member-panel").hidden = true;
+  el("tabs").hidden = false;
+  closeMentions();
+  showPane(state.before || "team", { draw: false });
+}
+el("member-close").addEventListener("click", closeMember);
+
+async function drawMember(thread) {
+  const name = state.member;
+  if (!name) return;
+  const key = lowered(name);
+  const mine = (row) => lowered(row.member) === key;
+  const m = memberOf(name);
+  const head = el("member-title");
+  head.replaceChildren();
+  head.append(face(m?.agent, m?.provider));
+  head.append(text("span", "name", name));
+  const route = [m?.agent, m?.model].filter(Boolean).join(" · ");
+  if (route) head.append(text("span", "route-name", route));
+  const status = memberState(m);
+  const pill = text("span", "pill", status.label);
+  pill.dataset.tone = status.tone;
+  head.append(pill);
+
+  const said = (state.said || []).filter((l) => l.kind === "message");
+  const team = (await call("team", { thread: thread.thread.id })) || {};
+  // Another thread may have been opened, or this one closed, while the team was read.
+  if (state.member !== name) return;
+  const host = el("member-body");
+  const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
+  host.replaceChildren();
+
+  // The parent: what the lead asked of the member.
+  const parent = said.find((l) => l.via === "handoff" && mine(l));
+  const lead = leadOf(thread);
+  const top = text("div", "thread-parent");
+  if (parent) {
+    top.append(post({ who: named(parent), at: parent.at, text: parent.text, agent: parent.agent || lead.agent, provider: parent.provider || lead.provider, mentions: parent.mentions }, false));
+  } else if (m?.title) {
+    top.append(post({ who: lead.name, text: `@${name} ${m.title}`, agent: lead.agent, provider: lead.provider }, false));
+  }
+  host.append(top);
+
+  // The thread: replies and the member's seats' work in the order they happened.
+  const lines = [
+    ...said.filter((l) => mine(l) && l.via !== "handoff").map((l) => ({ ...l, k: "said" })),
+    ...thread.items.filter((i) => mine(i)).map((i) => ({ ...i, k: "item" })),
+  ].sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0));
+  const items = lines.filter((l) => l.k === "item");
+  const lastMessage = new Set();
+  // The last thing each seat said is its report: the one before the next seat begins.
+  items.forEach((item, index) => {
+    if (item.kind !== "agent_message") return;
+    const after = items.slice(index + 1).find((x) => x.kind === "route" || x.kind === "agent_message");
+    if (!after || after.kind === "route") lastMessage.add(item);
+  });
+  const body = text("div", "thread-lines");
+  let pending = [];
+  let routed = false;
+  let voice = null;
+  const flush = () => {
+    if (pending.length) body.append(work(pending));
+    pending = [];
+  };
+  for (const line of lines) {
+    if (line.k === "said") {
+      flush();
+      const who = named(line);
+      body.append(post({ who, at: line.at, text: line.text, mine: line.via === "user", agent: line.agent, provider: line.provider, model: line.model, mentions: line.mentions }, voice === who));
+      voice = who;
+      continue;
+    }
+    if (line.kind === "thought" || line.kind === "tool_call") {
+      pending.push(line);
+      continue;
+    }
+    flush();
+    if (line.kind === "route") {
+      // A later seat of the same member: the thread goes on where the earlier one stopped.
+      if (routed) {
+        const d = line.data || {};
+        const where = [d.agent, d.model, d.reasoning].filter(Boolean).join(" · ");
+        const divider = text("div", "thread-divider", `${t("continued at")} ${hhmm(line.at)}${where ? ` · ${where}` : ""}`);
+        body.append(divider);
+        voice = null;
+      }
+      routed = true;
+    } else if (line.kind === "agent_message") {
+      const who = line.role || name;
+      const node = post({ who, at: line.at, text: line.text, agent: line.agent, provider: line.provider, model: line.model }, voice === who);
+      if (lastMessage.has(line)) {
+        node.dataset.report = "true";
+        node.append(text("div", "report-tag", t("report")));
+      }
+      body.append(node);
+      voice = who;
+    } else if (line.kind === "checks") {
+      body.append(checks(line, thread.seats));
+    }
+  }
+  flush();
+  if (!lines.length) body.append(text("p", "empty", t("Nothing said in this thread yet.")));
+  host.append(body);
+
+  // Its worktree and trials, as the Work pane draws one lane.
+  const worktrees = (team.workspaces || []).filter((w) => lowered(w.name) === key);
+  if (worktrees.length) {
+    const trials = (team.merges || []).filter((x) => lowered(x.workspace) === key);
+    const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply" && lowered(p.workspace) === key);
+    const { events } = workEvents(thread, worktrees, trials, asking);
+    const graph = text("div", "work-graph");
+    drawEvents(graph, thread, events.filter((e) => e.kind !== "turn"), null, worktrees);
+    host.append(graph);
+  }
+  if (stick) host.scrollTop = host.scrollHeight;
+}
+
+el("member-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const box = el("member-reply");
+  const value = box.value.trim();
+  if (!value || !state.thread || !state.member) return;
+  const member = memberOf(state.member)?.name || state.member;
+  const also = el("member-also-box").checked;
+  box.value = "";
+  box.style.height = "auto";
+  closeMentions();
+  await call("say", { thread: state.thread, to: null, text: value, member });
+  if (also) {
+    await call("send", { thread: state.thread, text: `${member}: ${value}` });
+    await call("ensure_host", { thread: state.thread });
+  }
+  await call("see_mentions", { thread: state.thread });
+  await refresh(true);
+});
+el("member-reply").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    el("member-form").requestSubmit();
+  }
+});
+el("member-reply").addEventListener("input", (event) => {
+  event.target.style.height = "auto";
+  event.target.style.height = `${event.target.scrollHeight}px`;
+});
+
+/// Threads (N) --------------------------------------------------------------
+/// The members that are working or have something waiting on the person.
+const openThreads = () => (state.members || []).filter((m) => m.live || m.needs);
+
+function drawThreadsControl() {
+  const ctl = el("threads-ctl");
+  const menu = el("threads-menu");
+  const list = openThreads();
+  ctl.hidden = !(state.members || []).length;
+  ctl.textContent = `${t("Threads")} (${list.length})`;
+  ctl.dataset.needs = String(list.some((m) => m.needs));
+  menu.replaceChildren();
+  if (!list.length) menu.append(text("p", "empty", t("No thread is running or waiting.")));
+  for (const m of list) {
+    const row = text("button", "threads-row");
+    row.type = "button";
+    row.dataset.member = m.name;
+    if (m.needs) row.dataset.needs = m.needs;
+    row.append(face(m.agent, m.provider));
+    row.append(text("span", "name", m.name));
+    row.append(text("span", "state", memberState(m).label));
+    if (m.needs) row.append(text("span", "needs", t(NEEDS[m.needs] || m.needs)));
+    row.addEventListener("click", () => showMember(m.name));
+    menu.append(row);
+  }
+}
+el("threads-ctl").addEventListener("click", (event) => {
+  event.stopPropagation?.();
+  const menu = el("threads-menu");
+  menu.hidden = !menu.hidden;
+  el("threads-ctl").setAttribute("aria-expanded", String(!menu.hidden));
+});
+document.addEventListener("click", (event) => {
+  if (!el("thread-head").contains?.(event.target)) {
+    el("threads-menu").hidden = true;
+    el("threads-ctl").setAttribute("aria-expanded", "false");
+  }
+});
+
+/// @ -------------------------------------------------------------------------
+/// Who typing `@` offers: the lead, every member of this conversation, and `@channel` last.
+/// Running members first, then the most recently active; what follows the `@` is a prefix of
+/// the name, the agent or the role.
+function mentionCandidates(query) {
+  const thread = state.view;
+  const q = lowered(query);
+  const last = (m) => Math.max((m.last_reply_at || 0) * 1000, m.ended_at || 0, m.started_at || 0);
+  const all = (state.members || []).map((m) => ({
+    name: m.name, agent: m.agent, provider: m.provider, model: m.model, role: m.role,
+    live: m.live, at: last(m), state: memberState(m).label, finished: !m.live && m.state !== "asking",
+  }));
+  if (thread) {
+    const lead = leadOf(thread);
+    const at = Math.max(0, ...thread.items.filter((i) => !i.member).map((i) => i.at || 0));
+    all.push({ name: lead.name, agent: lead.agent, provider: lead.provider, model: lead.model, role: "lead", live: false, at, state: thread.thread.status === "working" ? t("working") : t("lead"), finished: false });
+  }
+  const hits = all
+    .filter((c) => [c.name, c.agent, c.role].some((word) => lowered(word).startsWith(q)))
+    .sort((a, b) => Number(b.live) - Number(a.live) || b.at - a.at);
+  if ("channel".startsWith(q)) hits.push({ name: "channel", channel: true, state: t("everyone in the conversation") });
+  return hits;
+}
+
+const picker = { box: null, list: null, items: [], index: 0, start: 0 };
+
+function closeMentions() {
+  if (picker.list) picker.list.hidden = true;
+  picker.box = null;
+  picker.items = [];
+}
+
+/// The `@word` being typed at the caret, if that is what is being typed.
+function mentionQuery(box) {
+  const caret = Math.min(box.selectionStart ?? box.value.length, box.value.length);
+  const found = box.value.slice(0, caret).match(/(^|\s)@([\w.-]*)$/);
+  return found ? { query: found[2], start: caret - found[2].length - 1, caret } : null;
+}
+
+function drawMentions() {
+  const list = picker.list;
+  list.replaceChildren();
+  picker.items.forEach((c, index) => {
+    const row = text("button", "mention-row");
+    row.type = "button";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", String(index === picker.index));
+    row.dataset.name = c.name;
+    if (c.channel) row.append(text("span", "face channel", "#"));
+    else row.append(face(c.agent, c.provider));
+    row.append(text("span", "name", `@${c.name}`));
+    const route = [c.agent, c.model].filter(Boolean).join(" · ");
+    if (route) row.append(text("span", "route-name", route));
+    row.append(text("span", "state", c.finished ? `${t("done")} · ${t("mention to continue")}` : c.state));
+    row.addEventListener("mousedown", (event) => event.preventDefault());
+    row.addEventListener("click", () => takeMention(index));
+    list.append(row);
+  });
+  list.hidden = !picker.items.length;
+}
+
+function takeMention(index) {
+  const c = picker.items[index];
+  const box = picker.box;
+  if (!c || !box) return;
+  const found = mentionQuery(box);
+  if (!found) return closeMentions();
+  const insert = `@${c.name} `;
+  box.value = box.value.slice(0, found.start) + insert + box.value.slice(found.caret);
+  const caret = found.start + insert.length;
+  if (box.setSelectionRange) box.setSelectionRange(caret, caret);
+  box.selectionStart = box.selectionEnd = caret;
+  closeMentions();
+}
+
+function watchMentions(box, list) {
+  box.addEventListener("input", () => {
+    const found = mentionQuery(box);
+    if (!found) return closeMentions();
+    picker.box = box;
+    picker.list = list;
+    picker.items = mentionCandidates(found.query);
+    picker.index = 0;
+    drawMentions();
+  });
+  box.addEventListener("keydown", (event) => {
+    if (picker.box !== box || !picker.items.length) return;
+    if (event.metaKey || event.ctrlKey) return;
+    const n = picker.items.length;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      picker.index = (picker.index + (event.key === "ArrowDown" ? 1 : n - 1)) % n;
+      drawMentions();
+    } else if (event.key === "Tab" || event.key === "Enter") {
+      event.preventDefault();
+      takeMention(picker.index);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeMentions();
+    }
+  });
+}
+watchMentions(el("message"), el("mention-list"));
+watchMentions(el("member-reply"), el("member-mentions"));
+
+/// The members a message names, for a post that is for them and not for the lead.
+function mentionedIn(value) {
+  const names = [...value.matchAll(/(?<![\w@])@([\w][\w.-]*)/g)].map((m) => lowered(m[1]));
+  return {
+    members: (state.members || []).filter((m) => names.includes(lowered(m.name))).map((m) => m.name),
+    lead: names.includes("lead") || names.includes("channel"),
+  };
+}
+
 // The room ------------------------------------------------------------------
 // Agents talk to each other here, and so can the person — delivered when the agent next reads
 // its messages, which is a note on the table rather than an interruption.
@@ -3478,28 +4025,9 @@ function workRow({ gutter: slice, key, detail, status, buttons, title, onClick }
   return row;
 }
 
-async function drawWork(thread) {
-  const host = el("work");
-  host.replaceChildren();
-  const team = (await call("team", { thread: thread.thread.id })) || {};
-  const worktrees = team.workspaces || [];
-  const trials = team.merges || [];
-  if (team.plan?.plan?.length) {
-    const plan = text("div", "work-plan");
-    plan.append(text("b", null, t("Plan")));
-    for (const [index, step] of team.plan.plan.entries()) {
-      plan.append(text("span", null, `${index + 1}. ${step}`));
-    }
-    if (team.plan.next_step) plan.append(text("span", "next", `${t("next")} · ${team.plan.next_step}`));
-    host.append(plan);
-  }
-  if (!worktrees.length) {
-    host.append(text("p", "empty", t("No worktrees in this conversation.")));
-    return;
-  }
-  const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
-  const { events, running } = workEvents(thread, worktrees, trials, asking);
-  const graph = text("div", "work-graph");
+/// The rows of a work graph, one per event; the Work pane draws every worktree with them and a
+/// thread draws its member's one.
+function drawEvents(graph, thread, events, running, worktrees) {
   const where = (row) =>
     row.root.startsWith(thread.thread.project_root) ? row.root.slice(thread.thread.project_root.length + 1) : row.root;
   events.forEach((event, index) => {
@@ -3570,6 +4098,31 @@ async function drawWork(thread) {
       );
     }
   });
+}
+
+async function drawWork(thread) {
+  const host = el("work");
+  host.replaceChildren();
+  const team = (await call("team", { thread: thread.thread.id })) || {};
+  const worktrees = team.workspaces || [];
+  const trials = team.merges || [];
+  if (team.plan?.plan?.length) {
+    const plan = text("div", "work-plan");
+    plan.append(text("b", null, t("Plan")));
+    for (const [index, step] of team.plan.plan.entries()) {
+      plan.append(text("span", null, `${index + 1}. ${step}`));
+    }
+    if (team.plan.next_step) plan.append(text("span", "next", `${t("next")} · ${team.plan.next_step}`));
+    host.append(plan);
+  }
+  if (!worktrees.length) {
+    host.append(text("p", "empty", t("No worktrees in this conversation.")));
+    return;
+  }
+  const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
+  const { events, running } = workEvents(thread, worktrees, trials, asking);
+  const graph = text("div", "work-graph");
+  drawEvents(graph, thread, events, running, worktrees);
   host.append(graph);
   // What the marks mean, in one line: the graph is read by people who did not draw it.
   const legend = text("div", "work-legend");
@@ -4786,6 +5339,10 @@ function widen() {
 // Loop ----------------------------------------------------------------------
 async function select(id) {
   closeSettings();
+  if (id !== state.thread) {
+    closeMember();
+    state.members = [];
+  }
   state.thread = id;
   await call("seen", { thread: id });
   await refresh(true);
@@ -4802,6 +5359,7 @@ async function refresh(full) {
   state.folders = folders || [];
   state.live = (await call("live_seats", {})) || [];
   state.tasks = (await call("live_tasks", {})) || [];
+  state.mentions = (await call("mentions", {})) || [];
   await notify();
   // The accounts change when a probe runs, not when a key is pressed: read at most twice a
   // minute.
@@ -4858,7 +5416,11 @@ async function refresh(full) {
   // so the conversation cannot be drawn without it.
   const said = (await call("room", { thread: thread.thread.id })) || [];
   state.said = said;
+  state.members = (await call("members", { thread: thread.thread.id })) || [];
+  state.view = thread;
   drawTimeline(thread, said);
+  drawThreadsControl();
+  if (state.member) await drawMember(thread);
   drawTeam(thread);
   drawWork(thread);
   drawChanges(thread);
@@ -4881,7 +5443,12 @@ el("composer").addEventListener("submit", async (event) => {
   if (!value || !state.thread) return;
   box.value = "";
   box.style.height = "auto";
-  await call("send", { thread: state.thread, text: value });
+  closeMentions();
+  // A post naming a member reaches that member directly; it is a turn for the lead only when
+  // it names no one, the lead, or everyone.
+  const named_ = mentionedIn(value);
+  if (named_.members.length) await call("say", { thread: state.thread, to: null, text: value, member: null });
+  if (!named_.members.length || named_.lead) await call("send", { thread: state.thread, text: value });
   // A message is only a row until something runs it.
   await call("ensure_host", { thread: state.thread });
   await refresh(true);
@@ -4954,6 +5521,7 @@ for (const button of document.querySelectorAll(".by")) {
 }
 for (const [id, word] of [
   ["message", "Message…"],
+  ["member-reply", "Reply in thread…"],
   ["say", "Message the team…"],
   ["tree-search", "Search files…"],
 ]) {

@@ -250,7 +250,15 @@ fn mcp_server_exposes_the_mailbox_tools_to_one_peer() {
         .collect();
     assert_eq!(
         names,
-        ["list_peers", "send_message", "read_messages", "set_status"]
+        [
+            "list_peers",
+            "send_message",
+            "read_messages",
+            "set_status",
+            "post",
+            "read_channel",
+            "read_thread"
+        ]
     );
     let (error, peers) = server.tool("list_peers", json!({}));
     assert!(!error);
@@ -1697,4 +1705,295 @@ fn the_managers_tools_are_requests_its_console_answers() {
     console.join().unwrap();
     assert!(!error, "{reply}");
     assert_eq!(reply, json!({"started": "backend-1"}));
+}
+
+#[test]
+fn a_mention_is_read_from_the_text_and_names_only_someone_who_is_there() {
+    use orochi::mailbox::mentions_in;
+    let known = ["implementer".to_owned(), "reviewer".to_owned()];
+    assert_eq!(
+        mentions_in("@Implementer, add it; @you decide; @channel fyi", &known),
+        ["implementer", "you", "channel"],
+        "each mention is spelled as the member is, and the user and the room are always there"
+    );
+    assert!(
+        mentions_in("mail ops@reviewer.example or @nobody", &known).is_empty(),
+        "an address is not a mention and a name nobody has mentions nobody"
+    );
+    assert_eq!(
+        mentions_in("@reviewer. Thanks @reviewer!", &known),
+        ["reviewer"],
+        "punctuation ends a mention and one name is one mention"
+    );
+}
+
+/// A lead, a helper it started and a reviewer beside it, in one conversation, built the way the
+/// console builds them: a seat per agent, named as the member it is.
+struct Team {
+    _dir: tempfile::TempDir,
+    activity: orochi::activity::Activity,
+    mailbox: Mailbox,
+    thread: String,
+    lead: String,
+    helper: String,
+    reviewer: String,
+}
+
+fn team() -> Team {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = orochi::activity::Activity::open(dir.path(), 30).unwrap();
+    activity.project("room", dir.path()).unwrap();
+    let thread = activity
+        .create_thread(
+            "room",
+            dir.path(),
+            None,
+            "repo",
+            orochi::activity::Origin::Console,
+            &orochi::types::Overrides::default(),
+            "ask",
+        )
+        .unwrap();
+    let turn = activity
+        .queue_turn(&thread, "add the tests", &[], "auto", "terminal")
+        .unwrap();
+    let candidate = orochi::types::ExecutionCandidate {
+        id: "c".into(),
+        agent: "claude".into(),
+        provider: Provider::ANTHROPIC,
+        model: "opus".into(),
+        reasoning_level: None,
+        mode: None,
+        session_strategy: "fresh".into(),
+        context_strategy: "none".into(),
+        success_probability: 0.8,
+        expected_tokens: 1.0,
+        expected_cost: 1.0,
+        confidence: 0.5,
+        reasons: vec![],
+        prediction: None,
+        spoken_for: false,
+    };
+    let mailbox = Mailbox::open(dir.path(), &MailboxConfig::default()).unwrap();
+    let mut ids = vec![];
+    for (ordinal, name, member) in [
+        (0, "lead", false),
+        (1, "implementer", true),
+        (2, "reviewer", true),
+    ] {
+        let seat = activity
+            .create_seat(&turn, ordinal, name, ordinal == 0, ordinal == 2, None, None)
+            .unwrap();
+        if member {
+            activity.seat_member(&seat, name, None).unwrap();
+        }
+        let attempt = activity
+            .create_attempt(&seat, &candidate, false, None)
+            .unwrap();
+        let peer = mailbox
+            .register("room", name, dir.path(), None, me())
+            .unwrap();
+        activity
+            .attempt_session(&attempt, "session", Some(&peer.id))
+            .unwrap();
+        ids.push(peer.id);
+    }
+    // The lead asked for the helper, which is how a post of the helper's finds the lead.
+    mailbox
+        .request_agent_workspace(&ids[0], "implementer", "tests", "add them", false)
+        .unwrap();
+    let request: String = activity
+        .connection()
+        .query_row("SELECT id FROM agent_requests", [], |r| r.get(0))
+        .unwrap();
+    mailbox
+        .answer_request(&request, "started", None, Some("implementer"), None)
+        .unwrap();
+    Team {
+        _dir: dir,
+        activity,
+        mailbox,
+        thread,
+        lead: ids[0].clone(),
+        helper: ids[1].clone(),
+        reviewer: ids[2].clone(),
+    }
+}
+
+#[test]
+fn a_members_post_is_a_reply_in_its_thread_that_only_the_lead_and_those_it_mentions_are_pushed() {
+    let team = team();
+    let heard = |peer: &str| -> Vec<String> {
+        team.mailbox
+            .read(peer, 20)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.body)
+            .collect()
+    };
+    let reply = team
+        .mailbox
+        .post(
+            &team.helper,
+            "Tests only, greet.py left alone?",
+            None,
+            false,
+        )
+        .unwrap();
+    assert_eq!(reply.thread.as_deref(), Some("implementer"));
+    assert_eq!(heard(&team.lead), ["Tests only, greet.py left alone?"]);
+    assert!(
+        heard(&team.reviewer).is_empty(),
+        "a thread is not pushed to the room"
+    );
+
+    team.mailbox
+        .post(
+            &team.helper,
+            "@reviewer the float case is yours",
+            None,
+            true,
+        )
+        .unwrap();
+    assert_eq!(heard(&team.reviewer), ["@reviewer the float case is yours"]);
+    assert!(
+        heard(&team.lead).is_empty(),
+        "a mention goes to who it names, not also to the lead"
+    );
+
+    team.mailbox
+        .post(&team.lead, "@channel stand-up in five", None, false)
+        .unwrap();
+    assert_eq!(heard(&team.helper), ["@channel stand-up in five"]);
+    assert_eq!(heard(&team.reviewer), ["@channel stand-up in five"]);
+
+    team.mailbox
+        .post(&team.lead, "Planning the apply", None, false)
+        .unwrap();
+    assert!(
+        heard(&team.helper).is_empty() && heard(&team.reviewer).is_empty(),
+        "the lead's channel post pushes nobody"
+    );
+    assert!(
+        team.mailbox
+            .post(&team.lead, "x", Some("nobody"), false)
+            .is_err(),
+        "a thread belongs to a member that exists"
+    );
+}
+
+#[test]
+fn an_agent_looks_at_the_channel_and_a_thread_when_it_needs_to() {
+    let team = team();
+    team.mailbox
+        .post(&team.helper, "working on the int case", None, false)
+        .unwrap();
+    team.mailbox
+        .post(&team.helper, "Done: 6/6 pass", None, true)
+        .unwrap();
+    team.mailbox
+        .post(&team.lead, "Thanks, reviewing", None, false)
+        .unwrap();
+    let channel: Vec<String> = team
+        .mailbox
+        .read_channel(&team.reviewer, None, 20)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.body)
+        .collect();
+    assert_eq!(
+        channel,
+        ["Done: 6/6 pass", "Thanks, reviewing"],
+        "a thread's replies stay out of the channel unless sent to it"
+    );
+    let thread: Vec<String> = team
+        .mailbox
+        .read_thread(&team.reviewer, "implementer", 20)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.body)
+        .collect();
+    assert_eq!(thread, ["working on the int case", "Done: 6/6 pass"]);
+    assert!(
+        team.mailbox.read(&team.reviewer, 20).unwrap().is_empty(),
+        "looking is not a delivery"
+    );
+}
+
+#[test]
+fn a_mention_of_the_user_is_unseen_until_they_see_it_and_marks_what_waits_on_them() {
+    let team = team();
+    team.mailbox
+        .post(&team.helper, "@you apply the trial?", None, true)
+        .unwrap();
+    let mentions = team.activity.mentions(None).unwrap();
+    assert_eq!(mentions.len(), 1);
+    assert_eq!(mentions[0].who, "implementer");
+    assert_eq!(mentions[0].member.as_deref(), Some("implementer"));
+    assert_eq!(mentions[0].thread_id, team.thread);
+
+    let members = team.activity.members(&team.thread).unwrap();
+    let helper = members.iter().find(|m| m.name == "implementer").unwrap();
+    assert_eq!(helper.needs.as_deref(), Some("mention"));
+    assert_eq!(helper.replies, 1);
+    assert!(
+        members.iter().all(|m| m.name != "lead"),
+        "the lead is the channel, not a member"
+    );
+
+    team.activity.see_mentions(&team.thread).unwrap();
+    assert!(team.activity.mentions(None).unwrap().is_empty());
+    let members = team.activity.members(&team.thread).unwrap();
+    assert_eq!(
+        members
+            .iter()
+            .find(|m| m.name == "implementer")
+            .unwrap()
+            .needs,
+        None,
+        "seen, nothing waits on them"
+    );
+    team.mailbox
+        .post(&team.helper, "@you ok to continue?", None, false)
+        .unwrap();
+    assert_eq!(
+        team.activity.mentions(None).unwrap().len(),
+        1,
+        "a later mention is unseen again"
+    );
+}
+
+#[test]
+fn the_person_mentions_a_member_and_it_reaches_that_member_wherever_it_was_written() {
+    let team = team();
+    team.mailbox
+        .speak(
+            "room",
+            None,
+            "@reviewer take the parser, @implementer hold",
+            Some(&team.thread),
+        )
+        .unwrap();
+    for peer in [&team.reviewer, &team.helper] {
+        assert_eq!(
+            team.mailbox.read(peer, 20).unwrap().len(),
+            1,
+            "each member it names hears it"
+        );
+    }
+    assert!(
+        team.mailbox.read(&team.lead, 20).unwrap().is_empty(),
+        "and the lead is not woken by what was said to someone else"
+    );
+    let ended = team
+        .mailbox
+        .speak_in(
+            "room",
+            Some("gone"),
+            "pick this up again",
+            Some(&team.thread),
+            Some("gone"),
+        )
+        .unwrap();
+    assert_eq!(ended.thread.as_deref(), Some("gone"));
 }

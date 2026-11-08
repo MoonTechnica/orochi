@@ -1676,3 +1676,87 @@ fn two_conversations_may_both_have_a_trial_of_the_same_name() {
         .unwrap();
     assert_eq!(fed, 1);
 }
+
+/// A member is a name within one conversation: a second seat under it is the same thread, it
+/// leaves what a later request needs to pick its session up, and what the person said to it
+/// while it was away waits to be taken up once.
+#[test]
+fn a_member_that_asked_again_is_one_thread_that_remembers_where_its_session_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    let first = activity
+        .create_seat(&turn, 100, "implementer", false, false, None, None)
+        .unwrap();
+    activity.seat_member(&first, "implementer", None).unwrap();
+    activity
+        .seat_continuation(
+            &first,
+            &serde_json::json!({"agent": "claude", "model": "opus", "session_id": "s-1", "loadable": true}),
+        )
+        .unwrap();
+    let second = activity
+        .create_seat(&turn, 101, "implementer", false, false, None, None)
+        .unwrap();
+    activity
+        .seat_member(&second, "implementer", Some(&first))
+        .unwrap();
+
+    let (latest, left) = activity
+        .member_seat(&thread, "Implementer")
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest, second, "the newest seat is where the member is");
+    assert!(left.is_none(), "and it has not left a session yet");
+    activity
+        .seat_continuation(
+            &second,
+            &serde_json::json!({"session_id": "s-2", "loadable": false}),
+        )
+        .unwrap();
+    let (_, left) = activity
+        .member_seat(&thread, "implementer")
+        .unwrap()
+        .unwrap();
+    assert_eq!(left.unwrap()["session_id"], "s-2");
+    assert_eq!(
+        activity.members(&thread).unwrap().len(),
+        1,
+        "two seats, one member"
+    );
+    assert_eq!(activity.members(&thread).unwrap()[0].seats, 2);
+
+    let mailbox =
+        orochi::mailbox::Mailbox::open(dir.path(), &orochi::config::MailboxConfig::default())
+            .unwrap();
+    mailbox
+        .speak_in(
+            "proj",
+            None,
+            "also the float case",
+            Some(&thread),
+            Some("implementer"),
+        )
+        .unwrap();
+    let notes = activity.unheard_notes(&thread).unwrap();
+    assert_eq!(notes.len(), 1, "nobody was there to hear it");
+    assert_eq!(notes[0].1, "implementer");
+    activity.heard_note(notes[0].0).unwrap();
+    assert!(
+        activity.unheard_notes(&thread).unwrap().is_empty(),
+        "taken up once"
+    );
+    let history = activity
+        .member_history(&thread, "implementer", 1000)
+        .unwrap();
+    assert!(history.contains("also the float case"), "{history}");
+    assert_eq!(
+        activity
+            .member_history(&thread, "implementer", 8)
+            .unwrap()
+            .chars()
+            .count(),
+        8,
+        "bounded, keeping the newest"
+    );
+}

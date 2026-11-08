@@ -490,15 +490,30 @@ pub enum WorkspacesCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ThreadCommand {
-    /// Show one thread's timeline, seats and changed files.
-    Show { id: String },
+    /// Show one thread's timeline, seats and changed files; with `--member`, one member's
+    /// thread of the conversation (what it and the others said to each other, and its work).
+    Show {
+        id: String,
+        #[arg(long)]
+        member: Option<String>,
+    },
     /// Show one thread's team: the lead's plan, each helper's worktree and what became of
     /// it, and every merge trial — the same rows the desktop's Work pane draws.
     Team { id: String },
     /// Start a thread in this directory without running it; `orochi host` picks it up.
     New,
-    /// Queue a message in a thread. A running host takes it next; otherwise start one.
-    Send { id: String, text: String },
+    /// Queue a message in a thread. A running host takes it next; otherwise start one. A
+    /// message that mentions a member (`@implementer …`), or is sent `--thread <member>`,
+    /// reaches that member directly instead, continuing it if it had finished.
+    Send {
+        id: String,
+        text: String,
+        /// Reply in this member's thread.
+        #[arg(long)]
+        thread: Option<String>,
+    },
+    /// What the agents have said to you with `@you` that you have not seen.
+    Mentions,
     /// Stop the turn a host is running, as Esc does in the console.
     Interrupt { id: String },
     /// End the host running a thread. The thread and its history stay.
@@ -1420,15 +1435,75 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         }
                     }
                 }
-                Some(ThreadCommand::Show { id }) => {
+                Some(ThreadCommand::Show {
+                    id,
+                    member: Some(member),
+                }) => {
+                    let id = named(&activity, &id)?;
+                    let lines = activity.member_thread(&id, &member)?;
+                    ensure!(
+                        !lines.is_empty(),
+                        "no member named {member} in this conversation"
+                    );
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&lines)?);
+                    } else {
+                        for line in lines {
+                            let text = crate::context::bounded(&line.text.replace('\n', " "), 200);
+                            println!("  {:<12} {:<7} {}", line.who, line.kind, text);
+                        }
+                    }
+                    activity.see_mentions(&id)?;
+                }
+                Some(ThreadCommand::Mentions) => {
+                    let mentions = activity.mentions(None)?;
+                    if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&mentions)?);
+                    } else {
+                        for mention in mentions {
+                            println!(
+                                "{}  {}  {}{}  {}",
+                                &mention.thread_id[..8.min(mention.thread_id.len())],
+                                mention.thread_title,
+                                mention.who,
+                                mention
+                                    .member
+                                    .as_ref()
+                                    .map(|m| format!(" in {m}'s thread"))
+                                    .unwrap_or_default(),
+                                crate::context::bounded(&mention.text.replace('\n', " "), 160)
+                            );
+                        }
+                    }
+                }
+                Some(ThreadCommand::Show { id, member: None }) => {
                     let id = named(&activity, &id)?;
                     let thread = activity
                         .thread(&id)?
                         .with_context(|| format!("no thread {id}"))?;
+                    let members = activity.members(&id)?;
                     if cli.json {
                         println!("{}", serde_json::to_string_pretty(&thread)?);
                     } else {
                         println!("{}  ({})", thread.thread.title, thread.thread.status);
+                        for member in &members {
+                            println!(
+                                "  thread {}  {}  {} replies{}{}",
+                                member.name,
+                                member.state,
+                                member.replies,
+                                member
+                                    .needs
+                                    .as_ref()
+                                    .map(|n| format!("  · {n}"))
+                                    .unwrap_or_default(),
+                                member
+                                    .doing
+                                    .as_ref()
+                                    .map(|d| format!("  · {}", d.lines().next().unwrap_or("")))
+                                    .unwrap_or_default()
+                            );
+                        }
                         for seat in &thread.seats {
                             println!(
                                 "  seat {} {}{}  {}",
@@ -1462,6 +1537,7 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                             println!("  {} +{} -{}", file.path, file.added, file.removed);
                         }
                     }
+                    activity.see_mentions(&id)?;
                 }
                 Some(ThreadCommand::Team { id }) => {
                     let id = named(&activity, &id)?;
@@ -1546,11 +1622,43 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         println!("{id}");
                     }
                 }
-                Some(ThreadCommand::Send { id, text }) => {
+                Some(ThreadCommand::Send { id, text, thread }) => {
                     let id = named(&activity, &id)?;
-                    let turn = activity.queue_turn(&id, &text, &[], "auto", "desktop")?;
-                    if cli.json {
-                        println!("{}", json!({ "turn": turn }));
+                    // A member's name in the text, or the thread it is sent in, makes it a
+                    // note to that member rather than a message for the lead.
+                    let names: Vec<String> = activity
+                        .members(&id)?
+                        .into_iter()
+                        .map(|member| member.name)
+                        .collect();
+                    let mentioned = crate::mailbox::mentions_in(&text, &names)
+                        .into_iter()
+                        .find(|name| names.iter().any(|n| n == name));
+                    let member = match &thread {
+                        Some(name) => Some(
+                            names
+                                .iter()
+                                .find(|n| n.eq_ignore_ascii_case(name))
+                                .cloned()
+                                .with_context(|| {
+                                    format!("no member named {name} in this conversation")
+                                })?,
+                        ),
+                        None => mentioned,
+                    };
+                    if let Some(member) = member {
+                        let project = activity.thread_project(&id)?;
+                        let mailbox = crate::mailbox::Mailbox::open(&paths.data, &config.mailbox)?;
+                        let said =
+                            mailbox.speak_in(&project, None, &text, Some(&id), Some(&member))?;
+                        if cli.json {
+                            println!("{}", json!({ "member": member, "message": said.id }));
+                        }
+                    } else {
+                        let turn = activity.queue_turn(&id, &text, &[], "auto", "desktop")?;
+                        if cli.json {
+                            println!("{}", json!({ "turn": turn }));
+                        }
                     }
                 }
                 Some(ThreadCommand::Interrupt { id }) => {

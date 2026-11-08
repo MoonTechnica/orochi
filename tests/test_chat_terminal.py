@@ -537,6 +537,111 @@ class BackgroundAgents(unittest.TestCase):
         finally:
             c.close()
 
+    def test_at_lists_the_members_and_tab_takes_one_and_what_was_said_in_a_thread_stays_there(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API,explorer:Map the flow",
+            "MOCK_HELPER_DELAYS": "spec:60,explorer:60",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("2 background agents launched")
+            c.wait("Waiting for 2 background agents to finish")
+            # What the lead said to a member is one line in the channel, not the whole of it.
+            self.assertTrue(c.shown("spec's thread") and c.shown("explorer's thread"), c.rows())
+            def candidates(name):
+                return [row for row in c.screen.text() if row.startswith(f"  @{name}")]
+
+            c.type("@sp")
+            c.pump(TURN, until=lambda s: bool(candidates("spec")))
+            self.assertTrue(candidates("spec"), c.rows())
+            self.assertIn("working", candidates("spec")[0])
+            self.assertFalse(candidates("explorer"), "only what matches what was typed")
+            c.key(b"\t")
+            self.assertTrue(
+                any(row.startswith(">") and "@spec" in row for row in c.screen.text()),
+                c.rows(),
+            )
+            self.assertFalse(candidates("spec"), "taking one closes the list")
+        finally:
+            c.close()
+
+    def test_mentioning_a_member_that_finished_continues_it_in_its_thread(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("spec's thread")
+            c.wait("handing back what spec reported")
+            c.pump(10)
+            c.type("@spec also check the cache")
+            c.key(b"\r")
+            c.wait("continuing spec in its thread")
+            # The member is asked again in its own thread; the lead is not asked at all.
+            c.pump(60, until=lambda s: any(
+                "A new request in your thread: also check the cache" in p for p in c.prompts()
+            ))
+            asked = [p for p in c.prompts() if "A new request in your thread" in p]
+            self.assertEqual(len(asked), 1, [p[-200:] for p in c.prompts()])
+            self.assertIn('you are peer "spec"', asked[0])
+            # The lead was never asked it as a request, and is told of it when spec reports.
+            c.pump(60, until=lambda s: any("The user told `spec` directly" in p for p in c.prompts()))
+            lead = [p for p in c.prompts() if "The user told `spec` directly" in p]
+            self.assertEqual(len(lead), 1, [p[-200:] for p in c.prompts()])
+            self.assertNotIn("A new request in your thread", lead[0])
+        finally:
+            c.close()
+
+    def test_a_line_typed_in_an_open_thread_is_a_reply_in_it(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API",
+            "MOCK_HELPER_DELAYS": "spec:60",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("Waiting for 1 background agent to finish")
+            c.key(b"\x1b[B")
+            c.wait("Background agents")
+            c.key(b"\r")
+            c.type("use the cache")
+            self.assertTrue(c.shown("reply ›") and c.shown("use the cache"), c.rows())
+            c.key(b"\r")
+            c.esc()
+            c.esc()
+            import sqlite3
+            db = sqlite3.connect(str(c.dir / "data" / "activity.sqlite3"))
+            rows = db.execute(
+                "SELECT member, via, body FROM messages WHERE body LIKE '%use the cache%'"
+            ).fetchall()
+            self.assertEqual(rows, [("spec", "user", "use the cache")])
+        finally:
+            c.close()
+
+    def test_down_lists_a_member_that_finished_and_a_reply_there_continues_it(self):
+        c = Console(behavior="delegate", mailbox=True, env={
+            "MOCK_HELPERS": "spec:Research the API",
+        })
+        try:
+            c.type("Make the model selectable")
+            c.key(b"\r")
+            c.wait("handing back what spec reported")
+            c.pump(10)
+            c.key(b"\x1b[B")
+            c.wait("Background agents")
+            self.assertTrue(c.shown("spec") and c.shown("replies"), c.rows())
+            c.key(b"\r")
+            self.assertTrue(c.shown("done") and c.shown("reply ›"), c.rows())
+            c.type("also the cache")
+            c.key(b"\r")
+            c.esc()
+            c.esc()
+            c.wait("continuing spec in its thread")
+        finally:
+            c.close()
+
     def test_a_helper_that_wants_to_run_a_command_is_asked_about_by_name(self):
         c = Console(behavior="delegate", mailbox=True, env={
             "MOCK_HELPERS": "spec:Research the API",

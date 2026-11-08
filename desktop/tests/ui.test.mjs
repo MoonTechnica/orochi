@@ -14,6 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const recorded = {
   sidebar: JSON.parse(readFileSync(join(here, "sidebar.json"), "utf8")).projects,
   thread: JSON.parse(readFileSync(join(here, "thread.json"), "utf8")),
+  channel: JSON.parse(readFileSync(join(here, "channel.json"), "utf8")),
 };
 
 /// The window's script, read once and given a fresh scope per test. Importing it again would
@@ -45,6 +46,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
+    "threads-ctl", "threads-menu", "mention-list", "member-panel", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
     "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
@@ -193,7 +195,7 @@ test("the fixtures carry the fields the core actually sends", async () => {
   const item = recorded.thread.items[0];
   for (const [what, row, fields] of [
     ["seat", seat, ["seat_id", "turn", "ordinal", "role", "lead", "read_only", "state"]],
-    ["item", item, ["seq", "turn", "lane", "kind", "text", "at"]],
+    ["item", item, ["seq", "turn", "lane", "kind", "text", "at", "member"]],
   ]) {
     for (const field of fields) {
       assert.ok(field in row, `${what} has no ${field}: ${Object.keys(row)}`);
@@ -1631,7 +1633,8 @@ test("a finished turn says how long it took, when it ended, what it changed and 
   assert.match(drawn, /Worked for 16s · done \d\d:\d\d/);
   assert.match(drawn, /2 files changed/);
   assert.match(drawn, /context 81k \/ 200k \(41%\)/);
-  assert.match(drawn, /from the helpers[\s\S]*Background agent[\s\S]*code spec[\s\S]*finished/, "a turn Orochi wrote is not the person's");
+  assert.match(drawn, /reports from[\s\S]*the helpers/, "a turn Orochi wrote is one line, not the person's post");
+  assert.doesNotMatch(drawn, /Background agent/, "and its text is not drawn as a post");
 });
 
 test("a conversation's helpers are listed where it is read, each with a way to stop it", async () => {
@@ -2849,4 +2852,292 @@ test("the storage page shows where each big thing goes, and a folder chosen ther
     { which: "worktrees", path: "/Volumes/Big/worktrees/{name}", force: false },
     { which: "vm", path: null, force: false },
   ]);
+});
+
+// The team channel ------------------------------------------------------------------------
+// A conversation reads as a channel: what a member and the lead say about the work is a reply
+// in that member's thread, and the body carries the posts, the assignments and their bars.
+const channel = () => ({
+  thread: structuredClone(recorded.channel.thread),
+  room: structuredClone(recorded.channel.room),
+  members: structuredClone(recorded.channel.members),
+  mentions: [],
+  team: structuredClone(recorded.channel.team),
+});
+const wait = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("thread replies stay out of the body; assignments, posts to the channel and the person's own are in it", async () => {
+  const { el } = await open(channel());
+  const drawn = el("timeline").render();
+  assert.match(drawn, /tests: add tests for greet\(\) with a number/, "the assignment is the lead's post");
+  assert.match(drawn, /Done: two tests in test_greet\.py, 6\/6 pass/, "a reply also sent to the channel is a post");
+  assert.match(drawn, /also cover bool/, "and so is what the person said");
+  assert.doesNotMatch(drawn, /Tests only, greet\.py left alone/, "a reply in a thread is not in the body");
+  assert.doesNotMatch(drawn, /Tests only$/m, "nor is the lead's answer to it");
+  assert.doesNotMatch(drawn, /float case/, "nor is a member's word to another");
+  assert.doesNotMatch(drawn, /implementer joined|joined/, "arriving is not a post");
+  assert.doesNotMatch(drawn, /Added the bool case/, "a member's own work and reports are its thread's");
+  assert.match(drawn, /Both are handed off/, "the lead's own reply is in the body");
+  assert.match(drawn, /reports from[\s\S]*link implementer/, "a completion turn is one line naming whose reports it carries");
+  assert.doesNotMatch(drawn, /Background agent/, "not a large post");
+  const bars = el("timeline").querySelectorAll(".thread-bar");
+  assert.deepEqual(bars.map((b) => b.dataset.member), ["implementer", "reviewer"], "one bar per member, under its assignment");
+});
+
+test("a thread's bar says how many replies, the last one, and where the member stands; what waits on the person marks it", async () => {
+  const { el } = await open(channel());
+  const [implementer, reviewer] = el("timeline").querySelectorAll(".thread-bar");
+  const said = implementer.render();
+  assert.match(said, /3 replies/);
+  assert.match(said, /last reply/);
+  assert.match(said, /trial clean/, "the trial is part of where it stands");
+  assert.match(said, /trial not applied/, "and the bar says what waits");
+  assert.equal(implementer.dataset.needs, "trial", "so it is highlighted");
+  assert.match(reviewer.render(), /working — Read test_greet\.py/, "a working member says what it is doing");
+  assert.match(reviewer.render(), /1 reply/);
+  assert.equal(reviewer.dataset.needs, undefined, "nothing waits on the person there");
+  for (const [needs, word] of [["asking", /asking you/], ["mention", /mentioned you/], ["worktree", /worktree open/]]) {
+    const members = channel().members;
+    members[0].needs = needs;
+    const again = await open({ ...channel(), members });
+    const bar = again.el("timeline").querySelectorAll(".thread-bar").find((b) => b.dataset.member === "reviewer");
+    assert.match(bar.render(), word, `${needs} is said in words`);
+    assert.equal(bar.dataset.needs, needs);
+  }
+  // A member that finished and was applied or kept as a patch says so.
+  const members = channel().members;
+  members[1] = { ...members[1], workspace_state: "applied", trial_state: "applied", needs: null };
+  const done = await open({ ...channel(), members });
+  assert.match(done.el("timeline").render(), /applied/);
+});
+
+test("the bar opens the thread in the side pane in place of the tabs, and the cross brings them back", async () => {
+  const { el, calls } = await open(channel());
+  assert.equal(el("tabs").hidden, false);
+  el("timeline").querySelectorAll(".thread-bar")[0].dispatch("click");
+  await wait();
+  assert.equal(el("member-panel").hidden, false, "the panel is open");
+  assert.equal(el("tabs").hidden, true, "the tabs make way for it");
+  const drawn = el("member-body").render();
+  assert.match(drawn, /tests: add tests for greet/, "the parent is first");
+  assert.match(drawn, /Tests only, greet\.py left alone/, "then the replies");
+  assert.match(drawn, /Tests only/, "of both sides");
+  assert.match(drawn, /tool call/, "and the member's work, folded");
+  assert.match(drawn, /continued at \d\d:\d\d · opencode · qwen3\.8-27b/, "a later seat is a divider where it began");
+  assert.match(drawn, /Added the bool case; 7\/7 pass/);
+  assert.equal(el("member-body").querySelectorAll(".post").filter((p) => p.dataset.report === "true").length, 2, "each seat's last message is its report");
+  assert.match(drawn, /trial #1/i, "and its worktree and trial are drawn as the Work pane draws one lane");
+  assert.doesNotMatch(drawn, /float case/, "another member's thread is not in it");
+  assert.ok(calls.some(([name]) => name === "team"));
+  // It follows the change feed.
+  el("member-close").dispatch("click");
+  assert.equal(el("member-panel").hidden, true);
+  assert.equal(el("tabs").hidden, false, "the tabs are back");
+  assert.equal(el("pane-team").hidden, false, "on the pane that was open");
+});
+
+test("a thread fills in as it is said, without being asked", async () => {
+  const answers = channel();
+  const { el, tick } = await open(answers);
+  el("timeline").querySelectorAll(".thread-bar")[1].dispatch("click");
+  await wait();
+  assert.match(el("member-body").render(), /float case/, "the reviewer's thread has its reply");
+  answers.room = [...answers.room, { ...answers.room[0], seq: 99, via: "mailbox", member: "reviewer", parent: 2, text: "one more thing", at: answers.room.at(-1).at + 1000, broadcast: false, mentions: [] }];
+  answers.changed = [recorded.sidebar[0].threads[0].id];
+  await tick();
+  assert.match(el("member-body").render(), /one more thing/, "a reply that arrives is drawn in the open thread");
+});
+
+test("a reply in a thread is a note to that member, and also goes to the channel when asked", async () => {
+  const { el, calls } = await open(channel());
+  el("timeline").querySelectorAll(".thread-bar")[0].dispatch("click");
+  await wait();
+  assert.equal(el("member-reply").getAttribute("placeholder"), "Reply in thread…");
+  assert.match(markup, /also send to the channel/);
+  el("member-reply").value = "keep it to unittest";
+  el("member-form").dispatch("submit");
+  await wait();
+  const say = calls.findLast(([name]) => name === "say")[1];
+  assert.equal(say.member, "implementer");
+  assert.equal(say.text, "keep it to unittest");
+  assert.equal(calls.some(([name]) => name === "send"), false, "alone, it is the thread's");
+  el("member-also-box").checked = true;
+  el("member-reply").value = "and no mocks";
+  el("member-form").dispatch("submit");
+  await wait();
+  assert.equal(calls.findLast(([name]) => name === "say")[1].member, "implementer");
+  assert.equal(calls.findLast(([name]) => name === "send")[1].text, "implementer: and no mocks", "also to the channel, as a message naming the member");
+});
+
+test("typing @ offers the lead, the members and @channel: running first, then recent, filtered by prefix", async () => {
+  const { el, calls } = await open(channel());
+  const box = el("message");
+  const names = () => el("mention-list").querySelectorAll(".mention-row").map((r) => r.dataset.name);
+  box.value = "ask @";
+  box.dispatch("input");
+  assert.deepEqual(names(), ["reviewer", "implementer", "lead", "channel"], "the one working first, @channel last");
+  assert.equal(el("mention-list").hidden, false);
+  const rows = el("mention-list").querySelectorAll(".mention-row");
+  assert.match(rows[0].render(), /codex · gpt-5\.6[\s\S]*working/, "route and state beside the name");
+  assert.match(rows[1].render(), /done · mention to continue/, "a finished member says mentioning it continues it");
+  box.value = "ask @im";
+  box.dispatch("input");
+  assert.deepEqual(names(), ["implementer"], "a prefix of the name");
+  box.value = "ask @cod";
+  box.dispatch("input");
+  assert.deepEqual(names(), ["reviewer"], "or of the agent");
+  box.value = "ask @chan";
+  box.dispatch("input");
+  assert.deepEqual(names(), ["channel"], "@channel is offered to a prefix of it");
+  box.value = "ask @zzz";
+  box.dispatch("input");
+  assert.deepEqual(names(), [], "and nothing that is not there");
+  assert.equal(el("mention-list").hidden, true);
+  // Keys: Down moves, Enter takes, the text is plain.
+  box.value = "ask @";
+  box.dispatch("input");
+  box.dispatch("keydown", { key: "ArrowDown" });
+  assert.equal(el("mention-list").querySelectorAll(".mention-row")[1].getAttribute("aria-selected"), "true");
+  let prevented = 0;
+  box.dispatch("keydown", { key: "Enter", preventDefault: () => (prevented += 1) });
+  assert.equal(box.value, "ask @implementer ", "the name and a space, in the draft as plain text");
+  assert.equal(prevented, 1, "Enter took the choice, it did not send or break the line");
+  assert.equal(el("mention-list").hidden, true);
+  // Tab takes; Escape closes and keeps what was typed.
+  box.value = "@r";
+  box.dispatch("input");
+  box.dispatch("keydown", { key: "Tab" });
+  assert.equal(box.value, "@reviewer ");
+  box.value = "@i";
+  box.dispatch("input");
+  box.dispatch("keydown", { key: "Escape" });
+  assert.equal(el("mention-list").hidden, true);
+  assert.equal(box.value, "@i");
+  // Cmd-Enter is still send while the list is open.
+  box.value = "@";
+  box.dispatch("input");
+  box.dispatch("keydown", { key: "Enter", metaKey: true });
+  await wait();
+  assert.equal(calls.some(([name]) => name === "send"), true, "Cmd-Enter sends");
+});
+
+test("the thread's composer offers the same list, and a post naming a member reaches it directly", async () => {
+  const { el, calls } = await open(channel());
+  el("timeline").querySelectorAll(".thread-bar")[0].dispatch("click");
+  await wait();
+  el("member-reply").value = "@";
+  el("member-reply").dispatch("input");
+  assert.deepEqual(el("member-mentions").querySelectorAll(".mention-row").map((r) => r.dataset.name), ["reviewer", "implementer", "lead", "channel"]);
+  el("member-reply").value = "";
+  el("member-reply").dispatch("input");
+  // In the channel: a post naming only a member is a note to it, not a turn for the lead.
+  el("message").value = "@implementer also cover bool";
+  el("composer").dispatch("submit");
+  await wait();
+  assert.equal(calls.findLast(([name]) => name === "say")[1].text, "@implementer also cover bool");
+  assert.equal(calls.some(([name]) => name === "send"), false, "the lead is not woken by it");
+  el("message").value = "@lead and @reviewer what do you think";
+  el("composer").dispatch("submit");
+  await wait();
+  assert.equal(calls.findLast(([name]) => name === "send")[1].text, "@lead and @reviewer what do you think", "naming the lead as well is a turn for it too");
+  assert.equal(calls.filter(([name]) => name === "say").length, 2, "and the member is still told");
+  const before = calls.filter(([name]) => name === "say").length;
+  el("message").value = "just a question";
+  el("composer").dispatch("submit");
+  await wait();
+  assert.equal(calls.filter(([name]) => name === "say").length, before, "a post naming no one is the lead's alone");
+});
+
+test("a sent post draws the names it mentioned as chips, and @you marks it", async () => {
+  const { el } = await open(channel());
+  const chips = el("timeline").querySelectorAll(".mention-chip").map((c) => c.textContent);
+  assert.ok(chips.includes("@implementer"), `a mention is a chip: ${chips}`);
+  assert.ok(chips.includes("@you"));
+  assert.ok(el("timeline").querySelectorAll(".post").some((p) => p.dataset.mentionsYou === "true"), "the post that asks for the person is marked");
+});
+
+test("a mention of the person is notified by the OS whether or not the window is in front, unless it is the conversation in view", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  const here = projects[0].threads[0];
+  const there = projects[0].threads[1];
+  const answers = { sidebar: projects, mentions: [] };
+  const { calls, tick } = await open(answers);
+  const mention = (id, thread, who, member, body) => ({ message_id: id, thread_id: thread.id, project_id: "p", thread_title: thread.title, project: "repo", who, member, parent: null, text: body, at: 100 + id });
+  document.hasFocus = () => true;
+  try {
+    answers.mentions = [mention(1, there, "lead", "implementer", "Need a decision\nsecond line")];
+    answers.changed = [there.id];
+    await tick();
+    await tick();
+    const sent = () => calls.filter(([name]) => name === "notify").map(([, args]) => args);
+    assert.equal(sent().length, 1, "once, with the window in front");
+    assert.equal(sent()[0].title, "implementer mentioned you");
+    assert.equal(sent()[0].body, "Need a decision", "the first line of it");
+    await tick();
+    assert.equal(sent().length, 1, "and not again on the next look");
+    assert.equal(calls.filter(([n]) => n === "badge").at(-1)[1].count, 1, "the dock counts it");
+    // In the conversation that is in view and in front it is only seen.
+    answers.mentions = [...answers.mentions, mention(2, here, "reviewer", null, "look at this")];
+    await tick();
+    await tick();
+    assert.equal(sent().length, 1, "not announced where the person is looking");
+    assert.ok(calls.some(([name, args]) => name === "see_mentions" && args.thread === here.id), "it is marked seen");
+    answers.mentions = answers.mentions.filter((m) => m.thread_id !== here.id);
+    await tick();
+    assert.equal(calls.filter(([n]) => n === "badge").at(-1)[1].count, 1, "and the badge is the one still unseen");
+    // Out of front, even the open conversation's mention is announced.
+    document.hasFocus = () => false;
+    answers.mentions = [...answers.mentions, mention(3, here, "lead", null, "@you again")];
+    await tick();
+    assert.equal(sent().length, 2, "the person is not looking at it");
+    assert.equal(sent()[1].title, "lead mentioned you");
+    // And questions and mentions add up in the badge.
+    answers.open_prompts = [{ id: "p9", thread_id: there.id, thread_title: there.title, project: "repo", kind: "permission",
+      agent: "test", model: "m", role: "fixer", title: "Run tests", detail: null, options: [], created_at: 1, read_only: false, lead: true }];
+    await tick();
+    assert.equal(calls.filter(([n]) => n === "badge").at(-1)[1].count, 3, "open questions and unseen mentions");
+  } finally {
+    delete document.hasFocus;
+  }
+});
+
+test("the sidebar marks a conversation with an @ while a mention of the person is unseen", async () => {
+  const { el } = await open({ sidebar: recorded.channel.sidebar });
+  const rows = el("projects").querySelectorAll(".thread");
+  const marked = rows.filter((r) => r.querySelectorAll(".at-mark").length);
+  assert.equal(marked.length, 1, "only the conversation that was mentioned in");
+  assert.match(marked[0].render(), /Add tests for greet/);
+  const children = marked[0].children.filter((c) => c.className);
+  assert.ok(children[0].className.includes("state"), "the state mark comes first");
+  assert.ok(children[1].className.includes("at-mark"), "and the @ beside it, before the face and title");
+});
+
+test("Threads (N) lists the members working or waiting on the person, each a way into its thread", async () => {
+  const { el } = await open(channel());
+  assert.equal(el("threads-ctl").hidden, false);
+  assert.equal(el("threads-ctl").textContent, "Threads (2)", "the working one and the one with a trial waiting");
+  assert.equal(el("threads-menu").hidden, true);
+  el("threads-ctl").dispatch("click");
+  assert.equal(el("threads-menu").hidden, false);
+  const rows = el("threads-menu").querySelectorAll(".threads-row");
+  assert.deepEqual(rows.map((r) => r.dataset.member), ["reviewer", "implementer"]);
+  assert.match(rows[1].render(), /trial not applied/);
+  rows[1].dispatch("click");
+  await wait();
+  assert.equal(el("member-panel").hidden, false);
+  assert.equal(el("threads-menu").hidden, true, "the list closes on choosing");
+  assert.match(el("member-title").render(), /implementer/);
+  // Nothing running and nothing waiting: the count says so.
+  const members = channel().members.map((m) => ({ ...m, live: false, needs: null, state: "done" }));
+  const quiet = await open({ ...channel(), members });
+  assert.equal(quiet.el("threads-ctl").textContent, "Threads (0)");
+});
+
+test("the channel speaks Japanese too", async () => {
+  const { el } = await open(channel(), { language: "ja-JP" });
+  const drawn = el("timeline").render();
+  assert.match(drawn, /件の返信/);
+  assert.match(drawn, /報告:/, "reports from");
+  assert.match(drawn, /試行が未適用/);
+  assert.equal(el("threads-ctl").textContent, "スレッド (2)");
 });

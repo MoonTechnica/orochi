@@ -58,7 +58,7 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 17] = [
+const COMMANDS: [Command; 18] = [
     Command {
         name: "help",
         aliases: &[],
@@ -141,6 +141,13 @@ const COMMANDS: [Command; 17] = [
         aliases: &[],
         usage: "",
         about: "Show the lead's plan, its helpers, their worktrees and the merge trials",
+        anytime: true,
+    },
+    Command {
+        name: "thread",
+        aliases: &[],
+        usage: "<member>",
+        about: "Print one member's thread: what it and the others said to each other, and its report",
         anytime: true,
     },
     Command {
@@ -339,6 +346,11 @@ struct Session<'a> {
     /// What the user asked this session, in memory only, for the one distillation at its end.
     /// Kept apart from `conversation`, which `/new` clears.
     said: VecDeque<String>,
+    /// What each member's thread has held since this session began, for the status row.
+    threads: BTreeMap<String, ThreadStat>,
+    /// What the host's pane was saying before an agent mentioned the user: it waits on them
+    /// until they next type.
+    mentioned: Option<crate::pane::State>,
     /// The last turn's run, waiting for the only verdict an unverified turn gets: what the user
     /// does next.
     awaiting: Option<Awaiting>,
@@ -571,6 +583,8 @@ pub async fn run_with(
         keyboard,
         queue: VecDeque::new(),
         said: VecDeque::new(),
+        threads: BTreeMap::new(),
+        mentioned: None,
         awaiting: None,
         feed: Feed::open(),
         approval,
@@ -696,6 +710,7 @@ impl<'a> Session<'a> {
                         self.deliver();
                         self.manager.poll_inbox();
                         self.grant_idle();
+                        self.continue_mentioned();
                         continue
                     }
                     event = self.background.next(), if !self.background.is_empty() => {
@@ -751,15 +766,17 @@ impl<'a> Session<'a> {
                 }
                 // As in Claude Code: ↓ with nothing newer to recall opens the background agents.
                 if matches!(key, Key::Down)
-                    && !self.background.is_empty()
                     && self.view.term.suggestions.is_empty()
                     && self.view.term.prompt.at_newest()
+                    && (!self.background.is_empty() || !self.ended_members().is_empty())
                 {
                     let mut manage = Manage::default();
-                    show_manager(&mut self.view, &self.background, &mut manage);
+                    let ended = self.ended_members();
+                    show_manager(&mut self.view, &self.background, &ended, &mut manage);
                     self.managing = Some(manage);
                     continue;
                 }
+                self.seen_mention();
                 let action = press(&mut self.view.term, key, self.root);
                 // As in Claude Code: Esc never leaves; twice clears a draft into history.
                 // Ctrl-C clears the input, and a second press leaves; Ctrl-D on an empty line
@@ -827,7 +844,13 @@ impl<'a> Session<'a> {
 
     /// Runs a command straight away, or hands a plain message back to be executed.
     fn dispatch(&mut self, message: Message, running: bool) -> Option<Message> {
+        self.seen_mention();
         let Some((command, argument)) = command(&message.text) else {
+            // A message that mentions a member is a note to it, not a turn for the lead.
+            if self.note_to_members(&message.text) {
+                self.view.term.prompt.clear();
+                return None;
+            }
             if running {
                 self.view.queued(&message.text, self.queue.len() + 1);
                 self.queue.push_back(message);
@@ -902,6 +925,10 @@ impl<'a> Session<'a> {
             }
             "work" => {
                 let rows = self.team_rows();
+                self.view.rows(rows);
+            }
+            "thread" => {
+                let rows = self.thread_rows(argument.trim().trim_start_matches('@'));
                 self.view.rows(rows);
             }
             "memory" => self.memory(argument),
@@ -1047,9 +1074,41 @@ impl<'a> Session<'a> {
         let events = feed.poll();
         let mine = feed.mine.clone();
         let routes = feed.routes.clone();
+        let mut changed = false;
         for event in events {
+            if let Mail::Message(message) = &event
+                && let Some(member) = &message.thread
+            {
+                let stat = self.threads.entry(member.clone()).or_default();
+                if message.via != "handoff" {
+                    stat.replies += 1;
+                }
+                changed = true;
+                // What was said in a member's thread stays there: the channel holds the
+                // assignment, what was sent to it, and whatever is for the person.
+                let to_you = message.mentions.iter().any(|m| m == "you") && message.from != "user";
+                if message.via != "handoff" && !message.broadcast && !to_you {
+                    continue;
+                }
+            }
+            let to_you = matches!(&event, Mail::Message(m)
+                if m.mentions.iter().any(|x| x == "you") && m.from != "user");
             let text = self.view.mail(&event, &mine, &routes);
             self.view.term.note(&text);
+            if to_you {
+                self.view.term.signal("\x07");
+                // The pane is waiting on the person, as it is for a question of the console's.
+                if self.mentioned.is_none()
+                    && let Mail::Message(message) = &event
+                {
+                    let said = format!("{} mentioned you: {}", message.from, message.body);
+                    self.mentioned = Some(self.view.asking(&[said]));
+                }
+            }
+        }
+        self.sync_mentions();
+        if changed {
+            self.refresh_status(None);
         }
     }
 
@@ -1221,10 +1280,11 @@ impl<'a> Session<'a> {
 
     /// A key while the background agents' list is open.
     fn manage(&mut self, key: Key) {
+        let running = self.background.len();
+        let count = running + ended_names(self.recorded.as_ref(), &self.background).len();
         let Some(manage) = self.managing.as_mut() else {
             return;
         };
-        let count = self.background.len();
         match key {
             Key::Up if !manage.viewing && count > 0 => {
                 manage.selected = (manage.selected + count - 1) % count;
@@ -1232,12 +1292,45 @@ impl<'a> Session<'a> {
             Key::Down if !manage.viewing && count > 0 => {
                 manage.selected = (manage.selected + 1) % count;
             }
+            // Typed while a thread is open, a line is a reply in it.
+            Key::Char(c) if manage.viewing => manage.reply.push(c),
+            Key::Backspace if manage.viewing => {
+                manage.reply.pop();
+            }
+            Key::Enter if manage.viewing => {
+                let text = std::mem::take(&mut manage.reply);
+                let name = self
+                    .background
+                    .helpers
+                    .get(manage.selected)
+                    .map(|h| h.name.clone())
+                    .or_else(|| {
+                        ended_names(self.recorded.as_ref(), &self.background)
+                            .get(manage.selected - running)
+                            .cloned()
+                    });
+                if let (false, Some(name), Some(feed), Some(thread)) = (
+                    text.trim().is_empty(),
+                    name,
+                    self.feed.as_ref(),
+                    self.recorded.as_ref().and_then(|r| r.thread.clone()),
+                ) && let Err(error) =
+                    feed.mailbox
+                        .speak_in(&feed.channel, None, &text, Some(&thread), Some(&name))
+                {
+                    self.view
+                        .note(&format!("could not write to {name}'s thread: {error:#}"));
+                }
+            }
             Key::Enter if count > 0 => manage.viewing = true,
-            Key::Char('x' | 'X') if !manage.viewing && count > 0 => {
+            Key::Char('x' | 'X') if !manage.viewing && manage.selected < running => {
                 let name = self.background.helpers[manage.selected].name.clone();
                 self.background.stop(&name);
             }
-            Key::Escape | Key::Interrupt if manage.viewing => manage.viewing = false,
+            Key::Escape | Key::Interrupt if manage.viewing => {
+                manage.viewing = false;
+                manage.reply.clear();
+            }
             Key::Escape | Key::Interrupt | Key::CtrlD | Key::Eof => {
                 self.managing = None;
             }
@@ -1247,11 +1340,14 @@ impl<'a> Session<'a> {
     }
 
     fn redraw_manager(&mut self) {
+        let ended = self.ended_members();
         match self.managing.as_mut() {
-            Some(manage) if !self.background.is_empty() && self.asks.is_empty() => {
-                show_manager(&mut self.view, &self.background, manage);
+            Some(manage)
+                if !(self.background.is_empty() && ended.is_empty()) && self.asks.is_empty() =>
+            {
+                show_manager(&mut self.view, &self.background, &ended, manage);
             }
-            Some(_) if self.background.is_empty() => {
+            Some(_) if self.background.is_empty() && ended.is_empty() => {
                 self.managing = None;
                 self.view.term.overlay = None;
                 self.refresh_status(None);
@@ -1275,6 +1371,244 @@ impl<'a> Session<'a> {
             self.refresh_status(None);
         } else {
             show_ask(&mut self.view, &self.asks);
+        }
+    }
+
+    /// A note the person wrote to a member that had finished starts it again in its own thread:
+    /// one continuation request, decided by the same gates as any start. The lead hears of it
+    /// with the member's report, as it would of anything a helper does.
+    fn continue_mentioned(&mut self) {
+        let (Some(feed), Some(recorded)) = (self.feed.as_ref(), self.recorded.as_ref()) else {
+            return;
+        };
+        let Some(thread) = recorded.thread.clone() else {
+            return;
+        };
+        let Ok(notes) = recorded.store().unheard_notes(&thread) else {
+            return;
+        };
+        let Some(descriptor) = self.descriptor.clone() else {
+            return;
+        };
+        let requester = self
+            .manager
+            .inbox_id()
+            .map(str::to_owned)
+            .or_else(|| crate::mailbox::ours().into_iter().next().map(|(id, _)| id));
+        let Some(requester) = requester else {
+            return;
+        };
+        let mut asked = false;
+        for (id, member, body) in notes {
+            let _ = recorded.store().heard_note(id);
+            let Ok(Some((seat, _))) = recorded.store().member_seat(&thread, &member) else {
+                continue;
+            };
+            if self.background.helpers.iter().any(|h| h.name == member) {
+                continue;
+            }
+            let (title, write) = recorded
+                .store()
+                .seat_title_and_write(&seat)
+                .unwrap_or((member.clone(), false));
+            if feed
+                .mailbox
+                .request_continuation(&requester, &member, &title, &body, write)
+                .is_ok()
+            {
+                asked = true;
+                self.manager.later_note(format!(
+                    "The user told `{member}` directly, in its thread, and it is continuing: {body}"
+                ));
+            }
+        }
+        if !asked {
+            return;
+        }
+        let env = self.env();
+        let decide = Decide {
+            manager: &mut self.manager,
+            asks: &mut self.asks,
+            tty: self.tty,
+            headless: self.headless,
+            lead: self.lead_name.clone().unwrap_or_default(),
+        };
+        let started = grant(
+            feed,
+            &mut self.background,
+            env,
+            self.recorded.as_ref(),
+            Some(&descriptor),
+            0,
+            false,
+            decide,
+        );
+        for (name, _) in started {
+            self.view.note(&format!("continuing {name} in its thread"));
+        }
+    }
+
+    /// The members that have finished, with what their threads hold, for ↓'s list.
+    fn ended_members(&self) -> Vec<Ended> {
+        let Some(recorded) = &self.recorded else {
+            return vec![];
+        };
+        let Some(thread) = &recorded.thread else {
+            return vec![];
+        };
+        let names = ended_names(self.recorded.as_ref(), &self.background);
+        names
+            .into_iter()
+            .map(|name| {
+                let lines = recorded
+                    .store()
+                    .member_thread(thread, &name)
+                    .unwrap_or_default();
+                let about = recorded
+                    .store()
+                    .members(thread)
+                    .ok()
+                    .and_then(|m| m.into_iter().find(|m| m.name == name))
+                    .map(|m| {
+                        format!(
+                            "{} · {} replies",
+                            m.title.unwrap_or_else(|| "done".into()),
+                            m.replies
+                        )
+                    })
+                    .unwrap_or_default();
+                let thread = lines
+                    .into_iter()
+                    .map(|l| format!("{:<10} {:<6} {}", l.who, l.kind, l.text.replace('\n', " ")))
+                    .collect();
+                Ended {
+                    name,
+                    about,
+                    thread,
+                }
+            })
+            .collect()
+    }
+
+    /// The person is at the keyboard again: the pane stops waiting on what an agent said to
+    /// them.
+    fn seen_mention(&mut self) {
+        if let Some(before) = self.mentioned.take() {
+            self.view.asked(before);
+        }
+    }
+
+    /// The members `@` can mention: those this conversation has had, then the lead, then the
+    /// room. A member that has finished is still one, and mentioning it continues it.
+    fn member_names(&self) -> Vec<(String, String)> {
+        let mut names: Vec<(String, String)> = vec![];
+        let running: BTreeSet<&str> = self
+            .background
+            .helpers
+            .iter()
+            .map(|h| h.name.as_str())
+            .collect();
+        if let Some(recorded) = &self.recorded
+            && let Some(thread) = &recorded.thread
+            && let Ok(members) = recorded.store().members(thread)
+        {
+            for member in members {
+                let route = [member.agent.as_deref(), member.model.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let state = if running.contains(member.name.as_str()) || member.live {
+                    "working".to_owned()
+                } else {
+                    "done · mention to continue".to_owned()
+                };
+                names.push((member.name, format!("{route}  {state}")));
+            }
+        }
+        for helper in &self.background.helpers {
+            if !names.iter().any(|(n, _)| *n == helper.name) {
+                names.push((
+                    helper.name.clone(),
+                    format!("{}  working", helper.route.clone().unwrap_or_default()),
+                ));
+            }
+        }
+        if let Some(lead) = &self.lead_name
+            && !lead.is_empty()
+        {
+            names.push((lead.clone(), "the lead".to_owned()));
+        }
+        names.push(("channel".to_owned(), "everyone".to_owned()));
+        names
+    }
+
+    /// Hands the input line the names `@` offers.
+    fn sync_mentions(&mut self) {
+        self.view.term.mention_names = self.member_names();
+    }
+
+    /// A message that mentions a member and not the lead is a note to that member, written in
+    /// its thread: it reaches the member wherever it is, continues it if it had finished, and
+    /// the lead sees it in the channel. Whether it was one.
+    fn note_to_members(&mut self, text: &str) -> bool {
+        if !text.contains('@') {
+            return false;
+        }
+        let (Some(feed), Some(recorded)) = (self.feed.as_ref(), self.recorded.as_ref()) else {
+            return false;
+        };
+        let Some(thread) = recorded.thread.clone() else {
+            return false;
+        };
+        let lead = self.lead_name.clone().unwrap_or_default();
+        let members: Vec<String> = self
+            .member_names()
+            .into_iter()
+            .map(|(name, _)| name)
+            .filter(|name| name != "channel" && *name != lead)
+            .collect();
+        let mut known = members.clone();
+        known.push(lead.clone());
+        let mentions = crate::mailbox::mentions_in(text, &known);
+        if mentions.iter().any(|m| !lead.is_empty() && *m == lead)
+            || !mentions.iter().any(|m| members.contains(m))
+        {
+            return false;
+        }
+        feed.mailbox
+            .speak_in(&feed.channel, None, text, Some(&thread), None)
+            .is_ok()
+    }
+
+    /// One member's thread as lines for the transcript: what `/thread <member>` prints.
+    fn thread_rows(&mut self, member: &str) -> Vec<String> {
+        let Some(recorded) = &self.recorded else {
+            return vec!["Nothing is recorded in this conversation".to_owned()];
+        };
+        let Some(thread) = &recorded.thread else {
+            return vec!["Nothing is recorded in this conversation".to_owned()];
+        };
+        if member.is_empty() {
+            return self
+                .member_names()
+                .into_iter()
+                .filter(|(name, _)| name != "channel" && Some(name) != self.lead_name.as_ref())
+                .map(|(name, about)| format!("  {name}  {about}"))
+                .collect();
+        }
+        match recorded.store().member_thread(thread, member) {
+            Ok(lines) if !lines.is_empty() => {
+                let width = self.view.width().saturating_sub(24).max(30);
+                lines
+                    .into_iter()
+                    .map(|line| {
+                        let text = line.text.replace('\n', " ");
+                        format!("  {:<12} {:<7} {}", line.who, line.kind, fit(&text, width))
+                    })
+                    .collect()
+            }
+            _ => vec![format!("No member named {member} in this conversation")],
         }
     }
 
@@ -1521,6 +1855,26 @@ impl<'a> Session<'a> {
                     .unwrap_or_else(|| "/help for commands".into()),
             ),
         }
+        // The threads of the members the lead works with, where a terminal can keep them in
+        // view: running ones first, each with what it has held.
+        let mut shown: Vec<String> = vec![];
+        for helper in &self.background.helpers {
+            let replies = self.threads.get(&helper.name).map_or(0, |t| t.replies);
+            shown.push(if replies > 0 {
+                format!("{} ● {replies}", helper.name)
+            } else {
+                format!("{} ●", helper.name)
+            });
+        }
+        for (name, stat) in &self.threads {
+            if stat.replies > 0 && !self.background.helpers.iter().any(|h| h.name == *name) {
+                shown.push(format!("{name} {}", stat.replies));
+            }
+        }
+        if !shown.is_empty() {
+            shown.truncate(4);
+            parts.push(format!("💬 {}", shown.join(" │ ")));
+        }
         let status = fit(
             &parts.join(" · "),
             self.view.term.columns().saturating_sub(1),
@@ -1530,9 +1884,111 @@ impl<'a> Session<'a> {
     }
 }
 
+/// Members of the conversation that are not running now, oldest first.
+fn ended_names(
+    recorded: Option<&Recorded>,
+    background: &background::Background<'_>,
+) -> Vec<String> {
+    let Some(recorded) = recorded else {
+        return vec![];
+    };
+    let Some(thread) = &recorded.thread else {
+        return vec![];
+    };
+    recorded
+        .store()
+        .members(thread)
+        .map(|members| {
+            members
+                .into_iter()
+                .filter(|m| !background.helpers.iter().any(|h| h.name == m.name))
+                .map(|m| m.name)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What one member's thread has held in this session.
+#[derive(Default)]
+struct ThreadStat {
+    replies: usize,
+}
+
+/// The `@name` being typed at the cursor, with where it starts, when it is one a member could
+/// be: not a path, which has a `/` or a `.` in it.
+fn mention_word(term: &Term) -> Option<(usize, String)> {
+    let line = term.prompt.text();
+    let cursor = term.prompt.cursor;
+    let start = line[..cursor]
+        .rfind(char::is_whitespace)
+        .map_or(0, |index| index + 1);
+    let word = line[start..cursor].strip_prefix('@')?;
+    word.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .then(|| (start, word.to_owned()))
+}
+
+/// The members matching what follows an `@`, as the rows above the input. A name or the
+/// agent running it that starts with what was typed is a match.
+fn suggest_mentions(term: &mut Term) -> bool {
+    let Some((_, typed)) = mention_word(term) else {
+        term.mention_pick.clear();
+        return false;
+    };
+    let typed = typed.to_ascii_lowercase();
+    let matching: Vec<(String, String)> = term
+        .mention_names
+        .iter()
+        .filter(|(name, about)| {
+            name.to_ascii_lowercase().starts_with(&typed)
+                || about.to_ascii_lowercase().starts_with(&typed)
+        })
+        .cloned()
+        .collect();
+    if matching.is_empty() {
+        term.mention_pick.clear();
+        return false;
+    }
+    term.selected = term.selected.min(matching.len() - 1);
+    let paint = |code: &str, text: &str| {
+        if term.color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    };
+    let column = matching
+        .iter()
+        .map(|(name, _)| width_of(name))
+        .max()
+        .unwrap_or(0)
+        + 4;
+    term.suggestions = matching
+        .iter()
+        .enumerate()
+        .map(|(index, (name, about))| {
+            let shade = if index == term.selected { BRAND } else { MUTED };
+            let (head, tail) = name.split_at(typed.len().min(name.len()));
+            format!(
+                "  {}{}{}{}{}",
+                paint(BOLD, "@"),
+                paint(BOLD, head),
+                paint(shade, tail),
+                " ".repeat(column.saturating_sub(width_of(name))),
+                paint(shade, about)
+            )
+        })
+        .collect();
+    term.mention_pick = matching.into_iter().map(|(name, _)| name).collect();
+    true
+}
+
 /// Command candidates for what has been typed, as the rows drawn above the input. Only while
 /// the command itself is being typed: past the first space the rest is that command's argument.
 fn suggest(term: &mut Term) {
+    if suggest_mentions(term) {
+        return;
+    }
     let typed = term
         .prompt
         .text()
@@ -1618,7 +2074,10 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                 && !COMMANDS.iter().any(|c| {
                     let typed = term.prompt.text().trim_start_matches('/');
                     c.name == typed || c.aliases.contains(&typed)
-                }) =>
+                })
+                // A name typed out in full is sent, as a command is.
+                && !mention_word(term)
+                    .is_some_and(|(_, typed)| term.mention_pick.contains(&typed)) =>
         {
             accept(term);
         }
@@ -1680,6 +2139,17 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
 
 /// Takes the highlighted candidate, leaving the cursor where its argument goes.
 fn accept(term: &mut Term) {
+    if let Some(name) = term.mention_pick.get(term.selected).cloned()
+        && let Some((start, _)) = mention_word(term)
+    {
+        let cursor = term.prompt.cursor;
+        let mut buffer = term.prompt.text().to_owned();
+        buffer.replace_range(start..cursor, &format!("@{name} "));
+        term.prompt.cursor = start + name.len() + 2;
+        term.prompt.buffer = buffer;
+        term.mention_pick.clear();
+        return;
+    }
     let Some(command) = COMMANDS
         .iter()
         .filter(|c| {
@@ -2053,6 +2523,10 @@ impl Session<'_> {
         rows[0] = seat(0, lead, true, lead_read_only);
         for (index, role) in beside.iter().enumerate() {
             rows[index + 1] = seat(index + 1, role.name, false, true);
+            // A seat beside the lead is a member of the conversation, by its role.
+            if let Some(row) = &rows[index + 1] {
+                let _ = recorded.store().seat_member(&row.seat, role.name, None);
+            }
         }
         rows
     }
@@ -3871,17 +4345,58 @@ struct Manage {
     selected: usize,
     /// Showing what the selected one has said so far.
     viewing: bool,
+    /// What is being typed as a reply in the open thread.
+    reply: String,
 }
 
-fn show_manager(view: &mut View, background: &background::Background<'_>, manage: &mut Manage) {
-    if background.is_empty() {
+/// A member that has finished, listed beside the running helpers: its name, what it was for,
+/// and what its thread holds, for the rows shown when it is opened.
+struct Ended {
+    name: String,
+    about: String,
+    thread: Vec<String>,
+}
+
+fn show_manager(
+    view: &mut View,
+    background: &background::Background<'_>,
+    ended: &[Ended],
+    manage: &mut Manage,
+) {
+    let total = background.len() + ended.len();
+    if total == 0 {
         return;
     }
-    manage.selected = manage.selected.min(background.len() - 1);
+    manage.selected = manage.selected.min(total - 1);
     let width = view.width();
     let mut rows = vec![view.paint(MUTED, &"─".repeat(width))];
-    let helper = &background.helpers[manage.selected];
-    if manage.viewing {
+    if manage.selected >= background.len() {
+        let done = &ended[manage.selected - background.len()];
+        if manage.viewing {
+            rows.push(format!(
+                " {} {}",
+                view.paint(&peer_color(&done.name), &done.name),
+                view.paint(MUTED, &format!("({}) · done", done.about))
+            ));
+            for line in &done.thread[done.thread.len().saturating_sub(12)..] {
+                rows.push(format!("   {}", fit(line, width.saturating_sub(4))));
+            }
+            rows.push(format!(
+                " {} {}",
+                view.paint(BRAND, "reply ›"),
+                fit(&manage.reply, width.saturating_sub(12))
+            ));
+            view.term.overlay = Some(rows);
+            view.term.status = view.paint(
+                MUTED,
+                " a reply continues it in its thread · Enter to send · Esc to go back",
+            );
+            view.term.render();
+            return;
+        }
+    }
+    if manage.viewing && manage.selected < background.len() {
+        let helper = &background.helpers[manage.selected];
         rows.push(format!(
             " {} {}",
             view.paint(&peer_color(&helper.name), &helper.name),
@@ -3895,8 +4410,16 @@ fn show_manager(view: &mut View, background: &background::Background<'_>, manage
         for line in &lines[lines.len().saturating_sub(12)..] {
             rows.push(format!("   {}", fit(line, width.saturating_sub(4))));
         }
+        rows.push(format!(
+            " {} {}",
+            view.paint(BRAND, "reply ›"),
+            fit(&manage.reply, width.saturating_sub(12))
+        ));
         view.term.overlay = Some(rows);
-        view.term.status = view.paint(MUTED, " Esc to go back");
+        view.term.status = view.paint(
+            MUTED,
+            " type a reply in its thread · Enter to send · Esc to go back",
+        );
         view.term.render();
         return;
     }
@@ -3905,6 +4428,7 @@ fn show_manager(view: &mut View, background: &background::Background<'_>, manage
         .helpers
         .iter()
         .map(|h| h.name.len())
+        .chain(ended.iter().map(|e| e.name.len()))
         .max()
         .unwrap_or(0);
     // Each helper with what it was asked to do and for how long, and under it the agents its
@@ -3949,6 +4473,21 @@ fn show_manager(view: &mut View, background: &background::Background<'_>, manage
                 view.paint(MUTED, &fit(&label, width.saturating_sub(4)))
             ));
         }
+    }
+    for (index, done) in ended.iter().enumerate() {
+        let label = fit(
+            &format!("{:name_width$}  {}", done.name, done.about),
+            width.saturating_sub(4),
+        );
+        rows.push(if background.len() + index == manage.selected {
+            format!(
+                " {} {}",
+                view.paint(BRAND, "❯"),
+                view.paint(&format!("1;{BRAND}"), &label)
+            )
+        } else {
+            format!("   {}", view.paint(MUTED, &label))
+        });
     }
     view.term.overlay = Some(rows);
     view.term.status = view.paint(
@@ -4277,6 +4816,7 @@ fn helper_seat(
     name: &str,
     title: &str,
     write: bool,
+    continues: Option<&str>,
 ) -> Option<crate::activity::SeatRef> {
     recorded.and_then(|recorded| {
         let (thread, turn) = (recorded.thread.clone()?, recorded.turn.clone()?);
@@ -4285,6 +4825,8 @@ fn helper_seat(
             .create_seat(&turn, ordinal, name, false, !write, None, None)
             .ok()?;
         let _ = store.seat_details(&seat, Some(title), true, "lead");
+        // The name is the member, and a seat under a name that has had one is its next.
+        let _ = store.seat_member(&seat, name, continues);
         Some(crate::activity::SeatRef {
             thread,
             turn,
@@ -4361,7 +4903,9 @@ fn grant<'a>(
             refuse(&format!("already {live} agents on this conversation"));
             continue;
         }
-        if !crate::router::roles::worth_seating(env.config, env.store, descriptor) {
+        // What the person asked for outright is never held back for being small.
+        let by_user = request.payload["user"].as_bool().unwrap_or(false);
+        if !by_user && !crate::router::roles::worth_seating(env.config, env.store, descriptor) {
             refuse("work like this has cost less than a helper session costs here; do it yourself");
             continue;
         }
@@ -4371,8 +4915,46 @@ fn grant<'a>(
             );
             continue;
         }
+        // A name the conversation has already had is that member asked again: its thread
+        // goes on and its session is picked up, not a stranger under another name.
+        if background.helpers.iter().any(|h| h.name == request.name) {
+            refuse(&format!(
+                "{} is still running; mention it with @{} or post in its thread",
+                request.name, request.name
+            ));
+            continue;
+        }
+        let previous = recorded
+            .and_then(|r| Some((r, r.thread.clone()?)))
+            .and_then(|(r, thread)| r.store().member_seat(&thread, &request.name).ok().flatten());
         let taken = crate::mailbox::our_names();
-        let name = background.free_name(&request.name, &|name| taken.contains(name));
+        let name = if previous.is_some() {
+            request.name.clone()
+        } else {
+            background.free_name(&request.name, &|name| taken.contains(name))
+        };
+        let continued = previous.as_ref().and_then(|(_, c)| c.as_ref());
+        let resume = continued
+            .filter(|c| c["loadable"].as_bool().unwrap_or(false))
+            .and_then(|c| c["session_id"].as_str().map(str::to_owned));
+        // An agent that cannot load its session is told its own thread instead.
+        let task = match (&previous, &resume) {
+            (None, _) => request.task.clone(),
+            (Some(_), Some(_)) => format!("A new request in your thread: {}", request.task),
+            (Some(_), None) => {
+                let history = recorded
+                    .and_then(|r| {
+                        r.store()
+                            .member_history(r.thread.as_deref()?, &name, 6_000)
+                            .ok()
+                    })
+                    .unwrap_or_default();
+                format!(
+                    "You are continuing earlier work in your thread; your session is gone, so this is what was said:\n{history}\n\nA new request in your thread: {}",
+                    request.task
+                )
+            }
+        };
         let mut opened = None;
         let workspace = if request.write {
             if let Err(error) = hold_live(&env) {
@@ -4381,6 +4963,12 @@ fn grant<'a>(
             }
             match crate::workspaces::Workspaces::open(env.root, &env.workspace).and_then(
                 |mut work| {
+                    // A worktree the member still has open is where it goes on.
+                    if previous.is_some()
+                        && let Some(open) = work.workspaces.iter().find(|w| w.name == name)
+                    {
+                        return Ok((open.root.clone(), None));
+                    }
                     let root = work.create_titled(&name, &request.title)?;
                     Ok((root, work.workspaces.last().cloned()))
                 },
@@ -4404,7 +4992,14 @@ fn grant<'a>(
             continue;
         }
         let ordinal = 100 + started.len() + background.len();
-        let seat = helper_seat(recorded, ordinal, &name, &request.title, request.write);
+        let seat = helper_seat(
+            recorded,
+            ordinal,
+            &name,
+            &request.title,
+            request.write,
+            previous.as_ref().map(|(seat, _)| seat.as_str()),
+        );
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
         // The worktree is a row from the moment it exists: a helper that never starts leaves
         // one the sweep closes, and the row has to be there for the sweep to close it.
@@ -4437,15 +5032,31 @@ fn grant<'a>(
             }
             continue;
         }
+        // The lead's assignment is the first post of the member's thread, and the one it hangs
+        // from; a member asked again gets another under the same thread.
+        if let Some(recorded) = recorded {
+            let _ = feed.mailbox.assign(
+                &feed.channel,
+                recorded.thread.as_deref(),
+                (&request.requester, &request.requester_name),
+                &name,
+                &format!(
+                    "{}: {}",
+                    request.title,
+                    crate::context::bounded(&request.task, 1_500)
+                ),
+            );
+        }
         background.start(
             env.clone(),
             lead,
             name.clone(),
             request.title.clone(),
-            &request.task,
+            &task,
             descriptor.clone(),
             seat,
             workspace,
+            resume,
         );
         started.push((name, request.title));
     }
@@ -4639,7 +5250,7 @@ fn settle<'a>(
                     taken.contains(n)
                 });
                 let title = format!("Resolve merge conflicts of {}", trial.workspace);
-                let seat = helper_seat(recorded, 100 + background.len(), &name, &title, true);
+                let seat = helper_seat(recorded, 100 + background.len(), &name, &title, true, None);
                 let descriptor = descriptor.unwrap_or_else(|| {
                     crate::router::profiler::profile("resolve merge conflicts", env.root)
                 });
@@ -4652,6 +5263,7 @@ fn settle<'a>(
                     descriptor,
                     seat,
                     Some(trial.root.clone()),
+                    None,
                 );
                 manager.resolving(&name, &trial.id);
                 if let Some(t) = manager.trials.iter().find(|t| t.id == trial.id) {
@@ -7351,6 +7963,20 @@ impl View {
         routes: &BTreeMap<String, String>,
     ) -> String {
         match mail {
+            // The lead's assignment is the first line of a member's thread: one line in the
+            // channel, and what the thread hangs from.
+            Mail::Message(message) if message.via == "handoff" => {
+                let member = message.thread.clone().unwrap_or_else(|| message.to.clone());
+                format!(
+                    "{} {} {}\n",
+                    self.paint(MUTED, "└"),
+                    self.paint(&peer_color(&member), &format!("{member}'s thread")),
+                    self.paint(
+                        MUTED,
+                        &fit(&message.body.replace('\n', " "), width().saturating_sub(30))
+                    )
+                )
+            }
             Mail::Message(message) => {
                 // Several seats of this process are all "this session": the tag stops meaning
                 // anything, and only the colours tell them apart.
@@ -7368,8 +7994,15 @@ impl View {
                     .filter(|_| between_ours || !mine.contains(&message.from))
                     .map(|route| self.paint(MUTED, &format!(" ({route})")))
                     .unwrap_or_default();
+                // What an agent says to the person is drawn so it is not missed.
+                let to_you = message.mentions.iter().any(|m| m == "you") && message.from != "user";
                 let mut out = format!(
-                    "{} {}{route} {} {}  {}\n",
+                    "{}{} {}{route} {} {}  {}\n",
+                    if to_you {
+                        format!("{} ", self.paint("7", " @you "))
+                    } else {
+                        String::new()
+                    },
                     self.paint(&color, "✉"),
                     self.peer(&message.from, mine, !between_ours),
                     self.paint(MUTED, "→"),

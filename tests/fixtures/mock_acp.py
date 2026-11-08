@@ -53,7 +53,8 @@ def mailbox_tools():
     assert names[:4] == ["list_peers", "send_message", "read_messages", "set_status"], names
     manager = ["set_plan", "list_work", "stop_agent", "merge_trial", "apply_merge"]
     lead = ["start_agent", "finish_workspace"]
-    assert names[4:] in ([], lead, [*lead, *manager]), names
+    assert names[4:7] == ["post", "read_channel", "read_thread"], names
+    assert names[7:] in ([], lead, [*lead, *manager]), names
     offered.extend(names)
 
     def tool(tool_name, **arguments):

@@ -60,7 +60,8 @@
       "at": 1769000000000,
       "failed": false,
       "turn_origin": null,
-      "provider": null
+      "provider": null,
+      "member": null
     },
     {
       "seq": 2,
@@ -85,7 +86,8 @@
       "at": 1769000001000,
       "failed": false,
       "turn_origin": null,
-      "provider": "openai"
+      "provider": "openai",
+      "member": null
     },
     {
       "seq": 3,
@@ -104,7 +106,8 @@
       "at": 1769000002000,
       "failed": false,
       "turn_origin": null,
-      "provider": "openai"
+      "provider": "openai",
+      "member": null
     },
     {
       "seq": 4,
@@ -134,7 +137,8 @@
       "at": 1769000003000,
       "failed": false,
       "turn_origin": null,
-      "provider": "openai"
+      "provider": "openai",
+      "member": null
     },
     {
       "seq": 5,
@@ -153,7 +157,8 @@
       "at": 1769000004000,
       "failed": false,
       "turn_origin": null,
-      "provider": null
+      "provider": null,
+      "member": null
     },
     {
       "seq": 6,
@@ -178,7 +183,8 @@
       "at": 1769000005000,
       "failed": false,
       "turn_origin": null,
-      "provider": "openai"
+      "provider": "openai",
+      "member": null
     },
     {
       "seq": 7,
@@ -197,7 +203,8 @@
       "at": 1769000006000,
       "failed": false,
       "turn_origin": null,
-      "provider": "openai"
+      "provider": "openai",
+      "member": null
     },
     {
       "seq": 8,
@@ -227,7 +234,8 @@
       "at": 1769000007000,
       "failed": false,
       "turn_origin": null,
-      "provider": "openai"
+      "provider": "openai",
+      "member": null
     }
   ],
   "seats": [

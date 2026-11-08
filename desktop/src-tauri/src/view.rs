@@ -519,6 +519,14 @@ pub struct Said {
     pub model: Option<String>,
     pub agent: Option<String>,
     pub provider: Option<String>,
+    /// The post this is a reply under, and the member whose thread it belongs to; neither for
+    /// a post to the channel.
+    pub parent: Option<i64>,
+    pub member: Option<String>,
+    /// Who the text mentions, `you` and `channel` included.
+    pub mentions: Vec<String>,
+    /// A reply that was also sent to the channel.
+    pub broadcast: bool,
 }
 
 /// What one look at a thread found: whether the agent running it has gone, and whether there
@@ -932,7 +940,8 @@ impl Client {
     pub fn room(&self, thread: &str) -> Result<Vec<Said>> {
         let connection = self.activity.connection();
         let mut statement = connection.prepare(
-            "SELECT seq, kind, who, whom, via, text, at, role, model, agent, provider FROM v_room
+            "SELECT seq, kind, who, whom, via, text, at, role, model, agent, provider,
+                    parent, member, mentions, broadcast FROM v_room
              WHERE project_id = (SELECT project_id FROM threads WHERE id=?1)
                AND (thread_id IS NULL OR thread_id=?1)
              ORDER BY at, seq",
@@ -953,13 +962,54 @@ impl Client {
                 model: r.get(8)?,
                 agent: r.get(9)?,
                 provider: r.get(10)?,
+                parent: r.get(11)?,
+                member: r.get(12)?,
+                mentions: r
+                    .get::<_, Option<String>>(13)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
+                broadcast: r.get::<_, i64>(14)? != 0,
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
     }
 
+    /// The agents the lead works with in a conversation: one thread each in the channel.
+    pub fn members(&self, thread: &str) -> Result<Vec<orochi::activity::Member>> {
+        self.activity.members(thread)
+    }
+
+    /// What the agents have said to the user that they have not seen, across conversations.
+    pub fn mentions(&self) -> Result<Vec<orochi::activity::Mention>> {
+        self.activity.mentions(None)
+    }
+
+    /// The user has read this conversation's mentions.
+    pub fn see_mentions(&self, thread: &str) -> Result<()> {
+        self.activity.see_mentions(thread)
+    }
+
     /// Leaves a note in the room, for one seat or for everyone. It reaches them when they next
-    /// read their messages — a note on the table, not an interruption.
+    /// read their messages — a note on the table, not an interruption. `member` makes it a
+    /// reply in that member's thread; `@name` in the text reaches whoever it names.
+    pub fn say_in(
+        &self,
+        thread: &str,
+        to: Option<&str>,
+        text: &str,
+        member: Option<&str>,
+    ) -> Result<()> {
+        let project: String = self.activity.connection().query_row(
+            "SELECT project_id FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )?;
+        let mailbox = orochi::mailbox::Mailbox::open(self.store.data_dir(), &self.mailbox)?;
+        mailbox.speak_in(&project, to, text, Some(thread), member)?;
+        Ok(())
+    }
+
+    /// Leaves a note in the room, for one seat or for everyone.
     pub fn say(&self, thread: &str, to: Option<&str>, text: &str) -> Result<()> {
         let project: String = self.activity.connection().query_row(
             "SELECT project_id FROM threads WHERE id=?1",

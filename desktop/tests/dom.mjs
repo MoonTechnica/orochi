@@ -184,7 +184,7 @@ export function page(ids, markup = "") {
       .map((m) => m[1]),
   );
   for (const id of ids) {
-    const node = new Node(id === "message" ? "textarea" : id === "panel" ? "dialog" : "div");
+    const node = new Node((id === "message" || id === "member-reply") ? "textarea" : id === "panel" ? "dialog" : "div");
     node.id = id;
     node.value = "";
     node.hidden = startsHidden.has(id);

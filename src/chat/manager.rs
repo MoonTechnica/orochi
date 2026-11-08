@@ -647,6 +647,24 @@ impl<'a> Manager<'a> {
             self.inbox = crate::mailbox::Inbox::hold(name, root);
         }
     }
+    /// The peer the lead's name is held by between turns.
+    pub fn inbox_id(&self) -> Option<&str> {
+        self.inbox.as_ref().map(|inbox| inbox.id())
+    }
+    /// A line for the lead's next turn, from the console rather than from a peer.
+    pub fn later_note(&mut self, text: String) {
+        self.later.push(crate::mailbox::Message {
+            id: 0,
+            from: "user".to_owned(),
+            to: "lead".to_owned(),
+            body: text,
+            sent_at: crate::types::now(),
+            thread: None,
+            mentions: vec![],
+            broadcast: false,
+            via: "user".to_owned(),
+        });
+    }
     /// Gives the name back, for the lead's next session.
     pub fn release_inbox(&mut self) {
         if let Some(inbox) = self.inbox.take() {

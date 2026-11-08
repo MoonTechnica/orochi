@@ -488,6 +488,62 @@ pub struct SearchHit {
     pub snippet: Option<String>,
 }
 
+/// One agent the lead works with in a conversation, as the channel draws its thread: a name,
+/// whatever seat it last held, and what waits on the user in it (`docs/team-channel-design.md`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Member {
+    pub thread_id: String,
+    pub name: String,
+    pub seat_id: String,
+    pub role: String,
+    pub read_only: bool,
+    pub state: String,
+    pub live: bool,
+    pub agent: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning: Option<String>,
+    pub doing: Option<String>,
+    pub reported: bool,
+    pub title: Option<String>,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub seats: i64,
+    pub replies: i64,
+    /// Seconds, as the mailbox keeps them.
+    pub last_reply_at: Option<i64>,
+    pub workspace_state: Option<String>,
+    pub trial_state: Option<String>,
+    /// What waits on the user: `asking`, `mention`, `worktree` or `trial`.
+    pub needs: Option<String>,
+}
+
+/// One line of a member's thread.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemberLine {
+    pub at: i64,
+    pub who: String,
+    /// `task` (the lead's assignment), `post`, `report` or `work`.
+    pub kind: String,
+    pub text: String,
+}
+
+/// A post or reply that mentions the user and has not been seen.
+#[derive(Debug, Clone, Serialize)]
+pub struct Mention {
+    pub message_id: i64,
+    pub thread_id: String,
+    pub project_id: String,
+    pub thread_title: String,
+    pub project: String,
+    pub who: String,
+    pub member: Option<String>,
+    pub parent: Option<i64>,
+    pub text: String,
+    /// Seconds, as the mailbox keeps them.
+    pub at: i64,
+}
+
 /// A seat still working, across threads: the sidebar's child rows and the Activity screen.
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveSeat {
@@ -1801,6 +1857,247 @@ impl Activity {
     }
 
     /// Seats still working under a live host, oldest first.
+    /// The agents the lead works with in a conversation, running ones first.
+    pub fn members(&self, thread: &str) -> Result<Vec<Member>> {
+        let mut statement = self.connection.prepare(
+            "SELECT thread_id, name, seat_id, role, read_only, state, live, agent, provider, model,
+                    reasoning, doing, reported, title, started_at, ended_at, seats, replies,
+                    last_reply_at, workspace_state, trial_state, needs
+             FROM v_members WHERE thread_id=?1 ORDER BY live DESC, started_at",
+        )?;
+        let rows = statement.query_map([thread], |r| {
+            Ok(Member {
+                thread_id: r.get(0)?,
+                name: r.get(1)?,
+                seat_id: r.get(2)?,
+                role: r.get(3)?,
+                read_only: r.get::<_, i64>(4)? != 0,
+                state: r.get(5)?,
+                live: r.get::<_, i64>(6)? != 0,
+                agent: r.get(7)?,
+                provider: r.get(8)?,
+                model: r.get(9)?,
+                reasoning: r.get(10)?,
+                doing: r.get(11)?,
+                reported: r.get::<_, i64>(12)? != 0,
+                title: r.get(13)?,
+                started_at: r.get(14)?,
+                ended_at: r.get(15)?,
+                seats: r.get(16)?,
+                replies: r.get(17)?,
+                last_reply_at: r.get(18)?,
+                workspace_state: r.get(19)?,
+                trial_state: r.get(20)?,
+                needs: r.get(21)?,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// Mentions of the user nobody has seen yet, for one conversation or for all.
+    pub fn mentions(&self, thread: Option<&str>) -> Result<Vec<Mention>> {
+        let mut statement = self.connection.prepare(
+            "SELECT message_id, thread_id, project_id, thread_title, project, who, member, parent,
+                    text, at FROM v_mentions WHERE (?1 IS NULL OR thread_id=?1)
+             ORDER BY message_id",
+        )?;
+        let rows = statement.query_map([thread], |r| {
+            Ok(Mention {
+                message_id: r.get(0)?,
+                thread_id: r.get(1)?,
+                project_id: r.get(2)?,
+                thread_title: r.get(3)?,
+                project: r.get(4)?,
+                who: r.get(5)?,
+                member: r.get(6)?,
+                parent: r.get(7)?,
+                text: r.get(8)?,
+                at: r.get(9)?,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// The user has read what this conversation's agents said to them up to now.
+    pub fn see_mentions(&self, thread: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT INTO ui_state (thread_id, seen_mention)
+             VALUES (?1, COALESCE((SELECT max(id) FROM messages WHERE thread_id=?1), 0))
+             ON CONFLICT(thread_id) DO UPDATE SET seen_mention=excluded.seen_mention",
+            [thread],
+        )?;
+        Ok(())
+    }
+
+    /// Names a seat as the member it is, and the seat of that member it continues. A member is
+    /// a name within one conversation: every seat that ran under it is the same thread.
+    pub fn seat_member(&self, seat: &str, member: &str, continues: Option<&str>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE seats SET member=?2, continues=?3 WHERE id=?1",
+            params![seat, member, continues],
+        )?;
+        Ok(())
+    }
+
+    /// How to resume a member: what its last seat said it ran and the session it left.
+    pub fn seat_continuation(&self, seat: &str, continuation: &serde_json::Value) -> Result<()> {
+        self.connection.execute(
+            "UPDATE seats SET continuation=?2 WHERE id=?1",
+            params![seat, continuation.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// What was said in a member's thread and what it reported, oldest first and bounded: all a
+    /// continued member has of its earlier work when its agent cannot load the session.
+    pub fn member_history(&self, thread: &str, member: &str, chars: usize) -> Result<String> {
+        let mut lines: Vec<(i64, String)> = vec![];
+        let mut messages = self.connection.prepare(
+            "SELECT sent_at, sender_name, body FROM messages
+             WHERE thread_id=?1 AND lower(member)=lower(?2) ORDER BY id",
+        )?;
+        for row in messages.query_map(params![thread, member], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })? {
+            let (at, who, body) = row?;
+            lines.push((at, format!("{who}: {body}")));
+        }
+        let mut reports = self.connection.prepare(
+            "SELECT s.started_at / 1000, s.result FROM seats s JOIN turns t ON t.id=s.turn_id
+             WHERE t.thread_id=?1 AND lower(s.member)=lower(?2) AND s.result IS NOT NULL
+             ORDER BY s.started_at",
+        )?;
+        for row in reports.query_map(params![thread, member], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })? {
+            let (at, result) = row?;
+            lines.push((at, format!("{member} reported: {result}")));
+        }
+        lines.sort_by_key(|(at, _)| *at);
+        let text: Vec<String> = lines.into_iter().map(|(_, line)| line).collect();
+        let joined = text.join("\n");
+        // The newest is what a continuation needs most.
+        let skip = joined.chars().count().saturating_sub(chars);
+        Ok(joined.chars().skip(skip).collect())
+    }
+
+    /// The mailbox room a conversation's posts are written to.
+    pub fn thread_project(&self, thread: &str) -> Result<String> {
+        Ok(self.connection.query_row(
+            "SELECT project_id FROM threads WHERE id=?1",
+            [thread],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// One member's thread in time order: what was said in it, what the member reported and
+    /// what it did, as plain lines — what `orochi threads show --member` prints.
+    pub fn member_thread(&self, thread: &str, member: &str) -> Result<Vec<MemberLine>> {
+        let mut lines: Vec<MemberLine> = vec![];
+        let mut messages = self.connection.prepare(
+            "SELECT sent_at * 1000, sender_name, body, via FROM messages
+             WHERE thread_id=?1 AND lower(member)=lower(?2) ORDER BY id",
+        )?;
+        for row in messages.query_map(params![thread, member], |r| {
+            Ok(MemberLine {
+                at: r.get(0)?,
+                who: r.get(1)?,
+                text: r.get(2)?,
+                kind: match r.get::<_, String>(3)?.as_str() {
+                    "handoff" => "task",
+                    _ => "post",
+                }
+                .to_owned(),
+            })
+        })? {
+            lines.push(row?);
+        }
+        let mut items = self.connection.prepare(
+            "SELECT created_at, kind, text, role FROM v_timeline
+             WHERE thread_id=?1 AND lower(member)=lower(?2)
+               AND kind IN ('agent_message','tool_call') ORDER BY seq",
+        )?;
+        for row in items.query_map(params![thread, member], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })? {
+            let (at, kind, text, role) = row?;
+            lines.push(MemberLine {
+                at,
+                who: role.unwrap_or_else(|| member.to_owned()),
+                text,
+                kind: if kind == "agent_message" {
+                    "report"
+                } else {
+                    "work"
+                }
+                .to_owned(),
+            });
+        }
+        lines.sort_by_key(|line| line.at);
+        Ok(lines)
+    }
+
+    /// Notes the person wrote to a member that was not there to hear them, oldest first: what
+    /// continues a finished member (`docs/team-channel-design.md` §5).
+    pub fn unheard_notes(&self, thread: &str) -> Result<Vec<(i64, String, String)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, member, body FROM messages
+             WHERE thread_id=?1 AND via='user' AND recipient='-' AND member IS NOT NULL
+             ORDER BY id",
+        )?;
+        let rows = statement.query_map([thread], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// What a seat was for and whether it wrote, so a continuation asks for the same.
+    pub fn seat_title_and_write(&self, seat: &str) -> Result<(String, bool)> {
+        Ok(self.connection.query_row(
+            "SELECT COALESCE(title, role), read_only=0 FROM seats WHERE id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0)),
+        )?)
+    }
+
+    /// Marks a note as taken up, so it is not continued twice.
+    pub fn heard_note(&self, id: i64) -> Result<()> {
+        self.connection
+            .execute("UPDATE messages SET recipient='-heard' WHERE id=?1", [id])?;
+        Ok(())
+    }
+
+    /// The last seat a member held in a conversation, with the continuation it left.
+    pub fn member_seat(
+        &self,
+        thread: &str,
+        member: &str,
+    ) -> Result<Option<(String, Option<serde_json::Value>)>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT s.id, s.continuation FROM seats s JOIN turns t ON t.id=s.turn_id
+                 WHERE t.thread_id=?1 AND lower(s.member)=lower(?2)
+                 ORDER BY s.started_at DESC, s.ordinal DESC LIMIT 1",
+                params![thread, member],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?
+                            .and_then(|json| serde_json::from_str(&json).ok()),
+                    ))
+                },
+            )
+            .optional()?)
+    }
+
     pub fn live_seats(&self) -> Result<Vec<LiveSeat>> {
         let mut statement = self.connection.prepare(
             "SELECT seat_id, thread_id, project_id, turn_id, ordinal, role, lead, read_only,
@@ -2428,6 +2725,17 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("turns", "origin", "TEXT"),
     // The lead's plan for the conversation, as it wrote it with `set_plan`; content, so here.
     ("threads", "management", "TEXT"),
+    // The channel (`docs/team-channel-design.md` §7): the member a seat is, the seat it
+    // continues, and how to resume it; a reply's parent post and thread, who it mentions, and
+    // whether it was also sent to the channel; the newest mention of the user that was seen.
+    ("seats", "member", "TEXT"),
+    ("seats", "continues", "TEXT"),
+    ("seats", "continuation", "TEXT"),
+    ("messages", "parent", "INTEGER"),
+    ("messages", "member", "TEXT"),
+    ("messages", "mentions", "TEXT"),
+    ("messages", "broadcast", "INTEGER NOT NULL DEFAULT 0"),
+    ("ui_state", "seen_mention", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// Tables added since `USER_VERSION` 2, each created (and filled from what is already there)
@@ -2996,7 +3304,8 @@ SELECT t.id, t.project_id, p.name AS project, p.root AS project_root, lower(p.na
        (SELECT a.agent || char(31) || a.provider FROM attempts a
           JOIN seats s ON s.id=a.seat_id JOIN turns tn ON tn.id=s.turn_id
          WHERE tn.thread_id=t.id AND s.lead=1
-         ORDER BY a.started_at DESC LIMIT 1) AS lead_route
+         ORDER BY a.started_at DESC LIMIT 1) AS lead_route,
+       (SELECT count(*) FROM v_mentions mn WHERE mn.thread_id=t.id) AS mentions
 FROM threads t JOIN projects p ON p.id=t.project_id
 LEFT JOIN hosts h ON h.thread_id=t.id;
 
@@ -3008,7 +3317,7 @@ SELECT i.thread_id, i.id AS seq, i.turn_id, tn.ordinal AS turn_ordinal,
        i.kind, i.status, i.key, i.text, i.data, i.truncated,
        i.created_at, i.updated_at,
        (SELECT count(*) FROM patches pa WHERE pa.item_id=i.id) AS patches,
-       tn.origin AS turn_origin
+       tn.origin AS turn_origin, s.member
 FROM items i
 JOIN turns tn ON tn.id=i.turn_id
 LEFT JOIN attempts a ON a.id=i.attempt_id
@@ -3018,7 +3327,8 @@ DROP VIEW IF EXISTS v_room;
 CREATE VIEW v_room AS
 SELECT m.project_id, m.thread_id, m.id AS seq, 'message' AS kind,
        m.sender_name AS who, m.recipient_name AS whom, m.via, m.body AS text, m.sent_at AS at,
-       a.agent, a.model, s.role, a.provider
+       a.agent, a.model, s.role, a.provider,
+       m.parent, m.member, m.mentions, m.broadcast
 FROM messages m
 LEFT JOIN peers pe ON pe.id=m.sender
 LEFT JOIN attempts a ON a.peer_id=pe.id
@@ -3026,7 +3336,8 @@ LEFT JOIN seats s ON s.id=a.seat_id
 UNION ALL
 SELECT pe.project_id, NULL AS thread_id, e.id AS seq, e.kind,
        pe.name AS who, NULL AS whom, 'mailbox' AS via, e.text, e.at,
-       a.agent, a.model, s.role, a.provider
+       a.agent, a.model, s.role, a.provider,
+       NULL, NULL, NULL, 0
 FROM peer_events e
 JOIN peers pe ON pe.id=e.peer_id
 LEFT JOIN attempts a ON a.peer_id=pe.id
@@ -3043,7 +3354,8 @@ SELECT s.id AS seat_id, tn.thread_id, s.turn_id, s.ordinal, s.role, s.lead, s.re
          AND i.status='in_progress' ORDER BY i.id DESC LIMIT 1) AS doing,
        (SELECT i.data FROM items i WHERE i.attempt_id=a.id AND i.kind='context'
          ORDER BY i.id DESC LIMIT 1) AS context,
-       s.title, s.background, s.origin AS seat_origin, s.result IS NOT NULL AS reported
+       s.title, s.background, s.origin AS seat_origin, s.result IS NOT NULL AS reported,
+       s.member, s.continues
 FROM seats s
 JOIN turns tn ON tn.id=s.turn_id
 LEFT JOIN attempts a ON a.seat_id=s.id
@@ -3138,6 +3450,55 @@ SELECT w.id AS workspace_id, w.thread_id, w.name, w.title, w.root, w.base, w.sta
           AND m.created_at>=w.created_at) AS trials
 FROM workspaces w
 LEFT JOIN v_roster r ON r.seat_id=w.seat_id;
+
+DROP VIEW IF EXISTS v_mentions;
+CREATE VIEW v_mentions AS
+SELECT m.id AS message_id, m.thread_id, t.project_id, t.title AS thread_title, p.name AS project,
+       m.sender_name AS who, m.member, m.parent, m.body AS text, m.sent_at AS at
+FROM messages m
+JOIN threads t ON t.id=m.thread_id
+JOIN projects p ON p.id=t.project_id
+WHERE m.mentions IS NOT NULL AND m.sender<>'user'
+  AND EXISTS (SELECT 1 FROM json_each(m.mentions) j WHERE lower(j.value)='you')
+  AND m.id > COALESCE((SELECT u.seen_mention FROM ui_state u WHERE u.thread_id=m.thread_id),0);
+
+DROP VIEW IF EXISTS v_members;
+CREATE VIEW v_members AS
+SELECT l.thread_id, l.member AS name, l.seat_id, l.turn_id, l.role, l.read_only, l.state,
+       l.agent, l.provider, l.model, l.reasoning, l.doing, l.usage, l.reported,
+       l.started_at AS seat_started_at, l.ended_at,
+       l.ended_at IS NULL AS live,
+       (SELECT min(f.started_at) FROM v_roster f
+         WHERE f.thread_id=l.thread_id AND f.member=l.member) AS started_at,
+       (SELECT count(*) FROM v_roster f
+         WHERE f.thread_id=l.thread_id AND f.member=l.member) AS seats,
+       (SELECT f.title FROM v_roster f WHERE f.thread_id=l.thread_id AND f.member=l.member
+         ORDER BY f.started_at LIMIT 1) AS title,
+       (SELECT count(*) FROM messages m WHERE m.thread_id=l.thread_id
+         AND lower(m.member)=lower(l.member) AND m.via<>'handoff') AS replies,
+       (SELECT max(m.sent_at) FROM messages m WHERE m.thread_id=l.thread_id
+         AND lower(m.member)=lower(l.member)) AS last_reply_at,
+       (SELECT w.state FROM workspaces w WHERE w.thread_id=l.thread_id
+         AND lower(w.name)=lower(l.member) ORDER BY w.created_at DESC LIMIT 1) AS workspace_state,
+       (SELECT mg.state FROM merges mg WHERE mg.thread_id=l.thread_id
+         AND lower(mg.workspace)=lower(l.member) ORDER BY mg.created_at DESC LIMIT 1) AS trial_state,
+       CASE
+         WHEN EXISTS (SELECT 1 FROM prompts pr JOIN attempts a ON a.id=pr.attempt_id
+                       JOIN seats s2 ON s2.id=a.seat_id JOIN turns t2 ON t2.id=s2.turn_id
+                      WHERE t2.thread_id=l.thread_id AND s2.member=l.member AND pr.answer IS NULL)
+           THEN 'asking'
+         WHEN EXISTS (SELECT 1 FROM v_mentions mn WHERE mn.thread_id=l.thread_id
+                       AND lower(mn.member)=lower(l.member)) THEN 'mention'
+         WHEN EXISTS (SELECT 1 FROM workspaces w WHERE w.thread_id=l.thread_id
+                       AND lower(w.name)=lower(l.member) AND w.state='open') THEN 'worktree'
+         WHEN (SELECT mg.state FROM merges mg WHERE mg.thread_id=l.thread_id
+                AND lower(mg.workspace)=lower(l.member)
+                ORDER BY mg.created_at DESC LIMIT 1)='clean' THEN 'trial'
+       END AS needs
+FROM v_roster l
+WHERE l.member IS NOT NULL
+  AND l.seat_id=(SELECT f.seat_id FROM v_roster f WHERE f.thread_id=l.thread_id
+                  AND f.member=l.member ORDER BY f.started_at DESC, f.ordinal DESC LIMIT 1);
 
 DROP VIEW IF EXISTS v_route;
 CREATE VIEW v_route AS

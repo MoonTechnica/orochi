@@ -48,7 +48,8 @@
               "background": false,
               "last_at": 1
             }
-          ]
+          ],
+          "mentions": 0
         },
         {
           "id": "ac1154c1-3298-4ada-be14-4063b923a32c",
@@ -91,7 +92,8 @@
               "background": false,
               "last_at": 1
             }
-          ]
+          ],
+          "mentions": 0
         }
       ]
     }

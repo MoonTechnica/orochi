@@ -170,6 +170,7 @@ impl<'a> Background<'a> {
         descriptor: TaskDescriptor,
         seat: Option<crate::activity::SeatRef>,
         workspace: Option<std::path::PathBuf>,
+        resume: Option<String>,
     ) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let options = RunOptions {
@@ -183,7 +184,8 @@ impl<'a> Background<'a> {
             overrides: Overrides::default(),
             dry_run: false,
             json: false,
-            resume: None,
+            // A member continued in its own thread picks its session up where it left it.
+            resume,
             permission: if workspace.is_some() {
                 env.permission
             } else {
@@ -207,6 +209,7 @@ impl<'a> Background<'a> {
             background: true,
         };
         let run_root = workspace.clone().unwrap_or_else(|| env.root.to_path_buf());
+        let left = seat.clone();
         let (run, abort) = abortable(async move {
             let mut config = env.config.clone();
             if crate::sandbox::placement(env.data, env.root, config.sandbox.force)?.is_some() {
@@ -223,7 +226,7 @@ impl<'a> Background<'a> {
             };
             let policies = Registry::load(env.data)?;
             let mut slot: Option<Continuation> = None;
-            scheduler::run_turn(
+            let result = scheduler::run_turn(
                 &config,
                 &policies,
                 env.store,
@@ -232,7 +235,22 @@ impl<'a> Background<'a> {
                 Some(sender),
                 &mut slot,
             )
-            .await
+            .await;
+            // What a later request to this member needs to pick the session up again.
+            if let (Some(left), Some(session)) = (&left, &slot)
+                && let Ok(db) = left.store.lock()
+            {
+                let _ = db.seat_continuation(
+                    &left.seat,
+                    &serde_json::json!({
+                        "agent": session.session.agent, "model": session.session.model,
+                        "reasoning": session.session.reasoning, "mode": session.session.mode,
+                        "session_id": session.session.session_id, "run_id": session.run_id,
+                        "loadable": session.loadable,
+                    }),
+                );
+            }
+            result
         });
         let label = name.clone();
         self.runs.push(Box::pin(async move { (label, run.await) }));

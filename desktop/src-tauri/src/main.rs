@@ -296,19 +296,38 @@ fn room(open: State<'_, Open>, thread: String) -> Result<Vec<Said>, String> {
     open.0.lock().unwrap().room(&thread).map_err(fail)
 }
 
-/// Leaves a note in the room. It reaches the agents when they next read their messages.
+/// Leaves a note in the room. It reaches the agents when they next read their messages; with
+/// a `member` it is a reply in that member's thread, and a mention reaches whoever it names.
 #[tauri::command]
 fn say(
     open: State<'_, Open>,
     thread: String,
     to: Option<String>,
     text: String,
+    member: Option<String>,
 ) -> Result<(), String> {
     open.0
         .lock()
         .unwrap()
-        .say(&thread, to.as_deref(), &text)
+        .say_in(&thread, to.as_deref(), &text, member.as_deref())
         .map_err(fail)
+}
+
+/// The agents the lead works with in one conversation: a thread each in the channel.
+#[tauri::command]
+fn members(open: State<'_, Open>, thread: String) -> Result<Vec<orochi::activity::Member>, String> {
+    open.0.lock().unwrap().members(&thread).map_err(fail)
+}
+
+/// What the agents have said to the user that they have not seen yet.
+#[tauri::command]
+fn mentions(open: State<'_, Open>) -> Result<Vec<orochi::activity::Mention>, String> {
+    open.0.lock().unwrap().mentions().map_err(fail)
+}
+
+#[tauri::command]
+fn see_mentions(open: State<'_, Open>, thread: String) -> Result<(), String> {
+    open.0.lock().unwrap().see_mentions(&thread).map_err(fail)
 }
 
 #[tauri::command]
@@ -707,6 +726,9 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
+            members,
+            mentions,
+            see_mentions,
             folders,
             new_thread,
             placement,
