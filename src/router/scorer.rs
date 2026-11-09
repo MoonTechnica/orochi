@@ -23,6 +23,9 @@ const SUITED: f64 = 0.35;
 /// tier up to half as dear and the frontier tier up to half again as dear; plenty of headroom
 /// does the reverse, by less. An Orochi heuristic, not measured.
 const SCARCE_TILT: f64 = 0.5;
+/// Fragments of the model IDs kept for work that needs the most capable model. Orochi's own list,
+/// not measured; a model added here is set aside for simple and normal work alike.
+const RESERVED: [&str; 2] = ["astra", "fable"];
 const PLENTY_TILT: f64 = 0.15;
 
 /// Cost multiplier from what the account has left (`quota::headroom`) and the model's tier. With
@@ -410,6 +413,17 @@ pub fn candidates(
         .any(|c| !cx.taken.contains(&(c.agent.clone(), c.model.clone())))
     {
         candidates.retain(|c| !cx.taken.contains(&(c.agent.clone(), c.model.clone())));
+    }
+    // The most capable models are for the work that needs them. For simple and normal work they
+    // are set aside while another capable candidate is there, and kept when nothing else is.
+    if matches!(difficulty, Complexity::Simple | Complexity::Normal) {
+        let reserved = |c: &ExecutionCandidate| {
+            let model = c.model.to_lowercase();
+            RESERVED.iter().any(|name| model.contains(name))
+        };
+        if candidates.iter().any(|c| !reserved(c)) {
+            candidates.retain(|c| !reserved(c));
+        }
     }
     candidates.sort_by(|a, b| {
         b.spoken_for

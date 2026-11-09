@@ -3704,3 +3704,55 @@ fn a_short_account_loses_the_work_to_an_account_with_room_for_the_same_model() {
         ranked[1].reasons
     );
 }
+
+/// The most capable models are kept for the work that needs them: for simple work a capable
+/// faster model takes it instead, and for complex work the capable model is still a candidate.
+#[test]
+fn the_most_capable_models_are_kept_for_complex_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    let agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
+    let capabilities = caps(&["gpt-6-astra", "gpt-6-luna"]);
+    let registry = Registry::bundled().unwrap();
+    let config = Config::default();
+    let runtime = RuntimeMap::new();
+    let route = |complexity: Complexity| {
+        let mut task = profiler::profile("Rename a variable", dir.path());
+        task.complexity = complexity;
+        scorer::candidates(
+            &[(&agent, &capabilities)],
+            &ScoringContext {
+                task: &task,
+                overrides: &Overrides::default(),
+                config: &config,
+                policies: &registry,
+                store: &store,
+                runtime: &runtime,
+                sessions: &[],
+                busy: &[],
+                taken: &[],
+                difficulty: None,
+                root: dir.path(),
+                time: now(),
+            },
+        )
+        .unwrap()
+    };
+    let simple = route(Complexity::Simple);
+    assert!(
+        simple.iter().any(|c| c.model.contains("luna")),
+        "{:?}",
+        simple.iter().map(|c| &c.model).collect::<Vec<_>>()
+    );
+    assert!(
+        simple.iter().all(|c| !c.model.contains("astra")),
+        "simple work does not take the most capable model: {:?}",
+        simple.iter().map(|c| &c.model).collect::<Vec<_>>()
+    );
+    let complex = route(Complexity::Complex);
+    assert!(
+        complex.iter().any(|c| c.model.contains("astra")),
+        "complex work keeps the most capable model: {:?}",
+        complex.iter().map(|c| &c.model).collect::<Vec<_>>()
+    );
+}
