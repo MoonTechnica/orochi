@@ -569,3 +569,26 @@ fn a_key_names_only_a_provider_orochi_knows() {
     assert!(key::put(data.path(), &config.decision, "nobody", "x").is_err());
     assert!(key::put(data.path(), &config.decision, "openai", "sk-1").is_ok());
 }
+
+#[tokio::test]
+async fn the_decision_model_names_the_agent_that_carries_on_only_among_those_offered() {
+    let offered = vec!["claude".to_owned(), "opencode".to_owned()];
+    let data = tempfile::tempdir().unwrap();
+    let server = Server::start(json!({"handover": "opencode"}), &[]);
+    let cfg = config(DecisionBackend::Local, &server.url);
+    let picked = decision::handover(&cfg.decision, data.path(), "続きを実装して", &offered).await;
+    assert_eq!(picked.as_deref(), Some("opencode"));
+    let questions = &server.requests()[0]["request"]["questions"];
+    assert_eq!(questions["handover"]["type"], "choice");
+    assert!(
+        questions["handover"]["criteria"]["claude"].is_string(),
+        "the agents offered are the choices"
+    );
+    // An agent it was not offered is never taken, however it answers.
+    let server = Server::start(json!({"handover": "codex"}), &[]);
+    let cfg = config(DecisionBackend::Local, &server.url);
+    assert_eq!(
+        decision::handover(&cfg.decision, data.path(), "続きを実装して", &offered).await,
+        None
+    );
+}

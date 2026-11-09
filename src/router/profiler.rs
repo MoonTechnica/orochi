@@ -339,6 +339,7 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
             .iter()
             .any(|f| f.contains("test_") || f.contains(".test.") || f.contains("/tests/"));
     TaskDescriptor {
+        handover: None,
         task_type: task_type.into(),
         language,
         framework,

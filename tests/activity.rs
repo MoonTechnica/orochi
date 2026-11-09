@@ -595,6 +595,7 @@ fn an_older_binarys_writes_still_work_after_the_telemetry_migration() {
     }
 
     let task = TaskDescriptor {
+        handover: None,
         task_type: "implementation".into(),
         language: "rust".into(),
         framework: None,

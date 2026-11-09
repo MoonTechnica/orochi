@@ -712,6 +712,44 @@ pub struct Recommendation {
 
 /// `home` is where a local model would be downloaded (`local::home`), whose disk is the one
 /// that has to have room.
+/// Which of the agents that may carry on the work the decision model names as the one it suits,
+/// as it reads the request. `None` when no decision model is chosen, it does not answer, or it
+/// names none of them: the scheduler then chooses as it does without one.
+pub async fn handover(
+    config: &DecisionConfig,
+    data: &Path,
+    task: &str,
+    agents: &[String],
+) -> Option<String> {
+    if !chosen(config) || agents.is_empty() {
+        return None;
+    }
+    let target = target(config, data).await.ok()?;
+    let mut criteria: serde_json::Map<String, Value> = agents
+        .iter()
+        .map(|agent| (agent.clone(), json!(format!("the agent {agent}"))))
+        .collect();
+    criteria.insert(NONE.into(), json!("none of them suits this work"));
+    let questions = json!({"handover": {
+        "type": "choice",
+        "instructions": "Which of these agents should carry on this work? Each one has an account with room now; pick the one whose models suit what is asked for.",
+        "criteria": criteria,
+    }});
+    let answers = ask(
+        &target,
+        &state(task, None),
+        &questions,
+        Duration::from_millis(config.timeout_ms),
+    )
+    .await
+    .ok()?;
+    let picked = answers["handover"]["choice"].as_str()?;
+    agents
+        .iter()
+        .any(|agent| agent == picked)
+        .then(|| picked.to_owned())
+}
+
 pub fn recommend(home: &Path) -> Recommendation {
     let default = model(RECOMMENDED).expect("the recommended model is listed");
     let memory_gb = local::memory_gb();

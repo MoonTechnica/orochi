@@ -322,6 +322,15 @@ pub fn candidates(
                 c.reasons
                     .push(format!("you said you want {name} for this kind of work"));
             }
+            // Carried on by an agent the decision model picked: as the user's word for the route
+            // it goes first, but only among what passed every gate above.
+            if let Some(name) = &task.handover
+                && c.agent == *name
+            {
+                c.spoken_for = true;
+                c.reasons
+                    .push(format!("the decision model picked {name} to carry this on"));
+            }
             // What the work itself suits, read from what each model says it is for. Same shape
             // as a preference: it reorders the capable field and opens nothing.
             if let Some(name) = &task.suited

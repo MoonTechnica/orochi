@@ -221,6 +221,11 @@ pub struct TaskDescriptor {
     /// to make one up. It lowers a candidate's cost; it never lets one past a gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred: Option<String>,
+    /// The agent the decision model picked to carry this work on after another ran out of
+    /// quota. It comes first among the candidates that pass every gate; where none of them
+    /// does, the scheduler chooses as it would have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<String>,
     /// The model the classifier judged this kind of work suits, read from what each model
     /// says it is for. It is the one thing the numbers cannot carry: two models of one tier,
     /// with the same prior and the same price, still differ in what they are good at. Like
@@ -237,6 +242,7 @@ impl TaskDescriptor {
     /// session is recorded under. Nothing in it is read from a repository.
     pub fn synthetic(task_type: &str, complexity: Complexity) -> Self {
         Self {
+            handover: None,
             task_type: task_type.into(),
             language: "none".into(),
             framework: None,

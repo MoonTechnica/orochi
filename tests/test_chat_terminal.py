@@ -327,7 +327,7 @@ class Console:
     """One live session in a pty, driven a key at a time."""
 
     def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
-                 files=None, mailbox=False, host=False, backup=False):
+                 files=None, mailbox=False, host=False, backup=False, rate_limited=()):
         """`host` runs the session as an agent host's pane runs it, so `reports()` has what it
         was told. `backup` adds a second, working agent beside the first, whose prompts land in
         `self.backup_log`."""
@@ -341,7 +341,19 @@ class Console:
         self.log = self.dir / "agent.jsonl"
         self.backup_log = self.dir / "backup.jsonl"
         # Sorted after the first agent, so on a tie of price and fit the first one is chosen.
-        backup_text = f"""
+        # Agents that refuse every prompt with a rate limit, each with its own log.
+        limited = "".join(f"""
+[[agents]]
+id = "{name}"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "rate"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{self.dir / (name + '.jsonl')}"
+""" for name in rate_limited)
+        backup_text = limited + (f"""
 [[agents]]
 id = "zz-backup"
 provider = "openai"
@@ -351,7 +363,7 @@ args = ["{TESTS / 'fixtures/mock_acp.py'}"]
 MOCK_BEHAVIOR = "success"
 MOCK_MODELS = "sol-test,astra-test"
 MOCK_LOG = "{self.backup_log}"
-""" if backup else ""
+""" if backup else "")
         extra = "\n".join(f"{key} = {json.dumps(value)}" for key, value in (env or {}).items())
         path = self.dir / "config.toml"
         path.write_text(f"""
@@ -495,6 +507,24 @@ class FailedTurns(unittest.TestCase):
             c.pump(2)
             self.assertTrue(c.alive(), c.rows())
             self.assertTrue(c.input(), "the prompt is back: " + c.rows())
+        finally:
+            c.close()
+
+    def test_a_turn_whose_agents_all_hit_usage_limits_in_turn_is_carried_on_until_one_has_room(self):
+        # Two more agents are out of quota too (every prompt refused). Each is replaced in turn,
+        # until the working one answers.
+        c = Console(behavior="rate", backup=True, rate_limited=("test-b",))
+        try:
+            c.type("Summarize the README")
+            c.key(b"\r")
+            c.wait("Fixture completed", seconds=TURN * 3)
+            rows = c.rows()
+            self.assertGreaterEqual(rows.count("the agent hit its rate limit"), 2, rows)
+            self.assertTrue(c.shown("Trying zz-backup"), rows)
+            prompts = [r["params"]["prompt"][0]["text"] for r in
+                       (json.loads(line) for line in c.backup_log.read_text().splitlines())
+                       if r.get("method") == "session/prompt"] if c.backup_log.exists() else []
+            self.assertTrue(any("Summarize the README" in p for p in prompts), rows)
         finally:
             c.close()
 

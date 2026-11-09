@@ -366,6 +366,9 @@ struct Session<'a> {
     /// does next.
     awaiting: Option<Awaiting>,
     conversation: Conversation,
+    /// The agent whose account ran out during the turn being retried, so the decision model
+    /// picks who carries the same work on. Taken by the next `execute`.
+    handover_from: Option<String>,
     feed: Option<Feed>,
     approval: Approval,
     twice: Twice,
@@ -580,6 +583,7 @@ pub async fn run_with(
             .thread
             .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        handover_from: None,
         conversation: Conversation {
             resume: options.resume.clone(),
             ..Default::default()
@@ -2547,17 +2551,24 @@ impl Session<'_> {
             let mut result = self
                 .execute(message.clone(), None, Some(task.clone()))
                 .await;
-            // The agent ran out of quota during this turn. Its account is now cooling down, so
-            // the same message goes again and is routed to another agent, which carries on from
-            // the transcript rather than from the agent's own session.
-            if matches!(&result, Ok((code, _)) if *code != 0 && *code != 130)
+            // An agent ran out of quota during this turn. Its account is now cooling down, so the
+            // same message goes again and is routed to another agent, which carries on from the
+            // transcript rather than from the agent's own session. Each agent is replaced in turn,
+            // so the loop ends once there is no one left with room, or after one try per agent.
+            let mut handovers = self.config.agents.len();
+            while handovers > 0
+                && matches!(&result, Ok((code, _)) if *code != 0 && *code != 130)
                 && let Some(agent) = self.spent_in_last_run()
                 && self.account_spent(&agent)
             {
+                handovers -= 1;
                 self.view.note(&format!(
                     "{agent} hit its usage limit · carrying the request on with another agent"
                 ));
-                result = self.execute(message, None, Some(task)).await;
+                self.handover_from = Some(agent);
+                result = self
+                    .execute(message.clone(), None, Some(task.clone()))
+                    .await;
             }
             match &result {
                 Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
@@ -3614,8 +3625,9 @@ impl Session<'_> {
         let mut steps = steps;
         let mut index = 0;
         let mut last_code = 0;
-        // A step whose agent ran out of quota is carried on by another agent, once.
-        let mut retried = false;
+        // A step whose agents run out of quota is carried on by the next one with room, up to
+        // one try per configured agent.
+        let mut handovers = 0;
         while index < steps.len() {
             let phase = Phase::new(steps[index], descriptor);
             self.view.phase(phase.name, index + 1, steps.len());
@@ -3673,17 +3685,18 @@ impl Session<'_> {
                 return Ok(130);
             }
             if code != 0
-                && !retried
+                && handovers < self.config.agents.len()
                 && let Some(agent) = self.spent_in_last_run()
                 && self.account_spent(&agent)
             {
                 self.view.note(&format!(
                     "{agent} hit its usage limit · carrying this step on with another agent"
                 ));
-                retried = true;
+                handovers += 1;
+                self.handover_from = Some(agent);
                 continue;
             }
-            retried = false;
+            handovers = 0;
             if designed && code != 0 {
                 return Ok(code);
             }
@@ -3808,6 +3821,30 @@ impl Session<'_> {
     }
 
     /// Runs one turn and returns its exit code with the agent's reply.
+    /// The agent the decision model picks to carry the work on, from the agents other than the
+    /// one that ran out whose account has room now. The scheduler still applies every gate.
+    async fn pick_handover(&mut self, from: &str, text: &str) -> Option<String> {
+        let runtime = self.store.runtime().ok()?;
+        let agents: Vec<String> = self
+            .config
+            .agents
+            .iter()
+            .filter(|a| {
+                a.enabled
+                    && !a.routing_only
+                    && a.id != from
+                    && crate::scheduler::quota::available(&runtime, &a.id, "*", now())
+            })
+            .map(|a| a.id.clone())
+            .collect();
+        let picked =
+            crate::decision::handover(&self.config.decision, self.data, text, &agents).await?;
+        self.view.note(&format!(
+            "the decision model picks {picked} to carry this on"
+        ));
+        Some(picked)
+    }
+
     /// Whether an agent's account is cooling down after a usage or rate limit, as the scheduler
     /// records it. Reads the store only; nothing is probed.
     fn account_spent(&self, agent: &str) -> bool {
@@ -3835,6 +3872,7 @@ impl Session<'_> {
         phase: Option<&Phase>,
         classified: Option<TaskDescriptor>,
     ) -> Result<(u8, String)> {
+        let retry_from = self.handover_from.take();
         let mut execution_config = self.config.clone();
         let directory = self.env().workspace;
         if crate::sandbox::placement(self.data, self.root, self.config.sandbox.force)?.is_some() {
@@ -3941,6 +3979,20 @@ impl Session<'_> {
             ));
             resume = None;
             overrides = Overrides::default();
+        }
+        // Whoever ran out of quota (this turn's retry, or the conversation's own agent) is
+        // replaced by the agent the decision model picks, from those that can take the work.
+        if let Some(from) = retry_from.or_else(|| {
+            spent
+                .then(|| {
+                    self.conversation
+                        .current
+                        .as_ref()
+                        .map(|c| c.session.agent.clone())
+                })
+                .flatten()
+        }) {
+            profile.handover = self.pick_handover(&from, &message.text).await;
         }
         let outgrown = own_session
             && !spent
