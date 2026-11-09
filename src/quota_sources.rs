@@ -201,13 +201,28 @@ impl Drop for ProcessGuard {
     }
 }
 
-async fn probe(probe: &QuotaProbe, config: &Config, time: i64) -> Result<Snapshot> {
+async fn probe(
+    probe: &QuotaProbe,
+    config: &Config,
+    time: i64,
+    workspace: &std::path::Path,
+) -> Result<Snapshot> {
     let agent = config
         .agents
         .iter()
         .find(|a| a.id == probe.agent)
         .context("unknown quota agent")?;
-    let directory = tempfile::tempdir()?;
+    // Antigravity asks once whether to trust a folder, and remembers the answer for that folder:
+    // a fresh temporary folder would ask every time, so its probe runs in one kept under the
+    // data directory. Every other probe starts in an empty temporary folder.
+    let temporary;
+    let directory: &std::path::Path = if matches!(probe.kind, QuotaProbeKind::AntigravityUsage) {
+        std::fs::create_dir_all(workspace)?;
+        workspace
+    } else {
+        temporary = tempfile::tempdir()?;
+        temporary.path()
+    };
     let terminal = matches!(
         probe.kind,
         QuotaProbeKind::ClaudeUsage | QuotaProbeKind::AntigravityUsage
@@ -238,7 +253,7 @@ async fn probe(probe: &QuotaProbe, config: &Config, time: i64) -> Result<Snapsho
         .args(&probe.args)
         .envs(crate::pane::quiet_hooks())
         .envs(&agent.env)
-        .current_dir(directory.path())
+        .current_dir(directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -429,7 +444,8 @@ async fn refresh_agents(config: &Config, store: &Store, force: bool) -> Result<V
             });
             continue;
         };
-        match probe(p, config, now()).await {
+        let workspace = store.data_dir().join("quota").join(&agent.id);
+        match probe(p, config, now(), &workspace).await {
             Ok(snapshot) => {
                 if !snapshot.windows.is_empty() {
                     store.save_quota_snapshot(&snapshot)?;

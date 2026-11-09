@@ -212,10 +212,10 @@ def probe(kind, executable, args, timeout):
                 screen.feed(decoder.decode(chunk))
             text = screen.text()
             # Only the empty, temporary probe workspace can reach this branch.
-            if kind == 'claude_usage' and 'Yes, I trust this folder' in text and 'No, exit' in text:
+            if kind in ('claude_usage', 'antigravity_usage') and 'Yes, I trust this folder' in text and 'No, exit' in text:
                 elapsed = time.monotonic()
                 if elapsed-start > 2 and elapsed-trust_key_at > 1 and not trust_answered:
-                    if re.search(r'❯\s+Yes, I trust this folder', text):
+                    if re.search(r'[>❯]\s+Yes, I trust this folder', text):
                         os.write(fd,b'\r'); trust_answered=True
                     elif trust_attempts < 2:
                         os.write(fd,b'\x1b[B'); trust_attempts += 1
