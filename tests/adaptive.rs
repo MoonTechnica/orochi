@@ -1173,3 +1173,68 @@ fn codex_credit_balance_is_shown_beside_its_window_and_never_routed_on() {
         "a balance is not a headroom"
     );
 }
+
+/// A Codex account with no credit to spend shows a balance of 0, and Claude's Fable week is its
+/// own part of the account line, not folded into the week it sits beside.
+#[test]
+fn an_empty_credit_balance_reads_zero_and_fable_is_its_own_part_of_the_account_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let codex = json!({"rateLimitsByLimitId": {"codex": {
+        "primary": {"usedPercent": 100, "resetsAt": now + 3600},
+        "credits": {"hasCredits": false, "unlimited": false, "balance": null}
+    }}});
+    let windows = quota_sources::parse_codex(&codex, now).unwrap();
+    assert!(
+        windows.iter().any(|w| w.balance.as_deref() == Some("0")),
+        "{windows:?}"
+    );
+    let fable_week = |remaining: f64| Window {
+        bucket: "seven_day_fable".into(),
+        remaining,
+        reset_at: Some(now + 3600),
+        model: None,
+        affects_routing: false,
+        balance: None,
+    };
+    store
+        .save_quota_snapshot(&Snapshot {
+            agent: "claude".into(),
+            source: "claude_usage".into(),
+            observed_at: now,
+            valid_until: now + 3600,
+            windows: vec![
+                Window {
+                    bucket: "seven_day".into(),
+                    remaining: 0.03,
+                    reset_at: Some(now + 3600),
+                    model: None,
+                    affects_routing: true,
+                    balance: None,
+                },
+                fable_week(0.0),
+            ],
+        })
+        .unwrap();
+    store
+        .save_quota_snapshot(&Snapshot {
+            agent: "codex".into(),
+            source: "codex_app_server".into(),
+            observed_at: now,
+            valid_until: now + 3600,
+            windows,
+        })
+        .unwrap();
+    let line = orochi::chat::accounts(&Config::default(), &store).expect("both are known");
+    assert!(line.contains("claude 97%"), "{line}");
+    assert!(line.contains("claude fable 100% used"), "{line}");
+    assert!(line.contains("codex credits 0"), "{line}");
+    assert!(
+        orochi::scheduler::quota::headroom(&RuntimeMap::new(), "claude", "fable", now).is_none(),
+        "a Fable week is not a headroom"
+    );
+}

@@ -19,7 +19,7 @@ pub struct Window {
     pub model: Option<String>,
     /// Unknown Codex bucket-to-model mappings are displayed but never guessed.
     pub affects_routing: bool,
-    /// A credit balance as the agent reports it (`unlimited`, `none`, or the amount). A credit
+    /// A credit balance as the agent reports it (`unlimited`, `0`, or the amount). A credit
     /// window carries no quota fraction that routing could use; it only says what is left to pay
     /// with, so it is shown and never routed on.
     #[serde(default)]
@@ -85,7 +85,8 @@ pub fn parse_codex(value: &Value, time: i64) -> Result<Vec<Window>> {
             let balance = if unlimited {
                 "unlimited".to_owned()
             } else if !has {
-                "none".to_owned()
+                // No credit to spend is a balance of zero, shown as one.
+                "0".to_owned()
             } else {
                 credits["balance"]
                     .as_str()

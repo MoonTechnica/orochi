@@ -138,13 +138,17 @@ def antigravity_pools(text):
 def parse_screen(kind, text, now):
     windows = []
     if kind == 'claude_usage':
-        for label, bucket in [('Current session','five_hour'), ('Current week (all models)','seven_day')]:
+        # The Fable week is its own pool on the page, but the page names no model ID for it, so
+        # it is shown and never routed on: an agent-wide window would block every model at once.
+        for label, bucket, routes in [('Current session','five_hour',True),
+                ('Current week (all models)','seven_day',True),
+                ('Current week (Fable)','seven_day_fable',False)]:
             m = re.search(re.escape(label) + r'\s*\n([^\n]+)\n([^\n]*)', text)
             if not m: continue
             percent = re.search(r'(?<![\d.])(\d+(?:\.\d+)?)%\s+used', m[1])
             if percent and 0 <= float(percent[1]) <= 100:
                 windows.append(dict(bucket=bucket, remaining=1-float(percent[1])/100,
-                    reset_at=reset_at(m[2], now), model=None, affects_routing=True))
+                    reset_at=reset_at(m[2], now), model=None, affects_routing=routes))
     elif kind == 'antigravity_usage':
         # Accept explicit machine model IDs plus an explicit direction only. Friendly
         # model names, bare percentages and context-window statistics are ambiguous.

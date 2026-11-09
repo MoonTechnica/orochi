@@ -7860,6 +7860,15 @@ fn standing(config: &Config, store: &Store) -> Option<Accounts> {
             .filter(|at| *at > now);
         if let Some(at) = cooling {
             parts.push((format!("{} cooling {}", agent.id, until(at)), true));
+            // A spent account still says what credit it has, which is when that matters most.
+            let balance = snapshots
+                .iter()
+                .filter(|s| s.agent == agent.id && s.valid_until > now)
+                .max_by_key(|s| s.observed_at)
+                .and_then(|s| s.windows.iter().find_map(|w| w.balance.clone()));
+            if let Some(balance) = balance {
+                parts.push((format!("{} credits {balance}", agent.id), false));
+            }
             continue;
         }
         let latest = snapshots
@@ -7869,10 +7878,15 @@ fn standing(config: &Config, store: &Store) -> Option<Accounts> {
         let windows = latest.map(|s| s.windows.as_slice()).unwrap_or(&[]);
         // The subscription's most spent window, and the paid credit apart from it: credit is
         // money spent beyond the plan, so it is shown in its own part rather than as a window.
+        // A model's own week (`*_fable`) is shown beside the plan, never folded into it: the
+        // plan's most spent window is the account's, and the model's is its own number.
         let plan = windows
             .iter()
-            .filter(|w| w.bucket != "spend_limit" && w.balance.is_none())
+            .filter(|w| {
+                w.bucket != "spend_limit" && w.balance.is_none() && !w.bucket.ends_with("_fable")
+            })
             .min_by(|a, b| a.remaining.total_cmp(&b.remaining));
+        let fable = windows.iter().find(|w| w.bucket.ends_with("_fable"));
         let credit = windows.iter().find(|w| w.bucket == "spend_limit");
         // A balance the agent reports for itself (codex's credits): the amount left to pay with.
         let balance = windows.iter().find_map(|w| w.balance.as_deref());
@@ -7887,6 +7901,14 @@ fn standing(config: &Config, store: &Store) -> Option<Accounts> {
         if let Some(window) = credit {
             let used = ((1.0 - window.remaining) * 100.0).round().clamp(0.0, 100.0);
             let mut part = format!("{} credit {used:.0}% used", agent.id);
+            if let Some(at) = window.reset_at.filter(|at| *at > now) {
+                part.push_str(&format!(" · {}", until(at)));
+            }
+            parts.push((part, used >= 90.0));
+        }
+        if let Some(window) = fable {
+            let used = ((1.0 - window.remaining) * 100.0).round().clamp(0.0, 100.0);
+            let mut part = format!("{} fable {used:.0}% used", agent.id);
             if let Some(at) = window.reset_at.filter(|at| *at > now) {
                 part.push_str(&format!(" · {}", until(at)));
             }

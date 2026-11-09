@@ -41,6 +41,21 @@ class QuotaTerminal(unittest.TestCase):
         self.assertAlmostEqual(by_bucket['antigravity/gemini']['remaining'], 1.0)
         self.assertAlmostEqual(by_bucket['antigravity/claude-and-gpt']['remaining'], 0.6)
         self.assertTrue(all(x['model'] is None and not x['affects_routing'] for x in w))
+    def test_claude_fable_week_is_read_beside_the_week_and_never_routed_on(self):
+        page = (
+            "Current week (all models)\n"
+            "████████████████████████████████████████████████▌  97% used\n"
+            "Resets Nov 10 at 9pm (Asia/Tokyo)\n"
+            "Current week (Fable)\n"
+            "██████████████████████████████████████████████████ 100% used\n"
+            "Resets Nov 10 at 9pm (Asia/Tokyo)\n"
+        )
+        w = {x['bucket']: x for x in m.parse_screen('claude_usage', page, 1789487000)}
+        self.assertAlmostEqual(w['seven_day']['remaining'], 0.03)
+        self.assertAlmostEqual(w['seven_day_fable']['remaining'], 0.0)
+        self.assertTrue(w['seven_day']['affects_routing'])
+        self.assertFalse(w['seven_day_fable']['affects_routing'])
+        self.assertTrue(all(x['model'] is None for x in w.values()))
     def test_split_escape_and_stale_text_clearing(self):
         s=m.Screen();s.feed('Current session\r\n42% used\x1b[');s.feed('2J\x1b[HContext 90% used')
         self.assertEqual(m.parse_screen('claude_usage',s.text(),0),[])
