@@ -86,7 +86,12 @@ fn success(output: &Output) {
 #[test]
 fn dry_run_discovers_model_specific_reasoning_without_prompting() {
     let w = Workspace::new();
-    let output = w.run(&["--dry-run", "--json", "Implement a small endpoint"]);
+    // Cross-cutting work: the most capable model is kept for it, so it is listed here.
+    let output = w.run(&[
+        "--dry-run",
+        "--json",
+        "Refactor the request handling across the whole service",
+    ]);
     success(&output);
     let plan: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(plan["candidates"][0]["model"], "sol-test");

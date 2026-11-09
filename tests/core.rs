@@ -861,7 +861,7 @@ fn a_seat_beside_another_takes_a_model_of_its_own_while_one_is_left() {
     let task = profiler::profile("add a health endpoint to the server", dir.path());
     let registry = Registry::bundled().unwrap();
     let agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
-    let capabilities = caps(&["gpt-sol", "gpt-astra"]);
+    let capabilities = caps(&["gpt-sol", "gpt-luna"]);
     let (config, runtime, overrides) = (Config::default(), RuntimeMap::new(), Overrides::default());
     let route = |taken: &[(String, String)]| {
         scorer::candidates(
@@ -886,15 +886,15 @@ fn a_seat_beside_another_takes_a_model_of_its_own_while_one_is_left() {
     let all = route(&[]);
     let models: Vec<&str> = all.iter().map(|c| c.model.as_str()).collect();
     assert!(
-        models.contains(&"gpt-sol") && models.contains(&"gpt-astra"),
+        models.contains(&"gpt-sol") && models.contains(&"gpt-luna"),
         "{models:?}"
     );
-    let beside = route(&[("codex".into(), "gpt-astra".into())]);
+    let beside = route(&[("codex".into(), "gpt-luna".into())]);
     assert!(!beside.is_empty());
-    assert!(beside.iter().all(|c| c.model != "gpt-astra"));
+    assert!(beside.iter().all(|c| c.model != "gpt-luna"));
     // Every model taken: the seat runs the same one rather than not running at all.
     let cornered = route(&[
-        ("codex".into(), "gpt-astra".into()),
+        ("codex".into(), "gpt-luna".into()),
         ("codex".into(), "gpt-sol".into()),
     ]);
     assert_eq!(cornered.len(), all.len());
@@ -1710,7 +1710,9 @@ mod fit {
             Registry::bundled().unwrap(),
             RuntimeMap::new(),
         );
-        let task = profiler::profile("Implement a function", dir.path());
+        // Complex work: the most capable model is kept for it, so both are candidates here.
+        let mut task = profiler::profile("Implement a function", dir.path());
+        task.complexity = Complexity::Complex;
         let ranked = scorer::candidates(
             &[(&agent, &capabilities)],
             &ScoringContext {
@@ -3385,7 +3387,10 @@ fn the_roster_keeps_the_scheduler_to_the_models_the_user_chose_and_a_dislike_onl
     let registry = Registry::bundled().unwrap();
     let mut agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
     let capabilities = caps(&["gpt-sol", "gpt-astra", "gpt-luna"]);
-    let task = profiler::profile("add a health endpoint to the server", dir.path());
+    // Complex work: the most capable model is kept for it, so it is a candidate to roster and to
+    // dislike here; for simple work it is set aside before any of this is read.
+    let mut task = profiler::profile("add a health endpoint to the server", dir.path());
+    task.complexity = Complexity::Complex;
     let (config, runtime) = (Config::default(), RuntimeMap::new());
     let rank = |agent: &AgentConfig, task: &TaskDescriptor, overrides: &Overrides| {
         scorer::candidates(
@@ -3410,7 +3415,11 @@ fn the_roster_keeps_the_scheduler_to_the_models_the_user_chose_and_a_dislike_onl
     let models = |ranked: &[ExecutionCandidate]| -> Vec<String> {
         ranked.iter().map(|c| c.model.clone()).collect()
     };
-    assert_eq!(models(&rank(&agent, &task, &Overrides::default())).len(), 3);
+    let open = models(&rank(&agent, &task, &Overrides::default()));
+    assert!(
+        open.contains(&"gpt-astra".to_owned()) && open.contains(&"gpt-sol".to_owned()),
+        "{open:?}"
+    );
     agent.models = vec!["GPT-SOL".into(), "*luna".into()];
     assert!(agent.admits("gpt-sol") && agent.admits("gpt-luna") && !agent.admits("gpt-astra"));
     // An entry names a whole ID, or a family through `*`; a fragment names nothing, because
@@ -3426,9 +3435,7 @@ fn the_roster_keeps_the_scheduler_to_the_models_the_user_chose_and_a_dislike_onl
     );
     let rostered = models(&rank(&agent, &task, &Overrides::default()));
     assert!(
-        rostered.contains(&"gpt-sol".to_owned())
-            && rostered.contains(&"gpt-luna".to_owned())
-            && !rostered.contains(&"gpt-astra".to_owned()),
+        rostered.contains(&"gpt-sol".to_owned()) && !rostered.contains(&"gpt-astra".to_owned()),
         "{rostered:?}"
     );
     let named = Overrides {
@@ -3492,12 +3499,12 @@ fn a_fit_the_user_wrote_down_goes_before_price_and_a_fit_the_provider_wrote_is_a
     let store = Store::open(dir.path()).unwrap();
     let registry = Registry::bundled().unwrap();
     let mut agent = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
-    let capabilities = caps(&["gpt-sol", "gpt-astra", "gpt-luna"]);
+    let capabilities = caps(&["gpt-sol", "gpt-luna"]);
     // Beside it, a model that costs next to nothing: the case the tilt cannot reach past.
     let local = AgentConfig::preset("opencode", Provider::OPENCODE, "opencode", &["acp"]);
     let local_models = caps(&["lmstudio/qwen"]);
     let mut task = profiler::profile("add a health endpoint to the server", dir.path());
-    task.suited = Some("gpt-astra".into());
+    task.suited = Some("gpt-sol".into());
     let (config, runtime, overrides) = (Config::default(), RuntimeMap::new(), Overrides::default());
     let rank = |agent: &AgentConfig| {
         scorer::candidates(
@@ -3527,7 +3534,7 @@ fn a_fit_the_user_wrote_down_goes_before_price_and_a_fit_the_provider_wrote_is_a
         "{:?}",
         tilted.iter().map(|c| &c.model).collect::<Vec<_>>()
     );
-    let astra = tilted.iter().find(|c| c.model == "gpt-astra").unwrap();
+    let astra = tilted.iter().find(|c| c.model == "gpt-sol").unwrap();
     assert!(
         !astra.spoken_for
             && astra
@@ -3537,17 +3544,15 @@ fn a_fit_the_user_wrote_down_goes_before_price_and_a_fit_the_provider_wrote_is_a
     );
 
     // The user's note made it suited: first, whatever it costs, and the pool is it alone.
-    agent
-        .notes
-        .insert("gpt-astra".into(), "hard problems".into());
+    agent.notes.insert("gpt-sol".into(), "hard problems".into());
     let mut spoken = rank(&agent);
-    assert_eq!(spoken[0].model, "gpt-astra");
+    assert_eq!(spoken[0].model, "gpt-sol");
     assert!(
         spoken[0].spoken_for
             && spoken[0]
                 .reasons
                 .iter()
-                .any(|r| r.contains("you said gpt-astra"))
+                .any(|r| r.contains("you said gpt-sol"))
     );
     assert!(
         spoken[0].expected_cost > spoken[1].expected_cost,
@@ -3558,7 +3563,7 @@ fn a_fit_the_user_wrote_down_goes_before_price_and_a_fit_the_provider_wrote_is_a
     bandit.exploration = 1.0;
     orochi::learning::select(&mut spoken, &bandit, 0.999);
     assert_eq!(
-        spoken[0].model, "gpt-astra",
+        spoken[0].model, "gpt-sol",
         "even full exploration stays within what was spoken for"
     );
     assert!(
