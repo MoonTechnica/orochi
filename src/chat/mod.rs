@@ -1845,7 +1845,10 @@ impl<'a> Session<'a> {
     }
 
     fn refresh_status(&mut self, phase: Option<&str>) {
-        let accounts = self.accounts();
+        // Only when idle: while a turn or a helper runs, the row names what is running, and an
+        // account line in front of it would cut that off the 80-column row.
+        let idle = phase.is_none() && self.background.is_empty();
+        let accounts = if idle { self.accounts() } else { None };
         let muted = |text: &str| self.view.paint(MUTED, text);
         let mut parts = vec![muted(&format!("⏵⏵ {} (shift+tab)", self.approval.label()))];
         // What each account has left comes second, so a narrow row cuts the hints, not it. It is
@@ -1862,7 +1865,9 @@ impl<'a> Session<'a> {
             parts.push(pieces.join(&muted(" │ ")));
         }
         // The refresh button. A terminal has no click for it here, so the glyph names the command.
-        parts.push(muted("⟳ /usage"));
+        if idle {
+            parts.push(muted("⟳ /usage"));
+        }
         let mut tail = vec![];
         if !self.queue.is_empty() {
             tail.push(format!("{} queued", self.queue.len()));
