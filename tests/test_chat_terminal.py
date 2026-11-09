@@ -47,6 +47,8 @@ auto = false
 backend = "off"
 [classifier]
 enabled = false
+[quota]
+refresh_before_run = false
 [mailbox]
 enabled = {"true" if seats else "false"}
 [scheduler]
@@ -224,6 +226,8 @@ args = ["-c", "from pathlib import Path; assert Path('completed.txt').read_text(
 backend = "off"
 [classifier]
 enabled = false
+[quota]
+refresh_before_run = false
 [mailbox]
 enabled = false
 [scheduler]
@@ -1226,5 +1230,22 @@ class Roster(unittest.TestCase):
             c.key(b"\r")
             c.wait("Fixture completed.")
             self.assertTrue(c.shown("test · sol-test"), c.rows())
+        finally:
+            c.close()
+
+
+class StatusRow(unittest.TestCase):
+    def test_a_click_on_the_refresh_button_reads_the_accounts_again(self):
+        c = Console()
+        try:
+            c.wait("⟳ /usage")
+            rows = c.screen.text()
+            index = next(i for i, row in enumerate(rows) if "⟳ /usage" in row)
+            column = rows[index].index("⟳") + 1
+            # A press and its release, as a terminal sends them, at the button's cell.
+            c.key(f"\x1b[<0;{column};{index + 1}M".encode())
+            c.key(f"\x1b[<0;{column};{index + 1}m".encode())
+            c.wait("read 0 account(s)")
+            self.assertTrue(c.alive(), c.rows())
         finally:
             c.close()

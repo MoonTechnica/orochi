@@ -157,7 +157,7 @@ Paths excluded from copying, such as `.git`, `.env*` and `node_modules`, are nev
 - The handoff target is chosen by Policy, the lower bound on estimated success rate, capabilities, quota, expected cost and the configured learning strategy. Model names and reasoning settings from a different Provider are never forcibly carried over.
 - The attempt limit per stage is `scheduler.max_attempts` (default 3). If no candidate in range is usable, the run is saved as `blocked`. The resume command skips completed stages and gives unfinished stages a fresh attempt budget.
 
-To refresh quota before each stage, set `[quota] refresh_before_run = true`. By default, saved valid observations and runtime errors are used. Unknown quota is not treated as zero. While every service is unavailable, no AI work proceeds, but the run can be resumed later from the saved state.
+Quota is refreshed before each stage when `[quota] refresh_before_run` is set (the default). An agent is read again only once its saved reading has run out (`max_age_secs`); otherwise the saved valid observations and runtime errors are used. Unknown quota is not treated as zero. While every service is unavailable, no AI work proceeds, but the run can be resumed later from the saved state.
 
 Participant IDs must be unique (case-insensitive), and `baseline`, `control`, `merged`, `parts`, `resolve` and `resolve-base` are reserved names. Several participants can use the same Agent and model.
 

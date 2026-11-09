@@ -19,6 +19,11 @@ pub struct Window {
     pub model: Option<String>,
     /// Unknown Codex bucket-to-model mappings are displayed but never guessed.
     pub affects_routing: bool,
+    /// A credit balance as the agent reports it (`unlimited`, `none`, or the amount). A credit
+    /// window carries no quota fraction that routing could use; it only says what is left to pay
+    /// with, so it is shown and never routed on.
+    #[serde(default)]
+    pub balance: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -69,6 +74,32 @@ pub fn parse_codex(value: &Value, time: i64) -> Result<Vec<Window>> {
                 reset_at,
                 model: None,
                 affects_routing: bucket == "codex",
+                balance: None,
+            });
+        }
+        // The app-server's own credit snapshot, beside the windows: `balance` is text it sends
+        // (null when there is none to name), `hasCredits` and `unlimited` say the rest.
+        let credits = &limits["credits"];
+        if let Some(has) = credits["hasCredits"].as_bool() {
+            let unlimited = credits["unlimited"].as_bool().unwrap_or(false);
+            let balance = if unlimited {
+                "unlimited".to_owned()
+            } else if !has {
+                "none".to_owned()
+            } else {
+                credits["balance"]
+                    .as_str()
+                    .filter(|b| !b.is_empty() && b.len() <= 24)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "unknown".to_owned())
+            };
+            windows.push(Window {
+                bucket: format!("{bucket}/credits"),
+                remaining: 1.0,
+                reset_at: None,
+                model: None,
+                affects_routing: false,
+                balance: Some(balance),
             });
         }
     }
@@ -97,6 +128,7 @@ pub fn parse_claude_statusline(value: &Value, time: i64) -> Result<Vec<Window>> 
             reset_at,
             model: None,
             affects_routing: true,
+            balance: None,
         });
     }
     Ok(windows)
@@ -308,9 +340,36 @@ async fn probe(probe: &QuotaProbe, config: &Config, time: i64) -> Result<Snapsho
     result.context("quota probe timed out")?
 }
 
+/// Every configured probe, now: what `/usage` and `orochi quota` ask for.
 pub async fn refresh(config: &Config, store: &Store) -> Result<Vec<ProbeResult>> {
+    refresh_agents(config, store, true).await
+}
+
+/// The probes whose last reading has run out. A run starts with this, so an agent is probed at
+/// most once per `quota.max_age_secs` however many runs start in that time.
+pub async fn refresh_stale(config: &Config, store: &Store) -> Result<Vec<ProbeResult>> {
+    refresh_agents(config, store, false).await
+}
+
+async fn refresh_agents(config: &Config, store: &Store, force: bool) -> Result<Vec<ProbeResult>> {
     let mut results = vec![];
     for agent in config.agents.iter().filter(|a| a.enabled) {
+        if !force {
+            let time = now();
+            let fresh = store
+                .quota_snapshots()?
+                .iter()
+                .any(|s| s.agent == agent.id && s.observed_at <= time && s.valid_until > time);
+            if fresh {
+                results.push(ProbeResult {
+                    agent: agent.id.clone(),
+                    status: "fresh",
+                    detail: Some("read within quota.max_age_secs".into()),
+                    snapshot: None,
+                });
+                continue;
+            }
+        }
         let auto = if agent.id == "codex" && agent.provider == Provider::OPENAI {
             crate::discovery::inspect(agent, &config.discovery, store.data_dir())
                 .native_cli

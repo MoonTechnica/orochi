@@ -3645,3 +3645,62 @@ fn an_answerer_that_timed_out_is_timed_as_slow_and_a_refusal_is_not_timed_at_all
         "untimed first, then fastest, the one that timed out last"
     );
 }
+
+/// Two accounts of one frontier model, one short of room: the work goes to the account that
+/// has room, and the reason says so. Both accounts are asked for the same model, so the only
+/// difference the scorer sees is what is left on each account.
+#[test]
+fn a_short_account_loses_the_work_to_an_account_with_room_for_the_same_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    let short = AgentConfig::preset("claude", Provider::ANTHROPIC, "test", &[]);
+    let roomy = AgentConfig::preset("claude-b", Provider::ANTHROPIC, "test", &[]);
+    let capabilities = caps(&["claude-opus-5-5"]);
+    let registry = Registry::bundled().unwrap();
+    let config = Config::default();
+    let mut runtime = RuntimeMap::new();
+    let reading = |agent: &str, left: f64| RuntimeState {
+        quota_estimate: Some(left),
+        reset_at: Some(now() + 3600),
+        ..RuntimeState::new(agent, "*")
+    };
+    runtime.insert(("claude".into(), "*".into()), reading("claude", 0.1));
+    runtime.insert(("claude-b".into(), "*".into()), reading("claude-b", 0.9));
+    let mut task = profiler::profile("Implement a function", dir.path());
+    task.complexity = Complexity::Simple;
+    let ranked = scorer::candidates(
+        &[(&short, &capabilities), (&roomy, &capabilities)],
+        &ScoringContext {
+            task: &task,
+            overrides: &Overrides::default(),
+            config: &config,
+            policies: &registry,
+            store: &store,
+            runtime: &runtime,
+            sessions: &[],
+            busy: &[],
+            taken: &[],
+            difficulty: None,
+            root: dir.path(),
+            time: now(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        ranked[0].agent,
+        "claude-b",
+        "{:?}",
+        ranked
+            .iter()
+            .map(|c| (&c.agent, c.expected_cost))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        ranked[1]
+            .reasons
+            .iter()
+            .any(|r| r.contains("of this account left")),
+        "{:?}",
+        ranked[1].reasons
+    );
+}

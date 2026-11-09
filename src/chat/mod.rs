@@ -758,6 +758,14 @@ impl<'a> Session<'a> {
                     }
                     continue;
                 }
+                // A click on the status row's refresh button is `/usage`.
+                if let Key::Click { column, row } = key {
+                    if self.view.term.clicked_usage(column, row) {
+                        self.usage = true;
+                        self.run_usage().await;
+                    }
+                    continue;
+                }
                 match self.chord.feed(&key) {
                     Chord::Held => continue,
                     Chord::Arm => {
@@ -1864,10 +1872,12 @@ impl<'a> Session<'a> {
                 .collect();
             parts.push(pieces.join(&muted(" │ ")));
         }
-        // The refresh button. A terminal has no click for it here, so the glyph names the command.
-        if idle {
+        // The refresh button: the glyph, which a click on it runs as `/usage`, and the command
+        // named beside it for anyone who would rather type it.
+        let usage = idle.then(|| {
             parts.push(muted("⟳ /usage"));
-        }
+            parts.len() - 1
+        });
         let mut tail = vec![];
         if !self.queue.is_empty() {
             tail.push(format!("{} queued", self.queue.len()));
@@ -1896,11 +1906,23 @@ impl<'a> Session<'a> {
             parts.push(muted(&text));
         }
         let separator = muted(" · ");
-        let status = fit(
-            &parts.join(separator.as_str()),
-            self.view.term.columns().saturating_sub(1),
-        );
-        self.view.term.status = status;
+        let limit = self.view.term.columns().saturating_sub(1);
+        let joined = parts.join(separator.as_str());
+        // Where the button sits, when the whole row fits: a button the row cuts off is not one.
+        self.view.term.usage_at = usage.and_then(|index| {
+            if visible_width(&joined) > limit {
+                return None;
+            }
+            let before = match index {
+                0 => 0,
+                _ => {
+                    visible_width(&parts[..index].join(separator.as_str()))
+                        + visible_width(separator.as_str())
+                }
+            };
+            Some((before + 1, before + visible_width("⟳ /usage")))
+        });
+        self.view.term.status = fit(&joined, limit);
         self.view.term.threads = self.thread_row();
         self.view.term.render();
     }
@@ -2190,7 +2212,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
         Key::End => term.prompt.end(),
         Key::KillLine => term.prompt.kill_line(),
         Key::KillWord => term.prompt.kill_word(),
-        Key::Clear | Key::CtrlX | Key::Stop(_) => {}
+        Key::Clear | Key::CtrlX | Key::Stop(_) | Key::Click { .. } => {}
         Key::Tab if picking => accept(term),
         Key::Tab => complete(term, root),
         Key::ShiftTab => return Action::Cycle,
@@ -7849,9 +7871,11 @@ fn standing(config: &Config, store: &Store) -> Option<Accounts> {
         // money spent beyond the plan, so it is shown in its own part rather than as a window.
         let plan = windows
             .iter()
-            .filter(|w| w.bucket != "spend_limit")
+            .filter(|w| w.bucket != "spend_limit" && w.balance.is_none())
             .min_by(|a, b| a.remaining.total_cmp(&b.remaining));
         let credit = windows.iter().find(|w| w.bucket == "spend_limit");
+        // A balance the agent reports for itself (codex's credits): the amount left to pay with.
+        let balance = windows.iter().find_map(|w| w.balance.as_deref());
         if let Some(window) = plan {
             let used = ((1.0 - window.remaining) * 100.0).round().clamp(0.0, 100.0);
             let mut part = format!("{} {used:.0}%", agent.id);
@@ -7867,6 +7891,9 @@ fn standing(config: &Config, store: &Store) -> Option<Accounts> {
                 part.push_str(&format!(" · {}", until(at)));
             }
             parts.push((part, used >= 90.0));
+        }
+        if let Some(balance) = balance {
+            parts.push((format!("{} credits {balance}", agent.id), false));
         }
     }
     (!parts.is_empty()).then_some(parts)

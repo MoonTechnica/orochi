@@ -37,6 +37,8 @@ impl Workspace {
         config.decision.backend = Some(orochi::config::DecisionBackend::Off);
         // A test never touches the keychain of the machine it runs on.
         config.mcp.keychain = false;
+        // Quota is read before each run by default; a test never starts a real CLI to read it.
+        config.quota.refresh_before_run = false;
         config.decision.keychain = false;
         config.scheduler.discovery_timeout_secs = 5;
         config.scheduler.prompt_timeout_secs = 5;

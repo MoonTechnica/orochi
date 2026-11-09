@@ -22,6 +22,25 @@ class QuotaTerminal(unittest.TestCase):
         self.assertEqual(len(w),2)
         self.assertEqual(w[0]['model'],'gemini-3.1-pro')
         self.assertEqual(w[1]['remaining'],0)
+    def test_antigravity_models_and_quota_page_gives_one_pool_per_group(self):
+        page = (
+            "└ Models & Quota\n"
+            "  Account: someone@example.com\n"
+            "GEMINI MODELS\n"
+            "  Models within this group: Gemini Flash, Gemini Pro\n"
+            "  Weekly Limit Remaining\n"
+            "    [██████████████████████████████████████████████████] 100.00%\n"
+            "    Quota available\n"
+            "CLAUDE AND GPT MODELS\n"
+            "  Weekly Limit Used\n"
+            "    [█████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 40.00%\n"
+        )
+        w = m.parse_screen('antigravity_usage', page, 0)
+        by_bucket = {x['bucket']: x for x in w}
+        self.assertEqual(set(by_bucket), {'antigravity/gemini', 'antigravity/claude-and-gpt'})
+        self.assertAlmostEqual(by_bucket['antigravity/gemini']['remaining'], 1.0)
+        self.assertAlmostEqual(by_bucket['antigravity/claude-and-gpt']['remaining'], 0.6)
+        self.assertTrue(all(x['model'] is None and not x['affects_routing'] for x in w))
     def test_split_escape_and_stale_text_clearing(self):
         s=m.Screen();s.feed('Current session\r\n42% used\x1b[');s.feed('2J\x1b[HContext 90% used')
         self.assertEqual(m.parse_screen('claude_usage',s.text(),0),[])

@@ -238,6 +238,7 @@ fn stale_direct_quota_never_applies_and_live_error_cooldown_survives_refresh() {
             reset_at: Some(1000),
             model: None,
             affects_routing: true,
+            balance: None,
         }],
     };
     let mut map = RuntimeMap::new();
@@ -772,6 +773,7 @@ fn telemetry_is_readable_through_views_without_reaching_into_the_json() {
                 reset_at: Some(now() + 1800),
                 model: None,
                 affects_routing: true,
+                balance: None,
             }],
         })
         .unwrap();
@@ -991,6 +993,7 @@ fn the_idle_status_row_shows_each_measured_accounts_most_spent_window_and_its_re
         reset_at: Some(now + reset),
         model: None,
         affects_routing: true,
+        balance: None,
     };
     store
         .save_quota_snapshot(&Snapshot {
@@ -1048,6 +1051,7 @@ fn the_status_row_shows_credit_apart_from_the_subscription_window() {
         reset_at: Some(now + 3600),
         model: None,
         affects_routing: true,
+        balance: None,
     };
     store
         .save_quota_snapshot(&Snapshot {
@@ -1128,4 +1132,44 @@ fn headroom_is_the_smaller_of_the_agent_wide_and_the_model_reading() {
     assert_eq!(headroom(&map, "claude", "fable", now), Some(0.7));
     // A window that has already reset says nothing about the account now.
     assert_eq!(headroom(&map, "claude", "haiku", now + 7200), None);
+}
+
+/// Codex reports its own credit balance beside its windows. It is shown as the agent's credits,
+/// never read as a quota fraction, so it cannot be mistaken for a window that is spent.
+#[test]
+fn codex_credit_balance_is_shown_beside_its_window_and_never_routed_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let value = json!({"rateLimitsByLimitId": {"codex": {
+        "primary": {"usedPercent": 40, "resetsAt": now + 3600},
+        "credits": {"hasCredits": true, "unlimited": false, "balance": "12.50"}
+    }}});
+    let windows = quota_sources::parse_codex(&value, now).unwrap();
+    assert!(
+        windows
+            .iter()
+            .any(|w| w.balance.as_deref() == Some("12.50") && !w.affects_routing),
+        "{windows:?}"
+    );
+    store
+        .save_quota_snapshot(&Snapshot {
+            agent: "codex".into(),
+            source: "probe".into(),
+            observed_at: now,
+            valid_until: now + 3600,
+            windows,
+        })
+        .unwrap();
+    let line = orochi::chat::accounts(&Config::default(), &store).expect("codex is known");
+    let parts: Vec<&str> = line.split(" │ ").collect();
+    assert!(parts[0].starts_with("codex 40%"), "{line}");
+    assert_eq!(parts.last().copied(), Some("codex credits 12.50"), "{line}");
+    assert!(
+        orochi::scheduler::quota::headroom(&RuntimeMap::new(), "codex", "gpt", now).is_none(),
+        "a balance is not a headroom"
+    );
 }

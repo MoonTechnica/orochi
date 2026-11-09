@@ -400,7 +400,9 @@ pub struct QuotaConfig {
 impl Default for QuotaConfig {
     fn default() -> Self {
         Self {
-            refresh_before_run: false,
+            // On: a run reads what each account has left before it starts, at most once per
+            // `max_age_secs` per agent, so the routing and the status row use a current reading.
+            refresh_before_run: true,
             timeout_secs: 30,
             max_age_secs: 300,
             probes: vec![],

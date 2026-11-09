@@ -136,7 +136,7 @@ orochi quota-ingest --agent claude < claude-statusline.json
 
 ```toml
 [quota]
-refresh_before_run = true     # default false. Also fetches on dry-run
+refresh_before_run = true     # default true. Before a run, reads each agent whose reading has run out (at most once per max_age_secs). Also on dry-run
 max_age_secs = 300
 timeout_secs = 30
 ```

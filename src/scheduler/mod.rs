@@ -401,7 +401,7 @@ async fn run_recorded(
     };
     if config.quota.refresh_before_run {
         let results = tokio::select! {
-            result = crate::quota_sources::refresh(config, store) => result?,
+            result = crate::quota_sources::refresh_stale(config, store) => result?,
             _ = since.wait() => return Ok(130),
         };
         for result in results.iter().filter(|r| loud && r.status == "unavailable") {

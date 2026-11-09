@@ -107,6 +107,34 @@ def reset_at(text, now):
     except (ValueError, KeyError): return None
 
 
+def antigravity_pools(text):
+    pools = []
+    group = None
+    direction = ''
+    for line in text.splitlines():
+        stripped = line.strip()
+        bar = re.search(r'\[[^\]]*\]\s*(\d+(?:\.\d+)?)%', stripped)
+        if bar and group:
+            percent = float(bar[1])
+            if 0 <= percent <= 100:
+                if re.search(r'\bremaining\b|\bleft\b', direction, re.I):
+                    remaining = percent / 100
+                elif re.search(r'\bused\b', direction, re.I):
+                    remaining = 1 - percent / 100
+                else:
+                    continue
+                pools.append(dict(bucket='antigravity/' + group, remaining=remaining, reset_at=None,
+                    model=None, affects_routing=False))
+            direction = ''
+        elif re.fullmatch(r'[A-Z][A-Z &]{2,}', stripped):
+            name = re.sub(r' MODELS$', '', stripped)
+            group = name.lower().replace(' & ', '-').replace(' ', '-')
+            direction = ''
+        elif stripped and not stripped.startswith(('Models within', 'Quota available')):
+            direction = stripped
+    return pools
+
+
 def parse_screen(kind, text, now):
     windows = []
     if kind == 'claude_usage':
@@ -128,6 +156,11 @@ def parse_screen(kind, text, now):
                     if m[3] == 'used': remaining = 1-remaining
                     windows.append(dict(bucket=m[1], remaining=remaining, reset_at=None,
                         model=m[1], affects_routing=True))
+        # The CLI's own "Models & Quota" page: one weekly pool per model group, each a bar and a
+        # percentage under a direction line. A pool is shared by the models in it, so it is shown
+        # per group and never routed on as if it were one model's quota.
+        if re.search(r'Models & Quota', text):
+            windows.extend(antigravity_pools(text))
     # Repeated rows are not valid distinct windows.
     return list({(w['bucket'],w['model']):w for w in windows}.values())
 
@@ -188,7 +221,7 @@ def probe(kind, executable, args, timeout):
                         os.write(fd,b'\x1b[B'); trust_attempts += 1
                     trust_key_at = elapsed
                 continue
-            if sent is None and time.monotonic()-start > 2 and 'Yes, I trust this folder' not in text and ('❯' in text or '> ' in text):
+            if sent is None and time.monotonic()-start > 2 and 'Yes, I trust this folder' not in text and re.search(r'(?m)^\s*[>❯]', text):
                 os.write(fd,b'/usage\r'); sent=time.monotonic()
             if sent is not None:
                 result = parse_screen(kind, text, int(time.time()))

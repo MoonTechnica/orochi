@@ -38,6 +38,12 @@ pub enum Key {
     CtrlX,
     /// A client asked to stop one background agent by name, or all of them.
     Stop(Option<String>),
+    /// A left-button press at a screen cell (1-based column and row), as the terminal reports a
+    /// click once mouse reporting is on.
+    Click {
+        column: usize,
+        row: usize,
+    },
 }
 
 /// Reads stdin on a thread and decodes keys, so the async loop never blocks on input.
@@ -182,6 +188,21 @@ fn escape() -> Option<Key> {
         _ => return None,
     };
     let parameters = String::from_utf8_lossy(&parameters).into_owned();
+    // SGR mouse report: `ESC [ < button ; column ; row M` for a press. Only the left button's
+    // press is a click; wheel and release reports are read and dropped.
+    if let Some(mouse) = parameters.strip_prefix('<') {
+        if final_byte != b'M' {
+            return None;
+        }
+        let fields: Vec<usize> = mouse.split(';').filter_map(|f| f.parse().ok()).collect();
+        return match fields.as_slice() {
+            [0, column, row] => Some(Key::Click {
+                column: *column,
+                row: *row,
+            }),
+            _ => None,
+        };
+    }
     Some(match (final_byte, parameters.as_str()) {
         (b'A', _) => Key::Up,
         (b'B', _) => Key::Down,
@@ -242,6 +263,9 @@ pub struct Term {
     /// One row above the input naming the members' threads and what each holds; empty when the
     /// conversation has none, and then it takes no row.
     pub threads: String,
+    /// Where the status row's refresh button is, as the 1-based columns it covers, while the
+    /// row shows it; `None` while it does not, so a click there means nothing.
+    pub usage_at: Option<(usize, usize)>,
     /// Rows that take over the input area while a question is open.
     pub overlay: Option<Vec<String>>,
     /// Command candidates for what is being typed, drawn above the input line.
@@ -275,6 +299,7 @@ impl Term {
             prompt: Prompt::new(marker),
             status: String::new(),
             threads: String::new(),
+            usage_at: None,
             overlay: None,
             suggestions: vec![],
             selected: 0,
@@ -308,8 +333,10 @@ impl Term {
                 }
             }
         }
-        // Bracketed paste, a cleared screen, and a scroll region above the pinned rows.
-        print!("\x1b[?2004h\x1b[2J\x1b[H");
+        // Bracketed paste, mouse clicks (SGR), a cleared screen, and a scroll region above the
+        // pinned rows. Mouse reporting takes the wheel from the terminal's own scrollback, which
+        // is the price of a clickable status row; Shift with a drag still selects text.
+        print!("\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J\x1b[H");
         term.set_region();
         flush();
         term
@@ -503,12 +530,20 @@ impl Term {
     }
 
     /// Restores the terminal: full scroll region, normal input, cursor below the transcript.
+    /// Whether a click at this cell is on the status row's refresh button.
+    pub fn clicked_usage(&self, column: usize, row: usize) -> bool {
+        row == self.rows
+            && self
+                .usage_at
+                .is_some_and(|(first, last)| (first..=last).contains(&column))
+    }
+
     pub fn restore(&mut self) {
         if !self.tty {
             return;
         }
         let first = self.rows.saturating_sub(self.pinned) + 1;
-        let mut out = String::from("\x1b[r\x1b[?2004l\x1b[?25h");
+        let mut out = String::from("\x1b[r\x1b[?2004l\x1b[?1006l\x1b[?1000l\x1b[?25h");
         for row in first..=self.rows {
             out.push_str(&format!("\x1b[{row};1H\x1b[K"));
         }
