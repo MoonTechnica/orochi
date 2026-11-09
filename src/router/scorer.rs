@@ -19,6 +19,35 @@ const PREFERENCE: f64 = 0.8;
 /// out of it. The provider says the more capable model is what you reach for when the one
 /// below it falls short, so reaching has to be possible. An Orochi heuristic, not measured.
 const SUITED: f64 = 0.35;
+/// How far headroom tilts a model's cost, at most, per side. Scarce headroom makes the faster
+/// tier up to half as dear and the frontier tier up to half again as dear; plenty of headroom
+/// does the reverse, by less. An Orochi heuristic, not measured.
+const SCARCE_TILT: f64 = 0.5;
+const PLENTY_TILT: f64 = 0.15;
+
+/// Cost multiplier from what the account has left (`quota::headroom`) and the model's tier. With
+/// room the stronger model is worth its price, and short of it the faster one is. It reorders
+/// only what already passed every gate, as the preference does.
+///
+/// Short of room, the tilt moves work to another account's model of the fitting capability; it
+/// never moves hard work down to a faster tier on the same account. So the faster tier is only
+/// relieved for simple and normal work, which its success prior already judges as fit.
+pub fn headroom_tilt(tier: &str, headroom: f64, difficulty: Complexity) -> f64 {
+    let rank = match tier {
+        "frontier" => 1.0,
+        "small" => -1.0,
+        _ => 0.0,
+    };
+    let scarce = ((0.5 - headroom) * 2.0).clamp(0.0, 1.0);
+    let plenty = ((headroom - 0.5) * 2.0).clamp(0.0, 1.0);
+    let fits_small = matches!(difficulty, Complexity::Simple | Complexity::Normal);
+    let scarce_side = if rank < 0.0 && !fits_small {
+        0.0
+    } else {
+        SCARCE_TILT * scarce
+    };
+    1.0 + rank * (scarce_side - PLENTY_TILT * plenty)
+}
 
 pub struct ScoringContext<'a> {
     pub task: &'a TaskDescriptor,
@@ -326,6 +355,24 @@ pub fn candidates(
                 c.expected_cost *= 1.4;
                 c.reasons
                     .push("another agent here is using this account; leaving it room".into());
+            }
+            // What the account has left decides which end of the model's tier is worth its price:
+            // with room the frontier model, short of it the faster one. Tiers, not names, so an
+            // agent nobody has described gets no tilt at all.
+            if let Some(headroom) = quota::headroom(cx.runtime, &c.agent, &c.model, cx.time) {
+                let tilt = headroom_tilt(&rule.tier, headroom, difficulty);
+                if (tilt - 1.0).abs() > f64::EPSILON {
+                    c.expected_cost *= tilt;
+                    c.reasons.push(format!(
+                        "{:.0}% of this account left; {}",
+                        headroom * 100.0,
+                        if tilt < 1.0 {
+                            "the faster model is worth more here"
+                        } else {
+                            "the stronger model is worth its price"
+                        }
+                    ));
+                }
             }
             if let Some(p) = &mut c.prediction {
                 p.cost_features = Some(features);

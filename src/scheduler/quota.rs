@@ -54,6 +54,17 @@ pub fn available(map: &RuntimeMap, agent: &str, model: &str, time: i64) -> bool 
             .is_none_or(|s| s.available(time))
     })
 }
+/// What an account has left for this model, the smaller of the agent-wide and the model's own
+/// reading, or `None` where nothing current is known. Nothing measured is not the same as empty.
+pub fn headroom(map: &RuntimeMap, agent: &str, model: &str, time: i64) -> Option<f64> {
+    ["*", model]
+        .iter()
+        .filter_map(|m| map.get(&(agent.into(), (*m).into())))
+        .filter(|s| s.reset_at.is_none_or(|t| t > time))
+        .filter_map(|s| s.quota_estimate)
+        .reduce(f64::min)
+        .map(|r| r.clamp(0.0, 1.0))
+}
 pub fn shadow_price(map: &RuntimeMap, agent: &str, model: &str, time: i64) -> f64 {
     ["*", model]
         .iter()

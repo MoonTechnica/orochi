@@ -1031,3 +1031,101 @@ fn the_idle_status_row_shows_each_measured_accounts_most_spent_window_and_its_re
     let nothing = Store::open(empty.path()).unwrap();
     assert_eq!(orochi::chat::accounts(&config, &nothing), None);
 }
+
+/// Credit spent beyond the plan is its own part of the accounts line, never the plan's most
+/// spent window: a spent credit must not read as an exhausted subscription, nor hide one.
+#[test]
+fn the_status_row_shows_credit_apart_from_the_subscription_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let window = |bucket: &str, remaining: f64| Window {
+        bucket: bucket.into(),
+        remaining,
+        reset_at: Some(now + 3600),
+        model: None,
+        affects_routing: true,
+    };
+    store
+        .save_quota_snapshot(&Snapshot {
+            agent: "claude".into(),
+            source: "statusline".into(),
+            observed_at: now,
+            valid_until: now + 3600,
+            windows: vec![window("five_hour", 0.6), window("spend_limit", 0.25)],
+        })
+        .unwrap();
+    let line = orochi::chat::accounts(&Config::default(), &store).expect("claude is known");
+    let parts: Vec<&str> = line.split(" │ ").collect();
+    assert_eq!(parts.len(), 2, "{line}");
+    assert!(parts[0].starts_with("claude 40%"), "{line}");
+    assert!(parts[1].starts_with("claude credit 75% used"), "{line}");
+}
+
+/// With room on an account the frontier model is worth its price, and short of room the faster
+/// tier is; the tilt is bounded either way, and a tier nobody has described gets none.
+#[test]
+fn headroom_tilts_the_cost_toward_the_tier_the_account_can_afford() {
+    use orochi::router::scorer::headroom_tilt;
+    assert_eq!(headroom_tilt("frontier", 0.5, Complexity::Normal), 1.0);
+    assert_eq!(headroom_tilt("standard", 0.05, Complexity::Normal), 1.0);
+    assert_eq!(headroom_tilt("unknown", 0.95, Complexity::Normal), 1.0);
+    // Short of room: the frontier dearer, the small cheaper, both by no more than the bound.
+    assert!((headroom_tilt("frontier", 0.0, Complexity::Normal) - 1.5).abs() < 1e-9);
+    assert!((headroom_tilt("small", 0.0, Complexity::Normal) - 0.5).abs() < 1e-9);
+    // Plenty of room: the same tiers the other way, and by less.
+    assert!((headroom_tilt("frontier", 1.0, Complexity::Normal) - 0.85).abs() < 1e-9);
+    assert!((headroom_tilt("small", 1.0, Complexity::Normal) - 1.15).abs() < 1e-9);
+    // Between the two, the tilt is continuous and monotonic in headroom.
+    assert!(
+        headroom_tilt("small", 0.2, Complexity::Normal)
+            < headroom_tilt("small", 0.4, Complexity::Normal)
+    );
+    assert!(
+        headroom_tilt("frontier", 0.2, Complexity::Normal)
+            > headroom_tilt("frontier", 0.4, Complexity::Normal)
+    );
+    // Hard work is never handed down to the faster tier on the same account, however short the
+    // room: relief for it is a stronger model on another account.
+    assert_eq!(headroom_tilt("small", 0.0, Complexity::Complex), 1.0);
+    assert_eq!(headroom_tilt("small", 0.0, Complexity::Extreme), 1.0);
+    assert!((headroom_tilt("frontier", 0.0, Complexity::Complex) - 1.5).abs() < 1e-9);
+}
+
+#[test]
+fn headroom_is_the_smaller_of_the_agent_wide_and_the_model_reading() {
+    use orochi::scheduler::quota::headroom;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let mut map = RuntimeMap::new();
+    assert_eq!(
+        headroom(&map, "claude", "haiku", now),
+        None,
+        "nothing measured"
+    );
+    map.insert(
+        ("claude".into(), "*".into()),
+        RuntimeState {
+            quota_estimate: Some(0.7),
+            reset_at: Some(now + 3600),
+            ..RuntimeState::new("claude", "*")
+        },
+    );
+    map.insert(
+        ("claude".into(), "haiku".into()),
+        RuntimeState {
+            quota_estimate: Some(0.3),
+            reset_at: Some(now + 3600),
+            ..RuntimeState::new("claude", "haiku")
+        },
+    );
+    assert_eq!(headroom(&map, "claude", "haiku", now), Some(0.3));
+    assert_eq!(headroom(&map, "claude", "fable", now), Some(0.7));
+    // A window that has already reset says nothing about the account now.
+    assert_eq!(headroom(&map, "claude", "haiku", now + 7200), None);
+}

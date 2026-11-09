@@ -50,6 +50,9 @@ const MAX_ATTACHMENT_BYTES: u64 = 8 * 1024 * 1024;
 
 const PROMPT: &str = "> ";
 
+/// Each account's part of the status row, and whether it needs attention.
+type Accounts = Vec<(String, bool)>;
+
 struct Command {
     name: &'static str,
     aliases: &'static [&'static str],
@@ -58,13 +61,20 @@ struct Command {
     /// Runs even while an agent is working.
     anytime: bool,
 }
-const COMMANDS: [Command; 18] = [
+const COMMANDS: [Command; 19] = [
     Command {
         name: "help",
         aliases: &[],
         usage: "",
         about: "Show commands and shortcuts",
         anytime: true,
+    },
+    Command {
+        name: "usage",
+        aliases: &["quota"],
+        usage: "",
+        about: "Read again what each account has left (the ⟳ in the status row)",
+        anytime: false,
     },
     Command {
         name: "new",
@@ -364,12 +374,14 @@ struct Session<'a> {
     mcp: Option<String>,
     /// `/roster suggest`, held for the loop like `/mcp`: it starts an agent.
     roster: bool,
+    /// `/usage`, held for the loop like `/mcp`: it runs the quota probes, which start the CLIs.
+    usage: bool,
     /// Where this conversation is written down, when `activity.enabled`.
     recorded: Option<Recorded>,
     /// No terminal at either end: the turns come from the store and so do the answers.
     headless: bool,
     /// The accounts line for the idle status row, and when it was read.
-    accounts: Option<(Instant, Option<String>)>,
+    accounts: Option<(Instant, Option<Accounts>)>,
     /// Helpers the lead started, working past the turn that started them.
     background: background::Background<'a>,
     /// Whether writing helpers get worktrees here: the config's default until `/worktrees`.
@@ -592,6 +604,7 @@ pub async fn run_with(
         quit: false,
         mcp: None,
         roster: false,
+        usage: false,
         headless,
         accounts: None,
         background: background::Background::default(),
@@ -662,6 +675,7 @@ impl<'a> Session<'a> {
                         None => {
                             self.run_mcp().await;
                             self.run_roster().await;
+                            self.run_usage().await;
                             continue;
                         }
                     }
@@ -790,6 +804,7 @@ impl<'a> Session<'a> {
                         }
                         self.run_mcp().await;
                         self.run_roster().await;
+                        self.run_usage().await;
                     }
                     Action::Cycle => {
                         self.approval.cycle();
@@ -933,6 +948,7 @@ impl<'a> Session<'a> {
             }
             "memory" => self.memory(argument),
             "roster" => self.roster_command(argument),
+            "usage" => self.usage = true,
             "mcp" => self.mcp = Some(argument.to_owned()),
             "new" | "clear" => {
                 // Moving on to something else says nothing about the last answer.
@@ -1817,26 +1833,44 @@ impl<'a> Session<'a> {
 
     /// The accounts line, read again at most every 30 seconds: the status row is redrawn on
     /// every key, and a snapshot changes when a probe runs, not when a key is pressed.
-    fn accounts(&mut self) -> Option<String> {
+    fn accounts(&mut self) -> Option<Accounts> {
         let stale = self
             .accounts
             .as_ref()
             .is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(30));
         if stale {
-            self.accounts = Some((Instant::now(), accounts(self.config, self.store)));
+            self.accounts = Some((Instant::now(), standing(self.config, self.store)));
         }
         self.accounts.as_ref().and_then(|(_, line)| line.clone())
     }
 
     fn refresh_status(&mut self, phase: Option<&str>) {
-        let mut parts = vec![format!("⏵⏵ {} (shift+tab)", self.approval.label())];
+        let accounts = self.accounts();
+        let muted = |text: &str| self.view.paint(MUTED, text);
+        let mut parts = vec![muted(&format!("⏵⏵ {} (shift+tab)", self.approval.label()))];
+        // What each account has left comes second, so a narrow row cuts the hints, not it. It is
+        // one part of the row, its accounts joined by `│`. A window at 90% or more, or a cooldown,
+        // is drawn in the warning colour.
+        if let Some(accounts) = &accounts {
+            let pieces: Vec<String> = accounts
+                .iter()
+                .map(|(part, attention)| {
+                    let code = if *attention { WARN } else { AGENT };
+                    self.view.paint(code, part)
+                })
+                .collect();
+            parts.push(pieces.join(&muted(" │ ")));
+        }
+        // The refresh button. A terminal has no click for it here, so the glyph names the command.
+        parts.push(muted("⟳ /usage"));
+        let mut tail = vec![];
         if !self.queue.is_empty() {
-            parts.push(format!("{} queued", self.queue.len()));
+            tail.push(format!("{} queued", self.queue.len()));
         }
         match phase {
-            Some(phase) => parts.push(format!("{phase} · esc to interrupt")),
+            Some(phase) => tail.push(format!("{phase} · esc to interrupt")),
             // The row is one line of the terminal: with sub-agents to count, "to finish" goes.
-            None if !self.background.is_empty() => parts.push(match self.background.tasks() {
+            None if !self.background.is_empty() => tail.push(match self.background.tasks() {
                 0 => format!(
                     "✻ Waiting for {} to finish",
                     background_agents(self.background.len())
@@ -1850,16 +1884,18 @@ impl<'a> Session<'a> {
                     background_agents(self.background.len())
                 ),
             }),
-            None => parts.push(
-                self.accounts()
-                    .unwrap_or_else(|| "/help for commands".into()),
-            ),
+            None if accounts.is_none() => tail.push("/help for commands".into()),
+            None => {}
         }
+        for text in tail {
+            parts.push(muted(&text));
+        }
+        let separator = muted(" · ");
         let status = fit(
-            &parts.join(" · "),
+            &parts.join(separator.as_str()),
             self.view.term.columns().saturating_sub(1),
         );
-        self.view.term.status = self.view.paint(MUTED, &status);
+        self.view.term.status = status;
         self.view.term.threads = self.thread_row();
         self.view.term.render();
     }
@@ -2784,6 +2820,26 @@ impl Session<'_> {
     /// `/roster suggest`: an agent proposes the roster from what each model is for and what
     /// it has measured here; the proposal is kept as the decision, to be adjusted with
     /// `/roster set`.
+    /// `/usage`: runs the quota probes again and redraws the status row with what they found. The
+    /// probes start the CLIs, so this waits for the loop like `/mcp`; a probe that fails leaves
+    /// the account as it was, shown as last read.
+    async fn run_usage(&mut self) {
+        if !std::mem::take(&mut self.usage) {
+            return;
+        }
+        self.view.note("reading what each account has left…");
+        match crate::quota_sources::refresh(self.config, self.store).await {
+            Ok(results) => {
+                let read = results.iter().filter(|r| r.snapshot.is_some()).count();
+                self.view.result(OK, &format!("read {read} account(s)"));
+            }
+            Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
+        }
+        // The cache is read again on the next draw, not left to its 30 seconds.
+        self.accounts = None;
+        self.refresh_status(None);
+    }
+
     async fn run_roster(&mut self) {
         if !std::mem::take(&mut self.roster) {
             return;
@@ -7750,6 +7806,18 @@ fn span(elapsed: Duration) -> String {
 /// cooldowns: the most spent window per agent with its reset. Never probes; an agent nothing is
 /// known about is left out rather than shown as zero.
 pub fn accounts(config: &Config, store: &Store) -> Option<String> {
+    standing(config, store).map(|parts| {
+        parts
+            .into_iter()
+            .map(|(part, _)| part)
+            .collect::<Vec<_>>()
+            .join(" │ ")
+    })
+}
+
+/// Each account's part of the accounts line, and whether it needs the person's attention: a
+/// cooldown, or a window at 90% or more. The status row draws those in a colour of their own.
+fn standing(config: &Config, store: &Store) -> Option<Accounts> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
@@ -7764,28 +7832,39 @@ pub fn accounts(config: &Config, store: &Store) -> Option<String> {
             .and_then(|state| state.cooldown_until)
             .filter(|at| *at > now);
         if let Some(at) = cooling {
-            parts.push(format!("{} cooling {}", agent.id, until(at)));
+            parts.push((format!("{} cooling {}", agent.id, until(at)), true));
             continue;
         }
-        let window = snapshots
+        let latest = snapshots
             .iter()
             .filter(|s| s.agent == agent.id && s.valid_until > now)
-            .max_by_key(|s| s.observed_at)
-            .and_then(|s| {
-                s.windows
-                    .iter()
-                    .min_by(|a, b| a.remaining.total_cmp(&b.remaining))
-            });
-        if let Some(window) = window {
+            .max_by_key(|s| s.observed_at);
+        let windows = latest.map(|s| s.windows.as_slice()).unwrap_or(&[]);
+        // The subscription's most spent window, and the paid credit apart from it: credit is
+        // money spent beyond the plan, so it is shown in its own part rather than as a window.
+        let plan = windows
+            .iter()
+            .filter(|w| w.bucket != "spend_limit")
+            .min_by(|a, b| a.remaining.total_cmp(&b.remaining));
+        let credit = windows.iter().find(|w| w.bucket == "spend_limit");
+        if let Some(window) = plan {
             let used = ((1.0 - window.remaining) * 100.0).round().clamp(0.0, 100.0);
             let mut part = format!("{} {used:.0}%", agent.id);
             if let Some(at) = window.reset_at.filter(|at| *at > now) {
                 part.push_str(&format!(" · {}", until(at)));
             }
-            parts.push(part);
+            parts.push((part, used >= 90.0));
+        }
+        if let Some(window) = credit {
+            let used = ((1.0 - window.remaining) * 100.0).round().clamp(0.0, 100.0);
+            let mut part = format!("{} credit {used:.0}% used", agent.id);
+            if let Some(at) = window.reset_at.filter(|at| *at > now) {
+                part.push_str(&format!(" · {}", until(at)));
+            }
+            parts.push((part, used >= 90.0));
         }
     }
-    (!parts.is_empty()).then(|| parts.join(" │ "))
+    (!parts.is_empty()).then_some(parts)
 }
 
 fn compact(n: u64) -> String {
