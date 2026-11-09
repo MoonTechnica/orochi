@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"What the window may ask of Tauri's plugins: the system's folder picker, which is how a project is chosen.","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}

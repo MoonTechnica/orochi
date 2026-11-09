@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the window may ask of Tauri's plugins: the system's folder picker, which is how a project is chosen.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}
