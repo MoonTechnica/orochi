@@ -230,6 +230,7 @@ pub struct Options {
 }
 
 /// One queued user message.
+#[derive(Clone)]
 struct Message {
     text: String,
     attachments: Vec<Attachment>,
@@ -2456,6 +2457,21 @@ const CHOICES: [&str; 3] = [
 ];
 const NO: usize = 2;
 
+fn is_bare_continuation(text: &str) -> bool {
+    matches!(
+        text.trim()
+            .to_lowercase()
+            .trim_end_matches(['。', '.', '!', '！']),
+        "続き"
+            | "続けて"
+            | "続きを"
+            | "続きをお願いします"
+            | "continue"
+            | "please continue"
+            | "go on"
+    )
+}
+
 /// A permission request waiting for an answer; the panel stays on screen, the loop keeps running.
 struct Pending {
     answer: tokio::sync::oneshot::Sender<Option<String>>,
@@ -2467,10 +2483,27 @@ struct Pending {
 }
 
 impl Session<'_> {
-    async fn run_turn(&mut self, message: Message) -> Result<()> {
+    async fn run_turn(&mut self, mut message: Message) -> Result<()> {
         // A server added to `.mcp.json` since the last turn is asked about before this one uses
         // it, so nothing reaches a console turn undecided.
         self.review_repository_servers().await;
+        // A bare "continue" is not a new small task. Restore the most recent substantive user
+        // request before routing and prompting, including when the preceding turn was interrupted.
+        if !message.from_helpers
+            && is_bare_continuation(&message.text)
+            && let Some(recorded) = &self.recorded
+            && let Some(thread) = &recorded.thread
+            && let Ok(requests) = recorded.store().recent_user_requests(thread)
+            && let Some(request) = requests
+                .into_iter()
+                .find(|text| !is_bare_continuation(text) && !text.trim().is_empty())
+        {
+            message.text = format!(
+                "{}\n\nContinue the user's earlier request:\n{}",
+                message.text,
+                bounded(&request, USER_CHARS)
+            );
+        }
         // Carrying on after reading the answer is a (small) vote for how it was routed. Carrying
         // on after stopping it is not: that is usually the user adding what they forgot to say.
         // What the helpers hand back is Orochi's doing, not the user's: it says nothing about
@@ -2511,7 +2544,21 @@ impl Session<'_> {
         self.open_turn(&message, &task, &steps);
         let result = if steps.is_empty() {
             let pinned = self.conversation.current.is_some();
-            let result = self.execute(message, None, Some(task)).await;
+            let mut result = self
+                .execute(message.clone(), None, Some(task.clone()))
+                .await;
+            // The agent ran out of quota during this turn. Its account is now cooling down, so
+            // the same message goes again and is routed to another agent, which carries on from
+            // the transcript rather than from the agent's own session.
+            if matches!(&result, Ok((code, _)) if *code != 0 && *code != 130)
+                && let Some(agent) = self.spent_in_last_run()
+                && self.account_spent(&agent)
+            {
+                self.view.note(&format!(
+                    "{agent} hit its usage limit · carrying the request on with another agent"
+                ));
+                result = self.execute(message, None, Some(task)).await;
+            }
             match &result {
                 Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
                 Ok((code, _)) if *code != 0 && *code != 130 && pinned => self
@@ -2524,8 +2571,22 @@ impl Session<'_> {
             self.run_team(message, steps, &task)
                 .await
                 .inspect_err(|error| self.view.result(ERR, &format!("✗ {error:#}")))
-                .map(|()| 0)
         };
+        if let Err(error) = &result
+            && let Some(recorded) = &self.recorded
+            && let (Some(thread), Some(turn)) = (&recorded.thread, &recorded.turn)
+        {
+            let _ = recorded.store().item(
+                thread,
+                turn,
+                None,
+                crate::activity::ItemKind::Note,
+                Some("failed"),
+                Some("turn_error"),
+                &format!("{error:#}"),
+                None,
+            );
+        }
         self.close_turn(match &result {
             Ok(0) => crate::activity::TurnState::Completed,
             Ok(130) => crate::activity::TurnState::Interrupted,
@@ -3544,7 +3605,7 @@ impl Session<'_> {
         message: Message,
         steps: Vec<usize>,
         descriptor: &TaskDescriptor,
-    ) -> Result<()> {
+    ) -> Result<u8> {
         let task = message.text.clone();
         let mut handover = String::new();
         let mut plan = String::new();
@@ -3552,6 +3613,9 @@ impl Session<'_> {
         let mut last_stage = None;
         let mut steps = steps;
         let mut index = 0;
+        let mut last_code = 0;
+        // A step whose agent ran out of quota is carried on by another agent, once.
+        let mut retried = false;
         while index < steps.len() {
             let phase = Phase::new(steps[index], descriptor);
             self.view.phase(phase.name, index + 1, steps.len());
@@ -3593,17 +3657,36 @@ impl Session<'_> {
             let seed = phase.profile(descriptor);
             let kind = seed.task_type.clone();
             let Some(mut profile) = self.refine_profile(&step.text, seed).await else {
-                break;
+                return Ok(130);
             };
             profile.task_type = kind;
             let (code, reply) = match self.execute(step, Some(&phase), Some(profile)).await {
                 Ok(result) => result,
                 Err(error) => {
                     self.view.result(ERR, &format!("✗ {error:#}"));
-                    break;
+                    return Err(error);
                 }
             };
+            last_code = code;
             let designed = steps[index] == DESIGN;
+            if code == 130 || self.quit {
+                return Ok(130);
+            }
+            if code != 0
+                && !retried
+                && let Some(agent) = self.spent_in_last_run()
+                && self.account_spent(&agent)
+            {
+                self.view.note(&format!(
+                    "{agent} hit its usage limit · carrying this step on with another agent"
+                ));
+                retried = true;
+                continue;
+            }
+            retried = false;
+            if designed && code != 0 {
+                return Ok(code);
+            }
             last_stage = Some(phase.stage);
             let (reply, parts) = if designed {
                 divided(&reply)
@@ -3634,7 +3717,7 @@ impl Session<'_> {
                             from_helpers: false,
                             origin: None,
                         };
-                        return self.collaborate(team, plan).await;
+                        return self.collaborate(team, plan).await.map(|()| 0);
                     }
                     Proceed::Alone => self.view.note("carrying on as one agent"),
                     Proceed::Keep => {
@@ -3659,9 +3742,6 @@ impl Session<'_> {
                     .note("the review asked for changes · one more pass");
                 steps.push(IMPLEMENT);
             }
-            if self.quit || code == 130 {
-                break;
-            }
             index += 1;
         }
         if !deliverable.is_empty() {
@@ -3685,7 +3765,7 @@ impl Session<'_> {
                 ));
         }
         self.refresh_status(None);
-        Ok(())
+        Ok(last_code)
     }
 
     /// Whether the agent holding this conversation can do what the message needs. A message
@@ -3728,6 +3808,27 @@ impl Session<'_> {
     }
 
     /// Runs one turn and returns its exit code with the agent's reply.
+    /// Whether an agent's account is cooling down after a usage or rate limit, as the scheduler
+    /// records it. Reads the store only; nothing is probed.
+    fn account_spent(&self, agent: &str) -> bool {
+        self.store
+            .runtime()
+            .map(|runtime| !crate::scheduler::quota::available(&runtime, agent, "*", now()))
+            .unwrap_or(false)
+    }
+
+    /// The agent whose latest run ended on its account (a usage limit, a rejected sign-in or an
+    /// outage), if it did. The run's own record names it, so this is the agent that failed.
+    fn spent_in_last_run(&self) -> Option<String> {
+        let runs = self.store.recent_runs(1).ok()?;
+        let run = runs.first()?;
+        matches!(
+            run.error_kind.as_deref(),
+            Some("rate_limit" | "authentication" | "unavailable")
+        )
+        .then(|| run.candidate.agent.clone())
+    }
+
     async fn execute(
         &mut self,
         message: Message,
@@ -3820,7 +3921,29 @@ impl Session<'_> {
             .flatten();
         // The conversation's own model is kept only while it would still be picked for the
         // work; a follow-up that outgrows it is routed again rather than answered badly.
+        // An agent whose account is cooling down after a usage limit is not kept: the work goes
+        // to another agent, which takes the conversation over from its transcript.
+        let spent = own_session
+            && self
+                .conversation
+                .current
+                .as_ref()
+                .is_some_and(|c| self.account_spent(&c.session.agent));
+        if spent {
+            let agent = self
+                .conversation
+                .current
+                .as_ref()
+                .map(|c| c.session.agent.clone())
+                .unwrap_or_default();
+            self.view.note(&format!(
+                "{agent} is out of quota for now · handing the conversation to another agent"
+            ));
+            resume = None;
+            overrides = Overrides::default();
+        }
         let outgrown = own_session
+            && !spent
             && self
                 .conversation
                 .current
@@ -3835,7 +3958,7 @@ impl Session<'_> {
             .conversation
             .current
             .as_ref()
-            .filter(|_| own_session && !outgrown)
+            .filter(|_| own_session && !outgrown && !spent)
         {
             let session = &current.session;
             overrides = Overrides {

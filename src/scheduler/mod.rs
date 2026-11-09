@@ -522,7 +522,7 @@ async fn run_recorded(
         }
     }
     let (mut clients, failures) = tokio::select! {
-        result = discover_as(config, root, store, options.overrides.agent.as_deref(), options.permission, events.clone(), options.overrides.model.as_deref(), options.peer.as_deref(), options.read_only, &mcp) => result?,
+        result = discover_as(config, root, store, options.overrides.agent.as_deref(), options.permission, events.clone(), options.overrides.model.as_deref(), options.peer.as_deref(), options.read_only, &[]) => result?,
         _ = since.wait() => return Ok(130),
     };
     if !options.dry_run {
@@ -552,6 +552,7 @@ async fn run_recorded(
             report(Progress::Note(note));
         }
     }
+    let mut execution_servers_attached = BTreeSet::new();
     let mut attempted = BTreeSet::new();
     let mut retryable = BTreeSet::new();
     let mut envelope = TaskEnvelope::new(&options.task, root);
@@ -829,6 +830,27 @@ async fn run_recorded(
             candidate
                 .reasons
                 .push("a seat that only reads takes the agent's own read-only mode".into());
+        } else if !options.read_only
+            && options.permission == PermissionMode::Allow
+            && options.overrides.mode.is_none()
+            && candidate.provider == crate::types::Provider::OPENAI
+            && let Some(mode) = clients[index]
+                .capabilities
+                .models
+                .iter()
+                .find(|m| m.model == candidate.model)
+                .and_then(|m| m.modes.as_ref())
+                .and_then(|modes| {
+                    modes
+                        .values
+                        .iter()
+                        .find(|mode| mode.as_str() == "agent-full-access")
+                })
+        {
+            candidate.mode = Some(mode.clone());
+            candidate
+                .reasons
+                .push("YOLO uses the agent's advertised full-access mode".into());
         }
         let started = now();
         let clock = Instant::now();
@@ -842,7 +864,24 @@ async fn run_recorded(
         };
         let setup = tokio::select! {
             result = async {
-                if let Some(id) = resume { clients[index].load_session(&id, root).await?; }
+                if !execution_servers_attached.contains(&candidate.agent) {
+                    let changed = clients[index].attach_execution_servers(mcp.clone());
+                    for (name, reason) in clients[index].mcp_skipped() {
+                        let note = format!("MCP server {name} left out for {}: {reason}", candidate.agent);
+                        if loud { eprintln!("{note}"); } else { report(Progress::Note(note)); }
+                    }
+                    if let Some(id) = resume.as_deref() {
+                        clients[index].load_session(id, root).await?;
+                    } else if changed {
+                        clients[index].new_session(root).await?;
+                    }
+                    execution_servers_attached.insert(candidate.agent.clone());
+                } else if let Some(id) = resume.as_deref() {
+                    clients[index].load_session(id, root).await?;
+                }
+                if let (Some(id), Some(seat)) = (&recorded_attempt, &options.seat) {
+                    let _ = seat.store.lock().expect("activity store").attempt_session(id, &clients[index].capabilities.session_id, clients[index].peer_id());
+                }
                 clients[index].configure(&candidate).await
             } => result,
             _ = since.wait() => Err(AgentError::new(ErrorKind::Cancelled, "interrupted during session setup")),
@@ -864,12 +903,14 @@ async fn run_recorded(
                 if let Some(note) = clients[index].peer_note() {
                     text = format!("{note}\n\n{text}");
                 }
-                if fresh
-                    && let Ok(Some(runner)) =
-                        crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)
-                    && runner.mode == crate::sandbox::Mode::Runner
+                if let Ok(Some(place)) =
+                    crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)
                 {
-                    let note = crate::sandbox::runner::prompt_note(&config.sandbox, &runner.name);
+                    let note = if place.mode == crate::sandbox::Mode::Runner {
+                        crate::sandbox::runner::prompt_note(&config.sandbox, &place.name)
+                    } else {
+                        "Sandbox: You are working inside this conversation's Linux sandbox. When the task needs the project to run, inspect its setup instructions and environment configuration, then install and initialize missing project tools and dependencies inside this sandbox as needed, using that project's documented toolchain rather than assuming any particular one. Search the project's README and CI setup files for installation commands; if these do not cover this Linux environment, consult the tool's official installation instructions. Attempt the applicable setup and fix ordinary errors before reporting a blocker. A missing tool alone is not a reason to stop. Start the requested services from the actual conversation workspace and verify their health and reachable ports; an experiment in a temporary copy does not verify the workspace. Be aware that the project tree is shared with the host: do not overwrite host-specific dependencies or caches when installing Linux packages. If setup requires credentials, interactive authorization, or an unavailable capability, report the specific blocker and what was already tried. Do not change the shared base image.".to_owned()
+                    };
                     text = format!("{note}\n\n{text}");
                 }
                 if fresh
@@ -1057,6 +1098,7 @@ async fn run_recorded(
                     checks,
                 );
                 // Kill the failed process before any other agent touches the shared repository.
+                execution_servers_attached.remove(&candidate.agent);
                 let mut failed_client = clients.remove(index);
                 let failed_config = failed_client.config.clone();
                 failed_client.stop().await;
@@ -1066,8 +1108,17 @@ async fn run_recorded(
                     && quota::available(&store.runtime()?, &failed_config.id, "*", now())
                 {
                     let timeout = Duration::from_secs(config.scheduler.discovery_timeout_secs);
+                    let mut restart_servers = Vec::new();
+                    if let Ok(Some(place)) =
+                        crate::sandbox::placement_for(store.data_dir(), root, &config.sandbox)
+                        && place.mode == crate::sandbox::Mode::Runner
+                        && let Ok(server) =
+                            crate::sandbox::runner::server(&config.sandbox, store.data_dir(), root)
+                    {
+                        restart_servers.push(server);
+                    }
                     let restarted = tokio::select! {
-                        result = tokio::time::timeout(timeout, Client::start_named(failed_config, root, options.permission, timeout, events.clone(), None, options.peer.as_deref(), options.read_only, mcp.clone())) => result,
+                        result = tokio::time::timeout(timeout, Client::start_named(failed_config, root, options.permission, timeout, events.clone(), None, options.peer.as_deref(), options.read_only, restart_servers)) => result,
                         _ = since.wait() => return Ok(130),
                     };
                     if let Ok(Ok(client)) = restarted {

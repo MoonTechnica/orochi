@@ -327,9 +327,10 @@ class Console:
     """One live session in a pty, driven a key at a time."""
 
     def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
-                 files=None, mailbox=False, host=False):
+                 files=None, mailbox=False, host=False, backup=False):
         """`host` runs the session as an agent host's pane runs it, so `reports()` has what it
-        was told."""
+        was told. `backup` adds a second, working agent beside the first, whose prompts land in
+        `self.backup_log`."""
         self.dir = Path(tempfile.mkdtemp())
         self.raw = []
         self.repo = self.dir / "repo"
@@ -338,6 +339,19 @@ class Console:
         for name, text in (files or {}).items():
             (self.repo / name).write_text(text)
         self.log = self.dir / "agent.jsonl"
+        self.backup_log = self.dir / "backup.jsonl"
+        # Sorted after the first agent, so on a tie of price and fit the first one is chosen.
+        backup_text = f"""
+[[agents]]
+id = "zz-backup"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "success"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{self.backup_log}"
+""" if backup else ""
         extra = "\n".join(f"{key} = {json.dumps(value)}" for key, value in (env or {}).items())
         path = self.dir / "config.toml"
         path.write_text(f"""
@@ -366,6 +380,7 @@ MOCK_LINES = "{lines}"
 MOCK_LINE_DELAY = "{delay}"
 MOCK_LOG = "{self.log}"
 {extra}
+{backup_text}
 """)
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
@@ -480,6 +495,22 @@ class FailedTurns(unittest.TestCase):
             c.pump(2)
             self.assertTrue(c.alive(), c.rows())
             self.assertTrue(c.input(), "the prompt is back: " + c.rows())
+        finally:
+            c.close()
+
+    def test_a_turn_that_hits_a_usage_limit_is_carried_on_by_another_agent(self):
+        # The first agent is out of quota (every prompt is refused with a rate limit). The same
+        # request is then handed to the other agent, and the conversation moves to it.
+        c = Console(behavior="rate", backup=True)
+        try:
+            c.type("Summarize the README")
+            c.key(b"\r")
+            c.wait("Fixture completed", seconds=TURN * 2)
+            self.assertTrue(c.shown("Trying zz-backup"), c.rows())
+            prompts = [r["params"]["prompt"][0]["text"] for r in
+                       (json.loads(line) for line in c.backup_log.read_text().splitlines())
+                       if r.get("method") == "session/prompt"] if c.backup_log.exists() else []
+            self.assertTrue(any("Summarize the README" in p for p in prompts), c.rows())
         finally:
             c.close()
 
@@ -956,7 +987,11 @@ class ChatTerminal(unittest.TestCase):
         self.assertFalse(any("following the plan above" in p for p in prompts), prompts)
         self.assertTrue(any("keeping the design" in row for row in rows), text)
         self.assertIn("Build alpha and beta side by side", prompts[-1])
-        self.assertTrue(prompts[-1].rstrip().endswith("go on"), prompts[-1])
+        # A bare "go on" carries the user's earlier request with it (`is_bare_continuation`), so
+        # the prompt names the request it continues rather than ending with the bare words.
+        self.assertIn("go on", prompts[-1], prompts[-1])
+        self.assertIn("Continue the user's earlier request:", prompts[-1], prompts[-1])
+        self.assertIn("Plan the work first", prompts[-1], prompts[-1])
 
     def test_choosing_one_agent_carries_on_in_the_working_tree(self):
         rows, repo, data, prompts = divided(answer=b"2")

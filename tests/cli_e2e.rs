@@ -200,6 +200,27 @@ fn model_specific_rate_limit_can_fall_back_within_same_agent() {
 }
 
 #[test]
+fn yolo_selects_the_agents_advertised_full_access_mode() {
+    let mut w = Workspace::new();
+    w.config.agents[0]
+        .env
+        .insert("MOCK_FULL_ACCESS".into(), "1".into());
+    success(&w.run(&["--permission", "allow", "Implement a small endpoint"]));
+    let log = std::fs::read_to_string(w.dir.path().join("agent.jsonl")).unwrap();
+    let calls: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call["method"] == "session/set_config_option"
+                && call["params"]["configId"] == "mode"
+                && call["params"]["value"] == "agent-full-access")
+    );
+}
+
+#[test]
 fn single_model_can_retry_an_unfinished_turn_within_attempt_budget() {
     let mut w = Workspace::new();
     w.config.agents[0]
@@ -393,6 +414,19 @@ fn session_requests(w: &Workspace) -> Vec<(String, String, String)> {
             )
         })
         .collect()
+}
+
+#[test]
+fn bare_continuation_keeps_the_substantive_user_request() {
+    let w = Workspace::new();
+    let original = "Set up the project environment and start the web server";
+    success(&chat_steps(&w, &[original, "続き"]));
+    let prompts: Vec<String> = session_requests(&w)
+        .into_iter()
+        .filter(|(method, _, _)| method == "session/prompt")
+        .map(|(_, _, prompt)| prompt)
+        .collect();
+    assert!(prompts.last().unwrap().contains(original), "{prompts:?}");
 }
 
 #[test]
@@ -1669,7 +1703,19 @@ fn acp_judge_replaces_an_exhausted_adviser_and_only_reorders_eligible_candidates
             .get("mcpServers")
             .is_none_or(|s| s.as_array().unwrap().is_empty())
     );
-    let executing = new_session("agent.jsonl");
+    // Discovery opens a throwaway session first, with the mailbox only; the executing session
+    // is the one opened after the project's servers were attached, so it is the one naming them.
+    let executing = std::fs::read_to_string(w.dir.path().join("agent.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|r| r["method"] == "session/new")
+        .find(|r| {
+            r["params"]["mcpServers"]
+                .as_array()
+                .is_some_and(|s| s.iter().any(|m| m["name"] == "notes"))
+        })
+        .expect("the executing session is opened with the configured servers");
     assert_eq!(
         executing["params"]["mcpServers"][0]["name"],
         "orochi-mailbox"
@@ -3106,12 +3152,23 @@ fn configured_mcp_servers_reach_the_agents_session_beside_orochis_own() {
     ];
     let output = w.run(&["Implement a small endpoint"]);
     success(&output);
-    let new_session = w
+    let sessions: Vec<_> = w
         .log()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|r| r["method"] == "session/new")
-        .unwrap();
+        .filter(|r| r["method"] == "session/new")
+        .collect();
+    assert_eq!(
+        sessions.len(),
+        2,
+        "discovery and execution have separate sessions"
+    );
+    let discovery_servers = sessions[0]["params"]["mcpServers"].as_array().unwrap();
+    assert!(
+        !discovery_servers.iter().any(|s| s["name"] == "notes"),
+        "discovery does not launch project servers"
+    );
+    let new_session = &sessions[1];
     let servers = new_session["params"]["mcpServers"]
         .as_array()
         .unwrap()
@@ -3210,7 +3267,7 @@ fn a_gateway_session_hands_its_clients_mcp_servers_to_the_agent_running_the_prom
         .log()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|r| r["method"] == "session/new")
+        .rfind(|r| r["method"] == "session/new")
         .unwrap()["params"]["mcpServers"]
         .as_array()
         .unwrap()
@@ -3243,7 +3300,7 @@ fn a_repositorys_own_mcp_json_reaches_the_agent_and_the_run_says_where_it_came_f
         .log()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|r| r["method"] == "session/new")
+        .rfind(|r| r["method"] == "session/new")
         .unwrap()["params"]["mcpServers"]
         .as_array()
         .unwrap()
@@ -3292,7 +3349,7 @@ fn a_signed_in_remote_server_reaches_the_agent_with_its_token() {
         .log()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|r| r["method"] == "session/new")
+        .rfind(|r| r["method"] == "session/new")
         .unwrap()["params"]["mcpServers"]
         .as_array()
         .unwrap()
@@ -3336,7 +3393,7 @@ fn attached(w: &Workspace) -> std::collections::BTreeMap<String, serde_json::Val
     w.log()
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|r| r["method"] == "session/new")
+        .rfind(|r| r["method"] == "session/new")
         .unwrap()["params"]["mcpServers"]
         .as_array()
         .unwrap()

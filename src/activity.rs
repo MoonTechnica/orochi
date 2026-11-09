@@ -1660,6 +1660,15 @@ impl Activity {
             .collect())
     }
 
+    /// Recent user requests, including turns interrupted before an agent answered.
+    pub fn recent_user_requests(&self, thread: &str) -> Result<Vec<String>> {
+        let mut query = self.connection.prepare(
+            "SELECT text FROM items WHERE thread_id=?1 AND kind='user_message' ORDER BY id DESC LIMIT 20",
+        )?;
+        let rows = query.query_map([thread], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn set_continuation(&self, thread: &str, continuation: Option<&str>) -> Result<()> {
         self.connection.execute(
             "UPDATE threads SET continuation=?2, updated_at=?3 WHERE id=?1",

@@ -602,9 +602,7 @@ impl Client {
                             value["toolCall"]["kind"].as_str(),
                             Some("read" | "search" | "fetch" | "think") | None
                         );
-                        // A command may write, but a seat that reads often needs one to read at
-                        // all (`curl`, `rg`, `git log`): the user is asked, whatever the approval
-                        // mode, and nobody answering refuses the call rather than the seat.
+                        // A command may write, so a read-only seat asks whatever the approval mode.
                         // A request that does not say what it is (codex-acp names the call by
                         // id alone) is not taken for a read either: it is asked about.
                         let runs = matches!(
@@ -627,7 +625,7 @@ impl Client {
                                         None
                                     };
                                 answer.or_else(|| reject_once_option(&value))
-                            } else if read_only && writes && !coordination_tool(&value) {
+                            } else if read_only && writes && !runs && !coordination_tool(&value) {
                                 // Said, not merely done: an agent told "no" explains itself in
                                 // its own words, and a reader is left guessing who refused it
                                 // and why. This seat cannot write, and that is Orochi's answer.
@@ -894,6 +892,31 @@ impl Client {
         servers.extend(self.mcp.iter().cloned());
         servers
     }
+    /// Attach execution-only servers after candidate discovery, before opening its real session.
+    pub fn attach_execution_servers(
+        &mut self,
+        servers: Vec<crate::config::McpServerConfig>,
+    ) -> bool {
+        let (servers, inside): (Vec<_>, Vec<_>) = if self.config.sandboxed {
+            servers
+                .into_iter()
+                .partition(|server| server.transport != crate::config::McpTransport::Stdio)
+        } else {
+            (servers, vec![])
+        };
+        let (attached, mut skipped) = crate::mcp::attach(&servers, self.capabilities.mcp);
+        skipped.extend(inside.into_iter().map(|server| {
+            (
+                server.name,
+                "a stdio server runs on this machine, not inside the sandbox".to_owned(),
+            )
+        }));
+        let changed = !attached.is_empty();
+        self.mcp.extend(attached);
+        self.mcp_skipped.extend(skipped);
+        changed
+    }
+
     /// What this agent can do beyond the protocol: what the user configured for it, plus what
     /// it declared itself.
     pub fn abilities(&self) -> crate::types::Abilities {

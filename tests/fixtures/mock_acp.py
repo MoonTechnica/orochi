@@ -296,7 +296,8 @@ def options():
         {"id": "effort-control", "category": "thought_level", "type": "select", "name": "Effort", "currentValue": reasoning,
          "options": [{"value": v, "name": v} for v in levels]},
         {"id": "mode", "category": "mode", "type": "select", "name": "Mode", "currentValue": mode,
-         "options": [{"value": "ask", "name": "Ask"}, {"value": "plan", "name": "Plan"}]},
+         "options": [{"value": "ask", "name": "Ask"}, {"value": "plan", "name": "Plan"}] +
+                    ([{"value": "agent-full-access", "name": "Full access"}] if os.environ.get("MOCK_FULL_ACCESS") else [])},
     ]
 
 
