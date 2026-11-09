@@ -1,0 +1,35 @@
+{
+  "no_sandbox": {
+    "ask": true,
+    "mode": "host",
+    "tier": null,
+    "docker": true,
+    "name": "fresh",
+    "options": [
+      "host",
+      "runner",
+      "container",
+      "vm"
+    ],
+    "ready": [
+      "host"
+    ]
+  },
+  "sandboxed": {
+    "ask": false,
+    "mode": "runner",
+    "tier": "container",
+    "docker": true,
+    "name": "orochi",
+    "options": [
+      "host",
+      "runner",
+      "container"
+    ],
+    "ready": [
+      "host",
+      "runner",
+      "container"
+    ]
+  }
+}

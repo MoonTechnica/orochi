@@ -15,6 +15,7 @@ const recorded = {
   sidebar: JSON.parse(readFileSync(join(here, "sidebar.json"), "utf8")).projects,
   thread: JSON.parse(readFileSync(join(here, "thread.json"), "utf8")),
   channel: JSON.parse(readFileSync(join(here, "channel.json"), "utf8")),
+  placement: JSON.parse(readFileSync(join(here, "placement.json"), "utf8")),
 };
 
 /// The window's script, read once and given a fresh scope per test. Importing it again would
@@ -54,12 +55,11 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "panel", "panel-head", "panel-title", "panel-close", "panel-body",
     "settings", "settings-nav", "settings-main", "settings-head", "settings-title", "settings-close", "settings-body",
     "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-details", "setup-cancel", "setup-later", "setup-go",
-    "place", "place-head", "place-title", "place-close", "place-body", "place-root-label",
-    "place-root", "place-modes-label", "place-modes", "place-note", "place-more",
-    "place-advanced", "place-docker", "place-error", "place-foot", "place-cancel", "place-go",
-    "app", "side", "sidebar-resizer", "side-resizer", "member-resizer",
+        "app", "side", "sidebar-resizer", "side-resizer", "member-resizer",
     "pane-files", "files-head", "files-where", "files-refresh",
     "tree-search", "tree-by", "tree", "viewer",
+    "newproject", "newproject-head", "newproject-title", "newproject-close", "newproject-body", "newproject-label", "newproject-root", "newproject-error", "newproject-foot", "newproject-cancel", "newproject-go",
+    "spawn", "spawn-head", "spawn-title", "spawn-close", "spawn-body", "spawn-project-label", "spawn-project", "spawn-project-picker", "spawn-project-menu", "spawn-place-label", "spawn-picker", "spawn-place", "spawn-menu", "spawn-about", "spawn-worktree", "spawn-docker", "spawn-error", "spawn-foot", "spawn-cancel", "spawn-go", "spawn-go-label", "spawn-kbd",
     "context-menu", "confirm", "confirm-title", "confirm-body", "confirm-foot", "confirm-cancel", "confirm-go",
   ], markup);
   const localStorage = {
@@ -396,175 +396,6 @@ test("a project's own plus starts a thread in that project", async () => {
     "the project clicked, not the one in view",
   );
   assert.equal(prevented, 1, "and the click does not also fold the project");
-});
-
-test("adding a project opens its dialog first, and the folder is chosen inside it", async () => {
-  const picked = [];
-  const { el, calls } = await open({ placement: NEW }, {
-    pick: (options) => {
-      picked.push(options);
-      return "/work/fresh";
-    },
-  });
-  el("add-project").dispatch("click");
-  await settle();
-
-  assert.equal(el("place").open, true, "even with a thread open: this is for somewhere new");
-  assert.equal(picked.length, 0, "the picker waits to be asked for");
-  assert.equal(el("place-go").disabled, true, "nothing to create before there is a folder");
-
-  el("place-root").dispatch("click");
-  await settle();
-  assert.equal(picked.length, 1, "the system's own picker, from inside the dialog");
-  assert.match(el("place-root").textContent, /\/work\/fresh/);
-  assert.equal(el("place-go").disabled, false);
-  choose(el, "container");
-  el("place-go").dispatch("click");
-  await settle();
-
-  assert.deepEqual(calls.find(([name]) => name === "place")[1], { root: "/work/fresh", mode: "container", docker: true });
-  assert.deepEqual(calls.find(([name]) => name === "new_thread")?.[1], { root: "/work/fresh" });
-  assert.equal(el("place").open, false);
-});
-
-test("adding a folder that is already a project keeps where it runs", async () => {
-  const { el, calls } = await open(
-    { placement: { ask: false, mode: "container", tier: "container", docker: true, name: "repo" } },
-    { pick: () => "/work/orochi" },
-  );
-  el("add-project").dispatch("click");
-  await settle();
-  el("place-root").dispatch("click");
-  await settle();
-
-  const modes = el("place-modes").querySelectorAll("button");
-  assert.equal(modes.find((b) => b.dataset.mode === "container").getAttribute("aria-checked"), "true");
-  assert.ok(modes.every((b) => b.disabled), "changed under Sandboxes, not here");
-  el("place-go").dispatch("click");
-  await settle();
-  assert.equal(calls.some(([name]) => name === "place"), false);
-  assert.deepEqual(calls.find(([name]) => name === "new_thread")?.[1], { root: "/work/orochi" });
-});
-
-test("dismissing a new project before choosing a folder starts nothing", async () => {
-  const { el, calls } = await open({}, { pick: () => "/work/fresh" });
-  el("add-project").dispatch("click");
-  await settle();
-  el("place-cancel").dispatch("click");
-  await settle();
-  assert.equal(el("place").open, false);
-  assert.equal(calls.some(([name, args]) => name === "new_thread" || args?.root === "/work/fresh"), false);
-});
-
-test("new thread asks where, when nowhere has been worked in yet", async () => {
-  const picked = [];
-  const { el, calls } = await open({ sidebar: [], thread: null, folders: [] }, {
-    pick: (options) => {
-      picked.push(options);
-      return "/work/fresh";
-    },
-  });
-  el("new-thread").dispatch("click");
-  await new Promise((resolve) => setTimeout(resolve, 20));
-
-  assert.equal(picked.length, 1, "the system's own picker, not a typed path");
-  assert.deepEqual(
-    calls.find(([name]) => name === "new_thread")?.[1],
-    { root: "/work/fresh" },
-    "and the thread starts in what was chosen",
-  );
-});
-
-const NEW = { ask: true, mode: "host", tier: null, docker: true, name: null };
-async function freshFolder(answers = {}) {
-  const opened = await open(
-    { sidebar: [], thread: null, folders: [], placement: NEW, ...answers },
-    { pick: () => "/work/fresh" },
-  );
-  opened.el("new-thread").dispatch("click");
-  await settle();
-  return opened;
-}
-const choose = (el, mode) =>
-  el("place-modes").querySelectorAll("button").find((b) => b.dataset.mode === mode).dispatch("click");
-
-test("a new project is asked where it runs before its first thread, this Mac first", async () => {
-  const { el, calls } = await freshFolder();
-  assert.equal(el("place").open, true, "the question is open");
-  assert.match(el("place-root").textContent, /\/work\/fresh/);
-  const modes = el("place-modes").querySelectorAll("button");
-  assert.deepEqual(modes.map((b) => b.dataset.mode), ["host", "runner", "container", "vm"]);
-  assert.equal(modes[0].getAttribute("aria-checked"), "true", "running here stays the default");
-  assert.equal(el("place-docker").disabled, true, "Docker is a sandbox's to have");
-  assert.equal(calls.some(([name]) => name === "new_thread"), false, "nothing starts before the answer");
-});
-
-test("choosing a sandbox makes it before the thread starts", async () => {
-  const { el, calls } = await freshFolder();
-  choose(el, "container");
-  assert.equal(el("place-docker").disabled, false);
-  assert.equal(el("place-docker").getAttribute("aria-checked"), "true", "with Docker inside by default");
-  assert.match(el("place-note").textContent, /localhost:1355/, "and where its services will be");
-  el("place-go").dispatch("click");
-  await settle();
-  const names = calls.map(([name]) => name);
-  assert.deepEqual(calls.find(([name]) => name === "place")[1], {
-    root: "/work/fresh",
-    mode: "container",
-    docker: true,
-  });
-  assert.ok(names.indexOf("place") < names.indexOf("new_thread"), "the sandbox exists before the thread");
-  assert.equal(el("place").open, false);
-});
-
-test("running here with the project in a sandbox is a choice of its own, with Docker inside", async () => {
-  const { el, calls } = await freshFolder();
-  choose(el, "runner");
-  assert.equal(el("place-docker").disabled, false, "the project's runtime has Docker");
-  el("place-go").dispatch("click");
-  await settle();
-  assert.deepEqual(calls.find(([name]) => name === "place")[1], { root: "/work/fresh", mode: "runner", docker: true });
-});
-
-test("a sandbox without Docker is asked for under advanced", async () => {
-  const { el, calls } = await freshFolder();
-  choose(el, "container");
-  el("place-more").dispatch("click");
-  assert.equal(el("place-advanced").hidden, false);
-  el("place-docker").dispatch("click");
-  el("place-go").dispatch("click");
-  await settle();
-  assert.equal(calls.find(([name]) => name === "place")[1].docker, false);
-});
-
-test("dismissing the question starts nothing", async () => {
-  const { el, calls } = await freshFolder();
-  el("place-cancel").dispatch("click");
-  await settle();
-  assert.equal(el("place").open, false);
-  assert.equal(calls.some(([name]) => name === "place" || name === "new_thread"), false);
-});
-
-test("a sandbox that cannot be made says why and keeps the question open", async () => {
-  const { el, calls } = await freshFolder({
-    place: new Error("no sbx-golden image; run `orochi sandbox up` and `orochi sandbox image build` first"),
-  });
-  choose(el, "container");
-  el("place-go").dispatch("click");
-  await settle();
-  assert.equal(el("place").open, true);
-  assert.equal(el("place-error").hidden, false);
-  assert.match(el("place-error").textContent, /image build/);
-  assert.equal(el("place-go").disabled, false, "and it can be tried again or changed");
-  assert.equal(calls.some(([name]) => name === "new_thread"), false);
-});
-
-test("a folder already worked in is not asked again", async () => {
-  const { el, calls } = await open({ placement: { ...NEW, ask: false } });
-  el("new-thread").dispatch("click");
-  await settle();
-  assert.equal(el("place").open ?? false, false);
-  assert.ok(calls.some(([name]) => name === "new_thread"));
 });
 
 const SANDBOXES = {
@@ -3286,4 +3117,403 @@ test("the setup dialog is three pages with a step for each, and opens on the one
   assert.equal(steps().find((b) => b.getAttribute("aria-current") === "step").dataset.page, "decision");
   assert.match(el("setup-body").render(), /decision-place/);
   assert.doesNotMatch(el("setup-body").render(), /span.name Node.js/, "one page at a time");
+});
+
+// Where a new thread runs ------------------------------------------------------------------
+const spawnOpen = async (placement, extra = {}, options) => {
+  const opened = await open({ placement, ...extra }, options);
+  opened.el("new-thread").dispatch("click");
+  await settle();
+  return opened;
+};
+const choices = (el) => el("spawn-menu").querySelectorAll(".option").map((o) => o.dataset.key);
+const newThreadCalls = (calls) => calls.filter(([name]) => name === "new_thread").map(([, args]) => args);
+
+test("every folder asks where the thread runs, the project's own place first and the others marked as made later", async () => {
+  const { el, calls } = await spawnOpen(recorded.placement.no_sandbox);
+  assert.equal(el("spawn").open, true, "a folder with only this computer ready is asked too");
+  assert.equal(newThreadCalls(calls).length, 0, "nothing starts until it is answered");
+  assert.match(el("spawn-place").render(), /This computer/, "no sandbox: this computer is the default");
+  assert.doesNotMatch(el("spawn-place").render(), /sandbox/);
+  el("spawn-place").dispatch("click");
+  assert.deepEqual(choices(el), ["host", "runner", "container", "vm"], "all four places are offered");
+  const options = el("spawn-menu").querySelectorAll(".option");
+  assert.match(options[0].render(), /^(?:(?!several minutes)[\s\S])*$/, "what is ready says nothing more");
+  for (const option of options.slice(1)) assert.match(option.render(), /several minutes/, "the rest are made on first use");
+
+  const second = await spawnOpen(recorded.placement.sandboxed);
+  assert.equal(second.el("spawn-title").textContent, "New thread");
+  assert.match(second.el("spawn-project").render(), /repo/, "the project is named, read only");
+  assert.match(second.el("spawn-place").render(), /This computer · runs in sandbox/, "the project's own setting is the default");
+  assert.match(second.el("spawn-about").textContent, /tests, servers, Docker/, "with its description");
+  assert.equal(second.el("spawn-menu").hidden, true);
+  assert.match(second.el("spawn-kbd").textContent, /↵/, "the shortcut is on the button");
+  assert.match(markup, /id="spawn-place"[^>]*aria-haspopup="listbox"/);
+});
+
+test("the first sandbox of the machine says its host is prepared too", async () => {
+  const setup = { ...SETUP, sandbox: { ...SETUP.sandbox, ready: false } };
+  const { el } = await spawnOpen(recorded.placement.no_sandbox, { setup_status: setup });
+  el("spawn-place").dispatch("click");
+  assert.match(el("spawn-menu").render(), /The first time, the sandbox host is prepared too/);
+  const ready = { ...SETUP, sandbox: { ...SETUP.sandbox, ready: true } };
+  const later = await spawnOpen(recorded.placement.no_sandbox, { setup_status: ready });
+  later.el("spawn-place").dispatch("click");
+  assert.match(later.el("spawn-menu").render(), /Made the first time/, "afterwards only the project's sandbox is made");
+});
+
+test("a place the project does not have yet is made first, with progress, and then the thread starts", async () => {
+  const { el, calls } = await spawnOpen(recorded.placement.no_sandbox);
+  assert.equal(el("spawn-docker").hidden, true, "no Docker question for a place that is ready");
+  el("spawn-place").dispatch("click");
+  el("spawn-menu").querySelectorAll(".option").find((o) => o.dataset.key === "container").dispatch("click");
+  assert.equal(el("spawn-docker").hidden, false, "asked for a container that is yet to be made");
+  assert.equal(el("spawn-docker").getAttribute("aria-checked"), "true", "Docker inside by default");
+  assert.match(el("spawn-about").textContent, /several minutes/);
+  el("spawn-go").dispatch("click");
+  assert.equal(el("spawn-go").disabled, true, "controls are held while it is made");
+  assert.equal(el("spawn-place").disabled, true);
+  assert.match(el("spawn-go-label").textContent, /Creating the sandbox…|Setting up the sandbox host/);
+  await settle();
+  const names = calls.map(([name]) => name);
+  assert.deepEqual(calls.find(([name]) => name === "place")[1], { root: recorded.thread.thread.project_root, mode: "container", docker: true });
+  assert.ok(names.indexOf("place") < names.indexOf("new_thread"), "the sandbox exists before the thread");
+  assert.deepEqual(newThreadCalls(calls), [{ root: recorded.thread.thread.project_root, sandbox: "container" }]);
+  assert.equal(el("spawn").open, false);
+  // Docker can be left out.
+  const again = await spawnOpen(recorded.placement.no_sandbox);
+  again.el("spawn-place").dispatch("click");
+  again.el("spawn-menu").querySelectorAll(".option").find((o) => o.dataset.key === "runner").dispatch("click");
+  again.el("spawn-docker").dispatch("click");
+  again.el("spawn-go").dispatch("click");
+  await settle();
+  assert.equal(again.calls.find(([name]) => name === "place")[1].docker, false);
+});
+
+test("a sandbox that cannot be made says why, starts no thread, and can be tried again", async () => {
+  const { el, calls } = await spawnOpen(recorded.placement.no_sandbox, {
+    place: new Error("no sbx-golden image; run `orochi sandbox up` and `orochi sandbox image build` first"),
+  });
+  el("spawn-place").dispatch("click");
+  el("spawn-menu").querySelectorAll(".option").find((o) => o.dataset.key === "vm").dispatch("click");
+  el("spawn-go").dispatch("click");
+  await settle();
+  assert.equal(el("spawn").open, true);
+  assert.match(el("spawn-error").textContent, /image build/);
+  assert.equal(el("spawn-error").hidden, false);
+  assert.equal(el("spawn-go").disabled, false, "and it can be tried again or changed");
+  assert.equal(calls.some(([name]) => name === "new_thread"), false);
+});
+
+test("a place that is ready skips making the sandbox", async () => {
+  const { el, calls } = await spawnOpen(recorded.placement.sandboxed);
+  el("spawn-place").dispatch("click");
+  el("spawn-menu").querySelectorAll(".option").find((o) => o.dataset.key === "container").dispatch("click");
+  el("spawn-go").dispatch("click");
+  await settle();
+  assert.equal(calls.some(([name]) => name === "place"), false);
+  assert.equal(newThreadCalls(calls)[0].sandbox, "container");
+});
+
+test("the + by Projects opens a dialog that asks for the folder only, and creating it adds the project and nothing else", async () => {
+  const picked = [];
+  const { el, calls } = await open({ add_project: "ok" }, {
+    pick: (options) => {
+      picked.push(options);
+      return "/work/fresh";
+    },
+  });
+  el("add-project").dispatch("click");
+  await settle();
+  assert.equal(el("newproject").open, true);
+  assert.equal(el("spawn").open ?? false, false, "not the new thread dialog");
+  assert.equal(el("newproject-title").textContent, "New project");
+  assert.equal(el("newproject-label").textContent, "Project");
+  assert.equal(picked.length, 0, "the picker waits to be asked for");
+  assert.equal(el("newproject-go").disabled, true, "nothing to create before there is a folder");
+  assert.match(el("newproject-root").render(), /Choose a folder…/);
+  const drawn = el("newproject").render() + markup.slice(markup.indexOf('id="newproject"'), markup.indexOf('id="spawn"'));
+  assert.doesNotMatch(drawn, /Runs on|spawn-place|Advanced|Docker|sandbox/i, "no 実行先, no advanced, no Docker, no sandbox text");
+  el("newproject-root").dispatch("click");
+  await settle();
+  assert.equal(picked.length, 1, "the system's own picker, from the field");
+  assert.match(el("newproject-root").render(), /\/work\/fresh/, "the chosen path is shown");
+  assert.equal(el("newproject-go").disabled, false);
+  el("newproject-go").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.find(([name]) => name === "add_project")[1], { root: "/work/fresh" });
+  assert.equal(calls.some(([name]) => ["new_thread", "place"].includes(name)), false, "no thread, no sandbox");
+  assert.equal(el("newproject").open, false);
+  // Cmd-Enter creates too.
+  const keyed = await open({ add_project: "ok" }, { pick: () => "/work/other" });
+  keyed.el("add-project").dispatch("click");
+  await settle();
+  keyed.el("newproject-root").dispatch("click");
+  await settle();
+  keyed.el("newproject").dispatch("keydown", { key: "Enter", metaKey: true });
+  await settle();
+  assert.equal(keyed.calls.filter(([name]) => name === "add_project").length, 1);
+});
+
+test("dismissing the new project dialog, by Cancel or Esc, adds nothing", async () => {
+  const a = await open({ add_project: "ok" }, { pick: () => "/work/fresh" });
+  a.el("add-project").dispatch("click");
+  await settle();
+  a.el("newproject-root").dispatch("click");
+  await settle();
+  a.el("newproject-cancel").dispatch("click");
+  await settle();
+  assert.equal(a.el("newproject").open, false);
+  const b = await open({ add_project: "ok" }, { pick: () => "/work/fresh" });
+  b.el("add-project").dispatch("click");
+  await settle();
+  b.el("newproject").close();
+  await settle();
+  for (const x of [a, b]) assert.equal(x.calls.some(([name]) => name === "add_project"), false);
+  // A refusal is said in the dialog, which stays open.
+  const c = await open({ add_project: new Error("not a folder") }, { pick: () => "/nope" });
+  c.el("add-project").dispatch("click");
+  await settle();
+  c.el("newproject-root").dispatch("click");
+  await settle();
+  c.el("newproject-go").dispatch("click");
+  await settle();
+  assert.match(c.el("newproject-error").textContent, /not a folder/);
+  assert.equal(c.el("newproject").open, true);
+});
+
+test("the new project dialog speaks Japanese", async () => {
+  const { el } = await open({}, { language: "ja-JP" });
+  el("add-project").dispatch("click");
+  await settle();
+  assert.equal(el("newproject-title").textContent, "新しいプロジェクト");
+  assert.equal(el("newproject-label").textContent, "プロジェクト");
+  assert.match(el("newproject-root").render(), /フォルダを選択…/);
+  assert.equal(el("newproject-go").textContent, "作成");
+  assert.equal(el("newproject-cancel").textContent, "キャンセル");
+});
+
+test("a new thread names its project from a list of the existing ones only", async () => {
+  const projects = structuredClone(recorded.sidebar);
+  projects.push({ ...structuredClone(projects[0]), id: "p2", name: "web-app", root: "/work/web-app", threads: [] });
+  const reads = [];
+  const { el, calls } = await spawnOpen(
+    (args) => { reads.push(args.root); return args.root === "/work/web-app" || args.root === "/work/fresh" ? recorded.placement.no_sandbox : recorded.placement.sandboxed; },
+    { sidebar: projects, add_project: "ok" },
+    { pick: () => "/work/fresh" },
+  );
+  assert.equal(el("spawn-title").textContent, "New thread", "never a new project");
+  assert.match(el("spawn-project").render(), /repo/, "the project it came from is preselected");
+  assert.equal(el("spawn-project-menu").hidden, true);
+  el("spawn-project").dispatch("click");
+  const items = () => el("spawn-project-menu").querySelectorAll(".option").map((o) => o.textContent);
+  assert.deepEqual(items(), ["repo", "web-app"], "only the existing projects, no folder to add");
+  // Choosing another project reads its placement and starts from its own default.
+  assert.match(el("spawn-place").render(), /runs in sandbox/);
+  el("spawn-project-menu").querySelectorAll(".option")[1].dispatch("click");
+  await settle();
+  assert.ok(reads.includes("/work/web-app"), "its placement is read again");
+  assert.match(el("spawn-project").render(), /web-app/);
+  assert.match(el("spawn-place").render(), /This computer/);
+  assert.doesNotMatch(el("spawn-place").render(), /sandbox/, "reset to that project's default");
+  assert.equal(calls.some(([name]) => name === "add_project"), false, "adding a project is not done here");
+  el("spawn-go").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.findLast(([name]) => name === "new_thread")[1], { root: "/work/web-app" }, "the thread starts in the chosen project");
+  // Keys work in the project list too.
+  const again = await spawnOpen(recorded.placement.sandboxed, { sidebar: projects });
+  again.el("spawn-project").dispatch("click");
+  again.el("spawn").dispatch("keydown", { key: "ArrowDown" });
+  again.el("spawn").dispatch("keydown", { key: "Enter" });
+  await settle();
+  assert.match(again.el("spawn-project").render(), /web-app/);
+  again.el("spawn-project").dispatch("click");
+  again.el("spawn").dispatch("keydown", { key: "Escape" });
+  assert.equal(again.el("spawn-project-menu").hidden, true);
+  assert.equal(again.el("spawn").open, true);
+});
+
+test("with no project at all the field is disabled with a hint, and nothing can be created", async () => {
+  const { el, calls } = await open({ sidebar: [], thread: null, folders: [], placement: recorded.placement.no_sandbox }, { pick: () => "/work/fresh" });
+  el("new-thread").dispatch("click");
+  await settle();
+  assert.equal(el("spawn").open, true);
+  assert.equal(el("spawn-go").disabled, true);
+  assert.equal(el("spawn-project").disabled, true, "nothing to choose from");
+  assert.match(el("spawn-project").render(), /Choose a project…/);
+  assert.match(el("spawn-about").textContent, /No projects yet\. Add one with \+ on the left\./);
+  el("spawn-project").dispatch("click");
+  assert.equal(calls.some(([name]) => name === "add_project"), false, "no other action");
+});
+
+test("the place list opens, moves with the arrows, takes Enter and closes with Esc before the dialog does", async () => {
+  const { el } = await spawnOpen(recorded.placement.sandboxed);
+  el("spawn-place").dispatch("click");
+  assert.equal(el("spawn-menu").hidden, false);
+  assert.equal(el("spawn-place").getAttribute("aria-expanded"), "true");
+  assert.deepEqual(choices(el), ["host", "runner", "container"], "only what this folder may use, with descriptions");
+  assert.match(el("spawn-menu").render(), /A Linux container of its own/);
+  el("spawn").dispatch("keydown", { key: "ArrowDown" });
+  el("spawn").dispatch("keydown", { key: "Enter" });
+  assert.equal(el("spawn-menu").hidden, true);
+  assert.match(el("spawn-place").render(), /Sandbox · container/);
+  el("spawn-place").dispatch("click");
+  el("spawn").dispatch("keydown", { key: "Escape" });
+  assert.equal(el("spawn-menu").hidden, true, "Esc closes the list");
+  assert.equal(el("spawn").open, true, "and not the dialog");
+  assert.match(el("spawn-place").render(), /Sandbox · container/, "keeping the choice");
+});
+
+test("leaving the default sends no sandbox; a changed choice sends its key and is the next default", async () => {
+  const first = await spawnOpen(recorded.placement.sandboxed);
+  first.el("spawn-go").dispatch("click");
+  await settle();
+  assert.deepEqual(newThreadCalls(first.calls), [{ root: recorded.thread.thread.project_root }], "the thread follows the project's setting");
+  assert.equal(first.el("spawn").open, false, "and the dialog is gone");
+
+  const second = await spawnOpen(recorded.placement.sandboxed);
+  second.el("spawn-place").dispatch("click");
+  second.el("spawn-menu").querySelectorAll(".option").find((o) => o.dataset.key === "container").dispatch("click");
+  second.el("spawn-go").dispatch("click");
+  await settle();
+  assert.deepEqual(newThreadCalls(second.calls), [{ root: recorded.thread.thread.project_root, sandbox: "container" }]);
+  const stored = JSON.parse(second.localStorage.getItem("spawn"));
+  assert.equal(stored[recorded.thread.thread.project_root], "container", "remembered per project");
+
+  const third = await spawnOpen(recorded.placement.sandboxed, {}, { stored: { spawn: second.localStorage.getItem("spawn") } });
+  assert.match(third.el("spawn-place").render(), /Sandbox · container/, "the last choice is the next default");
+  third.el("spawn-go").dispatch("click");
+  await settle();
+  assert.equal(newThreadCalls(third.calls)[0].sandbox, "container", "what the dialog showed is what runs");
+});
+
+test("Cmd-Enter creates, Esc cancels, and a worktree start keeps its choice", async () => {
+  const a = await spawnOpen(recorded.placement.sandboxed);
+  a.el("spawn").dispatch("keydown", { key: "Enter", metaKey: true });
+  await settle();
+  assert.equal(newThreadCalls(a.calls).length, 1, "Cmd-Enter submits");
+  const b = await spawnOpen(recorded.placement.sandboxed);
+  b.el("spawn").close();
+  await settle();
+  assert.equal(newThreadCalls(b.calls).length, 0, "Esc cancels and starts nothing");
+  b.el("spawn-cancel").dispatch("click");
+  // The menu item that starts a worktree thread carries the choice into the dialog.
+  const menu = await (async () => {
+    const x = await open({ placement: recorded.placement.sandboxed });
+    x.el("projects").querySelectorAll("summary")[0].dispatch("contextmenu", { clientX: 5, clientY: 5 });
+    await settle();
+    x.el("context-menu").querySelectorAll("button").find((n) => /worktree/.test(n.textContent)).dispatch("click");
+    await settle();
+    return x;
+  })();
+  assert.equal(menu.el("spawn-worktree").hidden, false, "the worktree choice is shown");
+  menu.el("spawn-go").dispatch("click");
+  await settle();
+  assert.equal(newThreadCalls(menu.calls)[0].worktree, true);
+});
+
+test("a thread the core refuses says why under the controls and keeps the dialog open", async () => {
+  const { el, calls } = await spawnOpen(recorded.placement.sandboxed, { new_thread: new Error("sandbox vm is not available") });
+  el("spawn-go").dispatch("click");
+  await settle();
+  assert.equal(el("spawn-error").hidden, false);
+  assert.match(el("spawn-error").textContent, /sandbox vm is not available/);
+  assert.equal(el("spawn").open, true, "still there to try again");
+  assert.equal(el("spawn-go").disabled, false);
+  assert.equal(newThreadCalls(calls).length, 1);
+});
+
+test("the dialogs are one family and the new thread dialog speaks Japanese", async () => {
+    assert.doesNotMatch(css, /#place\b/, "one dialog, one set of rules");
+  assert.match(css, /button:focus-visible/, "a visible ring from the keyboard");
+  const { el } = await spawnOpen(recorded.placement.sandboxed, {}, { language: "ja-JP" });
+  assert.equal(el("spawn-title").textContent, "新しいスレッド");
+  assert.equal(el("spawn-project-label").textContent, "プロジェクト");
+  assert.equal(el("spawn-place-label").textContent, "実行先");
+  assert.equal(el("spawn-go-label").textContent, "作成");
+  assert.match(el("spawn-place").render(), /このコンピューター · 実行はサンドボックス/);
+});
+
+test("a project whose folder is gone is never where the new thread dialog starts, and cannot be chosen", async () => {
+  const gone = (root = "/tmp/localrun") => ({ ...structuredClone(recorded.sidebar[0]), id: "gone1", name: "localrun", root, missing: true, threads: [] });
+  assert.equal(recorded.sidebar[0].missing, false, "rows carry the flag");
+  const projects = [gone(), ...structuredClone(recorded.sidebar)];
+  // The first row is missing: the dialog starts on one that is there.
+  const { el, calls } = await spawnOpen(recorded.placement.sandboxed, { sidebar: projects });
+  assert.match(el("spawn-project").render(), /repo/);
+  assert.doesNotMatch(el("spawn-project").render(), /localrun/);
+  el("spawn-project").dispatch("click");
+  const rows = el("spawn-project-menu").querySelectorAll(".option");
+  assert.equal(rows[0].getAttribute("aria-disabled"), "true", "listed, but not selectable");
+  assert.match(rows[0].render(), /Folder not found/, "with its note");
+  assert.ok(rows[0].classList.contains("missing"), "and dimmed");
+  rows[0].dispatch("click");
+  await settle();
+  assert.match(el("spawn-project").render(), /repo/, "a click on it changes nothing");
+  // The arrow keys skip it: from the second row Up wraps past the missing first to the folder item.
+  el("spawn").dispatch("keydown", { key: "ArrowUp" });
+  el("spawn").dispatch("keydown", { key: "ArrowUp" });
+  el("spawn").dispatch("keydown", { key: "Enter" });
+  await settle();
+  assert.equal(calls.some(([name, args]) => name === "placement" && args.root === "/tmp/localrun"), false, "never read");
+  // Starting from the missing project's own "+" opens with the field empty.
+  const root = "/tmp/localrun";
+  const direct = await open({ sidebar: [gone(root)], folders: [{ name: "localrun", root, threads: 0, updated_at: 1 }], placement: recorded.placement.sandboxed });
+  direct.el("new-thread").dispatch("click");
+  await settle();
+  assert.equal(direct.el("spawn").open, true);
+  assert.match(direct.el("spawn-project").render(), /Choose a project…/, "empty, not on the missing project");
+  assert.equal(direct.el("spawn-go").disabled, true, "and nothing can be created");
+});
+
+test("a project's own + preselects it even when its folder is gone, and says so; the top button falls back", async () => {
+  const root = "/tmp/localrun";
+  const gone = { ...structuredClone(recorded.sidebar[0]), id: "gone1", name: "localrun", root, missing: true };
+  const withThread = { ...gone, threads: [{ ...structuredClone(recorded.sidebar[0].threads[0]), project_root: root, cwd: root }] };
+  const answers = (extra = []) => ({
+    sidebar: [withThread, ...extra],
+    folders: [{ name: "localrun", root, threads: 1, updated_at: 1 }],
+    placement: new Error(`${root} is not a directory this window can work in`),
+    new_thread: new Error(`${root} is not a directory this window can work in`),
+  });
+  const never = (calls) => calls.some(([name, args]) => (name === "placement" || name === "new_thread") && args?.root === root);
+  const pinned = async (start) => {
+    const { el, calls } = await open(answers());
+    calls.length = 0;
+    await start(el);
+    await settle();
+    assert.equal(el("spawn").open, true, "the dialog opens");
+    assert.match(el("spawn-project").render(), /localrun/, "on the project that was pressed");
+    assert.ok(el("spawn-project").className.includes("gone"), "shown as gone");
+    assert.match(el("spawn-about").textContent, /The folder was not found\. A new thread cannot be made in this project\./);
+    assert.equal(el("spawn-go").disabled, true, "nothing can be created in it");
+    el("spawn").dispatch("keydown", { key: "Enter", metaKey: true });
+    await settle();
+    assert.equal(never(calls), false, "the core is never asked about it");
+    assert.equal(el("notice").textContent, "", "and nothing is reported");
+  };
+  await pinned(async (el) => el("projects").querySelectorAll(".add")[0].dispatch("click"));
+  await pinned(async (el) => {
+    el("projects").querySelectorAll("summary")[0].dispatch("contextmenu", { clientX: 5, clientY: 5 });
+    el("context-menu").querySelectorAll("button").find((b) => /New thread$/.test(b.textContent)).dispatch("click");
+  });
+  await pinned(async (el) => {
+    el("projects").querySelectorAll("summary")[0].dispatch("contextmenu", { clientX: 5, clientY: 5 });
+    el("context-menu").querySelectorAll("button").find((b) => /worktree/.test(b.textContent)).dispatch("click");
+  });
+  // The top button is not naming a project: with the open thread's project gone it passes on
+  // to a usable one, and is empty only when every project is gone.
+  const other = { ...structuredClone(recorded.sidebar[0]), id: "p2", name: "web-app", root: "/work/web-app", missing: false, threads: [] };
+  const fall = await open({ ...answers([other]), placement: recorded.placement.no_sandbox });
+  fall.el("new-thread").dispatch("click");
+  await settle();
+  assert.match(fall.el("spawn-project").render(), /web-app/, "falls back to the next usable project");
+  assert.equal(fall.el("spawn-go").disabled, false);
+  const all = await open(answers());
+  all.calls.length = 0;
+  all.el("new-thread").dispatch("click");
+  await settle();
+  assert.match(all.el("spawn-project").render(), /Choose a project…/, "empty only when all are gone");
+  assert.equal(all.el("spawn-go").disabled, true);
+  assert.equal(never(all.calls), false);
 });

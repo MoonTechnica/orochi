@@ -902,6 +902,22 @@
         "error": null
       }
     ]
+  },
+  "placement": {
+    "ask": false,
+    "mode": "host",
+    "tier": null,
+    "docker": true,
+    "name": "fresh",
+    "options": [
+      "host",
+      "runner",
+      "container",
+      "vm"
+    ],
+    "ready": [
+      "host"
+    ]
   }
 };
   const base = window.__TAURI__.core.invoke;

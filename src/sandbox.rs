@@ -37,6 +37,12 @@ pub enum Mode {
     Runner,
 }
 impl Mode {
+    /// The mode a key names (`Mode::key`'s inverse); a conversation records where it runs by it.
+    pub fn parse(key: &str) -> Option<Self> {
+        [Mode::Host, Mode::Container, Mode::Vm, Mode::Runner]
+            .into_iter()
+            .find(|mode| mode.key() == key)
+    }
     pub fn key(self) -> &'static str {
         match self {
             Mode::Host => "host",

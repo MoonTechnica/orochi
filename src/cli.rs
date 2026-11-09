@@ -1390,13 +1390,19 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 config.activity.enabled,
                 "activity.enabled is false, so there is no thread to host"
             );
-            let named = {
+            let (named, sandbox) = {
                 let activity =
                     crate::activity::Activity::open(&paths.data, config.activity.retention_days)?;
-                activity
+                let named = activity
                     .resolve_thread(&thread)?
-                    .with_context(|| format!("no thread {thread}"))?
+                    .with_context(|| format!("no thread {thread}"))?;
+                let sandbox = activity.thread_sandbox(&named)?;
+                (named, sandbox)
             };
+            // Where this conversation was made to run, unless this run was told otherwise.
+            if config.sandbox.force.is_none() {
+                config.sandbox.force = sandbox.as_deref().and_then(crate::sandbox::Mode::parse);
+            }
             return crate::chat::host::run(&config, &paths.config, &paths.data, &named).await;
         }
         Some(Command::Threads {
@@ -1616,6 +1622,9 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         },
                         cli.permission.unwrap_or(config.scheduler.permission).key(),
                     )?;
+                    if let Some(mode) = cli.sandbox {
+                        activity.set_thread_sandbox(&id, Some(mode.key()))?;
+                    }
                     if cli.json {
                         println!("{}", json!({ "thread": id }));
                     } else {

@@ -1065,9 +1065,10 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .work .open-file:hover, .file .open:hover { color: var(--text); }
 .file .open { margin-left: 4px; }
 
-/* Where a new project's agents run, asked once before its first thread. */
-#place {
-  width: min(480px, calc(100vw - 32px));
+/* The dialog that asks where a conversation runs, and for a new project which folder. */
+#spawn, #newproject {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -1075,67 +1076,41 @@ details[open] > summary .icon { transform: rotate(90deg); }
   color: var(--text);
   box-shadow: 0 24px 64px rgb(0 0 0 / .5);
 }
-#place::backdrop { background: rgb(0 0 0 / .45); }
-#place-head { display: flex; align-items: center; padding: 14px var(--gutter) 6px; }
-#place-title { margin: 0; font-size: 15px; }
-#place-close { margin-left: auto; border: 0; color: var(--muted); padding: 2px 8px; }
-
-#place-body { padding: 4px var(--gutter) 8px; display: grid; gap: 6px; }
-.place-label { color: var(--muted); font-size: 12px; margin-top: 8px; }
-#place-root {
-  padding: 8px 10px;
+#spawn::backdrop, #newproject::backdrop { background: rgb(0 0 0 / .45); }
+#spawn-head, #newproject-head { display: flex; align-items: center; padding: 16px 20px 8px; }
+#spawn-title, #newproject-title { margin: 0; font-size: 15px; font-weight: 600; }
+#spawn-close, #newproject-close { margin-left: auto; border: 0; color: var(--muted); padding: 2px 8px; }
+#spawn-close:hover, #newproject-close:hover { color: var(--text); background: var(--line); }
+#spawn-body, #newproject-body { padding: 4px 20px 12px; display: grid; gap: 8px; }
+.place-label { color: var(--muted); font-size: 12px; font-weight: 500; margin-top: 6px; }
+/* One look for a field that is chosen from: the folder and where it runs. */
+.select {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px;
+  padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--raised);
   overflow-wrap: anywhere;
   text-align: left;
 }
-#place-root.empty { color: var(--muted); }
-#place-root:disabled { cursor: default; }
-#place-modes { display: grid; gap: 6px; }
-#place-modes button:disabled { opacity: .5; cursor: default; }
-#place-modes button {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  column-gap: 8px;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: var(--radius);
-}
-#place-modes button .where { grid-column: 2; color: var(--muted); font-size: 12px; }
-#place-modes button[aria-checked="true"] { border-color: var(--brand); background: var(--raised); }
-#place-modes .mark {
-  width: 12px; height: 12px; margin-top: 3px;
-  border: 1.5px solid var(--muted); border-radius: 50%;
-}
-#place-modes button[aria-checked="true"] .mark {
-  border-color: var(--brand);
-  background: radial-gradient(circle, var(--brand) 0 3px, transparent 3.5px);
-}
-#place-note { margin: 2px 0 0; color: var(--muted); font-size: 12px; min-height: 1em; }
-#place-more { justify-self: start; border: 0; padding: 2px 0; color: var(--muted); }
-#place-more::after {
-  content: ""; display: inline-block; width: 5px; height: 5px; margin: 0 0 2px 7px;
-  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
-  transform: rotate(45deg);
-}
-#place-more[aria-expanded="true"]::after { transform: rotate(-135deg); margin-bottom: -1px; }
-#place-docker { justify-self: start; }
-#place-docker::before {
+.select .choice { display: inline-flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+.select .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select .icon { width: 15px; height: 15px; flex: none; color: var(--muted); }
+.select .fold { margin-left: auto; width: 14px; height: 14px; color: var(--muted); flex: none; }
+.select.static { cursor: default; }
+.select.static:hover { border-color: var(--line); }
+.select.empty { color: var(--muted); }
+#spawn-foot, #newproject-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px 16px; }
+#spawn-error, #newproject-error { margin: 0; color: var(--danger); overflow-wrap: anywhere; }
+#spawn-docker { justify-self: start; border: 0; padding: 2px 0; }
+#spawn-docker::before {
   content: ""; display: inline-block; width: 22px; height: 12px; margin: 0 8px -1px 0;
   border-radius: 6px; background: var(--line);
   box-shadow: inset -10px 0 0 2px var(--line), inset 0 0 0 2px var(--line);
 }
-#place-docker[aria-checked="true"]::before { background: var(--brand); box-shadow: inset 10px 0 0 2px var(--brand), inset 0 0 0 2px var(--brand); }
-#place-docker:disabled { opacity: .5; cursor: default; }
-#place-error { margin: 0; color: var(--danger); overflow-wrap: anywhere; }
-#place-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 10px var(--gutter) 14px;
-}
-#place-go:disabled { opacity: .6; cursor: progress; }
+#spawn-docker[aria-checked="true"]::before { background: var(--brand); box-shadow: inset 10px 0 0 2px var(--brand), inset 0 0 0 2px var(--brand); }
+.later { display: block; color: var(--brand); font-size: 12px; padding-left: 23px; }
+#spawn-about .later { padding-left: 0; }
 
 /* The Sandboxes screen. */
 .place-pill { padding: 0 8px; font-size: 12px; border-color: var(--brand); color: var(--brand); border-radius: 999px; }
@@ -1359,7 +1334,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 :is(#panel-body, #settings-body) .roster-model input[type="checkbox"] { margin-top: 0; width: 14px; height: 14px; flex: none; }
 
 /* The × that closes a dialog: a glyph, sized to be seen, not a ring around nothing. */
-#panel-close, #setup-close, #place-close { font-size: 20px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
+#panel-close, #setup-close, #spawn-close, #newproject-close { font-size: 20px; line-height: 1; padding: 2px 8px; border-radius: 6px; }
 .roster-screen { margin-top: 0; margin-bottom: 16px; }
 :is(#panel-body, #settings-body) h3.settings-section { margin: 20px 0 8px; }
 :is(#panel-body, #settings-body) .card textarea { width: 100%; box-sizing: border-box; }
@@ -1500,3 +1475,68 @@ details[open] > summary .icon { transform: rotate(90deg); }
 }
 .setup-pages button[aria-current="step"] .mark { background: var(--brand); color: var(--on-brand, #111); }
 .setup-pages .mark .icon { width: 12px; height: 12px; }
+
+/* Where a new thread runs: two fields side by side, the list of places beneath the second. */
+.field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.field { min-width: 0; display: grid; gap: 4px; align-content: start; }
+.field .place-label { margin-top: 0; }
+#spawn-picker, #spawn-project-picker { position: relative; }
+#spawn-place[aria-expanded="true"] { border-color: var(--brand); }
+#spawn-menu, #spawn-project-menu {
+  position: absolute; left: 0; top: calc(100% + 4px); z-index: 10; width: max(100%, 320px);
+  display: grid; gap: 2px; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgb(0 0 0 / .4);
+}
+#spawn-menu .option, #spawn-project-menu .option {
+  display: grid; gap: 2px; text-align: left; border: 0; border-radius: 6px; padding: 7px 10px;
+}
+#spawn-menu .option .where { color: var(--muted); font-size: 12px; padding-left: 23px; }
+#spawn-menu .option:hover, #spawn-menu .option[data-active="true"], #spawn-project-menu .option:hover, #spawn-project-menu .option[data-active="true"] { background: var(--line); }
+#spawn-menu .option[aria-selected="true"] .name, #spawn-project-menu .option[aria-selected="true"] .name { color: var(--brand); }
+#spawn-about { margin: 0; color: var(--muted); font-size: 12px; min-height: 2.6em; }
+#spawn-worktree { justify-self: start; border: 0; padding: 2px 0; }
+#spawn-worktree::before {
+  content: ""; display: inline-block; width: 22px; height: 12px; margin: 0 8px -1px 0;
+  border-radius: 6px; background: var(--line);
+  box-shadow: inset -10px 0 0 2px var(--line), inset 0 0 0 2px var(--line);
+}
+#spawn-worktree[aria-checked="true"]::before { background: var(--brand); box-shadow: inset 10px 0 0 2px var(--brand), inset 0 0 0 2px var(--brand); }
+#spawn-go { display: inline-flex; align-items: center; gap: 10px; }
+#spawn-go kbd {
+  font: inherit; font-size: 11px; padding: 0 5px; border-radius: 4px;
+  background: rgb(0 0 0 / .12); color: inherit; opacity: .75;
+}
+#spawn-go:disabled { opacity: .6; cursor: progress; }
+@media (max-width: 480px) { .field-row { grid-template-columns: 1fr; } }
+
+/* One set of states for every button: a visible ring from the keyboard, a pressed look, and
+   a disabled one that is plainly not clickable. */
+button:focus-visible, .select:focus-visible, [role="switch"]:focus-visible {
+  outline: 2px solid var(--brand); outline-offset: 1px;
+}
+button:active:not(:disabled) { background: var(--line); }
+button.primary:hover:not(:disabled) { filter: brightness(1.06); }
+button.primary:active:not(:disabled) { background: var(--brand); filter: brightness(.94); }
+button:disabled { opacity: .5; cursor: default; }
+/* Body-side composer: the hint gives way before the buttons do. */
+#composer-row { flex-wrap: wrap; row-gap: 6px; }
+#composer-hint { flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#send, #interrupt { flex: none; white-space: nowrap; }
+#folder, #route, #effort { white-space: nowrap; flex: none; }
+#spawn { overflow: visible; }
+#newproject-go:disabled { cursor: default; }
+#spawn-menu { left: auto; right: 0; width: max(100%, min(340px, calc(100vw - 80px))); }
+#spawn-menu .option .name { white-space: normal; }
+.choice { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.choice .icon { width: 15px; height: 15px; flex: none; color: var(--muted); }
+#spawn-menu .option:focus-visible { outline-offset: -2px; }
+#spawn-menu { max-height: min(60vh, 360px); overflow: auto; }
+#spawn-project-menu { left: 0; right: auto; width: 100%; max-height: min(50vh, 280px); overflow: auto; }
+#spawn-place[aria-expanded="true"], #spawn-project[aria-expanded="true"] { border-color: var(--brand); }
+#spawn-project-menu .option.missing { opacity: .55; cursor: default; }
+#spawn-project-menu .option.missing:hover { background: transparent; }
+#spawn-project-menu .option .later.gone { color: var(--muted); padding-left: 23px; }
+.select.gone { opacity: .7; }
+.select.gone .name { text-decoration: line-through; text-decoration-color: var(--muted); }
+#spawn-about .later.gone { color: var(--danger); }

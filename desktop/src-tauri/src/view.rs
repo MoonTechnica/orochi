@@ -115,6 +115,12 @@ pub struct Placement {
     pub tier: Option<String>,
     pub docker: bool,
     pub name: Option<String>,
+    /// Where a conversation in this folder may run. A folder with a sandbox: this machine, the
+    /// runner and what the sandbox was made as (`container` or `vm`); one without: every place,
+    /// the sandboxed ones made the first time they are chosen.
+    pub options: Vec<String>,
+    /// Of `options`, the ones that need nothing made: a conversation can start in them now.
+    pub ready: Vec<String>,
 }
 
 /// Records where a folder's agents run, creating or recreating its sandbox where the choice
@@ -890,6 +896,8 @@ impl Client {
                 tier: Some(project.tier.key().into()),
                 docker: project.docker,
                 name: Some(project.name.clone()),
+                options: vec!["host".into(), "runner".into(), project.tier.key().into()],
+                ready: vec!["host".into(), "runner".into(), project.tier.key().into()],
             },
             None => Placement {
                 ask: !known,
@@ -897,14 +905,32 @@ impl Client {
                 tier: None,
                 docker: config.sandbox.default_docker,
                 name: None,
+                options: ["host", "runner", "container", "vm"]
+                    .map(String::from)
+                    .to_vec(),
+                ready: vec!["host".into()],
             },
         })
+    }
+
+    /// Adds a folder as a project without starting anything in it: where conversations run is
+    /// chosen when one is made, not when the project is opened. Returns the project's id.
+    pub fn add_project(&self, root: &Path) -> Result<String> {
+        ensure!(
+            root.is_dir(),
+            "{} is not a directory this window can work in",
+            root.display()
+        );
+        let root = root.canonicalize()?;
+        self.activity
+            .project_for(&root, &self.store.salt()?)
+            .context("could not identify the folder's project")
     }
 
     /// Starts a thread in a folder the user chose. The project is identified the way the
     /// mailbox identifies a room, so this thread and a terminal run in the same repository
     /// land in one section of the sidebar.
-    pub fn new_thread(&self, root: &Path, worktree: bool) -> Result<String> {
+    pub fn new_thread(&self, root: &Path, worktree: bool, sandbox: Option<&str>) -> Result<String> {
         ensure!(
             root.is_dir(),
             "{} is not a directory this window can work in",
@@ -925,7 +951,28 @@ impl Client {
         let branch = orochi::context::git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])
             .map(|b| b.trim().to_owned())
             .filter(|b| !b.is_empty() && b != "HEAD");
-        self.activity.create_thread(
+        // Where it runs was chosen when it was made, among what the folder's sandbox allows;
+        // none chosen takes the project's own setting.
+        let sandbox = match sandbox {
+            Some(key) => {
+                let placement = self.placement(&root)?;
+                ensure!(
+                    placement.options.iter().any(|o| o == key),
+                    "this folder cannot run a conversation as `{key}` (it can: {})",
+                    placement.options.join(", ")
+                );
+                // A sandbox the folder does not have yet is made first (`place`), not
+                // assumed: a conversation recorded as running in one that is not there fails
+                // later, where nobody is looking.
+                ensure!(
+                    placement.ready.iter().any(|o| o == key),
+                    "this folder has no `{key}` sandbox yet; make it first"
+                );
+                Some(key)
+            }
+            None => None,
+        };
+        let id = self.activity.create_thread(
             &project,
             &root,
             branch.as_deref(),
@@ -933,7 +980,11 @@ impl Client {
             Origin::Desktop,
             &orochi::types::Overrides::default(),
             "ask",
-        )
+        )?;
+        if sandbox.is_some() {
+            self.activity.set_thread_sandbox(&id, sandbox)?;
+        }
+        Ok(id)
     }
 
     /// What has been said in this thread's room, oldest first.

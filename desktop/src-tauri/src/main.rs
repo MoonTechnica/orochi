@@ -21,16 +21,31 @@ fn folders(open: State<'_, Open>) -> Result<Vec<Folder>, String> {
     open.0.lock().unwrap().folders().map_err(fail)
 }
 
+/// Adds a folder as a project, with no thread in it yet.
+#[tauri::command]
+fn add_project(open: State<'_, Open>, root: String) -> Result<String, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .add_project(std::path::Path::new(&root))
+        .map_err(fail)
+}
+
 #[tauri::command]
 fn new_thread(
     open: State<'_, Open>,
     root: String,
     worktree: Option<bool>,
+    sandbox: Option<String>,
 ) -> Result<String, String> {
     open.0
         .lock()
         .unwrap()
-        .new_thread(std::path::Path::new(&root), worktree.unwrap_or(false))
+        .new_thread(
+            std::path::Path::new(&root),
+            worktree.unwrap_or(false),
+            sandbox.as_deref(),
+        )
         .map_err(fail)
 }
 
@@ -726,6 +741,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
+            add_project,
             members,
             mentions,
             see_mentions,

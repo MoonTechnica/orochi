@@ -290,7 +290,7 @@ fn a_thread_can_be_started_in_a_folder_the_window_chooses() {
         "the folders offered are the ones already worked in"
     );
 
-    let thread = client.new_thread(&repo, false).unwrap();
+    let thread = client.new_thread(&repo, false, None).unwrap();
     let projects = client.sidebar(20, false).unwrap();
     let section = projects
         .iter()
@@ -318,7 +318,7 @@ fn a_folder_that_is_not_a_directory_is_refused_rather_than_recorded() {
     let client = Client::open(dir.path()).unwrap();
     assert!(
         client
-            .new_thread(&dir.path().join("nowhere"), false)
+            .new_thread(&dir.path().join("nowhere"), false, None)
             .is_err(),
         "a thread whose directory does not exist could never run"
     );
@@ -339,7 +339,7 @@ fn sending_starts_a_host_only_when_the_thread_has_none() {
         "a thread a terminal is holding is not the window's to run"
     );
 
-    let idle = client.new_thread(dir.path(), false).unwrap();
+    let idle = client.new_thread(dir.path(), false, None).unwrap();
     assert!(
         client.needs_host(&idle).unwrap(),
         "a thread nobody owns needs one before its messages can run"
@@ -525,7 +525,7 @@ fn the_changes_pane_reads_the_working_tree_as_well_as_what_was_recorded() {
     std::fs::write(repo.join("kept.txt"), "one\nchanged\n").unwrap();
 
     let client = Client::open(dir.path()).unwrap();
-    let thread = client.new_thread(&repo, false).unwrap();
+    let thread = client.new_thread(&repo, false, None).unwrap();
 
     let unstaged = client.tree_files(&thread, "unstaged").unwrap();
     assert_eq!(unstaged.len(), 1);
@@ -962,7 +962,7 @@ fn a_folder_nobody_worked_in_is_asked_where_it_runs_and_a_known_or_sandboxed_one
         asked.mode, "host",
         "nothing moves into a sandbox unless chosen"
     );
-    client.new_thread(fresh.path(), false).unwrap();
+    client.new_thread(fresh.path(), false, None).unwrap();
     assert!(
         !client.placement(fresh.path()).unwrap().ask,
         "once worked in, it is known"
@@ -1437,4 +1437,78 @@ fn the_roster_is_what_was_discovered_with_what_the_configuration_keeps_marked() 
         None,
         "no text removes it"
     );
+}
+
+/// Where a conversation runs is chosen when it is made, among what its folder's sandbox
+/// allows: a folder with none can only run on this machine, and asking for a sandbox it does
+/// not have is refused rather than recorded and failing later.
+#[test]
+fn a_conversation_records_where_it_runs_and_only_among_what_its_folder_allows() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let repo = dir.path().join("plain-repo");
+    std::fs::create_dir(&repo).unwrap();
+    let client = Client::open(dir.path()).unwrap();
+
+    let placement = client.placement(&repo).unwrap();
+    assert_eq!(placement.options, ["host", "runner", "container", "vm"]);
+    assert_eq!(
+        placement.ready,
+        ["host"],
+        "the sandboxed places are made the first time they are chosen"
+    );
+    let error = client
+        .new_thread(&repo, false, Some("container"))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("no `container` sandbox yet"),
+        "{error:#}"
+    );
+    assert!(
+        client
+            .new_thread(&repo, false, Some("nonsense"))
+            .unwrap_err()
+            .to_string()
+            .contains("cannot run a conversation as `nonsense`")
+    );
+    let thread = client.new_thread(&repo, false, Some("host")).unwrap();
+    let activity = orochi::activity::Activity::open(dir.path(), 30).unwrap();
+    assert_eq!(
+        activity.thread_sandbox(&thread).unwrap().as_deref(),
+        Some("host")
+    );
+    let unchosen = client.new_thread(&repo, false, None).unwrap();
+    assert_eq!(
+        activity.thread_sandbox(&unchosen).unwrap(),
+        None,
+        "none chosen takes the project's own setting"
+    );
+}
+
+/// Opening a project asks only for its folder: the project is there, with no thread and no
+/// sandbox made, and where conversations run is decided when one is made.
+#[test]
+fn adding_a_project_makes_the_project_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let repo = dir.path().join("added-repo");
+    std::fs::create_dir(&repo).unwrap();
+    let client = Client::open(dir.path()).unwrap();
+
+    client.add_project(&repo).unwrap();
+    let section = client
+        .sidebar(20, false)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.name == "added-repo")
+        .expect("the folder is a project");
+    assert!(section.threads.is_empty(), "no thread was started in it");
+    assert!(
+        orochi::sandbox::State::load(dir.path())
+            .unwrap()
+            .project_for(&repo.canonicalize().unwrap())
+            .is_none(),
+        "and no sandbox was made"
+    );
+    assert!(client.add_project(&dir.path().join("nowhere")).is_err());
 }

@@ -360,6 +360,9 @@ pub struct ProjectRow {
     pub root: String,
     pub pinned: bool,
     pub collapsed: bool,
+    /// The folder is no longer there (a temporary directory, a deleted checkout): its
+    /// conversations can be read but nothing can be started in it.
+    pub missing: bool,
     pub threads: Vec<ThreadRow>,
 }
 
@@ -1030,6 +1033,7 @@ impl Activity {
                     projects.push(ProjectRow {
                         id,
                         name,
+                        missing: !Path::new(&root).is_dir(),
                         root,
                         pinned,
                         collapsed,
@@ -1048,10 +1052,12 @@ impl Activity {
             "SELECT id, name, root, pinned, collapsed FROM projects WHERE ?1 OR hidden_at IS NULL",
         )?;
         let empty = statement.query_map(params![hidden], |r| {
+            let root: String = r.get(2)?;
             Ok(ProjectRow {
                 id: r.get(0)?,
                 name: r.get(1)?,
-                root: r.get(2)?,
+                missing: !Path::new(&root).is_dir(),
+                root,
                 pinned: r.get::<_, i64>(3)? != 0,
                 collapsed: r.get::<_, i64>(4)? != 0,
                 threads: vec![],
@@ -1985,6 +1991,26 @@ impl Activity {
         Ok(joined.chars().skip(skip).collect())
     }
 
+    /// Where a conversation runs, when it was made to run somewhere other than its project's
+    /// setting.
+    pub fn thread_sandbox(&self, thread: &str) -> Result<Option<String>> {
+        Ok(self
+            .connection
+            .query_row("SELECT sandbox FROM threads WHERE id=?1", [thread], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_thread_sandbox(&self, thread: &str, mode: Option<&str>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE threads SET sandbox=?2 WHERE id=?1",
+            params![thread, mode],
+        )?;
+        Ok(())
+    }
+
     /// The mailbox room a conversation's posts are written to.
     pub fn thread_project(&self, thread: &str) -> Result<String> {
         Ok(self.connection.query_row(
@@ -2734,6 +2760,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("turns", "origin", "TEXT"),
     // The lead's plan for the conversation, as it wrote it with `set_plan`; content, so here.
     ("threads", "management", "TEXT"),
+    // Where this conversation runs, as chosen when it was made (`host`, `runner`, `container`,
+    // `vm`); NULL takes the project's own setting.
+    ("threads", "sandbox", "TEXT"),
     // The channel (`docs/team-channel-design.md` §7): the member a seat is, the seat it
     // continues, and how to resume it; a reply's parent post and thread, who it mentions, and
     // whether it was also sent to the channel; the newest mention of the user that was seen.

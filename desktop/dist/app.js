@@ -142,7 +142,6 @@ const WORDS = {
     Recent: "最近",
     "Nowhere yet.": "まだありません。",
     "Open folder…": "フォルダを開く…",
-    "New project": "新しいプロジェクト",
     Project: "プロジェクト",
     "Runs on": "実行先",
     "This computer": "このコンピューター",
@@ -160,6 +159,8 @@ const WORDS = {
       "中で起動したサービスは http://<ポート>-<プロジェクト>.localhost:1355 で、フォーカス中は 127.0.0.1 でも開けます。",
     "Choose a folder": "フォルダを選択",
     "Choose a folder…": "フォルダを選択…",
+    "Choose a project…": "プロジェクトを選択…",
+    "No projects yet. Add one with + on the left.": "プロジェクトがありません。左の ＋ から追加してください。",
     "This folder is already a project; where it runs is changed under Sandboxes.":
       "このフォルダはすでにプロジェクトです。実行先はサンドボックス画面で変更できます。",
     Advanced: "詳細設定",
@@ -474,6 +475,12 @@ const WORDS = {
       "まだ会話はありません。フォルダとサンドボックスは残ります。",
     archived: "アーカイブ済み",
     asking: "確認待ち",
+    "New project": "新しいプロジェクト",
+    "Folder not found": "フォルダが見つかりません",
+    "The folder was not found. A new thread cannot be made in this project.": "フォルダが見つかりません。このプロジェクトでは新しいスレッドを作れません。",
+    "Create in a worktree": "worktree で作成",
+    "Made the first time (several minutes)": "初回は作成します（数分かかります）",
+    "The first time, the sandbox host is prepared too (several minutes)": "初回はサンドボックス環境の準備もします（数分かかります）",
     "patch kept": "パッチとして保持",
     "trial clean": "試行は問題なし",
     reply: "件の返信",
@@ -602,7 +609,7 @@ function drawSidebar() {
       // Inside a <summary>, a click would also fold the project it asked to add to.
       event.preventDefault();
       event.stopPropagation?.();
-      startIn(project.root);
+      startIn(project.root, false, true);
     });
     summary.append(add);
     section.append(summary);
@@ -1057,8 +1064,8 @@ function projectMenu(project) {
     ["working", "needs_you", "background"].includes(th.status) || th.terminal,
   );
   return [
-    { key: "new", label: "New thread", icon: "plus", run: () => startIn(project.root) },
-    { key: "new-worktree", label: "New thread in a worktree", icon: "git-branch", run: () => startIn(project.root, true) },
+    { key: "new", label: "New thread", icon: "plus", run: () => startIn(project.root, false, true) },
+    { key: "new-worktree", label: "New thread in a worktree", icon: "git-branch", run: () => startIn(project.root, true, true) },
     {
       key: "rename", label: "Rename", icon: "pencil",
       run: () => {
@@ -1711,31 +1718,120 @@ async function chooseFolder() {
   if (root) await startIn(root);
 }
 
-async function startIn(root, worktree = false) {
+const isMissing = (root) => state.projects.some((p) => p.root === root && p.missing);
+
+/// `pinned`: the project was named by the person (its own "+", its menu), so the dialog
+/// starts on it even when its folder is gone; otherwise a project that is gone is passed over.
+async function startIn(root, worktree = false, pinned = false) {
   closeFolders();
+  // A folder that is gone cannot be placed or worked in.
+  if (isMissing(root)) return void (await askSpawn(root, null, worktree, pinned));
   const where = await call("placement", { root });
-  if (where?.ask && !(await askPlace(root, where))) return;
+  // Where a conversation runs is chosen as it is created, for every folder.
+  if (where?.options?.length) return void (await askSpawn(root, where, worktree));
   await openThreadIn(root, worktree);
 }
 
 /// `worktree`: in a worktree of Orochi's own, on its own branch, removed with its last thread.
 async function openThreadIn(root, worktree = false) {
+  if (isMissing(root)) return void (await askSpawn(null, null, worktree));
   const id = await call("new_thread", worktree ? { root, worktree } : { root });
   if (!id) return;
   state.thread = id;
   await refresh(true);
 }
 
-/// Adding a project opens its dialog first; the folder is one of the things chosen in it.
-async function addProject() {
-  closeFolders();
-  const root = await askPlace(null, null);
-  if (root) await openThreadIn(root);
+/// Adds a folder as a project, with no thread and no sandbox, and shows it in the list.
+/// Resolves false, after saying why, when the core refused.
+async function addProjectAt(root) {
+  try {
+    await invoke("add_project", { root });
+  } catch (error) {
+    report(String(error));
+    return false;
+  }
+  await refresh(false);
+  const project = state.projects.find((p) => p.root === root);
+  if (project) {
+    state.open.delete(`closed:${project.id}`);
+    remember("open", [...state.open]);
+    drawSidebar();
+  }
+  return true;
 }
 
-// Where a new project runs ------------------------------------------------------
-// Asked once, before a folder nobody has worked in gets its first thread, the way Orca asks
-// where a new worktree runs. Everything after that is the project's own setting.
+/// The "+" by Projects: a dialog that asks for the folder and nothing else. Where a
+/// conversation runs is chosen when a thread is created.
+function addProject() {
+  closeFolders();
+  const dialog = el("newproject");
+  let root = null;
+  const field = el("newproject-root");
+  const go = el("newproject-go");
+  el("newproject-title").textContent = t("New project");
+  el("newproject-label").textContent = t("Project");
+  el("newproject-close").replaceChildren(drawn("x"));
+  el("newproject-cancel").textContent = t("Cancel");
+  go.textContent = t("Create");
+  el("newproject-error").hidden = true;
+  const draw = () => {
+    const shown = text("span", "choice");
+    shown.append(drawn("folder", "icon"), text("span", "name", root || t("Choose a folder…")));
+    field.replaceChildren(shown);
+    field.className = root ? "select" : "select empty";
+    go.disabled = !root;
+  };
+  draw();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      for (const [node, handler] of clicks) node.removeEventListener("click", handler);
+      dialog.removeEventListener("close", closed);
+      dialog.removeEventListener("keydown", keys);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    const closed = () => finish(false);
+    const create = async () => {
+      if (!root || go.disabled) return;
+      go.disabled = true;
+      if (await addProjectAt(root)) return finish(true);
+      el("newproject-error").textContent = el("notice").textContent;
+      el("newproject-error").hidden = false;
+      go.disabled = false;
+    };
+    const keys = (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey || event.target !== field)) {
+        event.preventDefault?.();
+        create();
+      }
+    };
+    const clicks = [
+      [field, async () => {
+        const picked = await pickFolder();
+        if (!picked || settled) return;
+        root = picked;
+        el("newproject-error").hidden = true;
+        draw();
+        go.focus?.();
+      }],
+      [el("newproject-close"), () => finish(false)],
+      [el("newproject-cancel"), () => finish(false)],
+      [go, create],
+    ];
+    for (const [node, handler] of clicks) node.addEventListener("click", handler);
+    dialog.addEventListener("close", closed);
+    dialog.addEventListener("keydown", keys);
+    dialog.showModal();
+    field.focus?.();
+  });
+}
+
+// Where a conversation runs ---------------------------------------------------
+// Chosen as the conversation is created, the way Orca asks where a new worktree lives. The
+// sandbox of a project is made the first time a place that needs one is chosen.
 const PLACES = [
   ["host", "This computer", "The agents run on this machine, as they always have."],
   ["runner", "This computer · runs in sandbox",
@@ -1745,122 +1841,324 @@ const PLACES = [
   ["vm", "Sandbox · VM", "A virtual machine of its own: the strongest separation, slower to start."],
 ];
 
-/// Resolves to the project's folder once the choice is recorded (a sandbox made where one was
-/// chosen), null if the dialog was dismissed. Without a `root` the folder is chosen in the
-/// dialog; a folder already worked in keeps where it runs, which the Sandboxes screen changes.
-function askPlace(root, where) {
-  const dialog = el("place");
-  const fixed = Boolean(root);
-  let mode = where?.mode || "host";
-  let docker = where?.docker !== false;
-  let known = false;
-  el("place-title").textContent = t("New project");
-  el("place-root-label").textContent = t("Project");
-  el("place-modes-label").textContent = t("Runs on");
-  el("place-close").replaceChildren(drawn("x"));
-  el("place-more").textContent = t("Advanced");
-  el("place-cancel").textContent = t("Cancel");
-  el("place-error").hidden = true;
-  const go = el("place-go");
-  go.textContent = t("Create");
+// Where a new thread runs -------------------------------------------------------
+// Asked for every folder, since every place is offered: the ones the project has are ready,
+// the others are made now. Leaving the project's own choice sends nothing, so the thread
+// follows the project's setting later; the last choice per project is the next default.
+const PLACE_ICONS = { host: "terminal", runner: "box", container: "box", vm: "box" };
+const ALL_PLACES = PLACES.map(([key]) => key);
 
+function lastPlaces() {
+  const stored = remembered("spawn");
+  return Array.isArray(stored) ? {} : stored || {};
+}
+
+/// The project is chosen from the known ones (a folder is added from the list's last item);
+/// `root` is the one it was asked from, or null to take the current or last used.
+function askSpawn(root, found, worktree, pinned = false) {
+  const dialog = el("spawn");
+  let where = found || { options: ALL_PLACES, ready: ["host"], mode: "host", docker: true };
+  const options = () => PLACES.filter(([key]) => (where.options || ALL_PLACES).includes(key));
+  const ready = () => where.ready || where.options || ["host"];
+  const nameOf = () => state.projects.find((p) => p.root === root)?.name
+    || (root ? root.split("/").filter(Boolean).pop() : "") || root;
+  // A project whose folder is gone is passed over when the dialog picks one itself; one the
+  // person named is kept, and says it cannot take a thread.
+  const missing = (r) => state.projects.some((p) => p.root === r && p.missing);
+  const gone = () => Boolean(root) && missing(root);
+  if (root && missing(root) && !pinned) {
+    root = null;
+    found = null;
+  }
+  if (!root) {
+    const last = remembered("lastProject");
+    const usable = (r) => r && state.projects.some((p) => p.root === r && !p.missing);
+    const current = openThread()?.project_root;
+    root = [current, typeof last === "string" ? last : null].find(usable)
+      || state.projects.find((p) => !p.missing)?.root || null;
+  }
+  const firstSandbox = () => state.setup.view?.sandbox?.ready === false;
+  const later = () => t(firstSandbox()
+    ? "The first time, the sandbox host is prepared too (several minutes)"
+    : "Made the first time (several minutes)");
+  const initial = () => {
+    const last = lastPlaces()[root];
+    const have = where.options || ALL_PLACES;
+    const natural = have.includes(where.mode) ? where.mode : options()[0][0];
+    return have.includes(last) ? last : natural;
+  };
+  let choice = initial();
+  let docker = where.docker !== false;
+  let useWorktree = worktree;
+  let busy = false;
+  let settled = false;
+  let active = 0;
+  const menu = el("spawn-menu");
+  const trigger = el("spawn-place");
+  const projectMenu = el("spawn-project-menu");
+  const projectRow = el("spawn-project");
+  const go = el("spawn-go");
+  const needsDocker = () => !ready().includes(choice) && (choice === "container" || choice === "runner");
+
+  el("spawn-title").textContent = t("New thread");
+  el("spawn-project-label").textContent = t("Project");
+  el("spawn-place-label").textContent = t("Runs on");
+  el("spawn-close").replaceChildren(drawn("x"));
+  el("spawn-cancel").textContent = t("Cancel");
+  const mac = /Mac|iPhone|iPad/.test(window.navigator?.platform || "");
+  el("spawn-kbd").textContent = mac ? "⌘ ↵" : "Ctrl ↵";
+  el("spawn-error").hidden = true;
+  el("spawn-worktree").hidden = !worktree;
+  el("spawn-worktree").textContent = t("Create in a worktree");
+  el("spawn-docker").textContent = t("Docker inside the sandbox");
+  const row = (key, label) => {
+    const node = text("span", "choice");
+    node.append(drawn(PLACE_ICONS[key] || "box", "icon"), text("span", "name", t(label)));
+    return node;
+  };
+
+  const closeMenu = () => {
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    projectMenu.hidden = true;
+    projectRow.setAttribute("aria-expanded", "false");
+  };
   const draw = () => {
-    const field = el("place-root");
-    field.textContent = root || t("Choose a folder…");
-    field.className = root ? "" : "empty";
-    field.disabled = fixed;
-    go.disabled = !root;
-    const modes = el("place-modes");
-    modes.replaceChildren();
-    for (const [key, label, where] of PLACES) {
-      const option = document.createElement("button");
+    const shown = text("span", "choice");
+    shown.append(drawn("folder", "icon"), text("span", "name", root ? nameOf() : t("Choose a project…")));
+    projectRow.replaceChildren(shown, drawn("chevron-down", "fold"));
+    projectRow.className = !root ? "select empty" : gone() ? "select gone" : "select";
+    if (root) projectRow.setAttribute("title", root);
+    projectMenu.replaceChildren();
+    const entries = state.projects.map((p) => [p.root, p.name]);
+    entries.forEach(([key, name], index) => {
+      const option = text("button", "option");
       option.type = "button";
-      option.dataset.mode = key;
-      option.setAttribute("role", "radio");
-      option.setAttribute("aria-checked", String(key === mode));
-      option.disabled = known;
-      option.append(text("span", "mark"), text("span", "name", t(label)), text("span", "where", t(where)));
+      option.dataset.key = key;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(key === root));
+      option.dataset.active = String(index === active && !projectMenu.hidden);
+      const gone = state.projects.find((p) => p.root === key)?.missing;
+      const label = text("span", "choice");
+      label.append(drawn("folder", "icon"), text("span", "name", name));
+      option.append(label);
+      if (key && key !== name) option.setAttribute("title", key);
+      if (gone) {
+        option.setAttribute("aria-disabled", "true");
+        option.classList.add("missing");
+        option.append(text("span", "later gone", t("Folder not found")));
+      } else {
+        option.addEventListener("click", () => takeProject(key));
+      }
+      projectMenu.append(option);
+    });
+    const [, label, about] = PLACES.find(([key]) => key === choice);
+    trigger.replaceChildren(row(choice, label), drawn("chevron-down", "fold"));
+    el("spawn-about").replaceChildren(text("span", null, t(about)));
+    if (!ready().includes(choice)) el("spawn-about").append(text("span", "later", later()));
+    el("spawn-worktree").setAttribute("aria-checked", String(useWorktree));
+    el("spawn-docker").hidden = !needsDocker();
+    el("spawn-docker").setAttribute("aria-checked", String(docker));
+    menu.replaceChildren();
+    options().forEach(([key, name, description], index) => {
+      const option = text("button", "option");
+      option.type = "button";
+      option.dataset.key = key;
+      option.setAttribute("role", "option");
+      option.setAttribute("aria-selected", String(key === choice));
+      option.dataset.active = String(index === active);
+      option.dataset.ready = String(ready().includes(key));
+      option.append(row(key, name), text("span", "where", t(description)));
+      if (!ready().includes(key)) option.append(text("span", "later", later()));
       option.addEventListener("click", () => {
-        mode = key;
+        choice = key;
+        closeMenu();
         draw();
+        trigger.focus?.();
       });
-      modes.append(option);
+      menu.append(option);
+    });
+    const none = !state.projects.length;
+    for (const node of [trigger, el("spawn-worktree"), el("spawn-docker")]) node.disabled = busy;
+    projectRow.disabled = busy || none;
+    if (none) el("spawn-about").replaceChildren(text("span", null, t("No projects yet. Add one with + on the left.")));
+    go.disabled = busy || !root || gone();
+    if (gone()) el("spawn-about").replaceChildren(text("span", "later gone", t("The folder was not found. A new thread cannot be made in this project.")));
+    if (!busy) el("spawn-go-label").textContent = t("Create");
+  };
+  // Two lists, one open at a time; the keys act on whichever is.
+  const lists = () => [
+    { node: menu, trigger, count: () => options().length, skip: () => false, pick: (i) => { choice = options()[i][0]; } },
+    { node: projectMenu, trigger: projectRow, count: () => state.projects.length, skip: (i) => Boolean(state.projects[i]?.missing), pick: (i) => takeProject(state.projects[i].root) },
+  ];
+  const openList = () => lists().find((l) => !l.node.hidden);
+  const openMenu = (which = menu) => {
+    closeMenu();
+    active = which === menu ? Math.max(0, options().findIndex(([key]) => key === choice))
+      : Math.max(0, state.projects.findIndex((p) => p.root === root && !p.missing));
+    which.hidden = false;
+    (which === menu ? trigger : projectRow).setAttribute("aria-expanded", "true");
+    draw();
+    which.querySelectorAll(".option")[active]?.focus?.();
+  };
+  const move = (by) => {
+    const list = openList();
+    // Past what cannot be chosen.
+    for (let n = 0; n < list.count(); n += 1) {
+      active = (active + by + list.count()) % list.count();
+      if (!list.skip(active)) break;
     }
-    el("place-note").textContent = known
-      ? t("This folder is already a project; where it runs is changed under Sandboxes.")
-      : mode === "host" ? "" : t("Services started inside open at http://<port>-<project>.localhost:1355, and at 127.0.0.1 while the project is focused.");
-    const toggle = el("place-docker");
-    toggle.textContent = t("Docker inside the sandbox");
-    const withDocker = mode === "container" || mode === "runner";
-    toggle.setAttribute("aria-checked", String(docker && withDocker));
-    toggle.disabled = known || !withDocker;
+    draw();
+    list.node.querySelectorAll(".option")[active]?.focus?.();
+  };
+  /// A project chosen from the list.
+  const takeProject = async (key) => {
+    closeMenu();
+    const next = key;
+    if (next === root && where) return draw();
+    const now = await call("placement", { root: next });
+    if (settled) return;
+    root = next;
+    if (now?.options?.length) where = now;
+    choice = initial();
+    docker = where.docker !== false;
+    el("spawn-error").hidden = true;
+    draw();
+    projectRow.focus?.();
   };
   draw();
 
   return new Promise((resolve) => {
-    let settled = false;
+    let removeClicks = () => {};
     const finish = (value) => {
       if (settled) return;
       settled = true;
-      for (const [id, handler] of handlers) el(id).removeEventListener("click", handler);
+      removeClicks();
       dialog.removeEventListener("close", closed);
+      dialog.removeEventListener("keydown", keys);
+      dialog.removeEventListener("cancel", cancel);
       if (dialog.open) dialog.close();
       resolve(value);
     };
-    const closed = () => finish(null);
-    const handlers = [
-      ["place-close", () => finish(null)],
-      ["place-cancel", () => finish(null)],
-      ["place-root", async () => {
-        if (fixed) return;
-        const picked = await pickFolder();
-        if (!picked || settled) return;
-        const found = await call("placement", { root: picked });
-        if (settled) return;
-        root = picked;
-        known = found ? !found.ask : false;
-        if (found) {
-          mode = found.mode || "host";
-          docker = found.docker !== false;
+    const closed = () => finish(false);
+    const cancel = (event) => {
+      // Esc closes the list before it closes the dialog.
+      if (openList()) {
+        event.preventDefault?.();
+        closeMenu();
+        trigger.focus?.();
+      }
+    };
+    const create = async () => {
+      if (busy || !root || gone()) return;
+      busy = true;
+      el("spawn-error").hidden = true;
+      const making = !ready().includes(choice);
+      draw();
+      if (making) {
+        // The first sandbox also sets up the host: Lima, the VM and the image come down now.
+        el("spawn-go-label").textContent = t(firstSandbox()
+          ? "Setting up the sandbox host, then the sandbox (several minutes the first time)…"
+          : "Creating the sandbox…");
+      }
+      // Only a choice other than the project's own is sent: the thread follows the project
+      // setting otherwise.
+      const sandbox = making || choice !== where.mode ? choice : null;
+      const args = { root };
+      if (useWorktree) args.worktree = true;
+      if (sandbox) args.sandbox = sandbox;
+      try {
+        if (making) {
+          await invoke("place", { root, mode: choice, docker: docker && (choice === "container" || choice === "runner") });
         }
-        el("place-error").hidden = true;
+        const id = await invoke("new_thread", args);
+        const stored = lastPlaces();
+        stored[root] = choice;
+        remember("spawn", stored);
+        remember("lastProject", root);
+        finish(true);
+        if (id) {
+          state.thread = id;
+          await refresh(true);
+        }
+      } catch (error) {
+        el("spawn-error").textContent = String(error);
+        el("spawn-error").hidden = false;
+        busy = false;
+        draw();
+      }
+    };
+    const keys = (event) => {
+      const list = openList();
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault?.();
+        create();
+      } else if (list && event.key === "Escape") {
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        closeMenu();
+        list.trigger.focus?.();
+      } else if (list && event.key === "ArrowDown") {
+        event.preventDefault?.();
+        move(1);
+      } else if (list && event.key === "ArrowUp") {
+        event.preventDefault?.();
+        move(-1);
+      } else if (list && event.key === "Home") {
+        event.preventDefault?.();
+        active = -1;
+        move(1);
+      } else if (list && event.key === "End") {
+        event.preventDefault?.();
+        active = list.count();
+        move(-1);
+      } else if (list && event.key === "Enter") {
+        event.preventDefault?.();
+        const at = active;
+        closeMenu();
+        list.pick(at);
+        draw();
+        list.trigger.focus?.();
+      } else if (!list && (event.key === "ArrowDown" || event.key === "ArrowUp")
+        && (event.target === trigger || event.target === projectRow)) {
+        event.preventDefault?.();
+        openMenu(event.target === trigger ? menu : projectMenu);
+      }
+    };
+    const clicks = [
+      [trigger, () => (menu.hidden ? openMenu(menu) : closeMenu())],
+      [projectRow, () => (projectRow.disabled ? null : projectMenu.hidden ? openMenu(projectMenu) : closeMenu())],
+      [el("spawn-worktree"), () => {
+        useWorktree = !useWorktree;
         draw();
       }],
-      ["place-more", () => {
-        const more = el("place-more");
-        const open = more.getAttribute("aria-expanded") !== "true";
-        more.setAttribute("aria-expanded", String(open));
-        el("place-advanced").hidden = !open;
-      }],
-      ["place-docker", () => {
-        if (mode !== "container" && mode !== "runner") return;
+      [el("spawn-docker"), () => {
         docker = !docker;
         draw();
       }],
-      ["place-go", async () => {
-        if (!root) return;
-        if (known) return finish(root);
-        go.disabled = true;
-        // The first sandbox also sets up the host: Lima, the VM and the image come down now.
-        if (mode !== "host") {
-          go.textContent = t(state.setup.view?.sandbox?.ready === false
-            ? "Setting up the sandbox host, then the sandbox (several minutes the first time)…"
-            : "Creating the sandbox…");
-        }
-        try {
-          await invoke("place", { root, mode, docker: docker && (mode === "container" || mode === "runner") });
-          finish(root);
-        } catch (error) {
-          el("place-error").textContent = String(error);
-          el("place-error").hidden = false;
-          go.disabled = false;
-          go.textContent = t("Create");
-        }
-      }],
+      [el("spawn-close"), () => finish(false)],
+      [el("spawn-cancel"), () => finish(false)],
+      [go, create],
     ];
-    for (const [id, handler] of handlers) el(id).addEventListener("click", handler);
+    for (const [node, handler] of clicks) node.addEventListener("click", handler);
+    removeClicks = () => {
+      for (const [node, handler] of clicks) node.removeEventListener("click", handler);
+    };
     dialog.addEventListener("close", closed);
+    dialog.addEventListener("keydown", keys);
+    dialog.addEventListener("cancel", cancel);
     dialog.showModal();
+    (root ? trigger : projectRow).focus?.();
+    // Opened from a project without its placement in hand: read it now.
+    if (!found && root && !gone()) {
+      call("placement", { root }).then((now) => {
+        if (settled || !now?.options?.length) return;
+        where = now;
+        choice = initial();
+        docker = where.docker !== false;
+        draw();
+      });
+    }
   });
 }
 
@@ -5628,7 +5926,7 @@ el("new-thread").addEventListener("click", async (event) => {
   const open = state.projects.flatMap((p) => p.threads.map((t) => [p, t]))
     .find(([, t]) => t.id === state.thread);
   const root = open?.[0].root ?? state.folders[0]?.root;
-  await (root ? startIn(root) : chooseFolder());
+  await (root ? startIn(root) : askSpawn(null, null, false));
 });
 
 // Somewhere not yet in the list is a project to add, so it is asked for where the list is.

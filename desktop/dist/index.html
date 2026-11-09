@@ -146,26 +146,51 @@
     <div id="counts"></div>
   </footer>
 
-  <dialog id="place" aria-labelledby="place-title">
-    <header id="place-head">
-      <h2 id="place-title">New project</h2>
-      <button type="button" id="place-close" aria-label="Close">×</button>
+  <dialog id="newproject" aria-labelledby="newproject-title">
+    <header id="newproject-head">
+      <h2 id="newproject-title">New project</h2>
+      <button type="button" id="newproject-close" aria-label="Close">×</button>
     </header>
-    <div id="place-body">
-      <div class="place-label" id="place-root-label">Project</div>
-      <button type="button" id="place-root" aria-labelledby="place-root-label"></button>
-      <div class="place-label" id="place-modes-label">Runs on</div>
-      <div id="place-modes" role="radiogroup" aria-labelledby="place-modes-label"></div>
-      <p id="place-note"></p>
-      <button type="button" id="place-more" aria-expanded="false">Advanced</button>
-      <div id="place-advanced" hidden>
-        <button type="button" id="place-docker" role="switch" aria-checked="true"></button>
-      </div>
-      <p id="place-error" hidden></p>
+    <div id="newproject-body">
+      <div class="place-label" id="newproject-label">Project</div>
+      <button type="button" id="newproject-root" class="select empty" aria-labelledby="newproject-label newproject-root"></button>
+      <p id="newproject-error" role="alert" hidden></p>
     </div>
-    <footer id="place-foot">
-      <button type="button" id="place-cancel">Cancel</button>
-      <button type="button" class="primary" id="place-go">Create</button>
+    <footer id="newproject-foot">
+      <button type="button" id="newproject-cancel">Cancel</button>
+      <button type="button" class="primary" id="newproject-go" disabled>Create</button>
+    </footer>
+  </dialog>
+  <dialog id="spawn" aria-labelledby="spawn-title">
+    <header id="spawn-head">
+      <h2 id="spawn-title">New thread</h2>
+      <button type="button" id="spawn-close" aria-label="Close">×</button>
+    </header>
+    <div id="spawn-body">
+      <div class="field-row">
+        <div class="field">
+          <div class="place-label" id="spawn-project-label">Project</div>
+          <div id="spawn-project-picker">
+            <button type="button" id="spawn-project" class="select" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="spawn-project-label spawn-project"></button>
+            <div id="spawn-project-menu" role="listbox" aria-labelledby="spawn-project-label" hidden></div>
+          </div>
+        </div>
+        <div class="field">
+          <div class="place-label" id="spawn-place-label">Runs on</div>
+          <div id="spawn-picker">
+            <button type="button" id="spawn-place" class="select" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="spawn-place-label spawn-place"></button>
+            <div id="spawn-menu" role="listbox" aria-labelledby="spawn-place-label" hidden></div>
+          </div>
+        </div>
+      </div>
+      <p id="spawn-about"></p>
+      <button type="button" id="spawn-docker" role="switch" aria-checked="true" hidden>Docker inside the sandbox</button>
+      <button type="button" id="spawn-worktree" role="switch" aria-checked="true" hidden>Create in a worktree</button>
+      <p id="spawn-error" role="alert" hidden></p>
+    </div>
+    <footer id="spawn-foot">
+      <button type="button" id="spawn-cancel">Cancel</button>
+      <button type="button" class="primary" id="spawn-go"><span id="spawn-go-label">Create</span><kbd id="spawn-kbd"></kbd></button>
     </footer>
   </dialog>
   <dialog id="setup" aria-labelledby="setup-title">
