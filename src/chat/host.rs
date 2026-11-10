@@ -187,7 +187,9 @@ async fn feed(
                     .expect("activity store")
                     .live_seats()
                     .map(|seats| seats.iter().any(|s| s.thread_id == thread && s.background))
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    // A request held for an agent's limit resumes here, so the host stays up.
+                    || crate::chat::holding();
                 if working {
                     last = Instant::now();
                 }

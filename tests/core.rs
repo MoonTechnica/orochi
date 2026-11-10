@@ -3761,3 +3761,63 @@ fn the_most_capable_models_are_kept_for_complex_work() {
         complex.iter().map(|c| &c.model).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn a_handover_the_decision_model_picked_comes_first_and_the_agent_that_ran_out_is_never_offered() {
+    use orochi::{
+        chat::handover_candidates,
+        config::Config as Cfg,
+        types::{RuntimeMap, RuntimeState, RuntimeStatus, now as clock},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("data")).unwrap();
+    let mut task = profiler::profile("Implement a small endpoint", dir.path());
+    task.handover = Some("claude".into());
+    let registry = Registry::bundled().unwrap();
+    let codex = AgentConfig::preset("codex", Provider::OPENAI, "test", &[]);
+    let claude = AgentConfig::preset("claude", Provider::ANTHROPIC, "test", &[]);
+    let (codex_caps, claude_caps) = (caps(&["gpt-sol"]), caps(&["sonnet"]));
+    let config = Cfg::default();
+    let runtime = RuntimeMap::new();
+    let overrides = orochi::types::Overrides::default();
+    let candidates = scorer::candidates(
+        &[(&codex, &codex_caps), (&claude, &claude_caps)],
+        &ScoringContext {
+            task: &task,
+            overrides: &overrides,
+            config: &config,
+            policies: &registry,
+            store: &store,
+            runtime: &runtime,
+            sessions: &[],
+            busy: &[],
+            taken: &[],
+            difficulty: None,
+            root: dir.path(),
+            time: now(),
+        },
+    )
+    .unwrap();
+    assert!(!candidates.is_empty());
+    assert_eq!(
+        candidates[0].agent, "claude",
+        "the agent the decision model picked goes first"
+    );
+    assert!(candidates[0].spoken_for);
+
+    // Codex has run out of quota: it is not offered for the handover, and nor is the agent
+    // that ran out itself.
+    let mut spent = RuntimeMap::new();
+    spent.insert(
+        ("codex".into(), "*".into()),
+        RuntimeState {
+            status: RuntimeStatus::Cooldown,
+            cooldown_until: Some(clock() + 3600),
+            ..RuntimeState::new("codex", "*")
+        },
+    );
+    let offered = handover_candidates(&config, &spent, "claude", clock());
+    assert!(!offered.iter().any(|a| a == "codex"), "{offered:?}");
+    assert!(!offered.iter().any(|a| a == "claude"), "{offered:?}");
+    assert!(offered.iter().any(|a| a == "opencode"), "{offered:?}");
+}

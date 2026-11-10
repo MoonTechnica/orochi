@@ -354,6 +354,9 @@ struct Session<'a> {
     tty: bool,
     keyboard: Keyboard,
     queue: VecDeque<Message>,
+    /// A request held because every agent is out of quota: when the first limit lifts (unix
+    /// seconds) it goes back on the queue, unless the user sends something else first.
+    waiting: Option<(i64, Message)>,
     /// What the user asked this session, in memory only, for the one distillation at its end.
     /// Kept apart from `conversation`, which `/new` clears.
     said: VecDeque<String>,
@@ -599,6 +602,7 @@ pub async fn run_with(
         tty,
         keyboard,
         queue: VecDeque::new(),
+        waiting: None,
         said: VecDeque::new(),
         threads: BTreeMap::new(),
         mentioned: None,
@@ -673,6 +677,18 @@ impl<'a> Session<'a> {
                 if self.quit {
                     break None;
                 }
+                // A request held for the agents' limits resumes once the first limit lifts.
+                if self
+                    .waiting
+                    .as_ref()
+                    .is_some_and(|(wake, _)| *wake <= now())
+                {
+                    let (_, mut held) = self.release_hold().expect("checked");
+                    held.origin = Some("resume");
+                    self.view
+                        .note("resuming the request held for the agents' limits");
+                    break Some(held);
+                }
                 // A queued line may be a command; run it in the order it was typed.
                 if let Some(queued) = self.queue.pop_front() {
                     match self.dispatch(queued, false) {
@@ -741,6 +757,10 @@ impl<'a> Session<'a> {
                         continue
                     }
                     _ = resized.recv() => { self.view.term.resized(); continue }
+                    // A request held for the limits wakes the loop when the first limit lifts.
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(
+                        self.waiting.as_ref().map_or(0, |(wake, _)| (*wake - now()).max(0) as u64 + 1),
+                    )), if self.waiting.is_some() => continue,
                 };
                 // Input has ended, but the team has not: helpers still at work, a trial or an
                 // apply under way or approved, or results waiting to go back to the lead.
@@ -2486,8 +2506,62 @@ struct Pending {
     call: Value,
 }
 
+/// The agents that may carry on work another agent could not finish: each enabled agent that
+/// takes a task, other than `from`, whose account has room at `time`.
+pub fn handover_candidates(
+    config: &Config,
+    runtime: &crate::types::RuntimeMap,
+    from: &str,
+    time: i64,
+) -> Vec<String> {
+    config
+        .agents
+        .iter()
+        .filter(|a| {
+            a.enabled
+                && !a.routing_only
+                && a.id != from
+                && crate::scheduler::quota::available(runtime, &a.id, "*", time)
+        })
+        .map(|a| a.id.clone())
+        .collect()
+}
+
+/// Requests held for the agents' limits, in this process. A host stays up while one waits, so
+/// that it can resume, and a console that ends gives its hold up.
+static HOLDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a request is waiting for an agent's limit to lift in this process.
+pub fn holding() -> bool {
+    HOLDS.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
+impl Drop for Session<'_> {
+    fn drop(&mut self) {
+        self.release_hold();
+    }
+}
+
 impl Session<'_> {
+    fn hold(&mut self, wake: i64, message: Message) {
+        if self.waiting.is_none() {
+            HOLDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.waiting = Some((wake, message));
+    }
+
+    fn release_hold(&mut self) -> Option<(i64, Message)> {
+        let held = self.waiting.take();
+        if held.is_some() {
+            HOLDS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        held
+    }
+
     async fn run_turn(&mut self, mut message: Message) -> Result<()> {
+        if message.origin != Some("resume") {
+            self.release_hold();
+        }
         // A server added to `.mcp.json` since the last turn is asked about before this one uses
         // it, so nothing reaches a console turn undecided.
         self.review_repository_servers().await;
@@ -2569,6 +2643,20 @@ impl Session<'_> {
                 result = self
                     .execute(message.clone(), None, Some(task.clone()))
                     .await;
+            }
+            let failed = match &result {
+                Ok((code, _)) => *code != 0 && *code != 130,
+                Err(_) => true,
+            };
+            if failed
+                && self.spent_in_last_run().is_some()
+                && let Some(wake) = self.wake_when_room()
+            {
+                let at = clock(wake);
+                self.view.note(&format!(
+                    "every agent is out of quota · this request resumes at {at}, when the first limit lifts"
+                ));
+                self.hold(wake, message.clone());
             }
             match &result {
                 Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
@@ -3697,6 +3785,13 @@ impl Session<'_> {
                 continue;
             }
             handovers = 0;
+            // Every agent with room was tried and none finished the step: the team stops here,
+            // rather than handing an unfinished step on as if it were done.
+            if code != 0 && self.spent_in_last_run().is_some() {
+                self.view
+                    .note("no agent with room is left for this step · the team stops here");
+                return Ok(code);
+            }
             if designed && code != 0 {
                 return Ok(code);
             }
@@ -3825,18 +3920,7 @@ impl Session<'_> {
     /// one that ran out whose account has room now. The scheduler still applies every gate.
     async fn pick_handover(&mut self, from: &str, text: &str) -> Option<String> {
         let runtime = self.store.runtime().ok()?;
-        let agents: Vec<String> = self
-            .config
-            .agents
-            .iter()
-            .filter(|a| {
-                a.enabled
-                    && !a.routing_only
-                    && a.id != from
-                    && crate::scheduler::quota::available(&runtime, &a.id, "*", now())
-            })
-            .map(|a| a.id.clone())
-            .collect();
+        let agents = handover_candidates(self.config, &runtime, from, now());
         let picked =
             crate::decision::handover(&self.config.decision, self.data, text, &agents).await?;
         self.view.note(&format!(
@@ -3864,6 +3948,31 @@ impl Session<'_> {
             Some("rate_limit" | "authentication" | "unavailable")
         )
         .then(|| run.candidate.agent.clone())
+    }
+
+    /// When an agent that is out of quota has room again, if no agent has room now. `None`
+    /// when someone can take the work already, or when no reset time is known.
+    fn wake_when_room(&self) -> Option<i64> {
+        let runtime = self.store.runtime().ok()?;
+        let time = now();
+        let mut wake: Option<i64> = None;
+        for agent in self
+            .config
+            .agents
+            .iter()
+            .filter(|a| a.enabled && !a.routing_only)
+        {
+            if crate::scheduler::quota::available(&runtime, &agent.id, "*", time) {
+                return None;
+            }
+            if let Some(until) = runtime
+                .get(&(agent.id.clone(), "*".to_owned()))
+                .and_then(|state| state.cooldown_until)
+            {
+                wake = Some(wake.map_or(until, |w| w.min(until)));
+            }
+        }
+        wake
     }
 
     async fn execute(

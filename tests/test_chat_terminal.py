@@ -528,6 +528,21 @@ class FailedTurns(unittest.TestCase):
         finally:
             c.close()
 
+    def test_a_request_held_for_every_limit_resumes_by_itself_when_the_first_lifts(self):
+        # The only agent is out of quota until a few seconds on. The request is held, and it
+        # goes again without anyone sending it, once the limit has lifted.
+        c = Console(behavior="rate_once", env={"MOCK_RESET_IN": "6"})
+        try:
+            c.type("Summarize the README")
+            c.key(b"\r")
+            c.wait("every agent is out of quota", seconds=TURN)
+            c.wait("resuming the request held", seconds=TURN * 2)
+            c.wait("Fixture completed", seconds=TURN)
+            prompts = [p for p in c.prompts() if "Summarize the README" in p]
+            self.assertEqual(len(prompts), 2, c.rows())
+        finally:
+            c.close()
+
     def test_a_turn_that_hits_a_usage_limit_is_carried_on_by_another_agent(self):
         # The first agent is out of quota (every prompt is refused with a rate limit). The same
         # request is then handed to the other agent, and the conversation moves to it.
