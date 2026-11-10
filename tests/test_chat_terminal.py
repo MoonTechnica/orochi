@@ -327,7 +327,8 @@ class Console:
     """One live session in a pty, driven a key at a time."""
 
     def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
-                 files=None, mailbox=False, host=False, backup=False, rate_limited=()):
+                 files=None, mailbox=False, host=False, backup=False, rate_limited=(),
+                 rate_behavior="rate"):
         """`host` runs the session as an agent host's pane runs it, so `reports()` has what it
         was told. `backup` adds a second, working agent beside the first, whose prompts land in
         `self.backup_log`."""
@@ -349,7 +350,7 @@ provider = "openai"
 command = "python3"
 args = ["{TESTS / 'fixtures/mock_acp.py'}"]
 [agents.env]
-MOCK_BEHAVIOR = "rate"
+MOCK_BEHAVIOR = "{rate_behavior}"
 MOCK_MODELS = "sol-test,astra-test"
 MOCK_LOG = "{self.dir / (name + '.jsonl')}"
 """ for name in rate_limited)
@@ -540,6 +541,33 @@ class FailedTurns(unittest.TestCase):
             c.wait("Fixture completed", seconds=TURN)
             prompts = [p for p in c.prompts() if "Summarize the README" in p]
             self.assertEqual(len(prompts), 2, c.rows())
+        finally:
+            c.close()
+
+    def test_a_team_whose_every_agent_is_refused_the_implementation_stops_before_review(self):
+        # The design works; every agent is then refused the implementation with a rate limit.
+        # The team stops there: the review step never runs on an unfinished implementation, and
+        # the request is held until the first limit lifts.
+        c = Console(behavior="rate_after_design", rate_limited=("zz-second",),
+                    rate_behavior="rate_after_design")
+        try:
+            c.type("Implement a small endpoint")
+            c.key(b"\r")
+            c.wait("every agent is out of quota", seconds=TURN * 4)
+            rows = c.rows()
+            self.assertFalse(any("review step" in row for row in rows), rows)
+        finally:
+            c.close()
+
+    def test_a_team_goes_on_to_completion_when_an_agent_with_room_is_there(self):
+        # Which agent takes each step is the scheduler's choice, so this checks the outcome: the
+        # refused agent does not stop a team that has another agent with room.
+        c = Console(behavior="rate_after_design", backup=True)
+        try:
+            c.type("Implement a small endpoint")
+            c.key(b"\r")
+            c.wait("Fixture completed", seconds=TURN * 4)
+            self.assertFalse(any("team stops here" in row for row in c.screen.text()), c.rows())
         finally:
             c.close()
 

@@ -592,3 +592,31 @@ async fn the_decision_model_names_the_agent_that_carries_on_only_among_those_off
         None
     );
 }
+
+/// The real decision model on this machine, not the fake: the local model the user downloaded
+/// picks the agent for a handover, from among the agents offered and no other. It runs here
+/// with no network; `cargo test --test decision -- --ignored` runs it.
+#[tokio::test]
+#[ignore = "needs the decision model downloaded on this machine"]
+async fn the_real_decision_model_picks_a_handover_only_among_the_agents_offered() {
+    decision::local::supervisor(PathBuf::from(env!("CARGO_BIN_EXE_orochi")));
+    let data = PathBuf::from(std::env::var("HOME").unwrap()).join(".local/share/orochi");
+    let mut config = Config::default();
+    config.decision.backend = Some(DecisionBackend::Local);
+    // Where the user keeps the downloaded model; `OROCHI_DECISION_MODELS` overrides it.
+    config.decision.models_dir = Some(PathBuf::from(
+        std::env::var("OROCHI_DECISION_MODELS")
+            .unwrap_or_else(|_| "/Volumes/External/orochi/models".into()),
+    ));
+    let offered = vec!["claude".to_owned(), "opencode".to_owned()];
+    let picked = decision::handover(
+        &config.decision,
+        &data,
+        "サンドボックスで Web アプリを起動して、動作を確認して",
+        &offered,
+    )
+    .await;
+    println!("picked: {picked:?}");
+    let picked = picked.expect("the real decision model answers and names one of the agents");
+    assert!(offered.contains(&picked), "{picked}");
+}

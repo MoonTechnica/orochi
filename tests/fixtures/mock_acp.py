@@ -665,6 +665,10 @@ for line in sys.stdin:
             (root / "limited.txt").write_text("limited\n")
             send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
                 "resetAt": int(time.time()) + int(os.environ.get("MOCK_RESET_IN", "3600")), "scope": "agent"}}})
+        elif behavior == "rate_after_design" and "Plan the work first" not in request["params"]["prompt"][0]["text"]:
+            # Works on the design, refused with a rate limit (agent scope) on everything after it.
+            send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
+                "resetAt": int(time.time()) + int(os.environ.get("MOCK_RESET_IN", "3600")), "scope": "agent"}}})
         elif behavior == "rate" or (behavior == "model_rate" and "sol" in model):
             (root / "partial.txt").write_text("partial work\n")
             send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
