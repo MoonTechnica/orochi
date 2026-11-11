@@ -1796,3 +1796,36 @@ fn a_held_request_is_a_held_thread_in_the_sidebar_until_it_resumes() {
     assert_eq!(status(&activity).1, None);
     assert_ne!(status(&activity).0, "held");
 }
+
+/// A store made before the holds table existed still reads its sidebar, and the first writer that
+/// opens it creates the table.
+#[test]
+fn a_store_without_the_holds_table_still_lists_its_threads_and_gets_it_on_open() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        thread_with_a_turn(&activity);
+        activity
+            .connection()
+            .execute_batch("DROP TABLE holds;")
+            .unwrap();
+    }
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let threads: usize = activity
+        .sidebar(20, false)
+        .unwrap()
+        .iter()
+        .map(|p| p.threads.len())
+        .sum();
+    assert_eq!(threads, 1);
+    activity.set_hold("missing", 1, "x").ok();
+    let present: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='holds'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(present, 1);
+}

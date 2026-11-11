@@ -728,6 +728,10 @@ impl Activity {
             )?;
         }
         added(&connection)?;
+        // A table added after a store reached its version is created here, on every writer open:
+        // the schema above runs only when the version is behind, and a store without this table
+        // makes the sidebar fail to read.
+        connection.execute_batch(HOLDS)?;
         repair_merges(&connection)?;
         // Threads an agent named after Orochi's own preamble before that was refused: named
         // again from the message that opened them.
@@ -3195,11 +3199,6 @@ CREATE TABLE IF NOT EXISTS ui_state (
 
 -- A request held because every agent is out of quota, until `wake` (unix seconds). Any host
 -- or console on the thread resumes it then.
-CREATE TABLE IF NOT EXISTS holds (
-  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
-  wake INTEGER NOT NULL,
-  request TEXT NOT NULL,
-  created_at INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3300,6 +3299,15 @@ CREATE INDEX IF NOT EXISTS agent_requests_open ON agent_requests(project_id) WHE
 /// learns what moved from these rows: `PRAGMA data_version` says *something* committed, the
 /// feed says what. Triggers rather than writer discipline, because there are several writers
 /// (hosts, the mailbox MCP subprocess, the app) and a forgotten notification is a stale UI.
+/// The holds table, on its own so that every writer open creates it (see `open`).
+const HOLDS: &str = r#"
+CREATE TABLE IF NOT EXISTS holds (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  wake INTEGER NOT NULL,
+  request TEXT NOT NULL,
+  created_at INTEGER NOT NULL);
+"#;
+
 const TRIGGERS: &str = r#"
 CREATE TRIGGER IF NOT EXISTS ch_threads_i AFTER INSERT ON threads BEGIN
   INSERT INTO changes (tbl,row,thread_id,at) VALUES ('threads',new.id,new.id,new.updated_at); END;
