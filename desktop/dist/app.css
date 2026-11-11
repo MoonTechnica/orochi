@@ -1281,6 +1281,8 @@ details[open] > summary .icon { transform: rotate(90deg); }
    they belong to. Rows are one line tall; the whole of a long line is in its title. */
 .work-plan { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); padding-bottom: 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .work-plan b { color: var(--text); font-weight: 600; }
+.work-own { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); padding-bottom: 8px; word-break: break-all; }
+.work-own b { color: var(--text); font-weight: 600; }
 .work-plan .next { flex-basis: 100%; }
 .work-graph { display: flex; flex-direction: column; }
 .work-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; height: 26px; font-size: 12px; }

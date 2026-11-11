@@ -365,6 +365,8 @@ const WORDS = {
     "background agents": "件のバックグラウンドエージェント",
     "Stop all": "すべて停止",
     "No worktrees in this conversation.": "この会話に worktree はありません。",
+    "This conversation works in its own worktree.": "この会話は自分の worktree で作業しています。",
+    "No helper worktrees in this conversation.": "この会話にヘルパーの worktree はありません。",
     "How the worktrees branched from your tree and came back": "worktree があなたのツリーから分かれ、戻ってきた流れ",
     "Hide flow": "流れを隠す",
     opened: "開始",
@@ -4530,9 +4532,21 @@ async function drawWork(thread) {
     if (team.plan.next_step) plan.append(text("span", "next", `${t("next")} · ${team.plan.next_step}`));
     host.append(plan);
   }
-  if (!worktrees.length) {
+  // The conversation's own worktree is the root of the tree: its branch is the base the helpers'
+  // work is merged into, so it is drawn even when no helper has been opened.
+  const own = thread.thread;
+  if (own.worktree) {
+    const root = text("div", "work-own");
+    root.append(text("b", null, own.branch || t("This conversation's worktree")));
+    root.append(text("span", null, own.cwd || ""));
+    host.append(root);
+  }
+  if (!worktrees.length && !own.worktree) {
     host.append(text("p", "empty", t("No worktrees in this conversation.")));
     return;
+  }
+  if (!worktrees.length) {
+    host.append(text("p", "empty", t("No helper worktrees in this conversation.")));
   }
   const asking = (state.prompts || []).filter((p) => p.thread_id === thread.thread.id && p.kind === "apply");
   const { events, running } = workEvents(thread, worktrees, trials, asking);
