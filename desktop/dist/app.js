@@ -4336,7 +4336,9 @@ function workEvents(thread, worktrees, trials, asking) {
   const last = ordered[ordered.length - 1];
   const running = last && thread.thread.status === "working" ? last : null;
   if (running) running.to = Date.now();
-  const events = ordered.map((turn) => ({ at: turn.from, kind: "turn", turn }));
+  // The graph is branches only: a helper's branch opened, worked on, reported, and merged into
+  // the root. Messages are not events of it, so they do not draw a row.
+  const events = [];
   worktrees.forEach((row, index) => {
     const column = index + 1;
     events.push({ at: row.created_at, kind: "open", row, column });
