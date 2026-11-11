@@ -511,6 +511,146 @@ def _prompts(path):
             if r.get("method") == "session/prompt"]
 
 
+class HeldRequest(unittest.TestCase):
+    def test_a_request_held_for_a_limit_keeps_its_host_up_until_the_limit_lifts(self):
+        # A host with nothing to do stops after host_idle_secs (60 s at the least). A request held
+        # for a limit keeps the host up until the limit lifts; the request then goes on and
+        # completes, and the host stops once it has been idle again.
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        config = work / "config.toml"
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "off"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[activity]
+host_idle_secs = 60
+[[agents]]
+id = "test"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "rate_once"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / 'agent.jsonl'}"
+MOCK_RESET_IN = "90"
+""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+        listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                           capture_output=True, text=True).stdout)
+        thread = listed["projects"][0]["threads"][0]["id"]
+        subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+                       capture_output=True)
+        log = open(work / "host.log", "w")
+        host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
+                                stderr=subprocess.STDOUT)
+        try:
+            # Past the idle time, while the limit still holds the request: the host is up.
+            time.sleep(75)
+            self.assertIsNone(host.poll(), (work / "host.log").read_text())
+            # The limit lifts, the request resumes and completes.
+            deadline = time.time() + 60
+            while time.time() < deadline and "Fixture completed" not in (work / "host.log").read_text():
+                time.sleep(2)
+            text = (work / "host.log").read_text()
+            self.assertIn("resuming the request held", text)
+            self.assertIn("Fixture completed", text)
+            # Then idle, the host stops on its own.
+            host.wait(timeout=120)
+        finally:
+            if host.poll() is None:
+                host.terminate()
+                host.wait(timeout=10)
+            log.close()
+
+
+class HeldTeam(unittest.TestCase):
+    def test_a_team_whose_agents_refuse_the_implementation_is_held_and_completes_when_one_has_room(self):
+        # Two agents accept the design and refuse everything after it; the first agent is out of
+        # quota for a minute after its first refusal. With nobody to take the implementation the
+        # request is held, and it completes once the first agent has room again.
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        agent = lambda name, behavior, reset: f"""
+[[agents]]
+id = "{name}"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "{behavior}"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / (name + '.jsonl')}"
+MOCK_RESET_IN = "{reset}"
+"""
+        config = work / "config.toml"
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "off"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[activity]
+host_idle_secs = 60
+{agent("test", "rate_once", 60)}{agent("zz-second", "rate_after_design", 3600)}{agent("zz-third", "rate_after_design", 3600)}""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+        listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                           capture_output=True, text=True).stdout)
+        thread = listed["projects"][0]["threads"][0]["id"]
+        subprocess.run([*common, "threads", "send", thread, "Implement a small endpoint"], check=True,
+                       capture_output=True)
+        log = open(work / "host.log", "w")
+        host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
+                                stderr=subprocess.STDOUT)
+        try:
+            deadline = time.time() + 240
+            while time.time() < deadline and "Fixture completed" not in (work / "host.log").read_text():
+                time.sleep(3)
+            text = (work / "host.log").read_text()
+            self.assertIn("Fixture completed", text)
+            self.assertNotIn("review step", text)
+        finally:
+            if host.poll() is None:
+                host.terminate()
+                host.wait(timeout=10)
+            log.close()
+
+
 class FailedTurns(unittest.TestCase):
     def test_a_turn_no_agent_could_take_leaves_the_conversation_open(self):
         c = Console(behavior="auth")
