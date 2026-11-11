@@ -669,6 +669,11 @@ for line in sys.stdin:
             (root / "limited.txt").write_text("limited\n")
             send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
                 "resetAt": int(time.time()) + int(os.environ.get("MOCK_RESET_IN", "3600")), "scope": "agent"}}})
+        elif behavior == "rate_implement_once" and "Plan the work first" not in request["params"]["prompt"][0]["text"] and not os.path.exists(os.environ["MOCK_LIMIT_MARK"]):
+            # Refused once with a rate limit on the implementation (agent scope), then it works.
+            open(os.environ["MOCK_LIMIT_MARK"], "w").write("limited\n")
+            send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
+                "resetAt": int(time.time()) + int(os.environ.get("MOCK_RESET_IN", "3600")), "scope": "agent"}}})
         elif behavior == "rate_after_design" and "Plan the work first" not in request["params"]["prompt"][0]["text"]:
             # Works on the design, refused with a rate limit (agent scope) on everything after it.
             send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {

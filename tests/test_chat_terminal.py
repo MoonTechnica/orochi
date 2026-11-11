@@ -583,8 +583,8 @@ MOCK_RESET_IN = "90"
             log.close()
 
 
-class HeldTeam(unittest.TestCase):
-    def test_a_team_whose_agents_refuse_the_implementation_is_held_and_completes_when_one_has_room(self):
+class HeldRequestAfterRefusals(unittest.TestCase):
+    def test_a_request_whose_agents_refuse_is_held_and_completes_when_one_has_room(self):
         # Two agents accept the design and refuse everything after it; the first agent is out of
         # quota for a minute after its first refusal. With nobody to take the implementation the
         # request is held, and it completes once the first agent has room again.
@@ -644,6 +644,85 @@ host_idle_secs = 60
             text = (work / "host.log").read_text()
             self.assertIn("Fixture completed", text)
             self.assertNotIn("review step", text)
+        finally:
+            if host.poll() is None:
+                host.terminate()
+                host.wait(timeout=10)
+            log.close()
+
+
+class HeldTeamChain(unittest.TestCase):
+    def test_a_team_step_refused_by_each_agent_in_turn_is_held_then_completes(self):
+        # One attempt per agent, so the scheduler gives each refusal back to the team, which
+        # carries the step on with the next agent with room. Two agents refuse every
+        # implementation, the third refuses its first one; with all three refused the step is held
+        # until the third has room again, and it completes then.
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        agent = lambda name, behavior, reset, extra="": f"""
+[[agents]]
+id = "{name}"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "{behavior}"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / (name + '.jsonl')}"
+MOCK_RESET_IN = "{reset}"
+{extra}
+"""
+        config = work / "config.toml"
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "off"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+max_attempts = 1
+[activity]
+host_idle_secs = 60
+{agent("zz-second", "rate_after_design", 3600)}{agent("zz-third", "rate_after_design", 3600)}{agent("test", "rate_implement_once", 60, f'MOCK_LIMIT_MARK = "{work / "test.mark"}"')}""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+        listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                           capture_output=True, text=True).stdout)
+        thread = listed["projects"][0]["threads"][0]["id"]
+        # A request the classifier reads as complex, so it runs as a team: design, then implement.
+        subprocess.run([*common, "threads", "send", thread,
+                        "Rewrite the entire architecture from scratch across the repository"],
+                       check=True, capture_output=True)
+        log = open(work / "host.log", "w")
+        host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
+                                stderr=subprocess.STDOUT)
+        try:
+            # The host stops once the held request has completed and it has been idle again.
+            try:
+                host.wait(timeout=240)
+            except subprocess.TimeoutExpired:
+                pass
+            text = (work / "host.log").read_text()
+            self.assertIn("implement step", text, text)
+            self.assertIn("every agent is out of quota", text)
+            self.assertIn("resuming the request held", text)
+            self.assertIn("Fixture completed", text)
+            # Each refusal went back to the team as a step carried on by the next agent.
+            self.assertGreaterEqual(text.count("carrying this step on with another agent"), 2, text)
         finally:
             if host.poll() is None:
                 host.terminate()
@@ -747,7 +826,9 @@ class FailedTurns(unittest.TestCase):
             c.type("Second request: summarize the docs")
             c.key(b"\r")
             c.wait("the decision model picks zz-backup", seconds=TURN * 4)
-            c.wait("Fixture completed", seconds=TURN * 2)
+            # The backup has the request once its own log has the prompt (the first request's
+            # "Fixture completed" is already on screen, so the screen cannot tell).
+            c.pump(TURN * 2, until=lambda s: any("Second request" in p for p in _prompts(c.backup_log)))
             rows = c.rows()
             refused = [name for name, path in (("test", c.log), ("zz-second", c.dir / "zz-second.jsonl"))
                        if any("Second request" in p for p in _prompts(path))]

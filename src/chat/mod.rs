@@ -2648,16 +2648,7 @@ impl Session<'_> {
                 Ok((code, _)) => *code != 0 && *code != 130,
                 Err(_) => true,
             };
-            if failed
-                && self.spent_in_last_run().is_some()
-                && let Some(wake) = self.wake_when_room()
-            {
-                let at = clock(wake);
-                self.view.note(&format!(
-                    "every agent is out of quota · this request resumes at {at}, when the first limit lifts"
-                ));
-                self.hold(wake, message.clone());
-            }
+            self.hold_if_out_of_quota(failed, &message);
             match &result {
                 Err(error) => self.view.result(ERR, &format!("✗ {error:#}")),
                 Ok((code, _)) if *code != 0 && *code != 130 && pinned => self
@@ -2667,9 +2658,16 @@ impl Session<'_> {
             }
             result.map(|(code, _)| code)
         } else {
-            self.run_team(message, steps, &task)
+            let result = self
+                .run_team(message.clone(), steps, &task)
                 .await
-                .inspect_err(|error| self.view.result(ERR, &format!("✗ {error:#}")))
+                .inspect_err(|error| self.view.result(ERR, &format!("✗ {error:#}")));
+            let failed = match &result {
+                Ok(code) => *code != 0 && *code != 130,
+                Err(_) => true,
+            };
+            self.hold_if_out_of_quota(failed, &message);
+            result
         };
         if let Err(error) = &result
             && let Some(recorded) = &self.recorded
@@ -3936,6 +3934,21 @@ impl Session<'_> {
             .runtime()
             .map(|runtime| !crate::scheduler::quota::available(&runtime, agent, "*", now()))
             .unwrap_or(false)
+    }
+
+    /// A request that failed with every agent out of quota is held until the first limit lifts,
+    /// whether it was a single turn or a team.
+    fn hold_if_out_of_quota(&mut self, failed: bool, message: &Message) {
+        if failed
+            && self.spent_in_last_run().is_some()
+            && let Some(wake) = self.wake_when_room()
+        {
+            let at = clock(wake);
+            self.view.note(&format!(
+                "every agent is out of quota · this request resumes at {at}, when the first limit lifts"
+            ));
+            self.hold(wake, message.clone());
+        }
     }
 
     /// The agent whose latest run ended on its account (a usage limit, a rejected sign-in or an
