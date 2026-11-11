@@ -529,7 +529,8 @@ function span(ms) {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
 function hhmm(at) {
@@ -3409,6 +3410,23 @@ function link(label, target, imageSyntax = false) {
 function drawStatus() {
   const host = el("accounts");
   host.replaceChildren();
+  // Reads what each account has left now, not when it was last read: the same probes a run makes.
+  const again = text("button", "account refresh", "⟳");
+  again.type = "button";
+  again.title = t("Read what each account has left again");
+  again.addEventListener("click", async () => {
+    again.disabled = true;
+    try {
+      await call("refresh_quota", {});
+      state.agents = (await call("agents", {})) || [];
+      state.agentsAt = Date.now();
+    } catch (_) {
+      // A probe that fails leaves the last readings in place; the bar says nothing new.
+    }
+    again.disabled = false;
+    drawStatus();
+  });
+  host.append(again);
   const byAgent = new Map();
   for (const row of state.agents) {
     const known = byAgent.get(row.agent) || { agent: row.agent, cooling: 0, window: null };
