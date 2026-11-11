@@ -25,6 +25,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 CUT = {"left": int(os.environ.get("MOCK_SYSTEMONE_CUT", "0") or 0)}
 
 
+QUEUES = {}
+
+
 def answers():
     path = os.environ.get("MOCK_SYSTEMONE_ANSWERS")
     if path and os.path.exists(path):
@@ -98,6 +101,12 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200:
             return self.send(status, {"error": "refused"})
         wanted = answers()
+        # An answer that is a list is given one per request for that question, in order: the
+        # last one again once they run out.
+        for name, value in list(wanted.items()):
+            if isinstance(value, list):
+                queue = QUEUES.setdefault(name, list(value))
+                wanted[name] = queue.pop(0) if len(queue) > 1 else queue[0]
         if self.path == "/v1/decisions":
             out = []
             for question in request.get("questions") or []:

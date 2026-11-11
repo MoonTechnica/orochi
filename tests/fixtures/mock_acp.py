@@ -664,6 +664,12 @@ for line in sys.stdin:
             # Refused with a rate limit (agent scope) on the prompts that contain MOCK_RATE_ON.
             send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
                 "resetAt": int(time.time()) + int(os.environ.get("MOCK_RESET_IN", "3600")), "scope": "agent"}}})
+        elif behavior == "limit_text":
+            # Says when the limit lifts in its reply, and refuses with no reset in the error, as
+            # Codex's usage limit does.
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "You've hit your usage limit. Visit https://example.com/usage or try again at Nov 16th, 2026 4:54 AM."}}}})
+            send({"id": request["id"], "error": {"code": -32603, "message": "Internal error"}})
         elif behavior == "rate_once" and not (root / "limited.txt").exists():
             # Refused once with a rate limit that lifts after MOCK_RESET_IN seconds, then it works.
             (root / "limited.txt").write_text("limited\n")

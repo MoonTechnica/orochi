@@ -1660,6 +1660,35 @@ impl Activity {
             .collect())
     }
 
+    /// Holds a request for `thread` until `wake` (unix seconds), replacing any hold it had.
+    pub fn set_hold(&self, thread: &str, wake: i64, request: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR REPLACE INTO holds (thread_id, wake, request, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![thread, wake, request, millis()],
+        )?;
+        Ok(())
+    }
+
+    /// The request `thread` holds, with the unix second it resumes at, if it holds one.
+    pub fn held(&self, thread: &str) -> Result<Option<(i64, String)>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT wake, request FROM holds WHERE thread_id=?1",
+                [thread],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// Gives up the request `thread` holds, if it holds one.
+    pub fn clear_hold(&self, thread: &str) -> Result<()> {
+        self.connection
+            .execute("DELETE FROM holds WHERE thread_id=?1", [thread])?;
+        Ok(())
+    }
+
     /// Recent user requests, including turns interrupted before an agent answered.
     pub fn recent_user_requests(&self, thread: &str) -> Result<Vec<String>> {
         let mut query = self.connection.prepare(
@@ -3155,6 +3184,14 @@ CREATE TABLE IF NOT EXISTS ui_state (
   thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
   last_seen_item INTEGER NOT NULL DEFAULT 0,
   draft TEXT);
+
+-- A request held because every agent is out of quota, until `wake` (unix seconds). Any host
+-- or console on the thread resumes it then.
+CREATE TABLE IF NOT EXISTS holds (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  wake INTEGER NOT NULL,
+  request TEXT NOT NULL,
+  created_at INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

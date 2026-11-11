@@ -99,6 +99,9 @@ pub fn selector(state: &Value, category: &str) -> Option<Selector> {
 struct Observation {
     session: Value,
     last_error: Value,
+    /// The end of what the agent said for the prompt in hand: a provider sometimes says when a
+    /// limit lifts in its reply rather than in the error.
+    reply: String,
     usage: Usage,
     quota: Option<QuotaObservation>,
     stream: bool,
@@ -567,6 +570,14 @@ impl Client {
                             && update["sessionUpdate"] == "agent_message_chunk"
                             && let Some(text) = update["content"]["text"].as_str()
                         {
+                            state.reply.push_str(text);
+                            if state.reply.len() > 4000 {
+                                let cut = state.reply.len() - 4000;
+                                let cut = (cut..state.reply.len())
+                                    .find(|i| state.reply.is_char_boundary(*i))
+                                    .unwrap_or(cut);
+                                state.reply.drain(..cut);
+                            }
                             if let Some(events) = &notification_events {
                                 let _ = events.send(ExecutionEvent::Text(
                                     text.to_owned(),
@@ -813,15 +824,28 @@ impl Client {
         }
     }
     fn classify(&self, error: &str) -> AgentError {
-        ProviderAdapter(self.config.provider).classify_error(
-            &self
-                .observations
-                .lock()
-                .expect("observation mutex")
-                .last_error,
+        let observed = self.observations.lock().expect("observation mutex");
+        let mut classified = ProviderAdapter(self.config.provider).classify_error(
+            &observed.last_error,
             error,
             crate::types::now(),
-        )
+        );
+        // An agent that says it hit its usage limit has hit it, whatever the error's own wording
+        // (Codex's reply says so while the error reads only "Internal error"). A limit whose reset
+        // the error does not give may still have it in what the agent said.
+        if classified.kind == crate::agents::ErrorKind::Other
+            && observed
+                .reply
+                .to_lowercase()
+                .contains("hit your usage limit")
+        {
+            classified.kind = crate::agents::ErrorKind::RateLimit;
+        }
+        if classified.kind == crate::agents::ErrorKind::RateLimit && classified.reset_at.is_none() {
+            classified.reset_at =
+                crate::agents::reset_in_text(&observed.reply, crate::types::now());
+        }
+        classified
     }
     fn state(&self) -> Value {
         self.observations
@@ -1197,6 +1221,7 @@ impl Client {
             o.usage = Usage::default();
             o.requests = 0;
             o.last_error = Value::Null;
+            o.reply.clear();
         }
         let mut blocks = vec![ContentBlock::Text(TextContent::new(prompt))];
         for attachment in attachments {

@@ -61,6 +61,73 @@ pub trait AgentAdapter {
 }
 pub struct ProviderAdapter(pub Provider);
 
+/// When a provider says a limit lifts, as its own text prints it: "try again at Nov 16th, 2026 4:54
+/// AM" (the date and the local time) or "try again at 9:11 PM" (the next such time).
+pub fn reset_in_text(text: &str, time: i64) -> Option<i64> {
+    dated_retry(text)
+        .or_else(|| retry_clock(text, time))
+        .filter(|t| *t > time)
+}
+
+/// "try again at Nov 16th, 2026 4:54 AM", in local time.
+fn dated_retry(text: &str) -> Option<i64> {
+    let rest = &text[text.find("try again at ")? + "try again at ".len()..];
+    let mut words = rest.split_whitespace();
+    let month = match words.next()?.get(..3)?.to_ascii_lowercase().as_str() {
+        "jan" => 0,
+        "feb" => 1,
+        "mar" => 2,
+        "apr" => 3,
+        "may" => 4,
+        "jun" => 5,
+        "jul" => 6,
+        "aug" => 7,
+        "sep" => 8,
+        "oct" => 9,
+        "nov" => 10,
+        "dec" => 11,
+        _ => return None,
+    };
+    let day: i32 = words
+        .next()?
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .ok()?;
+    let year: i32 = words.next()?.trim_end_matches(',').parse().ok()?;
+    let clock = words.next()?;
+    let (hour, minute) = clock.split_once(':')?;
+    let mut hour: i32 = hour.parse().ok()?;
+    let minute: i32 = minute.parse().ok()?;
+    let suffix = words
+        .next()?
+        .trim_end_matches(['.', ',', ')'])
+        .to_ascii_lowercase();
+    match suffix.as_str() {
+        "pm" if (1..12).contains(&hour) => hour += 12,
+        "am" if hour == 12 => hour = 0,
+        "am" | "pm" => {}
+        _ => return None,
+    }
+    local_at(year, month, day, hour, minute)
+}
+
+#[cfg(unix)]
+fn local_at(year: i32, month: i32, day: i32, hour: i32, minute: i32) -> Option<i64> {
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = minute;
+    tm.tm_isdst = -1;
+    let at = unsafe { libc::mktime(&mut tm) } as i64;
+    (at > 0).then_some(at)
+}
+#[cfg(not(unix))]
+fn local_at(_: i32, _: i32, _: i32, _: i32, _: i32) -> Option<i64> {
+    None
+}
+
 /// Next local occurrence of "try again at 9:11 PM", as printed by Codex usage limits.
 fn retry_clock(text: &str, time: i64) -> Option<i64> {
     let rest = &text[text.find("try again at ")? + "try again at ".len()..];

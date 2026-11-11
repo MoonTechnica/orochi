@@ -12,6 +12,7 @@ import pty
 import re
 import select
 import struct
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -730,6 +731,274 @@ host_idle_secs = 60
             log.close()
 
 
+class HeldRequestPersists(unittest.TestCase):
+    def test_a_request_held_for_a_limit_resumes_in_a_host_started_after_the_first_stopped(self):
+        # The hold is kept in the store: a host that stops while the request waits does not lose
+        # it, and a host started later resumes it when the limit lifts.
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        config = work / "config.toml"
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "off"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[activity]
+host_idle_secs = 60
+[[agents]]
+id = "test"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "rate_once"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / 'agent.jsonl'}"
+MOCK_RESET_IN = "60"
+""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+        listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                           capture_output=True, text=True).stdout)
+        thread = listed["projects"][0]["threads"][0]["id"]
+        subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+                       capture_output=True)
+        first_log = open(work / "host1.log", "w")
+        first = subprocess.Popen([*common, "host", "--thread", thread], stdout=first_log,
+                                 stderr=subprocess.STDOUT)
+        second = None
+        second_log = None
+        try:
+            deadline = time.time() + 60
+            while time.time() < deadline and "every agent is out of quota" not in (work / "host1.log").read_text():
+                time.sleep(1)
+            self.assertIn("every agent is out of quota", (work / "host1.log").read_text())
+            # The first host stops while the request waits.
+            first.terminate()
+            first.wait(timeout=20)
+            first_log.close()
+            second_log = open(work / "host2.log", "w")
+            second = subprocess.Popen([*common, "host", "--thread", thread], stdout=second_log,
+                                      stderr=subprocess.STDOUT)
+            deadline = time.time() + 150
+            while time.time() < deadline and "Fixture completed" not in (work / "host2.log").read_text():
+                time.sleep(2)
+            text = (work / "host2.log").read_text()
+            self.assertIn("resuming the request held", text)
+            self.assertIn("Fixture completed", text)
+        finally:
+            for proc in (first, second):
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    proc.wait(timeout=10)
+            if second_log is not None:
+                second_log.close()
+
+
+class LimitTextSaysWhenItLifts(unittest.TestCase):
+    def test_a_limit_whose_error_gives_no_reset_takes_the_date_the_agent_says_it_lifts(self):
+        # The error gives no reset; the reply says "try again at Nov 16th, 2026 4:54 AM". The
+        # cooldown is that time, not a short back-off that would retry a limit that still holds.
+        import datetime
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        config = work / "config.toml"
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "off"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[activity]
+host_idle_secs = 60
+[[agents]]
+id = "test"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "limit_text"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / 'agent.jsonl'}"
+""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+        listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                           capture_output=True, text=True).stdout)
+        thread = listed["projects"][0]["threads"][0]["id"]
+        subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+                       capture_output=True)
+        log = open(work / "host.log", "w")
+        host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
+                                stderr=subprocess.STDOUT)
+        try:
+            deadline = time.time() + 90
+            while time.time() < deadline and "every agent is out of quota" not in (work / "host.log").read_text():
+                time.sleep(2)
+            self.assertIn("every agent is out of quota", (work / "host.log").read_text())
+            expected = time.mktime(datetime.datetime(2026, 11, 16, 4, 54).timetuple())
+            con = sqlite3.connect(work / "data" / "telemetry.sqlite3")
+            record = json.loads(con.execute(
+                "SELECT record FROM runtime WHERE agent='test' AND model='*'").fetchone()[0])
+            con.close()
+            self.assertEqual(int(record["cooldown_until"]), int(expected))
+        finally:
+            host.terminate()
+            host.wait(timeout=10)
+            log.close()
+
+
+class PinnedAgentAlreadySpent(unittest.TestCase):
+    def test_a_conversation_pinned_to_an_agent_already_out_of_quota_goes_to_the_one_the_decision_model_picks(self):
+        # Before the request is even tried: the conversation is pinned to an agent whose account is
+        # already cooling down. The decision model names the agent with room, and it carries on.
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        answers = work / "answers.json"
+        answers.write_text(json.dumps({"handover": "zz-backup"}))
+        decisions = work / "decisions.jsonl"
+        fake = subprocess.Popen(
+            [sys.executable, str(TESTS / "fixtures/fake_systemone.py")],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, MOCK_SYSTEMONE_ANSWERS=str(answers), MOCK_SYSTEMONE_LOG=str(decisions)))
+        url = fake.stdout.readline().strip() + "/v1/systemone"
+        config = work / "config.toml"
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "local"
+model = "lev"
+endpoint = "{url}"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[activity]
+host_idle_secs = 60
+[[agents]]
+id = "test"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "success"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / 'agent.jsonl'}"
+[[agents]]
+id = "zz-backup"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "success"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / 'backup.jsonl'}"
+[[agents]]
+id = "zz-third"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "success"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / 'third.jsonl'}"
+""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        try:
+            subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+            listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                               capture_output=True, text=True).stdout)
+            thread = listed["projects"][0]["threads"][0]["id"]
+            # The conversation is pinned to `test`, whose account is cooling down for an hour.
+            data = work / "data"
+            cooling = {"agent": "test", "model": "*", "status": "cooldown", "quota_estimate": None,
+                       "reset_at": None, "cooldown_until": int(time.time()) + 3600,
+                       "last_success_at": None, "last_failure_at": int(time.time()),
+                       "consecutive_failures": 1, "rate_limit_count": 1}
+            con = sqlite3.connect(data / "telemetry.sqlite3")
+            con.execute("INSERT OR REPLACE INTO runtime (agent, model, record) VALUES ('test', '*', ?)",
+                        (json.dumps(cooling),))
+            con.commit()
+            con.close()
+            con = sqlite3.connect(data / "activity.sqlite3")
+            con.execute("UPDATE threads SET continuation=? WHERE id=?",
+                        (json.dumps({"agent": "test", "model": "sol-test", "session_id": "pinned-scratch",
+                                     "loadable": False}), thread))
+            con.commit()
+            con.close()
+            subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+                           capture_output=True)
+            log = open(work / "host.log", "w")
+            host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
+                                    stderr=subprocess.STDOUT)
+            try:
+                host.wait(timeout=150)
+            except subprocess.TimeoutExpired:
+                host.terminate()
+                host.wait(timeout=10)
+            log.close()
+            text = (work / "host.log").read_text()
+            self.assertIn("test is out of quota for now", text)
+            self.assertIn("the decision model picks zz-backup to carry this on", text)
+            self.assertIn("Fixture completed", text)
+            asked = [json.loads(line) for line in decisions.read_text().splitlines() if "handover" in line]
+            self.assertTrue(asked, "the decision model was asked which agent carries on")
+            offered = asked[-1]["request"]["questions"]["handover"]["criteria"]
+            self.assertIn("zz-backup", offered)
+            self.assertIn("zz-third", offered)
+            self.assertNotIn("test", offered, "the agent that is out of quota is not offered")
+            self.assertTrue(any("Summarize the README" in p for p in _prompts(work / "backup.jsonl")), text)
+            self.assertFalse(any("Summarize the README" in p for p in _prompts(work / "agent.jsonl")),
+                             "the agent that is out of quota is not tried")
+        finally:
+            fake.terminate()
+            fake.wait(timeout=10)
+
+
 class FailedTurns(unittest.TestCase):
     def test_a_turn_no_agent_could_take_leaves_the_conversation_open(self):
         c = Console(behavior="auth")
@@ -803,10 +1072,9 @@ class FailedTurns(unittest.TestCase):
         finally:
             c.close()
 
-    def test_a_conversation_whose_agent_runs_out_is_handed_on_to_the_agent_the_decision_model_picks(self):
-        # Pinned to the agent that answered the first request, the second is refused with a rate
-        # limit (every agent that is not the backup refuses it). A decision model, here a fake one,
-        # names the backup to carry it on; it is offered only the agents that have room.
+    def test_a_team_phase_is_given_to_the_agent_the_decision_model_picks(self):
+        # A request the classifier reads as complex runs as a team; the decision model (a fake one
+        # here) names the backup for the first phase, and the log shows it was asked.
         work = Path(tempfile.mkdtemp())
         answers = work / "answers.json"
         answers.write_text(json.dumps({"handover": "zz-backup"}))
@@ -816,33 +1084,108 @@ class FailedTurns(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             env=dict(os.environ, MOCK_SYSTEMONE_ANSWERS=str(answers), MOCK_SYSTEMONE_LOG=str(decisions)))
         url = fake.stdout.readline().strip() + "/v1/systemone"
-        c = Console(behavior="rate_when_asked", env={"MOCK_RATE_ON": "Second request"}, backup=True,
-                    rate_limited=("zz-second",), rate_behavior="rate_when_asked",
-                    limited_env={"MOCK_RATE_ON": "Second request"}, decision_endpoint=url)
+        c = Console(behavior="success", backup=True, decision_endpoint=url)
         try:
-            c.type("First request: summarize the README")
+            c.type("Rewrite the entire architecture from scratch across the repository")
             c.key(b"\r")
-            c.wait("Fixture completed", seconds=TURN * 2)
-            c.type("Second request: summarize the docs")
-            c.key(b"\r")
-            c.wait("the decision model picks zz-backup", seconds=TURN * 4)
-            # The backup has the request once its own log has the prompt (the first request's
-            # "Fixture completed" is already on screen, so the screen cannot tell).
-            c.pump(TURN * 2, until=lambda s: any("Second request" in p for p in _prompts(c.backup_log)))
-            rows = c.rows()
-            refused = [name for name, path in (("test", c.log), ("zz-second", c.dir / "zz-second.jsonl"))
-                       if any("Second request" in p for p in _prompts(path))]
-            self.assertTrue(refused, rows)
-            self.assertTrue(any("Second request" in p for p in _prompts(c.backup_log)), rows)
-            asked = [json.loads(line) for line in decisions.read_text().splitlines()
-                     if "handover" in line]
-            self.assertTrue(asked, "the decision model was asked for a handover")
-            criteria = asked[-1]["request"]["questions"]["handover"]["criteria"]
-            self.assertIn("zz-backup", criteria, criteria)
-            for name in refused:
-                self.assertNotIn(name, criteria, "the agent that ran out is never offered")
+            c.wait("the decision model picks zz-backup for this work", seconds=TURN * 4)
+            c.wait("Fixture completed", seconds=TURN * 4)
+            asked = [json.loads(line) for line in decisions.read_text().splitlines() if "handover" in line]
+            self.assertTrue(asked, "the decision model was asked for the phase")
         finally:
             c.close()
+            fake.terminate()
+            fake.wait(timeout=10)
+
+    def test_a_conversation_whose_agent_runs_out_is_handed_on_to_the_agent_the_decision_model_picks(self):
+        # The conversation is pinned to `test`, which is refused the request while it runs (a
+        # rate limit). The decision model, here a fake one, names one of the agents with room, and
+        # it is offered only those: `test` is not among them, and the request completes there.
+        work = Path(tempfile.mkdtemp())
+        repo = work / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("# readme\n")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=repo, check=True)
+        answers = work / "answers.json"
+        answers.write_text(json.dumps({"handover": "zz-backup"}))
+        decisions = work / "decisions.jsonl"
+        fake = subprocess.Popen(
+            [sys.executable, str(TESTS / "fixtures/fake_systemone.py")],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, MOCK_SYSTEMONE_ANSWERS=str(answers), MOCK_SYSTEMONE_LOG=str(decisions)))
+        url = fake.stdout.readline().strip() + "/v1/systemone"
+        config = work / "config.toml"
+        agent = lambda name, behavior: f"""
+[[agents]]
+id = "{name}"
+provider = "openai"
+command = "python3"
+args = ["{TESTS / 'fixtures/mock_acp.py'}"]
+[agents.env]
+MOCK_BEHAVIOR = "{behavior}"
+MOCK_MODELS = "sol-test,astra-test"
+MOCK_LOG = "{work / (name + '.jsonl')}"
+MOCK_RATE_ON = "Summarize"
+"""
+        config.write_text(f"""
+[discovery]
+auto_add = false
+[evaluator]
+auto = false
+[decision]
+backend = "local"
+model = "lev"
+endpoint = "{url}"
+[classifier]
+enabled = false
+[mailbox]
+enabled = false
+[quota]
+refresh_before_run = false
+[scheduler]
+discovery_timeout_secs = 20
+prompt_timeout_secs = 40
+[activity]
+host_idle_secs = 60
+{agent("test", "rate_when_asked")}{agent("zz-backup", "success")}{agent("zz-third", "success")}""")
+        common = [BINARY, "--config", str(config), "--data-dir", str(work / "data"), "-C", str(repo)]
+        try:
+            subprocess.run([*common, "threads", "new"], check=True, capture_output=True)
+            listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
+                                               capture_output=True, text=True).stdout)
+            thread = listed["projects"][0]["threads"][0]["id"]
+            # Pinned to `test`, as a conversation is after its first answer.
+            con = sqlite3.connect(work / "data" / "activity.sqlite3")
+            con.execute("UPDATE threads SET continuation=? WHERE id=?",
+                        (json.dumps({"agent": "test", "model": "sol-test", "session_id": "pinned-scratch",
+                                     "loadable": False}), thread))
+            con.commit()
+            con.close()
+            subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+                           capture_output=True)
+            log = open(work / "host.log", "w")
+            host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
+                                    stderr=subprocess.STDOUT)
+            try:
+                host.wait(timeout=150)
+            except subprocess.TimeoutExpired:
+                host.terminate()
+                host.wait(timeout=10)
+            log.close()
+            text = (work / "host.log").read_text()
+            self.assertIn("test hit its usage limit", text)
+            self.assertIn("the decision model picks zz-backup to carry this on", text)
+            self.assertIn("Fixture completed", text)
+            self.assertTrue(any("Summarize the README" in p for p in _prompts(work / "zz-backup.jsonl")), text)
+            asked = [json.loads(line) for line in decisions.read_text().splitlines() if "handover" in line]
+            self.assertTrue(asked, "the decision model was asked which agent carries on")
+            offered = asked[-1]["request"]["questions"]["handover"]["criteria"]
+            self.assertIn("zz-backup", offered)
+            self.assertIn("zz-third", offered)
+            self.assertNotIn("test", offered, "the agent that ran out is not offered")
+        finally:
             fake.terminate()
             fake.wait(timeout=10)
 

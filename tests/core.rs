@@ -3816,8 +3816,28 @@ fn a_handover_the_decision_model_picked_comes_first_and_the_agent_that_ran_out_i
             ..RuntimeState::new("codex", "*")
         },
     );
-    let offered = handover_candidates(&config, &spent, "claude", clock());
+    let offered = handover_candidates(&config, &spent, Some("claude"), clock());
     assert!(!offered.iter().any(|a| a == "codex"), "{offered:?}");
     assert!(!offered.iter().any(|a| a == "claude"), "{offered:?}");
     assert!(offered.iter().any(|a| a == "opencode"), "{offered:?}");
+}
+
+#[test]
+fn a_provider_s_own_words_for_when_a_limit_lifts_give_the_reset() {
+    use orochi::{agents::reset_in_text, types::now};
+    let time = now();
+    // The date form Codex prints, in local time: a day after the one the text is read on, so
+    // it is in the future whenever the test runs before then.
+    let dated = reset_in_text(
+        "You've hit your usage limit. Visit https://chatgpt.com/settings/usage or try again at Nov 16th, 2026 4:54 AM.",
+        time,
+    )
+    .expect("the dated form is read");
+    assert!(dated > time, "{dated} {time}");
+    assert!(dated - time < 6 * 86_400, "{dated} {time}");
+    // The clock form is the next such time, as before.
+    let clock = reset_in_text("try again at 9:11 PM", time).expect("the clock form is read");
+    assert!(clock > time && clock - time <= 86_400, "{clock} {time}");
+    // Nothing said, nothing read.
+    assert_eq!(reset_in_text("Internal error", time), None);
 }

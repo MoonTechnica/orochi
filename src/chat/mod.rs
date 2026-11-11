@@ -1776,6 +1776,24 @@ impl<'a> Session<'a> {
         let Some(recorded) = &self.recorded else {
             return;
         };
+        // A request held when the last host or console stopped resumes here.
+        let held = recorded.store().held(thread).ok().flatten();
+        if let Some((wake, text)) = held
+            && self.waiting.is_none()
+        {
+            HOLDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.waiting = Some((
+                wake,
+                Message {
+                    text,
+                    attachments: vec![],
+                    queued: None,
+                    steps: Steps::Auto,
+                    from_helpers: false,
+                    origin: None,
+                },
+            ));
+        }
         let store = recorded.store();
         if self.conversation.current.is_none()
             && self.conversation.resume.is_none()
@@ -2511,7 +2529,7 @@ struct Pending {
 pub fn handover_candidates(
     config: &Config,
     runtime: &crate::types::RuntimeMap,
-    from: &str,
+    from: Option<&str>,
     time: i64,
 ) -> Vec<String> {
     config
@@ -2520,7 +2538,7 @@ pub fn handover_candidates(
         .filter(|a| {
             a.enabled
                 && !a.routing_only
-                && a.id != from
+                && from.is_none_or(|from| a.id != from)
                 && crate::scheduler::quota::available(runtime, &a.id, "*", time)
         })
         .map(|a| a.id.clone())
@@ -2547,6 +2565,16 @@ impl Session<'_> {
         if self.waiting.is_none() {
             HOLDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        // Kept in the store too, so that a host started later resumes it.
+        if let Some(recorded) = &self.recorded
+            && let Some(thread) = &recorded.thread
+        {
+            let _ = recorded.activity.lock().expect("activity store").set_hold(
+                thread,
+                wake,
+                &message.text,
+            );
+        }
         self.waiting = Some((wake, message));
     }
 
@@ -2554,6 +2582,15 @@ impl Session<'_> {
         let held = self.waiting.take();
         if held.is_some() {
             HOLDS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(recorded) = &self.recorded
+                && let Some(thread) = &recorded.thread
+            {
+                let _ = recorded
+                    .activity
+                    .lock()
+                    .expect("activity store")
+                    .clear_hold(thread);
+            }
         }
         held
     }
@@ -3916,14 +3953,19 @@ impl Session<'_> {
     /// Runs one turn and returns its exit code with the agent's reply.
     /// The agent the decision model picks to carry the work on, from the agents other than the
     /// one that ran out whose account has room now. The scheduler still applies every gate.
-    async fn pick_handover(&mut self, from: &str, text: &str) -> Option<String> {
+    async fn pick_handover(&mut self, from: Option<&str>, text: &str) -> Option<String> {
         let runtime = self.store.runtime().ok()?;
         let agents = handover_candidates(self.config, &runtime, from, now());
+        // With one agent to choose from there is nothing for the decision model to choose.
+        if agents.len() < 2 {
+            return None;
+        }
         let picked =
             crate::decision::handover(&self.config.decision, self.data, text, &agents).await?;
-        self.view.note(&format!(
-            "the decision model picks {picked} to carry this on"
-        ));
+        self.view.note(&match from {
+            Some(_) => format!("the decision model picks {picked} to carry this on"),
+            None => format!("the decision model picks {picked} for this work"),
+        });
         Some(picked)
     }
 
@@ -4104,6 +4146,8 @@ impl Session<'_> {
         }
         // Whoever ran out of quota (this turn's retry, or the conversation's own agent) is
         // replaced by the agent the decision model picks, from those that can take the work.
+        // The first choice of a route (a phase, or a conversation with no agent yet) is the
+        // decision model's too, among every agent with room; the scorer still applies the gates.
         if let Some(from) = retry_from.or_else(|| {
             spent
                 .then(|| {
@@ -4114,7 +4158,9 @@ impl Session<'_> {
                 })
                 .flatten()
         }) {
-            profile.handover = self.pick_handover(&from, &message.text).await;
+            profile.handover = self.pick_handover(Some(&from), &message.text).await;
+        } else if phase.is_some() || self.conversation.current.is_none() {
+            profile.handover = self.pick_handover(None, &message.text).await;
         }
         let outgrown = own_session
             && !spent

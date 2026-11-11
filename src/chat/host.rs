@@ -182,6 +182,14 @@ async fn feed(
             }
             _ => {
                 // Helpers still working keep the host: their results are a turn it has to run.
+                // A request held in the store resumes here, so this host stays up for it.
+                let held = activity
+                    .lock()
+                    .expect("activity store")
+                    .held(&thread)
+                    .ok()
+                    .flatten()
+                    .is_some();
                 let working = activity
                     .lock()
                     .expect("activity store")
@@ -189,7 +197,8 @@ async fn feed(
                     .map(|seats| seats.iter().any(|s| s.thread_id == thread && s.background))
                     .unwrap_or(false)
                     // A request held for an agent's limit resumes here, so the host stays up.
-                    || crate::chat::holding();
+                    || crate::chat::holding()
+                    || held;
                 if working {
                     last = Instant::now();
                 }
