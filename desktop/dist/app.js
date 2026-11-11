@@ -5793,6 +5793,8 @@ async function refresh(full) {
   // The accounts change when a probe runs, not when a key is pressed: read at most twice a
   // minute.
   if (Date.now() - state.agentsAt > 30000) {
+    // The probes run only where the last reading is stale, so this is cheap when it is fresh.
+    await call("refresh_quota", {}).catch(() => {});
     state.agents = (await call("agents", {})) || [];
     // The routes that have run here: what the route menu offers besides Auto.
     state.routes = (await call("insights", {})) || [];

@@ -350,6 +350,24 @@ fn agents(open: State<'_, Open>) -> Result<Vec<AgentRow>, String> {
     open.0.lock().unwrap().agents().map_err(fail)
 }
 
+/// Reads again the quota of each account whose last reading has expired, so the status bar keeps
+/// what each account has left (the console does the same before each run). A probe only reads what
+/// the CLI shows; an account whose reading is still fresh is not asked again.
+#[tauri::command]
+async fn refresh_quota(open: State<'_, Open>) -> Result<(), String> {
+    let (config, data) = open.0.lock().unwrap().paths();
+    // The store is not `Send`, so the probes run on a blocking thread that owns it.
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        let config = orochi::config::Config::load(&config)?;
+        let store = orochi::storage::Store::open(&data)?;
+        tauri::async_runtime::block_on(orochi::quota_sources::refresh_stale(&config, &store))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(fail)
+}
+
 #[tauri::command]
 fn insights(open: State<'_, Open>) -> Result<Vec<RouteStats>, String> {
     open.0.lock().unwrap().insights().map_err(fail)
@@ -775,6 +793,7 @@ fn main() {
             room,
             say,
             agents,
+            refresh_quota,
             insights,
             board,
             team,
