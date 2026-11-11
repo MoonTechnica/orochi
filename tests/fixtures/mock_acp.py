@@ -660,6 +660,10 @@ for line in sys.stdin:
         elif behavior == "retry_once" and not (root / "partial.txt").exists():
             (root / "partial.txt").write_text("unfinished work\n")
             result(request, {"stopReason": "max_tokens"})
+        elif behavior == "rate_when_asked" and os.environ.get("MOCK_RATE_ON", "") in request["params"]["prompt"][0]["text"]:
+            # Refused with a rate limit (agent scope) on the prompts that contain MOCK_RATE_ON.
+            send({"id": request["id"], "error": {"code": 429, "message": "rate limit exceeded", "data": {
+                "resetAt": int(time.time()) + int(os.environ.get("MOCK_RESET_IN", "3600")), "scope": "agent"}}})
         elif behavior == "rate_once" and not (root / "limited.txt").exists():
             # Refused once with a rate limit that lifts after MOCK_RESET_IN seconds, then it works.
             (root / "limited.txt").write_text("limited\n")

@@ -328,7 +328,7 @@ class Console:
 
     def __init__(self, behavior="success", env=None, lines=0, delay=0.01, classifier=False, args=(),
                  files=None, mailbox=False, host=False, backup=False, rate_limited=(),
-                 rate_behavior="rate"):
+                 rate_behavior="rate", decision_endpoint=None, limited_env=None):
         """`host` runs the session as an agent host's pane runs it, so `reports()` has what it
         was told. `backup` adds a second, working agent beside the first, whose prompts land in
         `self.backup_log`."""
@@ -343,6 +343,7 @@ class Console:
         self.backup_log = self.dir / "backup.jsonl"
         # Sorted after the first agent, so on a tie of price and fit the first one is chosen.
         # Agents that refuse every prompt with a rate limit, each with its own log.
+        limited_lines = "\n".join(f"{key} = {json.dumps(value)}" for key, value in (limited_env or {}).items())
         limited = "".join(f"""
 [[agents]]
 id = "{name}"
@@ -353,6 +354,7 @@ args = ["{TESTS / 'fixtures/mock_acp.py'}"]
 MOCK_BEHAVIOR = "{rate_behavior}"
 MOCK_MODELS = "sol-test,astra-test"
 MOCK_LOG = "{self.dir / (name + '.jsonl')}"
+{limited_lines}
 """ for name in rate_limited)
         backup_text = limited + (f"""
 [[agents]]
@@ -365,6 +367,9 @@ MOCK_BEHAVIOR = "success"
 MOCK_MODELS = "sol-test,astra-test"
 MOCK_LOG = "{self.backup_log}"
 """ if backup else "")
+        # A decision model that answers from `decision_endpoint` (a fake System One server), or none.
+        decision_block = (f'[decision]\nbackend = "local"\nmodel = "lev"\nendpoint = {json.dumps(decision_endpoint)}\n'
+                          if decision_endpoint else '[decision]\nbackend = "off"\n')
         extra = "\n".join(f"{key} = {json.dumps(value)}" for key, value in (env or {}).items())
         path = self.dir / "config.toml"
         path.write_text(f"""
@@ -372,8 +377,7 @@ MOCK_LOG = "{self.backup_log}"
 auto_add = false
 [evaluator]
 auto = false
-[decision]
-backend = "off"
+{decision_block}
 [classifier]
 enabled = {"true" if classifier else "false"}
 [mailbox]
@@ -498,6 +502,15 @@ MOCK_LOG = "{self.log}"
         os.close(self.master)
 
 
+def _prompts(path):
+    """The prompts a mock agent received, from its log (empty when it received none)."""
+    if not Path(path).exists():
+        return []
+    return [r["params"]["prompt"][0]["text"] for r in
+            (json.loads(line) for line in Path(path).read_text().splitlines())
+            if r.get("method") == "session/prompt"]
+
+
 class FailedTurns(unittest.TestCase):
     def test_a_turn_no_agent_could_take_leaves_the_conversation_open(self):
         c = Console(behavior="auth")
@@ -570,6 +583,47 @@ class FailedTurns(unittest.TestCase):
             self.assertFalse(any("team stops here" in row for row in c.screen.text()), c.rows())
         finally:
             c.close()
+
+    def test_a_conversation_whose_agent_runs_out_is_handed_on_to_the_agent_the_decision_model_picks(self):
+        # Pinned to the agent that answered the first request, the second is refused with a rate
+        # limit (every agent that is not the backup refuses it). A decision model, here a fake one,
+        # names the backup to carry it on; it is offered only the agents that have room.
+        work = Path(tempfile.mkdtemp())
+        answers = work / "answers.json"
+        answers.write_text(json.dumps({"handover": "zz-backup"}))
+        decisions = work / "decisions.jsonl"
+        fake = subprocess.Popen(
+            [sys.executable, str(TESTS / "fixtures/fake_systemone.py")],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, MOCK_SYSTEMONE_ANSWERS=str(answers), MOCK_SYSTEMONE_LOG=str(decisions)))
+        url = fake.stdout.readline().strip() + "/v1/systemone"
+        c = Console(behavior="rate_when_asked", env={"MOCK_RATE_ON": "Second request"}, backup=True,
+                    rate_limited=("zz-second",), rate_behavior="rate_when_asked",
+                    limited_env={"MOCK_RATE_ON": "Second request"}, decision_endpoint=url)
+        try:
+            c.type("First request: summarize the README")
+            c.key(b"\r")
+            c.wait("Fixture completed", seconds=TURN * 2)
+            c.type("Second request: summarize the docs")
+            c.key(b"\r")
+            c.wait("the decision model picks zz-backup", seconds=TURN * 4)
+            c.wait("Fixture completed", seconds=TURN * 2)
+            rows = c.rows()
+            refused = [name for name, path in (("test", c.log), ("zz-second", c.dir / "zz-second.jsonl"))
+                       if any("Second request" in p for p in _prompts(path))]
+            self.assertTrue(refused, rows)
+            self.assertTrue(any("Second request" in p for p in _prompts(c.backup_log)), rows)
+            asked = [json.loads(line) for line in decisions.read_text().splitlines()
+                     if "handover" in line]
+            self.assertTrue(asked, "the decision model was asked for a handover")
+            criteria = asked[-1]["request"]["questions"]["handover"]["criteria"]
+            self.assertIn("zz-backup", criteria, criteria)
+            for name in refused:
+                self.assertNotIn(name, criteria, "the agent that ran out is never offered")
+        finally:
+            c.close()
+            fake.terminate()
+            fake.wait(timeout=10)
 
     def test_a_turn_that_hits_a_usage_limit_is_carried_on_by_another_agent(self):
         # The first agent is out of quota (every prompt is refused with a rate limit). The same
