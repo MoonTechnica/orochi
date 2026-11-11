@@ -600,6 +600,29 @@ async fn select(
                 difficulty: None,
             },
         )?;
+        // After an attempt has failed, the decision model names the agent that carries the turn
+        // on, among the agents with room now. The scorer still applies every gate to it.
+        if !attempted.is_empty() {
+            let runtime = store.runtime()?;
+            let offered: Vec<String> = scoped
+                .agents
+                .iter()
+                .filter(|a| {
+                    a.enabled && !a.routing_only && quota::available(&runtime, &a.id, "*", now())
+                })
+                .map(|a| a.id.clone())
+                .collect();
+            if let Some(picked) = crate::decision::handover(
+                &config.decision,
+                store.data_dir(),
+                &report.task,
+                &offered,
+            )
+            .await
+            {
+                descriptor.handover = Some(picked);
+            }
+        }
         ranked.retain(|c| !attempted.contains(&c.id));
         crate::learning::select(
             &mut ranked,

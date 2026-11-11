@@ -1787,3 +1787,77 @@ MOCK_BEHAVIOR = "session_collaboration"
         "every participant's reply is on its own lane: {lanes:?}"
     );
 }
+
+#[test]
+fn the_decision_model_names_the_replacement_for_an_exhausted_account() {
+    use orochi::config::{DecisionBackend, DecisionConfig};
+    let mut s = Scenario::new("implementer", "rate");
+    // A third agent with room, so the decision model has a choice to make.
+    let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
+    let mut third = AgentConfig::preset("tertiary", Provider::OPENAI, "python3", &[]);
+    third.args = vec![fixture];
+    third.env.insert("MOCK_MODELS".into(), "sol-test".into());
+    third
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "session_collaboration".into());
+    third.env.insert(
+        "MOCK_LOG".into(),
+        s.temp.path().join("tertiary.jsonl").display().to_string(),
+    );
+    s.config.agents.push(third);
+    // A fake decision model that names the third agent.
+    let answers = s.temp.path().join("answers.json");
+    fs::write(&answers, r#"{"handover": "tertiary"}"#).unwrap();
+    let decisions = s.temp.path().join("decisions.jsonl");
+    let mut fake = std::process::Command::new("python3")
+        .arg(format!(
+            "{}/tests/fixtures/fake_systemone.py",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .env("MOCK_SYSTEMONE_ANSWERS", &answers)
+        .env("MOCK_SYSTEMONE_LOG", &decisions)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut url = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(fake.stdout.as_mut().unwrap()),
+        &mut url,
+    )
+    .unwrap();
+    s.config.decision = DecisionConfig {
+        backend: Some(DecisionBackend::Local),
+        endpoint: Some(format!("{}/v1/systemone", url.trim())),
+        ..DecisionConfig::default()
+    };
+    let output = s.invoke(false);
+    let _ = fake.kill();
+    let _ = fake.wait();
+    assert!(
+        output.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = s.report();
+    assert_eq!(report["status"], "completed");
+    let sessions = report["sessions"].as_array().unwrap();
+    let replacement = sessions
+        .iter()
+        .find(|r| {
+            r["status"] == "completed" && r["stage"] == 6 && r["candidate"]["agent"] != "primary"
+        })
+        .or_else(|| {
+            sessions
+                .iter()
+                .find(|r| r["status"] == "completed" && r["candidate"]["agent"] != "primary")
+        })
+        .expect("a replacement completed");
+    assert_eq!(replacement["candidate"]["agent"], "tertiary", "{report}");
+    let asked = fs::read_to_string(&decisions).unwrap();
+    assert!(
+        asked.contains("\"handover\""),
+        "the decision model was asked"
+    );
+}

@@ -311,6 +311,8 @@ pub struct ThreadRow {
     pub seats: i64,
     pub asking: i64,
     pub unread: i64,
+    /// When a request held for an agent's limit resumes (unix seconds), if one is held.
+    pub held_until: Option<i64>,
     /// The thread is being run by a terminal rather than a headless host.
     pub terminal: bool,
     /// The lead's running tool call, while a turn runs.
@@ -935,7 +937,8 @@ impl Activity {
                     title, cwd, branch, origin, worktree, pinned, archived_at, updated_at,
                     running, queued, asking, seats, last_state, last_item, last_seen_item,
                     host_kind, host_pid, host_start, doing, background, running_since, overrides,
-                    lead_route
+                    lead_route,
+                    (SELECT wake FROM holds WHERE holds.thread_id = v_sidebar.id) AS held_until
              FROM v_sidebar WHERE (?1 OR archived_at IS NULL)
                AND (?2 OR project_id IN (SELECT id FROM projects WHERE hidden_at IS NULL))
              ORDER BY project_pinned DESC, project_sort, pinned DESC, updated_at DESC",
@@ -952,6 +955,7 @@ impl Activity {
             let pid: Option<i64> = r.get(22)?;
             let start: Option<i64> = r.get(23)?;
             let background: i64 = r.get(25)?;
+            let held_until: Option<i64> = r.get(29)?;
             let route = r.get::<_, Option<String>>(28)?.and_then(|route| {
                 route
                     .split_once('\u{1f}')
@@ -967,6 +971,9 @@ impl Activity {
                 "needs_you"
             } else if running > 0 && alive {
                 "working"
+            } else if held_until.is_some() {
+                // A request waiting for an agent's limit to lift; it resumes by itself then.
+                "held"
             } else if queued > 0 {
                 "queued"
             } else if background > 0 && alive {
@@ -1013,6 +1020,7 @@ impl Activity {
                         .unwrap_or_default(),
                     agent: route.as_ref().map(|(agent, _)| agent.clone()),
                     provider: route.map(|(_, provider)| provider),
+                    held_until,
                     agents: vec![],
                 },
             ))

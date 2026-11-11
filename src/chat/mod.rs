@@ -1778,15 +1778,16 @@ impl<'a> Session<'a> {
         };
         // A request held when the last host or console stopped resumes here.
         let held = recorded.store().held(thread).ok().flatten();
-        if let Some((wake, text)) = held
+        if let Some((wake, raw)) = held
             && self.waiting.is_none()
         {
+            let (text, attachments) = parse_held(&raw);
             HOLDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.waiting = Some((
                 wake,
                 Message {
                     text,
-                    attachments: vec![],
+                    attachments,
                     queued: None,
                     steps: Steps::Auto,
                     from_helpers: false,
@@ -2545,6 +2546,52 @@ pub fn handover_candidates(
         .collect()
 }
 
+/// What a held request is stored as: its text and its attachments, as JSON.
+pub fn held_request(text: &str, attachments: &[Attachment]) -> String {
+    let attachments: Vec<Value> = attachments
+        .iter()
+        .map(|a| {
+            json!({
+                "tag": a.tag,
+                "path": a.path.to_string_lossy(),
+                "name": a.name,
+                "bytes": a.bytes,
+                "image": a.image,
+            })
+        })
+        .collect();
+    json!({"text": text, "attachments": attachments}).to_string()
+}
+
+/// The text and attachments a held request was stored as. A request stored as plain text (before
+/// attachments were kept) is its text alone.
+pub fn parse_held(raw: &str) -> (String, Vec<Attachment>) {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return (raw.to_owned(), vec![]);
+    };
+    let Some(text) = value["text"].as_str() else {
+        return (raw.to_owned(), vec![]);
+    };
+    let attachments = value["attachments"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|a| {
+                    Some(Attachment {
+                        tag: a["tag"].as_str()?.into(),
+                        path: std::path::PathBuf::from(a["path"].as_str()?),
+                        name: a["name"].as_str()?.into(),
+                        bytes: a["bytes"].as_u64()?,
+                        image: a["image"].as_bool()?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (text.to_owned(), attachments)
+}
+
 /// Requests held for the agents' limits, in this process. A host stays up while one waits, so
 /// that it can resume, and a console that ends gives its hold up.
 static HOLDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -2569,11 +2616,12 @@ impl Session<'_> {
         if let Some(recorded) = &self.recorded
             && let Some(thread) = &recorded.thread
         {
-            let _ = recorded.activity.lock().expect("activity store").set_hold(
-                thread,
-                wake,
-                &message.text,
-            );
+            let request = held_request(&message.text, &message.attachments);
+            let _ = recorded
+                .activity
+                .lock()
+                .expect("activity store")
+                .set_hold(thread, wake, &request);
         }
         self.waiting = Some((wake, message));
     }
@@ -3962,10 +4010,12 @@ impl Session<'_> {
         }
         let picked =
             crate::decision::handover(&self.config.decision, self.data, text, &agents).await?;
-        self.view.note(&match from {
+        let line = match from {
             Some(_) => format!("the decision model picks {picked} to carry this on"),
             None => format!("the decision model picks {picked} for this work"),
-        });
+        };
+        self.view.note(&line);
+        self.note_in_thread(&line);
         Some(picked)
     }
 
@@ -3978,6 +4028,24 @@ impl Session<'_> {
             .unwrap_or(false)
     }
 
+    /// Writes a note into the thread, so a client that draws the conversation shows it too.
+    fn note_in_thread(&self, text: &str) {
+        if let Some(recorded) = &self.recorded
+            && let (Some(thread), Some(turn)) = (&recorded.thread, &recorded.turn)
+        {
+            let _ = recorded.store().item(
+                thread,
+                turn,
+                None,
+                crate::activity::ItemKind::Note,
+                Some("decided"),
+                Some("orchestration"),
+                text,
+                None,
+            );
+        }
+    }
+
     /// A request that failed with every agent out of quota is held until the first limit lifts,
     /// whether it was a single turn or a team.
     fn hold_if_out_of_quota(&mut self, failed: bool, message: &Message) {
@@ -3986,9 +4054,11 @@ impl Session<'_> {
             && let Some(wake) = self.wake_when_room()
         {
             let at = clock(wake);
-            self.view.note(&format!(
+            let line = format!(
                 "every agent is out of quota · this request resumes at {at}, when the first limit lifts"
-            ));
+            );
+            self.view.note(&line);
+            self.note_in_thread(&line);
             self.hold(wake, message.clone());
         }
     }

@@ -3841,3 +3841,35 @@ fn a_provider_s_own_words_for_when_a_limit_lifts_give_the_reset() {
     // Nothing said, nothing read.
     assert_eq!(reset_in_text("Internal error", time), None);
 }
+
+#[test]
+fn a_held_request_keeps_its_attachments_and_an_older_plain_one_is_its_text() {
+    use orochi::{
+        chat::{held_request, parse_held},
+        types::Attachment,
+    };
+    let attachments = vec![Attachment {
+        tag: "@notes.md".into(),
+        path: std::path::PathBuf::from("/tmp/notes.md"),
+        name: "notes.md".into(),
+        bytes: 42,
+        image: false,
+    }];
+    let (text, back) = parse_held(&held_request("Summarize @notes.md", &attachments));
+    assert_eq!(text, "Summarize @notes.md");
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].path, std::path::PathBuf::from("/tmp/notes.md"));
+    assert_eq!(
+        (
+            back[0].tag.as_str(),
+            back[0].name.as_str(),
+            back[0].bytes,
+            back[0].image
+        ),
+        ("@notes.md", "notes.md", 42, false)
+    );
+    // A request held before attachments were kept is stored as plain text.
+    let (plain, none) = parse_held("Summarize the README");
+    assert_eq!(plain, "Summarize the README");
+    assert!(none.is_empty());
+}

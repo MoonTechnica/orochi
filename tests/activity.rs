@@ -1761,3 +1761,38 @@ fn a_member_that_asked_again_is_one_thread_that_remembers_where_its_session_was(
         "bounded, keeping the newest"
     );
 }
+
+/// A request held for an agent's limit shows in the sidebar as held, until when, and is no
+/// longer held once it is given up.
+#[test]
+fn a_held_request_is_a_held_thread_in_the_sidebar_until_it_resumes() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, ..) = thread_with_a_turn(&activity);
+    let status = |activity: &Activity| {
+        activity
+            .sidebar(20, false)
+            .unwrap()
+            .into_iter()
+            .flat_map(|p| p.threads)
+            .find(|t| t.id == thread)
+            .map(|t| (t.status, t.held_until))
+            .unwrap()
+    };
+    assert_eq!(status(&activity).1, None);
+    activity
+        .set_hold(
+            &thread,
+            4_000_000_000,
+            "{\"text\":\"Summarize\",\"attachments\":[]}",
+        )
+        .unwrap();
+    assert_eq!(status(&activity), ("held", Some(4_000_000_000)));
+    assert_eq!(
+        activity.held(&thread).unwrap().map(|(wake, _)| wake),
+        Some(4_000_000_000)
+    );
+    activity.clear_hold(&thread).unwrap();
+    assert_eq!(status(&activity).1, None);
+    assert_ne!(status(&activity).0, "held");
+}

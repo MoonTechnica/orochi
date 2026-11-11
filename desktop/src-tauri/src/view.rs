@@ -65,6 +65,7 @@ pub fn mark(status: &str) -> &'static str {
         "needs_you" => "!",
         "working" => "◉",
         "queued" => "⋯",
+        "held" => "⧗",
         "interrupted" => "⏸",
         "failed" => "×",
         "unread" => "●",

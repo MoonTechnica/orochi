@@ -541,6 +541,8 @@ const MARKS = {
   needs_you: "message",
   working: "loader",
   queued: "clock",
+  // Waiting for an agent's limit to lift; the request then goes on by itself.
+  held: "clock",
   interrupted: "pause",
   background: "activity",
   // An alert, not a cross: a cross reads as a button that closes something.
@@ -638,6 +640,7 @@ const STATES = {
   working: "Working",
   background: "In the background",
   queued: "Queued",
+  held: "Waiting for a limit to lift",
   interrupted: "Interrupted",
   failed: "Failed",
   unread: "Unread",
