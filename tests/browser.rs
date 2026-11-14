@@ -451,7 +451,12 @@ async fn a_session_that_may_only_look_gets_the_reading_tools_and_nothing_that_ac
     read.read_only = true;
     let refused = browser.call(read).await;
     assert!(failed(&refused) && said(&refused).contains("not available"));
-    assert!(asked(dir.path()).is_empty(), "nothing was asked of Chrome");
+    assert!(
+        asked(dir.path())
+            .iter()
+            .all(|c| c["method"] == "Target.setDiscoverTargets"),
+        "nothing was asked of Chrome but to report targets"
+    );
     // A script in the page is a tool nobody has unless the person turned it on.
     assert!(!names(false).contains(&"browser_evaluate".to_owned()));
     let with = BrowserConfig {
@@ -599,4 +604,273 @@ fn an_agents_mcp_server_starts_the_broker_and_a_tool_call_goes_all_the_way() {
         "the session's context went with it"
     );
     unsafe { libc::kill(pid, libc::SIGTERM) };
+}
+
+fn viewed(result: &Value) -> Value {
+    assert!(!failed(result), "{result}");
+    serde_json::from_str(&said(result)).unwrap()
+}
+
+#[tokio::test]
+async fn the_persons_tab_goes_where_they_choose_streams_frames_and_takes_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let browser = start(dir.path(), &config()).await;
+    let tab = |tool: &str, args: Value| request("user:thread-1", tool, args);
+
+    // Not held to the agents' host list, but still only web addresses.
+    let opened = viewed(
+        &browser
+            .call(tab(
+                "view_open",
+                json!({"url": "https://example.com/somewhere"}),
+            ))
+            .await,
+    );
+    assert_eq!(opened["url"], "https://example.com/somewhere");
+    let refused = browser
+        .call(tab("view_navigate", json!({"url": "file:///etc/passwd"})))
+        .await;
+    assert!(failed(&refused), "{refused}");
+
+    // The size asks for a picture of that size, and the newest frame is handed over once.
+    let first = viewed(
+        &browser
+            .call(tab(
+                "view_resize",
+                json!({"width": 800, "height": 600, "ratio": 2}),
+            ))
+            .await,
+    );
+    let log = asked(dir.path());
+    let metrics = of(&log, "Emulation.setDeviceMetricsOverride")[0];
+    assert_eq!(metrics["params"]["width"], 800.0);
+    assert_eq!(metrics["params"]["deviceScaleFactor"], 2.0);
+    let cast = of(&log, "Page.startScreencast")[0];
+    assert_eq!(cast["params"]["maxWidth"], 1600.0, "pixels, not points");
+    assert_eq!(cast["params"]["format"], "jpeg");
+    let _ = first;
+    let mut frame = Value::Null;
+    for _ in 0..50 {
+        let polled = viewed(&browser.call(tab("view_frame", json!({"since": 0}))).await);
+        if polled["frame"].is_object() {
+            frame = polled["frame"].clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        frame["jpeg"].as_str().is_some_and(|j| !j.is_empty()),
+        "{frame}"
+    );
+    let seq = frame["seq"].as_u64().unwrap();
+    let again = viewed(&browser.call(tab("view_frame", json!({"since": seq}))).await);
+    assert!(again["frame"].is_null(), "nothing new, nothing sent");
+    assert_eq!(
+        of(&asked(dir.path()), "Page.screencastFrameAck").len(),
+        1,
+        "Chrome is told each frame arrived, or it sends no more"
+    );
+
+    // Input goes to the page as the window gave it; a bad kind goes nowhere.
+    viewed(
+        &browser
+            .call(tab(
+                "view_input",
+                json!({"type": "mouse", "kind": "mousePressed", "x": 10.5, "y": 20.0,
+                       "button": "left", "buttons": 1, "clickCount": 1}),
+            ))
+            .await,
+    );
+    viewed(
+        &browser
+            .call(tab(
+                "view_input",
+                json!({"type": "key", "kind": "keyDown", "key": "a", "code": "KeyA", "vk": 65, "text": "a"}),
+            ))
+            .await,
+    );
+    viewed(
+        &browser
+            .call(tab(
+                "view_input",
+                json!({"type": "ime", "text": "にほん", "commit": false}),
+            ))
+            .await,
+    );
+    viewed(
+        &browser
+            .call(tab(
+                "view_input",
+                json!({"type": "ime", "text": "日本", "commit": true}),
+            ))
+            .await,
+    );
+    let log = asked(dir.path());
+    let mouse = of(&log, "Input.dispatchMouseEvent");
+    assert_eq!(mouse[0]["params"]["x"], 10.5);
+    assert_eq!(mouse[0]["params"]["button"], "left");
+    assert_eq!(of(&log, "Input.dispatchKeyEvent")[0]["params"]["text"], "a");
+    assert_eq!(
+        of(&log, "Input.imeSetComposition")[0]["params"]["text"],
+        "にほん"
+    );
+    assert_eq!(of(&log, "Input.insertText")[0]["params"]["text"], "日本");
+    assert!(failed(
+        &browser
+            .call(tab(
+                "view_input",
+                json!({"type": "mouse", "kind": "teleport"})
+            ))
+            .await
+    ));
+
+    // The tab is the person's: an agent's session cannot reach it, nor use these tools.
+    let theirs = browser
+        .call(request("agent-1", "view_frame", json!({})))
+        .await;
+    assert!(failed(&theirs));
+    assert!(
+        said(
+            &browser
+                .call(request(
+                    "agent-1",
+                    "browser_tabs",
+                    json!({"action": "list"})
+                ))
+                .await
+        )
+        .matches("example.com")
+        .count()
+            == 0
+    );
+    viewed(&browser.call(tab("view_close", json!({}))).await);
+    assert_eq!(
+        of(&asked(dir.path()), "Target.disposeBrowserContext").len(),
+        1
+    );
+}
+
+fn fetch(url: &str, method: &str) -> (u16, String) {
+    use std::io::Read;
+    let without = url.strip_prefix("http://").unwrap();
+    let (host, path) = without
+        .split_once('/')
+        .map_or((without, ""), |(h, p)| (h, p));
+    let mut socket = std::net::TcpStream::connect(host).unwrap();
+    write!(
+        socket,
+        "{method} /{path} HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    socket.read_to_string(&mut reply).unwrap();
+    let status = reply.split(' ').nth(1).unwrap().parse().unwrap();
+    (
+        status,
+        reply.split("\r\n\r\n").nth(1).unwrap_or("").to_owned(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_preview_serves_one_folder_to_a_tab_that_may_load_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let browser = start(dir.path(), &config()).await;
+    let site = dir.path().join("site");
+    std::fs::create_dir_all(site.join(".git")).unwrap();
+    std::fs::create_dir_all(site.join("assets")).unwrap();
+    std::fs::write(site.join("index.html"), "<h1>hi</h1>").unwrap();
+    std::fs::write(site.join("paused.html"), "<p>x</p>").unwrap();
+    std::fs::write(site.join("assets/app.css"), "p{}").unwrap();
+    std::fs::write(site.join(".git/config"), "secret").unwrap();
+    std::fs::write(dir.path().join("outside.txt"), "outside").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("outside.txt"), site.join("link.txt")).unwrap();
+    let tab = |tool: &str, args: Value| request("user:t:p1", tool, args);
+
+    // A file that is not in the folder starts nothing.
+    let missing = browser
+        .call(tab(
+            "view_preview",
+            json!({"root": site, "path": "../outside.txt"}),
+        ))
+        .await;
+    assert!(failed(&missing), "{missing}");
+    assert!(of(&asked(dir.path()), "Page.navigate").is_empty());
+
+    viewed(
+        &browser
+            .call(tab(
+                "view_preview",
+                json!({"root": site, "path": "paused.html"}),
+            ))
+            .await,
+    );
+    let log = asked(dir.path());
+    // Confined before it went anywhere.
+    let order: Vec<_> = log.iter().map(|c| c["method"].as_str().unwrap()).collect();
+    assert!(
+        order.iter().position(|m| *m == "Fetch.enable")
+            < order.iter().position(|m| *m == "Page.navigate"),
+        "{order:?}"
+    );
+    let url = of(&log, "Page.navigate")[0]["params"]["url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        url.starts_with("http://127.0.0.1:") && url.ends_with("/paused.html"),
+        "{url}"
+    );
+
+    // The folder's own origin is let through, bytes the page carries too; everywhere else is not.
+    let mut log = asked(dir.path());
+    for _ in 0..50 {
+        if of(&log, "Fetch.continueRequest").len() + of(&log, "Fetch.failRequest").len() == 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        log = asked(dir.path());
+    }
+    let continued: Vec<_> = of(&log, "Fetch.continueRequest")
+        .iter()
+        .map(|c| c["params"]["requestId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(continued, ["r0", "r2"]);
+    let failed_ids: Vec<_> = of(&log, "Fetch.failRequest")
+        .iter()
+        .map(|c| c["params"]["requestId"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(failed_ids, ["r1"]);
+
+    // What the server hands out: the folder's files, and nothing past it.
+    let base = url.trim_end_matches("paused.html").to_owned();
+    assert_eq!(
+        fetch(&format!("{base}index.html"), "GET"),
+        (200, "<h1>hi</h1>".into())
+    );
+    assert_eq!(
+        fetch(&base, "GET").1,
+        "<h1>hi</h1>",
+        "a folder is its index"
+    );
+    assert_eq!(fetch(&format!("{base}assets/app.css"), "GET").0, 200);
+    for refused in [
+        "../outside.txt",
+        "%2e%2e/outside.txt",
+        ".git/config",
+        "link.txt",
+        "missing.html",
+    ] {
+        assert_eq!(
+            fetch(&format!("{base}{refused}"), "GET").0,
+            404,
+            "{refused}"
+        );
+    }
+    let origin = base.split('/').take(3).collect::<Vec<_>>().join("/");
+    assert_eq!(
+        fetch(&format!("{origin}/not-the-token/index.html"), "GET").0,
+        404
+    );
+    assert_eq!(fetch(&format!("{base}index.html"), "POST").0, 404);
+    assert_eq!(fetch(&format!("{base}index.html"), "HEAD").1, "");
 }

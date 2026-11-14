@@ -53,6 +53,18 @@ impl Policy {
         }
     }
 
+    /// What the person may open in their own tab: any web address, and nothing else.
+    pub fn web(address: &str) -> Result<(), Refusal> {
+        if address == "about:blank" {
+            return Ok(());
+        }
+        let url = Url::parse(address).map_err(|_| Refusal::Unreadable)?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(Refusal::Scheme(url.scheme().to_owned()));
+        }
+        Ok(())
+    }
+
     /// `Ok` when the address may be opened or stayed on.
     pub fn check(&self, address: &str) -> Result<(), Refusal> {
         if address == "about:blank" {

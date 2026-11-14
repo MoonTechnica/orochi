@@ -13,6 +13,8 @@ pub mod broker;
 #[cfg(unix)]
 pub mod cdp;
 #[cfg(unix)]
+pub mod preview;
+#[cfg(unix)]
 mod server;
 #[cfg(unix)]
 pub use server::*;

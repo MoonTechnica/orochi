@@ -52,6 +52,21 @@ struct Tab {
     refs: HashMap<String, i64>,
     console: VecDeque<(u64, String)>,
     network: VecDeque<(u64, String)>,
+    /// The newest screencast frame, for a window that is watching this tab.
+    frame: Option<Frame>,
+    casting: bool,
+    /// A JavaScript dialog the page opened, which headless Chrome has no window to show.
+    dialog: Option<(String, String)>,
+    titled: Option<std::time::Instant>,
+    /// The one origin this tab may load from, for a preview of a folder's files.
+    confine: Option<String>,
+}
+
+struct Frame {
+    seq: u64,
+    jpeg: String,
+    width: f64,
+    height: f64,
 }
 
 #[derive(Default)]
@@ -74,6 +89,7 @@ pub struct Browser {
     policy: Policy,
     config: BrowserConfig,
     state: Arc<Mutex<State>>,
+    preview: tokio::sync::OnceCell<super::preview::Preview>,
 }
 
 fn push(log: &mut VecDeque<(u64, String)>, seq: u64, line: String) {
@@ -203,12 +219,39 @@ impl Browser {
             policy: Policy::new(config),
             config: config.clone(),
             state: Arc::default(),
+            preview: tokio::sync::OnceCell::new(),
         });
         let mut events = browser.cdp.subscribe();
+        // Without discovery Chrome never says a tab's title changed.
+        let _ = browser
+            .cdp
+            .call("Target.setDiscoverTargets", json!({"discover": true}), None)
+            .await;
         let state = browser.state.clone();
+        let weak = Arc::downgrade(&browser);
         tokio::spawn(async move {
             while let Ok(event) = events.recv().await {
                 observe(&state, &event);
+                if event.method == "Fetch.requestPaused"
+                    && let Some(browser) = weak.upgrade()
+                {
+                    browser.settle_request(&event).await;
+                    continue;
+                }
+                // Chrome sends the next frame only once the last one is acknowledged.
+                if event.method == "Page.screencastFrame"
+                    && let (Some(browser), Some(id)) =
+                        (weak.upgrade(), event.params["sessionId"].as_i64())
+                {
+                    let _ = browser
+                        .cdp
+                        .call(
+                            "Page.screencastFrameAck",
+                            json!({"sessionId": id}),
+                            event.session.as_deref(),
+                        )
+                        .await;
+                }
             }
         });
         Ok(browser)
@@ -242,6 +285,20 @@ impl Browser {
     }
 
     pub async fn call(&self, request: Request) -> Value {
+        if request.tool.starts_with("view_") {
+            // The window's own tab, never an agent's: an agent's scope is a random name the
+            // broker's socket hands only to its own MCP server.
+            if !request.scope.starts_with("user:") {
+                return failure("that belongs to the person's browser tab");
+            }
+            return match self
+                .view(&request.scope, &request.tool, &request.args)
+                .await
+            {
+                Ok(value) => text(value.to_string()),
+                Err(error) => failure(format!("{error:#}")),
+            };
+        }
         let known = definitions(&self.config, request.read_only);
         let allowed = known
             .as_array()
@@ -253,6 +310,312 @@ impl Browser {
             Ok(value) => value,
             Err(error) => failure(format!("{error:#}")),
         }
+    }
+
+    // -- the person's tab ---------------------------------------------------------------
+    //
+    // A tab the window shows is the person's, in a context of its own like an agent's but not
+    // held to the agents' host list: the person chooses where to go. Only web addresses are
+    // opened, as for everyone. Frames are Chrome's screencast, kept as the newest one for a
+    // window that asks for what changed since the last it drew.
+
+    async fn view(&self, scope: &str, tool: &str, args: &Value) -> Result<Value> {
+        let session = self.current(scope).await?;
+        let number = |key: &str| args[key].as_f64();
+        match tool {
+            "view_open" | "view_navigate" => {
+                if let Some(url) = args["url"].as_str().filter(|u| !u.is_empty()) {
+                    Policy::web(url).map_err(|r| anyhow::anyhow!("{r}"))?;
+                    let answer = self
+                        .cdp
+                        .call("Page.navigate", json!({"url": url}), Some(&session))
+                        .await?;
+                    if let Some(error) = answer["errorText"].as_str() {
+                        bail!("{url} could not be opened: {error}");
+                    }
+                }
+            }
+            "view_back" | "view_forward" => {
+                let history = self
+                    .cdp
+                    .call("Page.getNavigationHistory", json!({}), Some(&session))
+                    .await?;
+                let at = history["currentIndex"].as_i64().unwrap_or(0);
+                let to = if tool == "view_back" { at - 1 } else { at + 1 };
+                if let Some(entry) = usize::try_from(to)
+                    .ok()
+                    .and_then(|i| history["entries"].get(i))
+                {
+                    self.cdp
+                        .call(
+                            "Page.navigateToHistoryEntry",
+                            json!({"entryId": entry["id"]}),
+                            Some(&session),
+                        )
+                        .await?;
+                }
+            }
+            "view_reload" => {
+                self.cdp
+                    .call("Page.reload", json!({}), Some(&session))
+                    .await?;
+            }
+            "view_resize" => {
+                let (width, height) = (
+                    number("width").unwrap_or(1024.0).clamp(100.0, 4000.0),
+                    number("height").unwrap_or(768.0).clamp(100.0, 4000.0),
+                );
+                let ratio = number("ratio").unwrap_or(1.0).clamp(1.0, 3.0);
+                self.cdp
+                    .call(
+                        "Emulation.setDeviceMetricsOverride",
+                        json!({"width": width.round(), "height": height.round(),
+                               "deviceScaleFactor": ratio, "mobile": false}),
+                        Some(&session),
+                    )
+                    .await?;
+                // A new size is a new picture: the stream starts over at it.
+                self.start_cast(&session, width * ratio, height * ratio, true)
+                    .await?;
+            }
+            "view_frame" => {
+                let (width, height) = (
+                    number("width").unwrap_or(1024.0),
+                    number("height").unwrap_or(768.0),
+                );
+                let started = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .tabs
+                    .get(&session)
+                    .is_some_and(|t| t.casting);
+                if !started {
+                    self.start_cast(&session, width, height, false).await?;
+                }
+            }
+            "view_input" => self.view_input(&session, args).await?,
+            "view_preview" => self.preview_page(&session, args).await?,
+            "view_dialog" => {
+                self.cdp
+                    .call(
+                        "Page.handleJavaScriptDialog",
+                        json!({"accept": args["accept"].as_bool().unwrap_or(false),
+                               "promptText": args["text"].as_str().unwrap_or("")}),
+                        Some(&session),
+                    )
+                    .await?;
+                if let Some(tab) = self.state.lock().unwrap().tabs.get_mut(&session) {
+                    tab.dialog = None;
+                }
+            }
+            "view_close" => {
+                self.forget(scope).await;
+                return Ok(json!({"closed": true}));
+            }
+            other => bail!("{other} is not something the tab does"),
+        }
+        // Chrome's target events carry the address until it has read the page, and headless
+        // does not always follow with the real title, so it is asked for now and then.
+        let due = self
+            .state
+            .lock()
+            .unwrap()
+            .tabs
+            .get(&session)
+            .is_some_and(|t| {
+                t.titled
+                    .is_none_or(|at| at.elapsed() > Duration::from_millis(700))
+            });
+        if due
+            && let Ok(answer) = self
+                .cdp
+                .call(
+                    "Runtime.evaluate",
+                    json!({"expression": "document.title", "returnByValue": true}),
+                    Some(&session),
+                )
+                .await
+            && let Some(tab) = self.state.lock().unwrap().tabs.get_mut(&session)
+        {
+            tab.titled = Some(std::time::Instant::now());
+            if let Some(title) = answer["result"]["value"].as_str().filter(|t| !t.is_empty()) {
+                tab.title = title.to_owned();
+            }
+        }
+        let since = args["since"].as_u64().unwrap_or(0);
+        let state = self.state.lock().unwrap();
+        let tab = state.tabs.get(&session).context("the tab ended")?;
+        let mut reply = json!({"url": tab.url, "title": tab.title});
+        if let Some((kind, message)) = &tab.dialog {
+            reply["dialog"] = json!({"type": kind, "message": message});
+        }
+        if let Some(frame) = tab.frame.as_ref().filter(|f| f.seq > since) {
+            reply["frame"] = json!({"seq": frame.seq, "jpeg": frame.jpeg,
+                                    "width": frame.width, "height": frame.height});
+        }
+        Ok(reply)
+    }
+
+    /// A request a confined tab made: allowed to the folder's origin and to what carries its own
+    /// bytes, refused to everywhere else.
+    async fn settle_request(&self, event: &super::cdp::Event) {
+        let url = event.params["request"]["url"].as_str().unwrap_or("");
+        let origin = event.session.as_ref().and_then(|s| {
+            self.state
+                .lock()
+                .unwrap()
+                .tabs
+                .get(s)
+                .and_then(|t| t.confine.clone())
+        });
+        let allowed = origin.as_deref().is_some_and(|o| confined(o, url));
+        let id = event.params["requestId"].clone();
+        let _ = if allowed {
+            self.cdp
+                .call(
+                    "Fetch.continueRequest",
+                    json!({"requestId": id}),
+                    event.session.as_deref(),
+                )
+                .await
+        } else {
+            self.cdp
+                .call(
+                    "Fetch.failRequest",
+                    json!({"requestId": id, "errorReason": "BlockedByClient"}),
+                    event.session.as_deref(),
+                )
+                .await
+        };
+    }
+
+    async fn preview_page(&self, session: &str, args: &Value) -> Result<()> {
+        let root = args["root"].as_str().context("a folder is needed")?;
+        let path = args["path"].as_str().context("a file is needed")?;
+        let preview = self
+            .preview
+            .get_or_try_init(super::preview::Preview::start)
+            .await?;
+        let token = preview.mount(Path::new(root))?;
+        let origin = preview.origin();
+        let mut url = reqwest::Url::parse(&origin)?;
+        url.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("not an address"))?
+            .push(&token)
+            .extend(path.trim_start_matches('/').split('/'));
+        if super::preview::resolve(
+            &[(token.clone(), std::fs::canonicalize(root)?)]
+                .into_iter()
+                .collect(),
+            url.path(),
+        )
+        .is_none()
+        {
+            bail!("{path} is not a file in this conversation's folder");
+        }
+        // The tab is confined before it is pointed anywhere, so not one request is ahead of it.
+        if let Some(tab) = self.state.lock().unwrap().tabs.get_mut(session) {
+            tab.confine = Some(origin);
+        }
+        self.cdp
+            .call(
+                "Fetch.enable",
+                json!({"patterns": [{"urlPattern": "*"}]}),
+                Some(session),
+            )
+            .await?;
+        self.cdp
+            .call("Page.navigate", json!({"url": url.as_str()}), Some(session))
+            .await?;
+        Ok(())
+    }
+
+    async fn start_cast(&self, session: &str, width: f64, height: f64, again: bool) -> Result<()> {
+        if again {
+            let _ = self
+                .cdp
+                .call("Page.stopScreencast", json!({}), Some(session))
+                .await;
+        }
+        // Cleared before asking, not after: the first frame can arrive with the answer, and a
+        // frame of the old size must not outlast the new one.
+        if let Some(tab) = self.state.lock().unwrap().tabs.get_mut(session) {
+            tab.casting = true;
+            tab.frame = None;
+        }
+        self.cdp
+            .call(
+                "Page.startScreencast",
+                json!({"format": "jpeg", "quality": 70,
+                       "maxWidth": width.round(), "maxHeight": height.round(), "everyNthFrame": 1}),
+                Some(session),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn view_input(&self, session: &str, args: &Value) -> Result<()> {
+        let call =
+            |method: &'static str, params: Value| self.cdp.call(method, params, Some(session));
+        let string = |key: &str| args[key].as_str().unwrap_or("");
+        match string("type") {
+            "mouse" => {
+                let kind = string("kind");
+                anyhow::ensure!(
+                    ["mouseMoved", "mousePressed", "mouseReleased", "mouseWheel"].contains(&kind),
+                    "not a mouse event: {kind}"
+                );
+                let mut params = json!({
+                    "type": kind, "x": args["x"].as_f64().unwrap_or(0.0),
+                    "y": args["y"].as_f64().unwrap_or(0.0),
+                    "button": if string("button").is_empty() { "none" } else { string("button") },
+                    "buttons": args["buttons"].as_i64().unwrap_or(0),
+                    "clickCount": args["clickCount"].as_i64().unwrap_or(0),
+                    "modifiers": args["modifiers"].as_i64().unwrap_or(0),
+                });
+                if kind == "mouseWheel" {
+                    params["deltaX"] = json!(args["deltaX"].as_f64().unwrap_or(0.0));
+                    params["deltaY"] = json!(args["deltaY"].as_f64().unwrap_or(0.0));
+                }
+                call("Input.dispatchMouseEvent", params).await?;
+            }
+            "key" => {
+                let kind = string("kind");
+                anyhow::ensure!(
+                    ["keyDown", "keyUp", "rawKeyDown", "char"].contains(&kind),
+                    "not a key event: {kind}"
+                );
+                let mut params = json!({
+                    "type": kind, "key": string("key"), "code": string("code"),
+                    "windowsVirtualKeyCode": args["vk"].as_i64().unwrap_or(0),
+                    "modifiers": args["modifiers"].as_i64().unwrap_or(0),
+                });
+                if !string("text").is_empty() {
+                    params["text"] = json!(string("text"));
+                }
+                call("Input.dispatchKeyEvent", params).await?;
+            }
+            "text" => {
+                call("Input.insertText", json!({"text": string("text")})).await?;
+            }
+            // Composition is done by the window, where the system's input method works; the
+            // page sees the underlined candidate and then the committed text.
+            "ime" => {
+                let at = i64::try_from(string("text").chars().count()).unwrap_or(0);
+                if args["commit"].as_bool().unwrap_or(false) {
+                    call("Input.insertText", json!({"text": string("text")})).await?;
+                } else {
+                    call(
+                        "Input.imeSetComposition",
+                        json!({"text": string("text"), "selectionStart": at, "selectionEnd": at}),
+                    )
+                    .await?;
+                }
+            }
+            other => bail!("not an input: {other}"),
+        }
+        Ok(())
     }
 
     // -- tabs ---------------------------------------------------------------------------
@@ -553,12 +916,12 @@ impl Browser {
             "paragraph",
             "group",
         ];
-        let mut stack: Vec<(&str, usize)> = nodes
+        let mut stack: Vec<(&str, usize, &str)> = nodes
             .first()
             .and_then(|n| n["nodeId"].as_str())
-            .map(|id| vec![(id, 0)])
+            .map(|id| vec![(id, 0, "")])
             .unwrap_or_default();
-        while let Some((id, depth)) = stack.pop() {
+        while let Some((id, depth, parent)) = stack.pop() {
             let Some(node) = by_id.get(id) else { continue };
             let children: Vec<&str> = node["childIds"]
                 .as_array()
@@ -568,7 +931,8 @@ impl Browser {
             let name = node["name"]["value"].as_str().unwrap_or("").trim();
             let ignored = node["ignored"].as_bool().unwrap_or(false);
             let mut next_depth = depth;
-            let blank_text = role == "StaticText" && name.is_empty();
+            // Chrome lists a label again as the text inside it; the second line says nothing.
+            let blank_text = role == "StaticText" && (name.is_empty() || name == parent);
             if !(ignored || SKIP.contains(&role) || blank_text) {
                 let mut line = format!("{}- {role}", "  ".repeat(depth));
                 if !name.is_empty() {
@@ -587,7 +951,7 @@ impl Browser {
                 next_depth += 1;
             }
             for child in children.into_iter().rev() {
-                stack.push((child, next_depth));
+                stack.push((child, next_depth, name));
             }
             if out.len() > SNAPSHOT_CHARS {
                 out.push_str("… (the page is longer than this)\n");
@@ -897,6 +1261,15 @@ impl Browser {
 }
 
 /// What the browser said happened, kept for the tools that ask.
+/// Whether a confined tab may load `url`: from its own origin, or from bytes the page carries.
+fn confined(origin: &str, url: &str) -> bool {
+    url.strip_prefix(origin)
+        .is_some_and(|rest| rest.starts_with('/'))
+        || ["data:", "blob:", "about:blank"]
+            .iter()
+            .any(|p| url.starts_with(p))
+}
+
 fn observe(state: &Mutex<State>, event: &super::cdp::Event) {
     let mut state = state.lock().unwrap();
     state.seq += 1;
@@ -923,6 +1296,21 @@ fn observe(state: &Mutex<State>, event: &super::cdp::Event) {
             tab.url = p["frame"]["url"].as_str().unwrap_or("").to_owned();
             tab.refs.clear();
         }
+        "Page.screencastFrame" => {
+            tab.frame = Some(Frame {
+                seq,
+                jpeg: p["data"].as_str().unwrap_or("").to_owned(),
+                width: p["metadata"]["deviceWidth"].as_f64().unwrap_or(0.0),
+                height: p["metadata"]["deviceHeight"].as_f64().unwrap_or(0.0),
+            });
+        }
+        "Page.javascriptDialogOpening" => {
+            tab.dialog = Some((
+                p["type"].as_str().unwrap_or("alert").to_owned(),
+                p["message"].as_str().unwrap_or("").to_owned(),
+            ));
+        }
+        "Page.javascriptDialogClosed" => tab.dialog = None,
         "Runtime.consoleAPICalled" => {
             let args: Vec<String> = p["args"]
                 .as_array()

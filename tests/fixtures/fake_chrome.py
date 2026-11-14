@@ -66,12 +66,19 @@ def handle(method, params, session):
         if "unreachable" in url:
             return {"errorText": "net::ERR_CONNECTION_REFUSED"}
         landed = "http://evil.example/landed" if url.endswith("/redirect") else url
+        if "paused" in url:
+            for n, asked in enumerate([url + "/style.css", "http://evil.example/steal", "data:text/plain,x"]):
+                pending.append(lambda n=n, asked=asked: event("Fetch.requestPaused", {"requestId": f"r{n}", "request": {"url": asked}}, session))
         pending.append(lambda: (
             navigated(session, landed),
             event("Runtime.consoleAPICalled", {"type": "log", "args": [{"type": "string", "value": "hello console"}]}, session),
             event("Network.requestWillBeSent", {"request": {"method": "GET", "url": landed}}, session),
         ))
         return {"frameId": "main", "loaderId": "l"}
+    if method == "Page.startScreencast":
+        counts["cast"] = counts.get("cast", 0) + 1
+        pending.append(lambda: event("Page.screencastFrame", {"data": base64.b64encode(b"jpegframe%d" % counts["cast"]).decode(), "sessionId": 7, "metadata": {"deviceWidth": params["maxWidth"], "deviceHeight": params["maxHeight"]}}, session))
+        return {}
     if method == "Page.reload":
         return {}
     if method == "Page.getNavigationHistory":
