@@ -146,6 +146,8 @@ pub enum ExecutionEvent {
 pub enum Progress {
     /// A chunk of the agent's reasoning text.
     Thinking(String),
+    /// A picture or sound the agent put in its reply.
+    Media(crate::media::MediaRef),
     /// A tool call started or changed. Fields absent from an update stay `None`/empty.
     /// Boxed: it is by far the largest thing a progress event carries, and every other
     /// variant would otherwise pay for it.
@@ -230,6 +232,9 @@ pub struct ToolUpdate {
     /// The tool's own name where the adapter gives it (`_meta.claudeCode.toolName`), which is
     /// how a `Task` is told from the other calls ACP files under `other`.
     pub tool_name: Option<String>,
+    /// Images and audio the call returned as content blocks (a screenshot, a generated
+    /// picture). Kept by the recorder (`media.rs`); never part of `output`.
+    pub media: Vec<crate::media::MediaRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +305,8 @@ pub(crate) fn tool_update(update: &Value) -> Option<ToolUpdate> {
             Some("content") => {
                 if let Some(text) = item["content"]["text"].as_str() {
                     lines.push(text);
+                } else if let Some(media) = crate::media::from_block(&item["content"], "result") {
+                    tool.media.push(media);
                 }
             }
             Some("diff") => {
@@ -356,7 +363,10 @@ fn progress(update: &Value) -> Option<Progress> {
         "session_info_update" => Some(Progress::Info(update["title"].as_str()?.into())),
         // Chunks and `config_option_update` are handled by the caller, which has the state
         // they change; anything else is kept verbatim rather than dropped.
-        "agent_message_chunk" | "user_message_chunk" | "config_option_update" => None,
+        "agent_message_chunk" => {
+            crate::media::from_block(&update["content"], "reply").map(Progress::Media)
+        }
+        "user_message_chunk" | "config_option_update" => None,
         _ => Some(Progress::Other(update.clone())),
     }
 }
@@ -386,6 +396,9 @@ pub struct Client {
     session_meta: Option<Meta>,
     #[cfg_attr(not(unix), allow(dead_code))]
     lease: Option<std::path::PathBuf>,
+    /// Where this session works, and whether it may only look: what the browser tools it is
+    /// offered are told.
+    browser: Option<(bool, std::path::PathBuf)>,
 }
 impl Drop for Client {
     fn drop(&mut self) {
@@ -740,6 +753,7 @@ impl Client {
             timeout,
             session_meta,
             lease,
+            browser: (!isolated).then(|| (read_only, root.to_path_buf())),
         };
         let initialized = client
             .request(
@@ -913,6 +927,17 @@ impl Client {
             )],
             None => vec![],
         };
+        #[cfg(unix)]
+        if let Some((read_only, cwd)) = &self.browser
+            && self.peer.is_some()
+            // A sandboxed agent runs inside the VM, which cannot run this machine's executable.
+            && !self.config.sandboxed
+            && let Some((name, command, args)) = crate::browser::server_for(*read_only, cwd)
+        {
+            servers.push(McpServer::Stdio(
+                McpServerStdio::new(name, command).args(args),
+            ));
+        }
         servers.extend(self.mcp.iter().cloned());
         servers
     }

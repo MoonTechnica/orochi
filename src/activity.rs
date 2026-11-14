@@ -258,6 +258,9 @@ pub enum ItemKind {
     Merge,
     Apply,
     Acp,
+    /// A picture, a sound or a video the conversation produced; its bytes are a file
+    /// (`media.rs`) and this row says which and where it came from.
+    Media,
 }
 impl ItemKind {
     pub fn key(self) -> &'static str {
@@ -278,6 +281,7 @@ impl ItemKind {
             Self::Merge => "merge",
             Self::Apply => "apply",
             Self::Acp => "acp",
+            Self::Media => "media",
         }
     }
     /// Kinds that exist once per attempt and are replaced rather than appended: a plan, the
@@ -288,6 +292,20 @@ impl ItemKind {
             Self::Plan | Self::Context | Self::Commands | Self::Mode
         )
     }
+}
+
+/// One row of `v_media`.
+#[derive(Debug, Clone, Serialize)]
+pub struct MediaRow {
+    pub seq: i64,
+    pub turn_id: String,
+    pub created_at: i64,
+    pub sha: String,
+    pub mime: String,
+    pub bytes: u64,
+    pub name: String,
+    pub kind: String,
+    pub kept: bool,
 }
 
 /// One row of `v_sidebar`, as a client renders it. `status` is derived at read time rather
@@ -692,6 +710,8 @@ impl std::fmt::Debug for SeatRef {
 pub struct Activity {
     connection: Connection,
     retention_days: i64,
+    /// The data directory: the media files a thread kept live beside the database.
+    data: std::path::PathBuf,
 }
 
 impl Activity {
@@ -755,6 +775,7 @@ impl Activity {
         let activity = Self {
             connection,
             retention_days,
+            data: data.to_path_buf(),
         };
         activity.prune()?;
         Ok(activity)
@@ -783,6 +804,7 @@ impl Activity {
         Ok(Self {
             connection,
             retention_days,
+            data: data.to_path_buf(),
         })
     }
 
@@ -825,16 +847,110 @@ impl Activity {
             "DELETE FROM threads WHERE pinned=0 AND updated_at < ?1",
             [cutoff],
         )?;
+        self.sweep_media();
         Ok(())
+    }
+
+    /// The media files of threads that no longer exist, whichever way they went: deleted by
+    /// hand, by retention, or cascaded with their project.
+    fn sweep_media(&self) {
+        if let Ok(live) = self.all_threads() {
+            crate::media::sweep(&self.data, &live);
+        }
+    }
+
+    /// A thread's media in the order it appeared, as `v_media` reads them: what `orochi threads
+    /// media` lists and the desktop's gallery draws.
+    pub fn media(&self, thread: &str) -> Result<Vec<MediaRow>> {
+        let mut statement = self.connection.prepare(
+            "SELECT seq, turn_id, created_at, sha, mime, bytes, name, kind, kept
+             FROM v_media WHERE thread_id=?1 ORDER BY seq",
+        )?;
+        let rows = statement.query_map([thread], |r| {
+            Ok(MediaRow {
+                seq: r.get(0)?,
+                turn_id: r.get(1)?,
+                created_at: r.get(2)?,
+                sha: r.get(3)?,
+                mime: r.get(4)?,
+                bytes: r.get::<_, i64>(5)? as u64,
+                name: r.get(6)?,
+                kind: r.get(7)?,
+                kept: r.get::<_, i64>(8)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data
+    }
+
+    pub fn thread_cwd(&self, thread: &str) -> Option<String> {
+        self.connection
+            .query_row("SELECT cwd FROM threads WHERE id=?1", [thread], |r| {
+                r.get(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Indexes a kept file and holds the thread to its cap, oldest first. A row is never
+    /// removed with its file: `kept = 0` is how the timeline says "no longer kept".
+    pub fn keep_media(&self, thread: &str, kept: &crate::media::Kept) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO media (thread_id, sha, mime, bytes, name, kind, kept, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                thread,
+                kept.sha,
+                kept.mime,
+                kept.bytes as i64,
+                kept.name,
+                serde_json::to_value(kept.kind)?.as_str().unwrap_or("image"),
+                i64::from(kept.kept),
+                millis()
+            ],
+        )?;
+        loop {
+            let used: i64 = self.connection.query_row(
+                "SELECT COALESCE(sum(bytes),0) FROM media WHERE thread_id=?1 AND kept=1",
+                [thread],
+                |r| r.get(0),
+            )?;
+            if used as u64 <= crate::media::THREAD_CAP {
+                return Ok(());
+            }
+            let oldest: Option<String> = self
+                .connection
+                .query_row(
+                    "SELECT sha FROM media WHERE thread_id=?1 AND kept=1 AND sha<>?2
+                     ORDER BY created_at, rowid LIMIT 1",
+                    params![thread, kept.sha],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(sha) = oldest else {
+                return Ok(());
+            };
+            crate::media::remove_file(&self.data, thread, &sha);
+            self.connection.execute(
+                "UPDATE media SET kept=0 WHERE thread_id=?1 AND sha=?2",
+                params![thread, sha],
+            )?;
+        }
     }
 
     /// Everything about a thread, including its text. Used by `orochi threads delete` and by
     /// the app's delete; `secure_delete` makes it a real deletion.
     pub fn delete_thread(&self, id: &str) -> Result<bool> {
-        Ok(self
+        let deleted = self
             .connection
             .execute("DELETE FROM threads WHERE id=?1", [id])?
-            == 1)
+            == 1;
+        self.sweep_media();
+        Ok(deleted)
     }
 
     /// Where every thread works and every project's root: what `reclaim` needs to tell what a
@@ -2830,6 +2946,21 @@ const ADDED: &[(&str, &str, &str)] = &[
 /// the first time an open finds it missing.
 const ADDED_TABLES: &[(&str, &str)] = &[
     (
+        "media",
+        r#"
+CREATE TABLE IF NOT EXISTS media (
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  sha TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  kept INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, sha));
+"#,
+    ),
+    (
         "agent_requests",
         r#"
 CREATE TABLE IF NOT EXISTS agent_requests (
@@ -3422,6 +3553,14 @@ FROM items i
 JOIN turns tn ON tn.id=i.turn_id
 LEFT JOIN attempts a ON a.id=i.attempt_id
 LEFT JOIN seats s ON s.id=a.seat_id;
+
+DROP VIEW IF EXISTS v_media;
+CREATE VIEW v_media AS
+SELECT i.id AS seq, i.thread_id, i.turn_id, i.created_at,
+       m.sha, m.mime, m.bytes, m.name, m.kind, m.kept
+FROM items i
+JOIN media m ON m.thread_id=i.thread_id AND m.sha=json_extract(i.data,'$.sha')
+WHERE i.kind='media';
 
 DROP VIEW IF EXISTS v_room;
 CREATE VIEW v_room AS

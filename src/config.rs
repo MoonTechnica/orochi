@@ -29,6 +29,7 @@ pub struct Config {
     pub activity: ActivityConfig,
     pub console: ConsoleConfig,
     pub sandbox: SandboxConfig,
+    pub browser: BrowserConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -69,6 +70,7 @@ impl Default for Config {
             activity: ActivityConfig::default(),
             console: ConsoleConfig::default(),
             sandbox: SandboxConfig::default(),
+            browser: BrowserConfig::default(),
         }
     }
 }
@@ -367,6 +369,41 @@ pub struct ConsoleConfig {
 impl Default for ConsoleConfig {
     fn default() -> Self {
         Self { host_status: true }
+    }
+}
+
+/// A browser the person and the agents share (`docs/conversation-tabs-design.md` §3.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrowserConfig {
+    /// Offers every agent session the `browser_*` tools. Off until the browser has been run
+    /// against a real Chrome here.
+    pub enabled: bool,
+    /// Hosts an agent may navigate to: exact names, or `*.example.com` for its subdomains.
+    /// Loopback only by default, which is the dev-server case.
+    pub allow: Vec<String>,
+    /// Hosts it may not, whatever `allow` says.
+    pub deny: Vec<String>,
+    /// The browser is stopped after this many seconds in which no agent used it.
+    pub idle_secs: u64,
+    /// The Chrome or Chromium to run, when not the one found on this machine.
+    pub chrome: Option<std::path::PathBuf>,
+    /// Lets an agent run its own script in a page. Off: a script can reach any address, which
+    /// the host lists above then no longer bound.
+    pub agent_evaluate: bool,
+}
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow: ["localhost", "127.0.0.1", "[::1]", "*.localhost"]
+                .map(String::from)
+                .to_vec(),
+            deny: vec![],
+            idle_secs: 600,
+            chrome: None,
+            agent_evaluate: false,
+        }
     }
 }
 
@@ -1008,6 +1045,7 @@ impl Config {
                 ensure!(place.is_absolute(), "{name} must be an absolute path");
             }
         }
+        crate::browser::policy::check(&self.browser)?;
         let decision = &self.decision;
         ensure!(
             !decision.model.trim().is_empty() && decision.model.chars().count() <= 128,

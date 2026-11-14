@@ -366,6 +366,13 @@ enabled = false       # default since 2026-11-08; true asks a coding agent in a 
 max_cost_share = 0.25 # skip asking when it would cost more than this share of what work like this costs
 lean = true           # default; the session opens with the classifier's instruction and nothing of the agent's own
 
+[browser]               # a browser the agents drive (docs/conversation-tabs-design.md §3.5); never yet run against a real Chrome
+enabled = false       # default; true gives each agent session the browser_* tools, in a browser context of its own
+allow = ["localhost", "127.0.0.1", "[::1]", "*.localhost"]   # where an agent may take it; the default is this machine only
+deny = []             # always refused, whatever `allow` says
+# chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # default: a Chrome or Chromium found on this machine
+agent_evaluate = false  # true lets an agent run its own script in a page, which no host list then bounds
+
 [memory]
 enabled = true        # default
 user_chars = 1500     # budget for USER.md in each new agent session
@@ -640,6 +647,8 @@ src/router/         Task Profiler and task classification over ACP, candidate ge
 src/scheduler/      Execution, fallback, quota / circuit breaker
 src/process.rs      Agent supervisor processes, recording descendants, reclaiming after a forced kill
 src/mailbox.rs      Inter-process messages between agents (MCP server, retention-limited storage)
+src/browser.rs      A browser agents and the person share: host policy, config (`[browser]`); `browser/` holds the CDP pipe client, the broker with its tools, and the unix broker process and MCP relay
+src/media.rs        Pictures, sound and video a conversation produced: sniffed from bytes, kept by hash beside the activity store
 src/mcp.rs          The MCP servers a session is given: configured, named by the repository's own .mcp.json, and forwarded by an ACP client
 src/mcp/oauth.rs    Signing in to a remote MCP server on the agents' behalf (spec-order discovery, registration, PKCE, refresh; keychain or 0600 file)
 src/pane.rs         Reporting the console's state to an agent host's pane (Orca, OSC 9999), and keeping the host's hooks quiet in launched agents

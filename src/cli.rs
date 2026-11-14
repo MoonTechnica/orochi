@@ -514,6 +514,13 @@ pub enum ThreadCommand {
     },
     /// What the agents have said to you with `@you` that you have not seen.
     Mentions,
+    /// The pictures, sound and video a thread produced; `--save <dir>` writes them out under
+    /// their names, which is how a terminal sees what the window's gallery shows.
+    Media {
+        id: String,
+        #[arg(long)]
+        save: Option<std::path::PathBuf>,
+    },
     /// Stop the turn a host is running, as Esc does in the console.
     Interrupt { id: String },
     /// End the host running a thread. The thread and its history stay.
@@ -885,6 +892,11 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     if joins && config.activity.enabled {
         let _ = crate::activity::Activity::open(&paths.data, config.activity.retention_days)
             .map_err(|error| tracing::debug!(%error, "conversation store unavailable"));
+    }
+    // The browser's tools are offered to the sessions this process starts.
+    #[cfg(unix)]
+    if joins && config.browser.enabled {
+        crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
     }
     let _membership = if joins && config.mailbox.enabled {
         let membership = crate::mailbox::join(
@@ -1460,6 +1472,45 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         }
                     }
                     activity.see_mentions(&id)?;
+                }
+                Some(ThreadCommand::Media { id, save }) => {
+                    let id = named(&activity, &id)?;
+                    let rows = activity.media(&id)?;
+                    if let Some(dir) = &save {
+                        std::fs::create_dir_all(dir)?;
+                        for (n, row) in rows.iter().filter(|r| r.kept).enumerate() {
+                            let Some(from) = crate::media::file(&paths.data, &id, &row.sha) else {
+                                continue;
+                            };
+                            // A name an agent chose is a label, never a path.
+                            let label: String = std::path::Path::new(&row.name)
+                                .file_name()
+                                .map(|s| s.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let ext = from.extension().and_then(|e| e.to_str()).unwrap_or("bin");
+                            let stem = std::path::Path::new(&label).file_stem().map_or_else(
+                                || "media".into(),
+                                |s| s.to_string_lossy().into_owned(),
+                            );
+                            let to = dir.join(format!("{:03}-{stem}.{ext}", n + 1));
+                            std::fs::copy(&from, &to)?;
+                            println!("{}", to.display());
+                        }
+                    } else if cli.json {
+                        println!("{}", serde_json::to_string_pretty(&rows)?);
+                    } else {
+                        for row in rows {
+                            println!(
+                                "{}  {:<5}  {:<16}  {:>8} B  {}{}",
+                                &row.sha[..8],
+                                row.kind,
+                                row.mime,
+                                row.bytes,
+                                row.name,
+                                if row.kept { "" } else { "  (no longer kept)" }
+                            );
+                        }
+                    }
                 }
                 Some(ThreadCommand::Mentions) => {
                     let mentions = activity.mentions(None)?;

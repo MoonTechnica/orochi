@@ -9,6 +9,7 @@ use super::{Activity, ItemKind, SeatState, Shared};
 use crate::acp::{EventSink, ExecutionEvent, Progress, ToolUpdate};
 use serde_json::json;
 use std::{
+    path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -59,6 +60,9 @@ pub struct Recorder {
     thinking: bool,
     message: Stream,
     thought: Stream,
+    /// The tail of what the agent said this stretch, read for the pictures and recordings it
+    /// names when the stretch ends.
+    reply: String,
 }
 
 impl Recorder {
@@ -71,6 +75,7 @@ impl Recorder {
             thinking,
             message: Stream::default(),
             thought: Stream::default(),
+            reply: String::new(),
         }
     }
 
@@ -107,6 +112,9 @@ impl Recorder {
                     self.close(db, true)?;
                 }
                 self.message.message_id.clone_from(id);
+                if self.reply.len() < 16 * 1024 {
+                    self.reply.push_str(chunk);
+                }
                 self.stream(db, true, chunk)?;
             }
             ExecutionEvent::Finished => {
@@ -121,6 +129,10 @@ impl Recorder {
 
     fn progress(&mut self, db: &Activity, progress: &Progress) -> anyhow::Result<()> {
         match progress {
+            Progress::Media(reference) => {
+                self.finish_streams(db);
+                self.media(db, std::slice::from_ref(reference))?;
+            }
             Progress::Thinking(text) => {
                 if self.thinking {
                     self.close(db, true)?;
@@ -321,6 +333,64 @@ impl Recorder {
                 &diff.new,
             )?;
         }
+        // What the call returned as pictures, and the media files it touched or named.
+        let mut references = update.media.clone();
+        if update.status.as_deref() == Some("completed") {
+            let mut words = update.output.clone().unwrap_or_default();
+            for (path, _) in &update.locations {
+                words.push(' ');
+                words.push_str(path);
+            }
+            references.extend(self.named_files(db, &words));
+        }
+        self.media(db, &references)
+    }
+
+    /// Media files a piece of text names, inside the places an agent's words may point.
+    fn named_files(&self, db: &Activity, text: &str) -> Vec<crate::media::MediaRef> {
+        let Some(cwd) = db.thread_cwd(&self.place.thread) else {
+            return Vec::new();
+        };
+        let roots = [std::env::temp_dir(), db.data_dir().to_path_buf()];
+        crate::media::find_paths(text, Path::new(&cwd), &roots)
+            .into_iter()
+            .map(|path| crate::media::MediaRef {
+                name: path
+                    .file_name()
+                    .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned()),
+                source: crate::media::Source::Path(path),
+            })
+            .collect()
+    }
+
+    /// Keeps each reference that is media and writes one `media` row for it under the turn.
+    /// The same picture twice in one attempt is one row: the key is its hash.
+    fn media(
+        &mut self,
+        db: &Activity,
+        references: &[crate::media::MediaRef],
+    ) -> anyhow::Result<()> {
+        for reference in references {
+            let Some(kept) = crate::media::keep(db.data_dir(), &self.place.thread, reference)?
+            else {
+                continue;
+            };
+            db.keep_media(&self.place.thread, &kept)?;
+            let key = format!("media:{}", kept.sha);
+            let data = json!(kept);
+            if let Err(error) = db.item(
+                &self.place.thread,
+                &self.place.turn,
+                self.place.attempt.as_deref(),
+                ItemKind::Media,
+                Some("completed"),
+                Some(&key),
+                &kept.name,
+                Some(&data.to_string()),
+            ) {
+                tracing::debug!(%error, "media row not written (shown already?)");
+            }
+        }
         Ok(())
     }
 
@@ -406,6 +476,13 @@ impl Recorder {
         for message in [true, false] {
             if let Err(error) = self.close(db, message) {
                 tracing::debug!(%error, "activity stream not closed");
+            }
+        }
+        if !self.reply.is_empty() {
+            let reply = std::mem::take(&mut self.reply);
+            let references = self.named_files(db, &reply);
+            if let Err(error) = self.media(db, &references) {
+                tracing::debug!(%error, "media named in a reply not kept");
             }
         }
     }

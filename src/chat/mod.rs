@@ -7430,6 +7430,10 @@ impl<'v> Screen<'v> {
     fn progress(&mut self, progress: Progress) {
         match progress {
             Progress::Thinking(text) => self.thinking(&text),
+            Progress::Media(media) => {
+                let line = crate::media::describe(&media);
+                self.result(MUTED, &format!("⎿ {line}"));
+            }
             Progress::Tool(update) => self.tool(*update),
             Progress::Plan(entries) => self.show_plan(entries),
             Progress::Route {

@@ -25,6 +25,15 @@ fn main() -> std::process::ExitCode {
         }
         if args
             .get(1)
+            .is_some_and(|a| a == orochi::browser::BROKER_FLAG)
+        {
+            return orochi::browser::serve_broker(&args[2..]);
+        }
+        if args.get(1).is_some_and(|a| a == orochi::browser::MCP_FLAG) {
+            return orochi::browser::serve_mcp(&args[2..]);
+        }
+        if args
+            .get(1)
             .is_some_and(|a| a == orochi::sandbox::runner::SERVE_FLAG)
         {
             return orochi::sandbox::runner::serve(&args[2..]);
