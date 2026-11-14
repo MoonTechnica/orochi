@@ -458,6 +458,11 @@ const WORDS = {
     Content: "内容",
     "Open in editor": "エディタで開く",
     "Opening…": "開いています…",
+    "Agents' browser": "エージェントのブラウザ",
+    Watching: "表示中",
+    "An agent's page": "エージェントのページ",
+    "No agent has a page open yet.": "ページを開いているエージェントはまだいません。",
+    "a blank page": "空のページ",
     "Split view": "画面を分割",
     "Join the two sides": "分割をまとめる",
     "Move to the other side": "反対側へ移す",
@@ -6758,11 +6763,137 @@ async function startBrowser(id, panel) {
   }
 }
 
+/// The agents' own pages, watched from here: a list of the agents that have a page open and
+/// the newest frame of the one chosen. Nothing in it sends input — the page is the agent's.
+function openAgentBrowserTab() {
+  if (!tabs.thread) return;
+  const existing = tabs.order.find((id) => tabs.tabs[id]?.watch);
+  if (existing) {
+    showTab(existing);
+    return;
+  }
+  if (tabs.order.length >= TAB_LIMIT) {
+    report(`${t("Tabs are full")} (${TAB_LIMIT})`);
+    return;
+  }
+  const id = `w${++tabs.seq}`;
+  tabs.order.push(id);
+  tabs.tabs[id] = { kind: "browser", watch: true, title: t("Agents' browser"), url: "" };
+  showTab(id);
+}
+
+async function startWatch(id, panel) {
+  const thread = tabs.thread;
+  const tab = tabs.tabs[id];
+  const status = await call("browser_status");
+  if (!tabs.panels.has(id) || tabs.panels.get(id) !== panel) return;
+  if (!status?.enabled || !status.chrome) {
+    panel.append(text("p", "empty", t(status?.enabled
+      ? "No Chrome or Chromium was found. Install one, or name it as `chrome` under [browser]."
+      : "The browser is off. Set `enabled = true` under [browser] in the configuration.")));
+    return;
+  }
+  const send = (tool, args) => viewCall(thread, id, tool, args);
+  const bar = text("div", "browser-bar");
+  bar.append(text("span", "watch-label", t("Watching")));
+  const choose = document.createElement("select");
+  choose.className = "browser-address";
+  choose.setAttribute("aria-label", t("An agent's page"));
+  bar.append(choose);
+  const address = text("span", "watch-url");
+  bar.append(address);
+  const view = text("div", "browser-view");
+  const canvas = document.createElement("canvas");
+  canvas.className = "browser-canvas";
+  const note = text("p", "empty", t("No agent has a page open yet."));
+  view.append(canvas, note);
+  panel.append(bar, view);
+  const entry = { id, thread, alive: true, since: 0, watching: null };
+  browsers.set(`${thread}:${id}`, entry);
+  const stopWatching = () => {
+    if (entry.watching) send("view_unwatch", { watch: entry.watching });
+    entry.watching = null;
+    entry.since = 0;
+  };
+  entry.stop = stopWatching;
+  choose.addEventListener("change", () => {
+    tab.agent = choose.value;
+    persistTabs();
+    stopWatching();
+  });
+  const paint = (frame) => {
+    const image = new Image();
+    image.onload = () => {
+      if (!entry.alive) return;
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.getContext("2d").drawImage(image, 0, 0);
+    };
+    image.src = `data:image/jpeg;base64,${frame.jpeg}`;
+  };
+  let listedAt = 0;
+  let agents = [];
+  const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  while (entry.alive && tabs.panels.get(id) === panel) {
+    if (panel.hidden) {
+      await pause(500);
+      continue;
+    }
+    if (Date.now() - listedAt > 1500) {
+      listedAt = Date.now();
+      const listed = await send("view_agents");
+      agents = listed.ok?.agents || [];
+      choose.replaceChildren();
+      for (const agent of agents) {
+        const option = document.createElement("option");
+        option.value = agent.scope;
+        option.textContent = `${agent.label} — ${agent.title || agent.url || t("a blank page")}`;
+        choose.append(option);
+      }
+      if (!agents.some((agent) => agent.scope === tab.agent)) {
+        if (entry.watching) stopWatching();
+        tab.agent = agents[0]?.scope || null;
+      }
+      choose.value = tab.agent || "";
+      note.hidden = agents.length > 0;
+      const here = agents.find((agent) => agent.scope === tab.agent);
+      address.textContent = here?.url || "";
+      const named = here ? here.label : t("Agents' browser");
+      if (named !== tab.title) {
+        tab.title = named;
+        drawTabs();
+      }
+    }
+    if (!tab.agent) {
+      await pause(500);
+      continue;
+    }
+    entry.watching = tab.agent;
+    const r = await send("view_frame", {
+      watch: tab.agent, since: entry.since,
+      width: Math.round(view.clientWidth || 0) || 1024, height: Math.round(view.clientHeight || 0) || 768,
+    });
+    if (r.error) {
+      // The agent's page went away between the list and the frame.
+      listedAt = 0;
+      entry.watching = null;
+      await pause(500);
+      continue;
+    }
+    if (r.ok?.frame) {
+      entry.since = r.ok.frame.seq;
+      paint(r.ok.frame);
+    }
+    await pause(100);
+  }
+}
+
 function stopBrowser(id) {
   const key = `${tabs.thread}:${id}`;
   const entry = browsers.get(key);
   if (!entry) return;
   entry.alive = false;
+  entry.stop?.();
   browsers.delete(key);
   viewCall(entry.thread, id, "view_close");
 }
@@ -7135,7 +7266,7 @@ function buildPanel(id) {
   if (tab.kind === "file") drawFileTab(id, panel, false);
   if (tab.kind === "media") drawMediaTab(id, panel);
   if (tab.kind === "terminal") startTerminal(id, panel);
-  if (tab.kind === "browser") startBrowser(id, panel);
+  if (tab.kind === "browser") (tab.watch ? startWatch : startBrowser)(id, panel);
 }
 
 async function drawFileTab(id, panel, source) {
@@ -7195,11 +7326,12 @@ function openNewMenu() {
   for (const [what, label, run] of [
     ["terminal", t("Terminal"), () => { closeQuickOpen(); openTerminalTab(); }],
     ["browser", t("Browser"), () => { closeQuickOpen(); openBrowserTab(); }],
+    ["agents", t("Agents' browser"), () => { closeQuickOpen(); openAgentBrowserTab(); }],
     ["file", t("File…"), () => openQuickOpen()],
   ]) {
     const row = text("div", "doc-item");
     row.dataset.item = what;
-    row.append(drawn(what === "terminal" ? "terminal" : what === "browser" ? "globe" : "file"), text("span", null, label));
+    row.append(drawn(what === "terminal" ? "terminal" : what === "browser" || what === "agents" ? "globe" : "file"), text("span", null, label));
     row.addEventListener("click", (event) => {
       event.stopPropagation();
       run();

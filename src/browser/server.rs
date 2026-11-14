@@ -74,16 +74,34 @@ pub fn is_registered() -> bool {
     ACTIVE.get().is_some()
 }
 
-/// The MCP server to attach to one agent session: (name, command, args).
-pub fn server_for(read_only: bool, cwd: &Path) -> Option<(&'static str, PathBuf, Vec<String>)> {
+/// The MCP server to attach to one agent session: (name, command, args). The session's name
+/// starts with `label` (the peer's name), which is what the window lists when the person
+/// chooses an agent's page to watch.
+pub fn server_for(
+    read_only: bool,
+    cwd: &Path,
+    label: &str,
+) -> Option<(&'static str, PathBuf, Vec<String>)> {
     let active = ACTIVE.get()?;
+    let slug: String = label
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(24)
+        .collect();
+    let slug = if slug.trim_matches('-').is_empty() {
+        "agent".to_owned()
+    } else {
+        slug
+    };
+    let scope = format!("{slug}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     Some((
         SERVER_NAME,
         active.executable.clone(),
         vec![
             MCP_FLAG.into(),
             active.data.display().to_string(),
-            uuid::Uuid::new_v4().simple().to_string(),
+            scope,
             u8::from(read_only).to_string(),
             cwd.display().to_string(),
         ],

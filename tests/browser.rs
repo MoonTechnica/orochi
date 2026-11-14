@@ -931,3 +931,103 @@ async fn a_screenshot_can_be_kept_as_a_png_in_the_project_folder_and_nowhere_els
     assert!(failed(&looking), "a seat that may only look writes nothing");
     assert!(!project.path().join("shots/looked.png").exists());
 }
+
+#[tokio::test]
+async fn the_person_can_watch_an_agents_page_but_not_drive_it_and_watching_opens_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let browser = start(dir.path(), &config()).await;
+    let me = |tool: &str, args: Value| request("user:thread-1:b1", tool, args);
+
+    // Nobody has a page yet: the list is empty, and asking made nothing for the person.
+    let none = viewed(&browser.call(me("view_agents", json!({}))).await);
+    assert_eq!(none["agents"], json!([]));
+    assert!(of(&asked(dir.path()), "Target.createTarget").is_empty());
+
+    browser
+        .call(request(
+            "implementer-1a2b3c4d",
+            "browser_navigate",
+            json!({"url": "http://localhost:3000/"}),
+        ))
+        .await;
+    browser
+        .call(request(
+            "reviewer-9f8e7d6c",
+            "browser_tabs",
+            json!({"action": "list"}),
+        ))
+        .await;
+    let listed = viewed(&browser.call(me("view_agents", json!({}))).await);
+    let agents = listed["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 1, "only the agent with a page open: {listed}");
+    assert_eq!(agents[0]["scope"], "implementer-1a2b3c4d");
+    assert_eq!(agents[0]["label"], "implementer");
+    assert_eq!(agents[0]["url"], "http://localhost:3000/");
+
+    // Frames of that page, and the person's own tab is still not made.
+    let mut frame = Value::Null;
+    for _ in 0..50 {
+        let polled = viewed(
+            &browser
+                .call(me(
+                    "view_frame",
+                    json!({"watch": "implementer-1a2b3c4d", "since": 0, "width": 640, "height": 400}),
+                ))
+                .await,
+        );
+        if polled["frame"].is_object() {
+            frame = polled["frame"].clone();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        frame["jpeg"].as_str().is_some_and(|j| !j.is_empty()),
+        "{frame}"
+    );
+    assert_eq!(
+        of(&asked(dir.path()), "Target.createTarget").len(),
+        1,
+        "the agent's tab only"
+    );
+    assert!(
+        of(&asked(dir.path()), "Runtime.evaluate").is_empty(),
+        "nothing is run in a page that is watched"
+    );
+
+    // Watched, not driven: no input, no navigation, no dialog answers, and not the person's own.
+    for tool in [
+        "view_input",
+        "view_navigate",
+        "view_dialog",
+        "view_resize",
+        "view_close",
+    ] {
+        let refused = browser
+            .call(me(
+                tool,
+                json!({"watch": "implementer-1a2b3c4d", "type": "mouse", "kind": "mousePressed", "url": "http://localhost:3000/x"}),
+            ))
+            .await;
+        assert!(failed(&refused), "{tool}: {refused}");
+    }
+    assert!(of(&asked(dir.path()), "Input.dispatchMouseEvent").is_empty());
+    assert!(failed(
+        &browser
+            .call(me("view_frame", json!({"watch": "user:thread-2:b1"})))
+            .await
+    ));
+    assert!(failed(
+        &browser
+            .call(me("view_frame", json!({"watch": "nobody-00000000"})))
+            .await
+    ));
+
+    // Leaving stops the stream and leaves the agent's page as it was.
+    viewed(
+        &browser
+            .call(me("view_unwatch", json!({"watch": "implementer-1a2b3c4d"})))
+            .await,
+    );
+    assert_eq!(of(&asked(dir.path()), "Page.stopScreencast").len(), 1);
+}

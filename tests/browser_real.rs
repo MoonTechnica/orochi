@@ -435,3 +435,87 @@ fn a_broker_killed_outright_leaves_no_chrome_in_the_way_of_the_next_and_ends_its
         "no Chrome outlives its broker"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs a Chrome or Chromium on this machine"]
+async fn a_real_chrome_lets_the_person_watch_the_page_an_agent_opened() {
+    let config = BrowserConfig {
+        enabled: true,
+        ..BrowserConfig::default()
+    };
+    let chrome = find_chrome(&config).expect("a Chrome on this machine");
+    let dir = tempfile::tempdir().unwrap();
+    let args: Vec<String> = [
+        "--headless=new",
+        "--remote-debugging-pipe",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    .map(String::from)
+    .into_iter()
+    .chain([
+        format!("--user-data-dir={}", dir.path().display()),
+        "about:blank".into(),
+    ])
+    .collect();
+    let browser = Browser::start(&chrome, &args, &config, Stdio::null())
+        .await
+        .unwrap();
+    let port = serve().await;
+    let call = |scope: &str, tool: &str, args: Value| {
+        browser.call(Request {
+            scope: scope.into(),
+            tool: tool.into(),
+            args,
+            read_only: false,
+            cwd: None,
+        })
+    };
+    let agent = "implementer-1a2b3c4d";
+    let opened = call(
+        agent,
+        "browser_navigate",
+        json!({"url": format!("http://127.0.0.1:{port}/")}),
+    )
+    .await;
+    assert!(opened["isError"] != true, "{opened}");
+
+    let parse = |value: Value| -> Value {
+        assert!(value["isError"] != true, "{value}");
+        serde_json::from_str(&said(&value)).unwrap()
+    };
+    let listed = parse(call("user:t:w1", "view_agents", json!({})).await);
+    assert_eq!(listed["agents"][0]["scope"], agent, "{listed}");
+    assert_eq!(listed["agents"][0]["label"], "implementer");
+
+    let mut jpeg = String::new();
+    for _ in 0..100 {
+        let polled = parse(
+            call(
+                "user:t:w1",
+                "view_frame",
+                json!({"watch": agent, "since": 0, "width": 640, "height": 400}),
+            )
+            .await,
+        );
+        if let Some(data) = polled["frame"]["jpeg"].as_str() {
+            jpeg = data.to_owned();
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(jpeg.starts_with("/9j/"), "a JPEG of the agent's page");
+    // The agent's own tools still work on the page being watched.
+    let snapshot = call(agent, "browser_snapshot", json!({})).await;
+    assert!(said(&snapshot).contains("Welcome"), "{snapshot}");
+    assert!(
+        call(
+            "user:t:w1",
+            "view_input",
+            json!({"watch": agent, "type": "mouse", "kind": "mousePressed"})
+        )
+        .await["isError"]
+            == true
+    );
+    parse(call("user:t:w1", "view_unwatch", json!({"watch": agent})).await);
+}

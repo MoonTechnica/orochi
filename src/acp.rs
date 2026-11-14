@@ -941,7 +941,11 @@ impl Client {
             && self.peer.is_some()
             // A sandboxed agent runs inside the VM, which cannot run this machine's executable.
             && !self.config.sandboxed
-            && let Some((name, command, args)) = crate::browser::server_for(*read_only, cwd)
+            && let Some((name, command, args)) = crate::browser::server_for(
+                *read_only,
+                cwd,
+                self.peer.as_ref().map_or("agent", |peer| peer.name.as_str()),
+            )
         {
             servers.push(McpServer::Stdio(
                 McpServerStdio::new(name, command).args(args),

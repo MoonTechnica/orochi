@@ -4100,8 +4100,8 @@ async function newBrowser(el) {
   await settle(60);
 }
 /// A tab keeps asking for frames until it is closed, so a test closes what it opened.
-async function closeBrowsers(el) {
-  for (const id of tabIds(el).filter((tab) => tab.startsWith("b"))) {
+async function closeBrowsers(el, prefix = "b") {
+  for (const id of tabIds(el).filter((tab) => tab.startsWith(prefix))) {
     tabButton(el, id).querySelectorAll(".doc-close")[0].dispatch("click");
   }
   await settle(10);
@@ -4404,4 +4404,44 @@ test("the sides come back as they were, and with nothing to put on a second side
   await settle(40);
   assert.deepEqual([idsIn(el, 0), idsIn(el, 1).length], [["chat"], 1]);
   await closeBrowsers(el);
+});
+
+// Watching an agent's page --------------------------------------------------------------------
+test("the agents' browser lists the agents that have a page, shows the chosen one's frames, and sends nothing to it", async () => {
+  const agent = { scope: "implementer-1a2b3c4d", label: "implementer", title: "Dev server", url: "http://localhost:3000/", tabs: 1 };
+  let agents = [];
+  const painted = [];
+  const { el, calls } = await open({
+    browser_status: { enabled: true, chrome: "chrome" },
+    browser_call: ({ tool }) => {
+      if (tool === "view_agents") return { agents };
+      if (tool === "view_frame") return { url: agent.url, frame: { seq: 7, jpeg: "QQ==", width: 100, height: 50 } };
+      return {};
+    },
+  }, { setup: () => { globalThis.Image = class { set src(value) { painted.push(value); } }; } });
+  await newIn(el, 0, "agents");
+  await settle(150);
+  assert.deepEqual(tabIds(el), ["chat", "w1"]);
+  assert.match(el("doc-body").render(), /No agent has a page open yet/, "nobody to watch");
+  assert.equal(viewTools(calls).some((c) => c.tool === "view_frame"), false, "no frames asked for with nobody chosen");
+
+  agents = [agent];
+  await settle(1800);
+  assert.match(el("doc-body").render(), /implementer — Dev server/, "the agent is offered by name and page");
+  assert.match(el("doc-tabs").render(), /implementer/, "the tab takes the agent's name");
+  const frames = viewTools(calls).filter((c) => c.tool === "view_frame");
+  assert.ok(frames.length > 0 && frames.every((f) => f.args.watch === agent.scope), "frames of that agent's page");
+  assert.ok(painted.length > 0);
+
+  // Nothing the person does on it reaches the agent's page.
+  const canvas = el("doc-body").querySelectorAll(".browser-canvas")[0];
+  canvas.dispatch("mousedown", { clientX: 5, clientY: 5, button: 0, buttons: 1, detail: 1 });
+  canvas.dispatch("keydown", { key: "a" });
+  await settle(30);
+  assert.equal(viewTools(calls).some((c) => c.tool === "view_input"), false);
+
+  await closeBrowsers(el, "w");
+  const last = viewTools(calls).map((c) => c.tool);
+  assert.ok(last.includes("view_unwatch"), "closing the tab stops the stream");
+  assert.equal(last.at(-1), "view_close");
 });

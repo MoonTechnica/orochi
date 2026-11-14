@@ -322,8 +322,58 @@ impl Browser {
     // opened, as for everyone. Frames are Chrome's screencast, kept as the newest one for a
     // window that asks for what changed since the last it drew.
 
+    /// The agents that have a page open, for the window to offer. Nothing about the page but
+    /// what the tab strip of any browser shows.
+    fn agents(&self) -> Vec<Value> {
+        let state = self.state.lock().unwrap();
+        let mut agents: Vec<Value> = state
+            .scopes
+            .iter()
+            .filter(|(name, _)| !name.starts_with("user:"))
+            .filter_map(|(name, scope)| {
+                let tab = state.tabs.get(scope.tabs.get(scope.active)?)?;
+                Some(json!({
+                    "scope": name,
+                    "label": name.rsplit_once('-').map_or(name.as_str(), |(label, _)| label),
+                    "title": tab.title, "url": tab.url, "tabs": scope.tabs.len(),
+                }))
+            })
+            .collect();
+        agents.sort_by(|a, b| a["scope"].as_str().cmp(&b["scope"].as_str()));
+        agents
+    }
+
+    /// The page an agent has in view, if it has one: watching never opens one.
+    fn peek(&self, agent: &str) -> Result<String> {
+        let state = self.state.lock().unwrap();
+        state
+            .scopes
+            .get(agent)
+            .and_then(|s| s.tabs.get(s.active).cloned())
+            .context("that agent has no page open")
+    }
+
     async fn view(&self, scope: &str, tool: &str, args: &Value) -> Result<Value> {
-        let session = self.current(scope).await?;
+        if tool == "view_agents" {
+            return Ok(json!({"agents": self.agents()}));
+        }
+        // An agent's page is watched, not driven: frames only, and never a page of the
+        // person's own.
+        let watching = args["watch"].as_str();
+        if let Some(agent) = watching {
+            anyhow::ensure!(
+                !agent.starts_with("user:"),
+                "only an agent's page can be watched"
+            );
+            anyhow::ensure!(
+                matches!(tool, "view_frame" | "view_unwatch"),
+                "that is the agent's page: it is watched, not driven"
+            );
+        }
+        let session = match watching {
+            Some(agent) => self.peek(agent)?,
+            None => self.current(scope).await?,
+        };
         let number = |key: &str| args[key].as_f64();
         match tool {
             "view_open" | "view_navigate" => {
@@ -399,6 +449,16 @@ impl Browser {
             }
             "view_input" => self.view_input(&session, args).await?,
             "view_preview" => self.preview_page(&session, args).await?,
+            "view_unwatch" => {
+                let _ = self
+                    .cdp
+                    .call("Page.stopScreencast", json!({}), Some(&session))
+                    .await;
+                if let Some(tab) = self.state.lock().unwrap().tabs.get_mut(&session) {
+                    tab.casting = false;
+                }
+                return Ok(json!({"unwatched": true}));
+            }
             "view_dialog" => {
                 self.cdp
                     .call(
@@ -420,16 +480,18 @@ impl Browser {
         }
         // Chrome's target events carry the address until it has read the page, and headless
         // does not always follow with the real title, so it is asked for now and then.
-        let due = self
-            .state
-            .lock()
-            .unwrap()
-            .tabs
-            .get(&session)
-            .is_some_and(|t| {
-                t.titled
-                    .is_none_or(|at| at.elapsed() > Duration::from_millis(700))
-            });
+        // (Never in a page that is watched: a dialog open there would hold the call.)
+        let due = watching.is_none()
+            && self
+                .state
+                .lock()
+                .unwrap()
+                .tabs
+                .get(&session)
+                .is_some_and(|t| {
+                    t.titled
+                        .is_none_or(|at| at.elapsed() > Duration::from_millis(700))
+                });
         if due
             && let Ok(answer) = self
                 .cdp
