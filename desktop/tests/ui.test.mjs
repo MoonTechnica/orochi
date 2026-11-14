@@ -47,7 +47,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {}, setup }
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
-    "doc-tabs", "doc-menu", "doc-body", "threads-ctl", "threads-menu", "mention-list", "split", "chat", "member-col", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
+    "doc-tabs", "doc-menu", "doc-body", "stage", "pane-handle", "group-0", "group-1", "doc-tabs-2", "doc-body-2", "threads-ctl", "threads-menu", "mention-list", "split", "chat", "member-col", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
     "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
@@ -3662,8 +3662,10 @@ test("the office's question bubble opens the conversation that asks, and any sea
 });
 
 // Conversation tabs --------------------------------------------------------------------
-const tabIds = (el) => el("doc-tabs").querySelectorAll(".doc-tab").map((t) => t.dataset.tab);
-const tabButton = (el, id) => el("doc-tabs").querySelectorAll(".doc-tab").find((t) => t.dataset.tab === id);
+const tabIds = (el) => [el("doc-tabs"), el("doc-tabs-2")].flatMap((strip) => strip.querySelectorAll(".doc-tab")).map((t) => t.dataset.tab);
+/// The tool panels on screen: the body also holds the chat, which is not one.
+const shownPanels = (el) => [0, 1].flatMap((g) => el(g === 0 ? "doc-body" : "doc-body-2").querySelectorAll(".doc-panel")).filter((p) => !p.hidden);
+const tabButton = (el, id) => [el("doc-tabs"), el("doc-tabs-2")].flatMap((strip) => strip.querySelectorAll(".doc-tab")).find((t) => t.dataset.tab === id);
 const thread_id = recorded.thread.thread.id;
 async function openInTab(el, path = "src/chat/term.rs") {
   await filesTab(el);
@@ -3684,7 +3686,7 @@ test("a conversation opens on its Chat tab, which is the only one it has and can
   assert.equal(tabButton(el, "chat").getAttribute("aria-selected"), "true");
   assert.equal(tabButton(el, "chat").querySelectorAll(".doc-close").length, 0);
   assert.equal(el("split").hidden, false, "the chat is what shows");
-  assert.equal(el("doc-body").hidden, true);
+  assert.equal(shownPanels(el).length, 0);
 });
 
 test("a file opened in a tab is read, shown in place of the chat, and the chat is kept for when it is back", async () => {
@@ -3693,16 +3695,16 @@ test("a file opened in a tab is read, shown in place of the chat, and the chat i
   assert.deepEqual(tabIds(el), ["chat", "f1"]);
   assert.equal(tabButton(el, "f1").getAttribute("aria-selected"), "true");
   assert.equal(el("split").hidden, true);
-  assert.equal(el("doc-body").hidden, false);
+  assert.equal(shownPanels(el).length, 1);
   assert.match(el("doc-body").render(), /fn a\(\) \{/, "the file's text is drawn");
   assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "src/chat/term.rs"));
   el("message").value = "half a thought";
   tabButton(el, "chat").dispatch("click");
   assert.equal(el("split").hidden, false);
-  assert.equal(el("doc-body").hidden, true);
+  assert.equal(shownPanels(el).length, 0);
   assert.equal(el("message").value, "half a thought", "the draft was not touched");
   tabButton(el, "f1").dispatch("click");
-  assert.equal(el("doc-body").hidden, false);
+  assert.equal(shownPanels(el).length, 1);
 });
 
 test("closing a tab goes to its neighbour, and Chat has nothing to close", async () => {
@@ -3711,7 +3713,7 @@ test("closing a tab goes to its neighbour, and Chat has nothing to close", async
   tabButton(el, "f1").querySelectorAll(".doc-close")[0].dispatch("click");
   assert.deepEqual(tabIds(el), ["chat"]);
   assert.equal(el("split").hidden, false);
-  assert.equal(el("doc-body").hidden, true);
+  assert.equal(shownPanels(el).length, 0);
 });
 
 test("a tab opened to look is replaced by the next look; a kept one is not", async () => {
@@ -3751,7 +3753,7 @@ test("the tabs a conversation had come back with it, and no other conversation s
   };
   const { el, calls } = await open(tree(), { stored });
   assert.deepEqual(tabIds(el), ["chat", "f1"]);
-  assert.equal(el("doc-body").hidden, false, "it was the tab in view");
+  assert.equal(shownPanels(el).length, 1, "it was the tab in view");
   assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "src/chat/term.rs"), "and its file is read again");
   const other = await open(tree(), { stored: { "tabs:someone-else": stored[`tabs:${thread_id}`] } });
   assert.deepEqual(tabIds(other.el), ["chat"]);
@@ -3834,7 +3836,7 @@ test("a picture opens in a tab that steps through the conversation's media", asy
   press("Next").dispatch("click");
   await settle();
   assert.match(el("doc-body").render(), /demo\.mp4/);
-  assert.equal(el("doc-body").querySelectorAll("video").length, 1);
+  assert.equal(shownPanels(el)[0].querySelectorAll("video").length, 1);
   // The same picture opened again is the tab it already has.
   card(1).children[0].dispatch("click");
   assert.deepEqual(tabIds(el), ["chat", "m1"]);
@@ -4250,3 +4252,156 @@ async function closeTerminals(el) {
   }
   await settle(10);
 }
+
+
+// Split view: each side has its own tabs --------------------------------------------------
+const offBrowser = { browser_status: { enabled: false, chrome: null } };
+const strip = (el, g) => el(g === 0 ? "doc-tabs" : "doc-tabs-2");
+const idsIn = (el, g) => strip(el, g).querySelectorAll(".doc-tab").map((t) => t.dataset.tab);
+const tabIn = (el, g, id) => strip(el, g).querySelectorAll(".doc-tab").find((t) => t.dataset.tab === id);
+const splitButton = (el, g) => strip(el, g).querySelectorAll(".doc-split")[0];
+const newIn = async (el, g, what = "browser") => {
+  strip(el, g).querySelectorAll(".doc-new")[0].dispatch("click");
+  el("doc-menu").querySelectorAll(".doc-item").find((r) => r.dataset.item === what).dispatch("click");
+  await settle(60);
+};
+const panelIn = (el, g, id) => el(g === 0 ? "doc-body" : "doc-body-2").querySelectorAll(".doc-panel").find((p) => p.dataset.tab === id);
+
+test("splitting sends the tab in view to a side of its own, with a row of tabs of its own, beside the chat", async () => {
+  const { el } = await open(offBrowser);
+  await newBrowser(el);
+  assert.equal(el("group-1").hidden, true, "one side until asked");
+  assert.deepEqual(idsIn(el, 0), ["chat", "b1"]);
+  splitButton(el, 0).dispatch("click");
+  assert.equal(el("group-1").hidden, false);
+  assert.deepEqual(idsIn(el, 0), ["chat"], "the chat stays on the left");
+  assert.deepEqual(idsIn(el, 1), ["b1"], "the tool is on the right, in a row of its own");
+  assert.equal(el("split").hidden, false);
+  assert.equal(el("split").parentNode, el("doc-body"));
+  assert.equal(panelIn(el, 1, "b1").hidden, false, "its panel is in the right side's body");
+  assert.equal(el("group-0").style.flex, "0 0 50%");
+  assert.equal(el("pane-handle").hidden, false);
+  assert.equal(el("pane-handle").parentNode, el("stage"));
+  assert.equal(el("group-1").dataset.focus, "true", "the keys stay with the tool");
+  assert.equal(tabIn(el, 1, "b1").dataset.pane, "focus");
+  assert.equal(tabIn(el, 0, "chat").dataset.pane, "shown");
+  assert.equal(splitButton(el, 1).getAttribute("aria-pressed"), "true", "the button is on the last side's row");
+  assert.equal(strip(el, 0).querySelectorAll(".doc-split").length, 0);
+  await closeBrowsers(el);
+});
+
+test("each side keeps its own tabs: a + opens on its own side, and choosing a tab changes only that side", async () => {
+  const { el } = await open(offBrowser);
+  await newBrowser(el);
+  splitButton(el, 0).dispatch("click");
+  await newIn(el, 1);
+  await newIn(el, 0);
+  assert.deepEqual(idsIn(el, 0), ["chat", "b3"], "opened with the left +");
+  assert.deepEqual(idsIn(el, 1), ["b1", "b2"], "opened with the right +");
+  assert.equal(panelIn(el, 0, "b3").hidden, false);
+  assert.equal(el("split").hidden, true, "the left side shows b3, not the chat");
+  assert.equal(panelIn(el, 1, "b2").hidden, false);
+  // Choosing on the left leaves the right as it was.
+  tabIn(el, 0, "chat").dispatch("click");
+  assert.equal(el("split").hidden, false);
+  assert.equal(panelIn(el, 0, "b3").hidden, true);
+  assert.equal(panelIn(el, 1, "b2").hidden, false, "the right side did not change");
+  assert.equal(el("group-0").dataset.focus, "true", "and the left has the keys now");
+  // Touching a side gives it the keys without choosing anything — and without redrawing the
+  // row, or the button under the pointer would be gone before its click.
+  const under = tabIn(el, 1, "b2");
+  el("group-1").dispatch("pointerdown");
+  assert.equal(tabIn(el, 1, "b2"), under, "the same button, so a click on it still lands");
+  assert.equal(el("group-1").dataset.focus, "true");
+  assert.equal(tabIn(el, 1, "b2").dataset.pane, "focus");
+  await closeBrowsers(el);
+});
+
+test("a tab is sent to the other side with its button or dragged there, and a side left empty is gone", async () => {
+  const { el } = await open(offBrowser);
+  await newBrowser(el);
+  await newBrowser(el);
+  // Sent over: the other side is made.
+  tabIn(el, 0, "b2").querySelectorAll(".doc-move")[0].dispatch("click");
+  assert.deepEqual([idsIn(el, 0), idsIn(el, 1)], [["chat", "b1"], ["b2"]]);
+  // Dragged: from the left row onto the right row.
+  const drag = tabIn(el, 0, "b1");
+  drag.dispatch("dragstart", { dataTransfer: { setData() {} } });
+  strip(el, 1).dispatch("drop");
+  assert.deepEqual([idsIn(el, 0), idsIn(el, 1)], [["chat"], ["b2", "b1"]]);
+  assert.equal(panelIn(el, 1, "b1").hidden, false, "the dropped tab is the one shown");
+  // Dragged back to the body of the left side.
+  tabIn(el, 1, "b2").dispatch("dragstart", { dataTransfer: { setData() {} } });
+  el("doc-body").dispatch("drop");
+  assert.deepEqual([idsIn(el, 0), idsIn(el, 1)], [["chat", "b2"], ["b1"]]);
+  // The right side's last tab leaves: the side is gone and the other has the screen.
+  tabIn(el, 1, "b1").querySelectorAll(".doc-move")[0].dispatch("click");
+  assert.equal(el("group-1").hidden, true);
+  assert.equal(el("pane-handle").hidden, true);
+  assert.deepEqual(idsIn(el, 0), ["chat", "b2", "b1"]);
+  await closeBrowsers(el);
+});
+
+test("closing the last tab of a side, or joining the sides, leaves one side with everything", async () => {
+  const { el } = await open(offBrowser);
+  await newBrowser(el);
+  await newBrowser(el);
+  splitButton(el, 0).dispatch("click");
+  assert.deepEqual([idsIn(el, 0), idsIn(el, 1)], [["chat", "b1"], ["b2"]]);
+  tabIn(el, 1, "b2").querySelectorAll(".doc-close")[0].dispatch("click");
+  assert.equal(el("group-1").hidden, true, "its last tab closed");
+  assert.deepEqual(idsIn(el, 0), ["chat", "b1"]);
+  assert.equal(el("group-0").style.flex, "1 1 0");
+
+  splitButton(el, 0).dispatch("click");
+  assert.equal(el("group-1").hidden, false);
+  splitButton(el, 1).dispatch("click");
+  assert.equal(el("group-1").hidden, true, "joined");
+  assert.deepEqual(idsIn(el, 0).sort(), ["b1", "chat"]);
+  await closeBrowsers(el);
+});
+
+test("the edge between the sides moves with the arrows, never past a fifth, and the sides are remembered", async () => {
+  const { el, localStorage } = await open(offBrowser);
+  await newBrowser(el);
+  splitButton(el, 0).dispatch("click");
+  const handle = el("pane-handle");
+  handle.dispatch("keydown", { key: "ArrowRight" });
+  assert.equal(el("group-0").style.flex, "0 0 52%");
+  handle.dispatch("keydown", { key: "ArrowRight", shiftKey: true });
+  assert.equal(el("group-0").style.flex, "0 0 62%");
+  for (let i = 0; i < 20; i += 1) handle.dispatch("keydown", { key: "ArrowLeft", shiftKey: true });
+  assert.equal(el("group-0").style.flex, "0 0 20%");
+  handle.dispatch("dblclick");
+  assert.equal(el("group-0").style.flex, "0 0 50%");
+  handle.dispatch("keydown", { key: "ArrowRight", shiftKey: true });
+  const saved = JSON.parse(localStorage.getItem(`tabs:${thread_id}`));
+  assert.deepEqual(saved.groups.map((g) => g.ids), [["chat"], ["b1"]]);
+  assert.equal(saved.focus, 1);
+  assert.equal(saved.ratio, 0.6);
+  await closeBrowsers(el);
+});
+
+test("the sides come back as they were, and with nothing to put on a second side the button asks what to open", async () => {
+  const stored = { [`tabs:${thread_id}`]: JSON.stringify({
+    order: ["chat", "b1", "b2"], active: "b2", seq: 2,
+    tabs: { b1: { kind: "browser", title: "Browser", url: "" }, b2: { kind: "browser", title: "Browser", url: "" } },
+    groups: [{ ids: ["chat", "b1"], active: "chat" }, { ids: ["b2"], active: "b2" }], focus: 1, ratio: 0.35,
+  }) };
+  const { el } = await open(offBrowser, { stored });
+  await settle(40);
+  assert.deepEqual([idsIn(el, 0), idsIn(el, 1)], [["chat", "b1"], ["b2"]]);
+  assert.equal(el("group-0").style.flex, "0 0 35%");
+  assert.equal(el("group-1").dataset.focus, "true");
+  assert.equal(el("split").hidden, false, "the left side shows the chat");
+  await closeBrowsers(el);
+
+  // Only the chat left: the button asks, and what is chosen opens on a side of its own.
+  assert.equal(el("group-1").hidden, true);
+  splitButton(el, 0).dispatch("click");
+  assert.equal(el("doc-menu").hidden, false);
+  el("doc-menu").querySelectorAll(".doc-item").find((r) => r.dataset.item === "browser").dispatch("click");
+  await settle(40);
+  assert.deepEqual([idsIn(el, 0), idsIn(el, 1).length], [["chat"], 1]);
+  await closeBrowsers(el);
+});

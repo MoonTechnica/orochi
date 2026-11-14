@@ -458,6 +458,10 @@ const WORDS = {
     Content: "内容",
     "Open in editor": "エディタで開く",
     "Opening…": "開いています…",
+    "Split view": "画面を分割",
+    "Join the two sides": "分割をまとめる",
+    "Move to the other side": "反対側へ移す",
+    "Resize the split": "分割の幅を変える",
     Preview: "プレビュー",
     Browser: "ブラウザ",
     "Only this many browser tabs per conversation": "ブラウザタブは会話ごとにこの数までです",
@@ -1565,6 +1569,7 @@ const ICONS = {
   user: ["M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2", "circle:12,7,4"],
   terminal: ["m4 17 6-6-6-6", "M12 19h8"],
   globe: ["circle:12,12,10", "M2 12h20", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"],
+  columns: ["rect:3,3,18,18", "M12 3v18"],
   eye: ["M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z", "circle:12,12,3"],
   compass: ["m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36z", "circle:12,12,10"],
   search: ["circle:11,11,8", "m21 21-4.3-4.3"],
@@ -6770,7 +6775,16 @@ function stopBrowser(id) {
 // read when it is shown and never kept.
 const TAB_LIMIT = 12;
 
-const tabs = { thread: null, order: ["chat"], active: "chat", tabs: {}, panels: new Map(), seq: 0 };
+// The screen is one or two sides (`groups`), each with its own row of tabs and the one it shows.
+// `focus` is the side the keys go to and `active` the tab it shows. Every tab is on one side;
+// a side with no tabs left is gone, and the chat is a tab like the others, though never closed.
+const tabs = {
+  thread: null, order: ["chat"], active: "chat", tabs: {}, panels: new Map(), seq: 0,
+  groups: [{ ids: ["chat"], active: "chat" }], focus: 0, ratio: 0.5, wantSplit: 0, target: null,
+};
+const stripOf = (g) => el(g === 0 ? "doc-tabs" : "doc-tabs-2");
+const bodyOf = (g) => el(g === 0 ? "doc-body" : "doc-body-2");
+const groupOf = (id) => tabs.groups.findIndex((group) => group.ids.includes(id));
 
 function storedTabs(thread) {
   try {
@@ -6781,14 +6795,13 @@ function storedTabs(thread) {
     return null;
   }
 }
-
 function persistTabs() {
   if (!tabs.thread) return;
-  remember(`tabs:${tabs.thread}`, { order: tabs.order, active: tabs.active, tabs: tabs.tabs, seq: tabs.seq });
+  remember(`tabs:${tabs.thread}`, {
+    order: tabs.order, active: tabs.active, tabs: tabs.tabs, seq: tabs.seq,
+    groups: tabs.groups, focus: tabs.focus, ratio: tabs.ratio,
+  });
 }
-
-/// Brings the strip to the conversation in view. Another thread has its own tabs; coming back
-/// to one restores them, a file read again from the disk.
 function syncTabs(thread) {
   if (tabs.thread === thread) return;
   for (const panel of tabs.panels.values()) panel.remove();
@@ -6799,6 +6812,9 @@ function syncTabs(thread) {
   tabs.tabs = {};
   tabs.order = ["chat"];
   tabs.seq = 0;
+  tabs.ratio = 0.5;
+  tabs.focus = 0;
+  tabs.groups = [{ ids: ["chat"], active: "chat" }];
   if (saved) {
     for (const id of saved.order) {
       const tab = saved.tabs[id];
@@ -6810,10 +6826,25 @@ function syncTabs(thread) {
       }
     }
     tabs.seq = Number(saved.seq) || tabs.order.length;
-    tabs.active = tabs.order.includes(saved.active) ? saved.active : "chat";
-  } else {
-    tabs.active = "chat";
+    const placed = new Set();
+    const groups = (Array.isArray(saved.groups) ? saved.groups : []).slice(0, 2)
+      .map((group) => ({
+        ids: (group.ids || []).filter((id) => tabs.order.includes(id) && !placed.has(id) && placed.add(id)),
+        active: group.active,
+      }))
+      .filter((group) => group.ids.length);
+    if (!groups.length) groups.push({ ids: [], active: null });
+    // What no side claims goes to the first, so nothing a person opened is lost.
+    for (const id of tabs.order) if (!placed.has(id)) groups[0].ids.push(id);
+    for (const group of groups) if (!group.ids.includes(group.active)) group.active = group.ids[0];
+    if (!Array.isArray(saved.groups) && tabs.order.includes(saved.active)) groups[0].active = saved.active;
+    tabs.groups = groups;
+    tabs.focus = Math.max(0, Math.min(Number(saved.focus) || 0, groups.length - 1));
+    tabs.ratio = clampRatio(Number(saved.ratio) || 0.5);
   }
+  tabs.wantSplit = 0;
+  tabs.target = null;
+  tabs.active = tabs.groups[tabs.focus].active;
   showTab(tabs.active);
 }
 
@@ -6824,16 +6855,27 @@ function tabTitle(id) {
   return tab.kind === "media" ? tab.name : tab.path.split("/").pop();
 }
 
+let draggedTab = null;
+
 function drawTabs() {
-  const strip = el("doc-tabs");
-  strip.hidden = !tabs.thread;
+  drawStrip(0);
+  drawStrip(1);
+}
+
+function drawStrip(g) {
+  const strip = stripOf(g);
+  const group = tabs.groups[g];
   strip.replaceChildren();
-  for (const id of tabs.order) {
+  if (!group) return;
+  strip.hidden = !tabs.thread;
+  for (const id of group.ids) {
     const tab = tabs.tabs[id];
     const button = text("div", "doc-tab");
     button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", String(id === tabs.active));
+    button.setAttribute("aria-selected", String(id === group.active));
     button.dataset.tab = id;
+    // Two sides: the tab the keys go to is marked apart from the one the other side shows.
+    if (tabs.groups.length === 2 && id === group.active) button.dataset.pane = g === tabs.focus ? "focus" : "shown";
     if (tab?.preview) button.dataset.preview = "true";
     if (tab && tab.kind !== "terminal") button.title = tab.kind === "media" ? tab.name : tab.kind === "browser" ? tab.url || tab.title : tab.path;
     const icon = id === "chat" ? "message" : { media: "eye", terminal: "terminal", browser: "globe" }[tab.kind] || "file";
@@ -6848,6 +6890,24 @@ function drawTabs() {
         drawTabs();
       }
     });
+    // A tab is dragged to the other side, or sent there with its own button.
+    button.setAttribute("draggable", "true");
+    button.addEventListener("dragstart", (event) => {
+      draggedTab = id;
+      event.dataTransfer?.setData?.("text/plain", id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    button.addEventListener("dragend", () => { draggedTab = null; });
+    const away = text("button", "doc-move", tabs.groups.length === 2 ? (g === 0 ? "⇥" : "⇤") : "⇥");
+    away.type = "button";
+    away.title = t("Move to the other side");
+    away.setAttribute("aria-label", t("Move to the other side"));
+    away.addEventListener("click", (event) => {
+      event.stopPropagation();
+      moveTab(id, g === 0 ? 1 : 0);
+    });
+    // The last tab of a side cannot be sent over a split that would only empty it.
+    if (!(tabs.groups.length === 1 && group.ids.length < 2)) button.append(away);
     if (id !== "chat") {
       const close = text("button", "doc-close", "×");
       close.type = "button";
@@ -6862,26 +6922,152 @@ function drawTabs() {
   }
   const add = text("button", "doc-new", "+");
   add.type = "button";
-  add.id = "doc-new";
+  if (g === 0) add.id = "doc-new";
   add.title = t("New tab");
   add.setAttribute("aria-label", t("New tab"));
   add.addEventListener("click", (event) => {
     event.stopPropagation();
+    tabs.target = { g, at: Date.now() };
     openNewMenu();
   });
   strip.append(add);
+  if (g === tabs.groups.length - 1) {
+    const split = text("button", "doc-split");
+    split.type = "button";
+    if (g === 0) split.id = "doc-split";
+    split.append(drawn("columns"));
+    split.title = tabs.groups.length === 2 ? t("Join the two sides") : t("Split view");
+    split.setAttribute("aria-label", split.title);
+    split.setAttribute("aria-pressed", String(tabs.groups.length === 2));
+    split.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleSplit();
+    });
+    strip.append(split);
+  }
+}
+
+const clampRatio = (r) => Math.max(0.2, Math.min(0.8, Number.isFinite(r) ? r : 0.5));
+
+/// What a tab draws into: the chat's own element, or its panel.
+const elementOf = (id) => (id === "chat" ? el("split") : tabs.panels.get(id));
+
+/// Puts each side's tab on screen, in its own body, the left side a share of the width.
+function layoutGroups() {
+  const two = tabs.groups.length === 2;
+  el("group-1").hidden = !two;
+  el("pane-handle").hidden = !two;
+  tabs.groups.forEach((group, g) => {
+    if (group.active && group.active !== "chat" && !tabs.panels.has(group.active)) buildPanel(group.active);
+    for (const id of group.ids) {
+      const node = elementOf(id);
+      if (!node) continue;
+      if (node.parentNode !== bodyOf(g)) bodyOf(g).append(node);
+      node.hidden = id !== group.active;
+    }
+    const side = el(`group-${g}`);
+    side.style.flex = two && g === 0 ? `0 0 ${Math.round(tabs.ratio * 1000) / 10}%` : "1 1 0";
+    if (two && g === tabs.focus) side.dataset.focus = "true";
+    else if (side.dataset) delete side.dataset.focus;
+  });
+  el("pane-handle").setAttribute("aria-valuenow", String(Math.round(tabs.ratio * 100)));
+}
+
+/// Which tab each side shows, and which side has the keys, marked on the buttons as they are.
+function markTabs() {
+  for (const g of [0, 1]) {
+    for (const button of stripOf(g).querySelectorAll(".doc-tab")) {
+      const shown = tabs.groups[g]?.active === button.dataset.tab;
+      if (tabs.groups.length === 2 && shown) button.dataset.pane = g === tabs.focus ? "focus" : "shown";
+      else delete button.dataset.pane;
+    }
+  }
+}
+
+/// Pressing a side gives it the keys. The rows are not redrawn here: the button under the
+/// pointer must still be there when the press ends, or its click is lost.
+function focusGroup(g) {
+  if (g === tabs.focus || !tabs.groups[g]) return;
+  tabs.focus = g;
+  tabs.active = tabs.groups[g].active;
+  layoutGroups();
+  markTabs();
+  persistTabs();
+}
+
+/// Sends a tab to the other side, making one if there is only one, and a side with nothing left
+/// is gone.
+function moveTab(id, to) {
+  const from = groupOf(id);
+  if (from < 0 || to === from || to > 1) return;
+  if (!tabs.groups[to]) {
+    if (tabs.groups[from].ids.length < 2) return;
+    tabs.groups.push({ ids: [], active: null });
+  }
+  const source = tabs.groups[from];
+  const target = tabs.groups[to];
+  source.ids.splice(source.ids.indexOf(id), 1);
+  if (source.active === id) source.active = source.ids[0] ?? null;
+  target.ids.push(id);
+  target.active = id;
+  tabs.groups = tabs.groups.filter((group) => group.ids.length);
+  tabs.focus = tabs.groups.indexOf(target);
+  tabs.active = id;
+  layoutGroups();
+  if (tabs.tabs[id]?.kind === "terminal") focusShell(id);
+  persistTabs();
+  drawTabs();
+}
+
+/// Split view: the active tab goes to a side of its own, so the chat sits beside a tool or two
+/// tools sit side by side; with nothing to put there it asks what to open. With two sides it
+/// joins them again.
+function toggleSplit() {
+  if (!tabs.thread) return;
+  if (tabs.groups.length === 2) {
+    const [left, right] = tabs.groups;
+    left.ids.push(...right.ids);
+    left.active = tabs.active;
+    tabs.groups = [left];
+    tabs.focus = 0;
+    layoutGroups();
+    persistTabs();
+    drawTabs();
+    return;
+  }
+  const movable = tabs.active !== "chat" ? tabs.active : tabs.groups[0].ids.find((id) => id !== "chat");
+  if (!movable) {
+    tabs.wantSplit = Date.now();
+    openNewMenu();
+    return;
+  }
+  moveTab(movable, 1);
 }
 
 function showTab(id) {
   if (!tabs.order.includes(id)) id = "chat";
-  tabs.active = id;
-  el("split").hidden = id !== "chat";
-  el("doc-body").hidden = id === "chat";
-  if (id !== "chat") {
-    if (!tabs.panels.has(id)) buildPanel(id);
-    for (const [other, panel] of tabs.panels) panel.hidden = other !== id;
-    if (tabs.tabs[id].kind === "terminal") focusShell(id);
+  let g = groupOf(id);
+  if (g < 0) {
+    // A new tab: on the side asked for with its `+`, beside the chat when a split was asked
+    // for, else where the keys are.
+    const target = tabs.target;
+    if (tabs.wantSplit && Date.now() - tabs.wantSplit < 30000 && tabs.groups.length === 1) {
+      tabs.groups.push({ ids: [], active: null });
+      g = 1;
+    } else if (target && Date.now() - target.at < 30000 && tabs.groups[target.g]) {
+      g = target.g;
+    } else {
+      g = tabs.focus;
+    }
+    tabs.groups[g].ids.push(id);
   }
+  tabs.wantSplit = 0;
+  tabs.target = null;
+  tabs.groups[g].active = id;
+  tabs.focus = g;
+  tabs.active = id;
+  layoutGroups();
+  if (tabs.tabs[id]?.kind === "terminal") focusShell(id);
   persistTabs();
   drawTabs();
 }
@@ -6895,8 +7081,19 @@ function closeTab(id) {
   tabs.panels.delete(id);
   tabs.order.splice(at, 1);
   delete tabs.tabs[id];
-  if (tabs.active === id) tabs.active = tabs.order[Math.min(at, tabs.order.length) - 1] || "chat";
-  showTab(tabs.active);
+  const g = groupOf(id);
+  if (g >= 0) {
+    const group = tabs.groups[g];
+    const place = group.ids.indexOf(id);
+    group.ids.splice(place, 1);
+    if (group.active === id) group.active = group.ids[Math.min(place, group.ids.length - 1)] ?? null;
+    if (!group.ids.length) {
+      // The other side keeps the whole screen.
+      tabs.groups.splice(g, 1);
+      if (g < tabs.focus || tabs.focus >= tabs.groups.length) tabs.focus = Math.max(0, tabs.focus - 1);
+    }
+  }
+  showTab(tabs.groups[tabs.focus].active);
 }
 
 /// Opens a file in a tab. `preview` is how a look is told from a keeper: one preview tab is
@@ -6933,7 +7130,7 @@ function buildPanel(id) {
   const tab = tabs.tabs[id];
   const panel = text("section", "doc-panel");
   panel.dataset.tab = id;
-  el("doc-body").append(panel);
+  bodyOf(Math.max(0, groupOf(id))).append(panel);
   tabs.panels.set(id, panel);
   if (tab.kind === "file") drawFileTab(id, panel, false);
   if (tab.kind === "media") drawMediaTab(id, panel);
@@ -7099,13 +7296,71 @@ document.addEventListener("keydown", (event) => {
       event.preventDefault();
       showTab(id);
     }
+  } else if (mod && !event.shiftKey && !event.altKey && event.key === "\\") {
+    event.preventDefault();
+    toggleSplit();
   } else if (event.ctrlKey && event.key === "Tab") {
     event.preventDefault();
-    const at = tabs.order.indexOf(tabs.active);
+    const ids = tabs.groups[tabs.focus].ids;
     const step = event.shiftKey ? -1 : 1;
-    showTab(tabs.order[(at + step + tabs.order.length) % tabs.order.length]);
+    showTab(ids[(ids.indexOf(tabs.active) + step + ids.length) % ids.length]);
   }
 });
+
+for (const g of [0, 1]) {
+  el(`group-${g}`).addEventListener("pointerdown", () => focusGroup(g), true);
+  // A tab dropped on a side's strip or body goes there.
+  for (const part of [stripOf(g), bodyOf(g)]) {
+    part.addEventListener("dragover", (event) => { if (draggedTab) event.preventDefault(); });
+    part.addEventListener("drop", (event) => {
+      if (!draggedTab) return;
+      event.preventDefault();
+      const id = draggedTab;
+      draggedTab = null;
+      moveTab(id, g);
+    });
+  }
+}
+{
+  const handle = el("pane-handle");
+  const setRatio = (r) => {
+    tabs.ratio = clampRatio(r);
+    layoutGroups();
+  };
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    handle.setPointerCapture?.(event.pointerId);
+    handle.classList?.add("active");
+    document.body.classList?.add("resizing");
+    const move = (moved) => {
+      const box = handle.parentNode?.getBoundingClientRect?.();
+      if (box?.width) setRatio((moved.clientX - box.left) / box.width);
+    };
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      handle.classList?.remove("active");
+      document.body.classList?.remove("resizing");
+      persistTabs();
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  });
+  handle.addEventListener("dblclick", () => {
+    setRatio(0.5);
+    persistTabs();
+  });
+  handle.addEventListener("keydown", (event) => {
+    const step = (event.shiftKey ? 0.1 : 0.02) * ({ ArrowLeft: -1, ArrowRight: 1 }[event.key] || 0);
+    if (!step) return;
+    event.preventDefault();
+    setRatio(tabs.ratio + step);
+    persistTabs();
+  });
+}
 
 // Loop ----------------------------------------------------------------------
 // Office --------------------------------------------------------------------

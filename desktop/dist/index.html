@@ -39,8 +39,11 @@
       <button type="button" id="threads-ctl" aria-haspopup="menu" aria-expanded="false" hidden>Threads (0)</button>
       <div id="threads-menu" role="menu" hidden></div>
     </header>
-    <div id="doc-tabs" role="tablist" aria-label="Conversation tabs" hidden></div>
     <div id="doc-menu" role="dialog" aria-label="Find a file" hidden></div>
+    <div id="stage">
+    <section id="group-0" class="group">
+    <div id="doc-tabs" class="group-tabs" role="tablist" aria-label="Conversation tabs" hidden></div>
+    <div id="doc-body" class="group-body">
     <div id="split">
       <div id="chat">
       <div id="timeline" role="log" aria-live="polite"></div>
@@ -82,7 +85,14 @@
         </form>
       </aside>
     </div>
-    <div id="doc-body" hidden></div>
+    </div>
+    </section>
+    <div id="pane-handle" class="resizer" role="separator" aria-orientation="vertical" aria-label="Resize the split" tabindex="0" hidden></div>
+    <section id="group-1" class="group" hidden>
+    <div id="doc-tabs-2" class="group-tabs" role="tablist" aria-label="Conversation tabs, right side"></div>
+    <div id="doc-body-2" class="group-body"></div>
+    </section>
+    </div>
   </main>
 
   <aside id="side">

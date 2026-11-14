@@ -1663,7 +1663,7 @@ button:disabled { opacity: .5; cursor: default; }
 .desk:hover .avatar { border-color: var(--text); }
 
 /* Conversation tabs: Chat first, then whatever was opened beside it. */
-#doc-tabs { display: flex; align-items: stretch; gap: 1px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
+#doc-tabs, .group-tabs { display: flex; align-items: stretch; gap: 1px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
 .doc-tab {
   display: flex; align-items: center; gap: 6px; flex: none; max-width: 220px; padding: 6px 10px; font-size: 12px;
   color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; user-select: none;
@@ -1685,7 +1685,8 @@ button:disabled { opacity: .5; cursor: default; }
 .doc-find { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
 .doc-hit { padding: 5px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-hit[aria-selected="true"], .doc-hit:hover { background: var(--line); }
-#doc-body { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; }
+.group { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+#doc-body, .group-body { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; }
 .doc-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
 .doc-file { flex: 1; min-height: 0; overflow: auto; }
 
@@ -1738,3 +1739,16 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .browser-canvas { display: block; width: 100%; height: 100%; outline: none; }
 .browser-typing { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; }
 .browser-dialog { position: absolute; left: 12px; right: 12px; top: 12px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; background: var(--panel, #222); color: inherit; border: 1px solid #8886; border-radius: 6px; box-shadow: 0 4px 16px #0006; }
+
+
+/* Split view: each side has a row of tabs of its own; the side the keys go to is marked above. */
+#stage { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; }
+#pane-handle { position: relative; flex: none; width: 7px; top: auto; bottom: auto; margin: 0 -3px; z-index: 4; cursor: col-resize; }
+#pane-handle::after { left: 3px; background: var(--line); }
+.group[data-focus="true"] > .group-tabs { box-shadow: inset 0 2px 0 var(--brand); }
+.doc-tab[data-pane="shown"][aria-selected="true"] { color: var(--text); }
+.doc-move { border: 0; background: none; color: var(--muted); font-size: 12px; padding: 0 2px; border-radius: 4px; opacity: 0; }
+.doc-tab:hover .doc-move, .doc-tab:focus-within .doc-move { opacity: 1; }
+.doc-move:hover { color: var(--text); background: var(--line); }
+.doc-split { margin-left: auto; font: inherit; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; cursor: pointer; flex: none; }
+.doc-split[aria-pressed="true"] { color: var(--brand); border-color: var(--line); }

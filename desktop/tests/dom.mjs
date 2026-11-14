@@ -33,9 +33,12 @@ class Node {
     };
   }
   get childElementCount() { return this.children.filter((c) => c instanceof Node).length; }
+  get parentNode() { return this.parent ?? null; }
   append(...nodes) {
     for (const node of nodes) {
       const child = node instanceof Node || node instanceof TextNode ? node : new TextNode(String(node));
+      // A node has one parent: appending it somewhere else moves it, as in a browser.
+      if (child.parent && child.parent !== this) child.parent.children = child.parent.children.filter((c) => c !== child);
       child.parent = this;
       this.children.push(child);
     }

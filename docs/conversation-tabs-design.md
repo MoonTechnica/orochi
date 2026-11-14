@@ -19,7 +19,8 @@ Written: 2026-11-14 (browser rewritten the same day for Chromium, D4).
 | **D3** HTML preview | **built, checked against real Chrome.** `view_preview` serves a conversation's folder on loopback under a random token (`GET`/`HEAD` only, never through `..`, `.git` or a symlink out) and opens it in a tab whose every request outside that origin is refused by `Fetch.requestPaused` (confinement is switched on before the first navigation). On the real Chrome a page's own CSS and script ran and its `fetch` to another local server failed with that server seeing 0 requests (`tests/browser_real.rs`). **Gap:** `Fetch` does not intercept WebSockets, so a preview page could still open one; no live reload, no thumbnail |
 | **D5** 3D models | **built, partly checked.** three.js 0.170.0 with the glTF/OBJ/STL/PLY loaders and OrbitControls, bundled once with esbuild 0.24.0 (recipe in `desktop/dist/vendor/three/entry.js`) and run in the same frame, whose CSP now allows `connect-src blob: data:` (no network) so embedded textures load. Rendered a hand-made GLB cube and an ASCII STL in real Chromium (headless, software WebGL). **Not done:** a `.gltf` with external buffers or textures, animations, Draco/Meshopt, a still for the timeline, a limit on live WebGL contexts; real models and Tauri's WebKit untested |
 | **Lottie** | **not built** |
-| **W4** dock, user attachments, sandbox terminal | **not built** |
+| **Split view** (the user's request 2026-11-15: *each split section has tabs of its own*; the "dock beside the chat" of §3.6 and two tools side by side) | **built; seen in the real window except the last fix.** The screen is one or two **sides** (`groups`), each with its own row of tabs and the tab it shows; `focus` is the side the keys go to (a line on top of its row), and every tab is on exactly one side, the chat included. The split button (right end of the last row, `⌘\\`) sends the tab in view to a side of its own, or asks what to open when there is nothing to send; with two sides it joins them. A `+` opens on its own side; a tab goes to the other side with its `⇥` button or by dragging it onto the other row or body; a side left with no tab is gone. The edge is dragged, moved with the arrows (20–80 %) or reset by double-click; sides, focus and width are remembered per conversation, and the older one-row state opens as one side. **Seen in the window:** chat | terminal each with its own row, the old state migrated, the edge dragged, a tab switched on one side. **Found there and fixed, not re-seen:** pressing a side redrew its row, so the click that followed on a tab of the other side was lost (the fix: only marks change; fake-DOM test checks the button survives). **Not done:** more than two sides, a vertical split, dropping a tab on a screen edge to split, a tab shown on both sides |
+| **W4** user attachments in the timeline, sandbox terminal | **not built** |
 
 Claims about what Tauri, WKWebView,
 Chrome or the ACP adapters do are marked *unverified* where no one has measured them; what
@@ -374,7 +375,7 @@ Following VS Code's model:
 * **The agent's own browser tools** (Claude in Chrome, a configured Playwright MCP) keep
   working; the prompt note says that the Orochi tab is the one the user is watching.
 
-### 3.6 Dock beside the chat (phase W4)
+#### 3.6 Dock beside the chat (phase W4)
 
 Watching a dev server while talking to the agent needs both on screen. Each non-chat tab has a
 **Dock right** button that moves its panel into a resizable column inside `#split`, using the
