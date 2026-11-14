@@ -6418,7 +6418,7 @@ async function startTerminal(id, panel) {
       entry.exited = false;
       connectShell(entry);
     } else if (entry.sid) {
-      quietly("term_write", { id: entry.sid, data });
+      sendTyped(entry, data);
     }
   });
   if (window.ResizeObserver) new window.ResizeObserver(() => fitShell(entry)).observe(host);
@@ -6435,6 +6435,24 @@ function focusShell(id) {
   if (!entry) return;
   fitShell(entry);
   entry.term?.focus?.();
+}
+
+/// Keys go to the shell in the order they were typed. Each `invoke` is a request of its own and
+/// two in flight may arrive either way round (measured in the real window: `ls -la && echo x`
+/// reached the shell scrambled), so one is sent at a time and what is typed meanwhile goes with
+/// the next.
+function sendTyped(entry, data) {
+  entry.typed = (entry.typed || "") + data;
+  if (entry.typing) return;
+  entry.typing = true;
+  (async () => {
+    while (entry.typed) {
+      const chunk = entry.typed;
+      entry.typed = "";
+      await quietly("term_write", { id: entry.sid, data: chunk });
+    }
+    entry.typing = false;
+  })();
 }
 
 function stopTerminal(id) {
@@ -6550,6 +6568,10 @@ async function startBrowser(id, panel) {
   const entry = { id, thread, since: 0, alive: true, view: { w: 1024, h: 768 }, canvas, field };
   browsers.set(key, entry);
   const send = (tool, args) => viewCall(thread, id, tool, args);
+  // Input is sent one event at a time, in order: a mouse-down must not overtake a mouse-move,
+  // nor a key-up its key-down (see sendTyped).
+  let tail = Promise.resolve();
+  const typed = (args) => (tail = tail.then(() => send("view_input", args)));
   button("‹", t("Back"), () => send("view_back"));
   button("›", t("Forward"), () => send("view_forward"));
   button("↻", t("Reload"), () => send("view_reload"));
@@ -6616,7 +6638,7 @@ async function startBrowser(id, panel) {
   };
   const BUTTONS = ["left", "middle", "right"];
   let moved = 0;
-  const mouse = (kind, event, extra = {}) => send("view_input", {
+  const mouse = (kind, event, extra = {}) => typed({
     type: "mouse", kind, ...place(event), button: BUTTONS[event.button] || "left",
     buttons: event.buttons || 0, modifiers: modifiersOf(event), ...extra,
   });
@@ -6645,7 +6667,7 @@ async function startBrowser(id, panel) {
     event.stopPropagation();
     event.preventDefault();
     const printable = event.key.length === 1 && !event.ctrlKey && !event.altKey;
-    send("view_input", {
+    typed({
       type: "key", kind: printable ? "keyDown" : "rawKeyDown", key: event.key, code: event.code,
       vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event), text: printable ? event.key : "",
     });
@@ -6653,23 +6675,23 @@ async function startBrowser(id, panel) {
   typing.addEventListener("keyup", (event) => {
     if (event.metaKey || event.isComposing || event.keyCode === 229) return;
     event.stopPropagation();
-    send("view_input", {
+    typed({
       type: "key", kind: "keyUp", key: event.key, code: event.code,
       vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event),
     });
   });
   typing.addEventListener("compositionupdate", (event) => {
-    send("view_input", { type: "ime", text: event.data || "", commit: false });
+    typed({ type: "ime", text: event.data || "", commit: false });
   });
   typing.addEventListener("compositionend", (event) => {
-    send("view_input", { type: "ime", text: event.data || "", commit: true });
+    typed({ type: "ime", text: event.data || "", commit: true });
     typing.value = "";
   });
   typing.addEventListener("paste", (event) => {
     const pasted = event.clipboardData?.getData?.("text/plain");
     if (!pasted) return;
     event.preventDefault();
-    send("view_input", { type: "text", text: pasted });
+    typed({ type: "text", text: pasted });
   });
 
   // Frames --------------------------------------------------------------------------

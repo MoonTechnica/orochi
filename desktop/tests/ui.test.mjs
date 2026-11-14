@@ -4214,3 +4214,39 @@ test("a 3D model, text or binary, is drawn by the sandboxed frame with the bundl
   assert.equal(el("viewer").querySelectorAll("iframe")[0].getAttribute("sandbox"), "allow-scripts");
   assert.deepEqual(fetched, ["vendor/three/three-viewer.min.js"]);
 });
+
+test("what is typed into a terminal reaches the shell in order, one request at a time, even when the first is slow", async () => {
+  const inflight = [];
+  const sent = [];
+  let busy = 0;
+  let overlapped = false;
+  const { el, window } = await open({
+    term_open: { id: "term-3", shell: "zsh" },
+    term_resize: null,
+    term_close: null,
+    term_write: async ({ data }) => {
+      busy += 1;
+      if (busy > 1) overlapped = true;
+      await new Promise((resolve) => setTimeout(resolve, sent.length === 0 ? 40 : 1));
+      sent.push(data);
+      busy -= 1;
+      return null;
+    },
+  });
+  const terms = fakeXterm(window);
+  fakeChannelAndEvents(window);
+  await newTerminal(el);
+  void inflight;
+  for (const key of ["l", "s", " ", "-", "l", "a", "\r"]) terms[0].type(key);
+  await settle(200);
+  assert.equal(sent.join(""), "ls -la\r", "in the order it was typed");
+  assert.equal(overlapped, false, "never two requests in flight");
+  assert.ok(sent.length < 7, "what was typed meanwhile went together");
+  await closeTerminals(el);
+});
+async function closeTerminals(el) {
+  for (const id of tabIds(el).filter((tab) => tab.startsWith("t"))) {
+    tabButton(el, id).querySelectorAll(".doc-close")[0].dispatch("click");
+  }
+  await settle(10);
+}
