@@ -180,6 +180,7 @@ const WORDS = {
     Advanced: "詳細設定",
     "Docker inside the sandbox": "サンドボックス内で Docker を使う",
     Cancel: "キャンセル",
+    OK: "OK",
     Create: "作成",
     "Creating the sandbox…": "サンドボックスを作成しています…",
     Sandboxes: "サンドボックス",
@@ -457,6 +458,15 @@ const WORDS = {
     Content: "内容",
     "Open in editor": "エディタで開く",
     "Opening…": "開いています…",
+    Preview: "プレビュー",
+    Browser: "ブラウザ",
+    "Only this many browser tabs per conversation": "ブラウザタブは会話ごとにこの数までです",
+    "The browser is off. Set `enabled = true` under [browser] in the configuration.": "ブラウザはオフです。設定の [browser] で `enabled = true` にしてください。",
+    "No Chrome or Chromium was found. Install one, or name it as `chrome` under [browser].": "Chrome か Chromium が見つかりません。インストールするか、[browser] の `chrome` で指定してください。",
+    Forward: "進む",
+    Reload: "再読み込み",
+    "Type a web address": "ウェブのアドレスを入力",
+    "That is not a web address.": "ウェブのアドレスではありません。",
     "too large to preview": "プレビューするには大きすぎます",
     "viewer did not load": "ビューアを読み込めませんでした",
     "could not be read": "読み込めませんでした",
@@ -1554,6 +1564,7 @@ function drawTimeline(thread, said = []) {
 const ICONS = {
   user: ["M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2", "circle:12,7,4"],
   terminal: ["m4 17 6-6-6-6", "M12 19h8"],
+  globe: ["circle:12,12,10", "M2 12h20", "M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"],
   eye: ["M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z", "circle:12,12,3"],
   compass: ["m16.24 7.76-2.12 6.36-6.36 2.12 2.12-6.36z", "circle:12,12,10"],
   search: ["circle:11,11,8", "m21 21-4.3-4.3"],
@@ -5555,6 +5566,7 @@ function drawViewer() {
   actions.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
   actions.append(action(t("Reveal"), () => call("open_path", { thread, path: file.path, reveal: true })));
   actions.append(action(t("Open in tab"), () => openFileTab(file.path, { line: tree.line })));
+  if (/\.html?$/i.test(file.path)) actions.append(action(t("Preview"), () => openBrowserTab("", file.path)));
   actions.append(action(t("Add to message"), () => mention(file.path)));
   actions.append(action(t("Copy path"), () => window.navigator?.clipboard?.writeText?.(file.path)));
   if (viewKind(file)) {
@@ -5594,6 +5606,10 @@ function fileBody(host, file, o) {
     image.src = file.image;
     image.alt = file.path;
     host.append(image);
+    return;
+  }
+  if (!o.source && /\.(glb|gltf|obj|stl|ply)$/i.test(file.path)) {
+    frameView(host, file, o, "model");
     return;
   }
   if (file.binary && /\.(pdf|docx|xlsx|pptx)$/i.test(file.path)) {
@@ -5652,6 +5668,7 @@ function fileBody(host, file, o) {
 const FRAME_LIBRARIES = {
   pdf: (get) => Promise.all([get("pdfjs/pdf.min.mjs"), get("pdfjs/pdf.worker.min.mjs")])
     .then(([lib, worker]) => ({ lib, worker })),
+  model: (get) => get("three/three-viewer.min.js").then((lib) => ({ lib })),
   pptx: (get) => get("pptx-renderer/aiden0z-pptx-renderer.browser.es.js").then((lib) => ({ lib })),
   xlsx: (get) => get("sheetjs/xlsx.mini.min.js").then((script) => ({ scripts: [script] })),
   docx: (get) => Promise.all([get("jszip/jszip.min.js"), get("docx-preview/docx-preview.min.js")])
@@ -5697,7 +5714,7 @@ function frameView(host, file, o, type) {
       const message = event.data || {};
       if (message.kind === "ready") {
         const bytes = dataBytes(media.data);
-        frame.contentWindow.postMessage({ kind: "open", type, ...libs, bytes }, "*", [bytes]);
+        frame.contentWindow.postMessage({ kind: "open", type, name: file.path, ...libs, bytes }, "*", [bytes]);
       } else if (message.kind === "opened") {
         note.remove();
       } else if (message.kind === "error") {
@@ -6447,6 +6464,282 @@ function openTerminalTab() {
   showTab(id);
 }
 
+// Browser ---------------------------------------------------------------------
+// The person's own tab (docs/conversation-tabs-design.md §3.5.3): Chrome runs in the broker, not
+// here, and this is a window onto it — the newest screencast frame on a canvas, and the person's
+// mouse and keys sent back as input. Input methods work in a textarea of this window, where the
+// system's IME is, and only the composed text is sent. Agents cannot reach this tab.
+const BROWSERS_PER_THREAD = 3;
+const browsers = new Map();
+const VK = {
+  Enter: 13, Backspace: 8, Tab: 9, Escape: 27, Delete: 46, Home: 36, End: 35, PageUp: 33, PageDown: 34,
+  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+};
+
+const viewCall = async (thread, tab, tool, args = {}) => {
+  try {
+    return { ok: await invoke("browser_call", { thread, tab, tool, args }) };
+  } catch (error) {
+    return { error: String(error) };
+  }
+};
+
+/// What the address bar means: a web address as typed, or one that only lacks its scheme.
+function addressOf(typed) {
+  const value = String(typed || "").trim();
+  if (!value) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return value;
+  if (/^(localhost|127\.|\[::1\]|\d+\.\d+\.\d+\.\d+)/i.test(value)) return `http://${value}`;
+  if (/^[^\s/]+\.[a-z]{2,}([/:?#].*)?$/i.test(value)) return `https://${value}`;
+  return null;
+}
+
+function modifiersOf(event) {
+  return (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0);
+}
+
+function openBrowserTab(url = "", preview = null) {
+  if (!tabs.thread) return;
+  const mine = tabs.order.filter((id) => tabs.tabs[id]?.kind === "browser").length;
+  if (mine >= BROWSERS_PER_THREAD) {
+    report(`${t("Only this many browser tabs per conversation")} (${BROWSERS_PER_THREAD})`);
+    return;
+  }
+  if (tabs.order.length >= TAB_LIMIT) {
+    report(`${t("Tabs are full")} (${TAB_LIMIT})`);
+    return;
+  }
+  const id = `b${++tabs.seq}`;
+  tabs.order.push(id);
+  tabs.tabs[id] = { kind: "browser", title: preview ? preview.split("/").pop() : t("Browser"), url, preview };
+  showTab(id);
+}
+
+async function startBrowser(id, panel) {
+  const thread = tabs.thread;
+  const tab = tabs.tabs[id];
+  const key = `${thread}:${id}`;
+  const status = await call("browser_status");
+  if (!tabs.panels.has(id) || tabs.panels.get(id) !== panel) return;
+  if (!status?.enabled) {
+    panel.append(text("p", "empty", t("The browser is off. Set `enabled = true` under [browser] in the configuration.")));
+    return;
+  }
+  if (!status.chrome) {
+    panel.append(text("p", "empty", t("No Chrome or Chromium was found. Install one, or name it as `chrome` under [browser].")));
+    return;
+  }
+  const bar = text("div", "browser-bar");
+  const button = (label, title, run) => {
+    const b = text("button", "browser-button", label);
+    b.type = "button";
+    b.title = title;
+    b.addEventListener("click", run);
+    bar.append(b);
+    return b;
+  };
+  const field = document.createElement("input");
+  const view = text("div", "browser-view");
+  const canvas = document.createElement("canvas");
+  canvas.className = "browser-canvas";
+  const typing = document.createElement("textarea");
+  typing.className = "browser-typing";
+  typing.setAttribute("aria-label", "Page input");
+  const notice = text("div", "browser-dialog");
+  notice.hidden = true;
+  const entry = { id, thread, since: 0, alive: true, view: { w: 1024, h: 768 }, canvas, field };
+  browsers.set(key, entry);
+  const send = (tool, args) => viewCall(thread, id, tool, args);
+  button("‹", t("Back"), () => send("view_back"));
+  button("›", t("Forward"), () => send("view_forward"));
+  button("↻", t("Reload"), () => send("view_reload"));
+  field.className = "browser-address";
+  field.setAttribute("placeholder", t("Type a web address"));
+  field.setAttribute("spellcheck", "false");
+  field.value = tab.url || "";
+  field.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key !== "Enter" || event.isComposing) return;
+    const address = addressOf(field.value);
+    if (!address) {
+      report(t("That is not a web address."));
+      return;
+    }
+    tab.url = address;
+    persistTabs();
+    send("view_navigate", { url: address }).then((r) => r.error && report(r.error));
+    typing.focus?.();
+  });
+  bar.append(field);
+  view.append(canvas, typing, notice);
+  panel.append(bar, view);
+
+  const size = () => {
+    const w = Math.round(view.clientWidth || 0) || 1024;
+    const h = Math.round(view.clientHeight || 0) || 768;
+    return { w, h };
+  };
+  const resize = async () => {
+    entry.view = size();
+    entry.since = 0;
+    const r = await send("view_resize", {
+      width: entry.view.w, height: entry.view.h, ratio: Math.min(2, window.devicePixelRatio || 1),
+    });
+    if (r.error) report(r.error);
+  };
+  if (typeof ResizeObserver === "function") {
+    let timer = 0;
+    new ResizeObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (entry.alive && !panel.hidden) resize(); }, 150);
+    }).observe(view);
+  }
+  await resize();
+  // A preview serves a file of this conversation's folder, and its tab loads nothing else.
+  if (tab.preview) {
+    const r = await send("view_preview", { path: tab.preview });
+    if (r.error) report(r.error);
+  } else if (tab.url) {
+    const r = await send("view_open", { url: tab.url });
+    if (r.error) report(r.error);
+  }
+
+  // Input ---------------------------------------------------------------------------
+  const place = (event) => {
+    const box = canvas.getBoundingClientRect?.() || {};
+    const w = box.width || entry.view.w;
+    const h = box.height || entry.view.h;
+    return {
+      x: ((event.clientX - (box.left || 0)) * entry.view.w) / w,
+      y: ((event.clientY - (box.top || 0)) * entry.view.h) / h,
+    };
+  };
+  const BUTTONS = ["left", "middle", "right"];
+  let moved = 0;
+  const mouse = (kind, event, extra = {}) => send("view_input", {
+    type: "mouse", kind, ...place(event), button: BUTTONS[event.button] || "left",
+    buttons: event.buttons || 0, modifiers: modifiersOf(event), ...extra,
+  });
+  canvas.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    typing.focus?.();
+    mouse("mousePressed", event, { clickCount: event.detail || 1, buttons: event.buttons || 1 });
+  });
+  canvas.addEventListener("mouseup", (event) => mouse("mouseReleased", event, { clickCount: event.detail || 1, buttons: 0 }));
+  canvas.addEventListener("mousemove", (event) => {
+    // Chrome needs hover (menus, tooltips) but not every pixel of it.
+    const now = Date.now();
+    if (now - moved < 40) return;
+    moved = now;
+    mouse("mouseMoved", event, { button: event.buttons ? "left" : "none" });
+  });
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    mouse("mouseWheel", event, { deltaX: event.deltaX, deltaY: event.deltaY, button: "none" });
+  });
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  // A key is the page's unless it is a ⌘ shortcut, which is the window's (§3.2).
+  typing.addEventListener("keydown", (event) => {
+    if (event.metaKey || (event.ctrlKey && event.key === "Tab")) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const printable = event.key.length === 1 && !event.ctrlKey && !event.altKey;
+    send("view_input", {
+      type: "key", kind: printable ? "keyDown" : "rawKeyDown", key: event.key, code: event.code,
+      vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event), text: printable ? event.key : "",
+    });
+  });
+  typing.addEventListener("keyup", (event) => {
+    if (event.metaKey || event.isComposing || event.keyCode === 229) return;
+    event.stopPropagation();
+    send("view_input", {
+      type: "key", kind: "keyUp", key: event.key, code: event.code,
+      vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event),
+    });
+  });
+  typing.addEventListener("compositionupdate", (event) => {
+    send("view_input", { type: "ime", text: event.data || "", commit: false });
+  });
+  typing.addEventListener("compositionend", (event) => {
+    send("view_input", { type: "ime", text: event.data || "", commit: true });
+    typing.value = "";
+  });
+  typing.addEventListener("paste", (event) => {
+    const pasted = event.clipboardData?.getData?.("text/plain");
+    if (!pasted) return;
+    event.preventDefault();
+    send("view_input", { type: "text", text: pasted });
+  });
+
+  // Frames --------------------------------------------------------------------------
+  const paint = (frame) => {
+    const image = new Image();
+    image.onload = () => {
+      if (!entry.alive) return;
+      canvas.width = image.width;
+      canvas.height = image.height;
+      canvas.getContext("2d").drawImage(image, 0, 0);
+    };
+    image.src = `data:image/jpeg;base64,${frame.jpeg}`;
+  };
+  const dialogs = (dialog) => {
+    notice.replaceChildren();
+    notice.hidden = !dialog;
+    if (!dialog) return;
+    notice.append(text("span", null, dialog.message));
+    const answer = document.createElement("input");
+    if (dialog.type === "prompt") notice.append(answer);
+    const respond = (accept) => send("view_dialog", { accept, text: answer.value || "" });
+    const ok = text("button", "link", t("OK"));
+    ok.type = "button";
+    ok.addEventListener("click", () => respond(true));
+    notice.append(ok);
+    if (dialog.type !== "alert") {
+      const no = text("button", "link", t("Cancel"));
+      no.type = "button";
+      no.addEventListener("click", () => respond(false));
+      notice.append(no);
+    }
+  };
+  while (entry.alive && tabs.panels.get(id) === panel) {
+    if (panel.hidden) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      continue;
+    }
+    const r = await send("view_frame", { since: entry.since, width: entry.view.w, height: entry.view.h });
+    if (r.error) {
+      report(r.error);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      continue;
+    }
+    const got = r.ok || {};
+    if (got.frame) {
+      entry.since = got.frame.seq;
+      paint(got.frame);
+    }
+    if (got.url && document.activeElement !== field && field.value !== got.url) {
+      field.value = got.url;
+      tab.url = got.url;
+    }
+    if (got.title && got.title !== tab.title) {
+      tab.title = got.title;
+      drawTabs();
+    }
+    dialogs(got.dialog || null);
+    await new Promise((resolve) => setTimeout(resolve, 70));
+  }
+}
+
+function stopBrowser(id) {
+  const key = `${tabs.thread}:${id}`;
+  const entry = browsers.get(key);
+  if (!entry) return;
+  entry.alive = false;
+  browsers.delete(key);
+  viewCall(entry.thread, id, "view_close");
+}
+
 // Tabs ----------------------------------------------------------------------
 // The centre column of a conversation is a row of tabs (docs/conversation-tabs-design.md §3):
 // Chat is always the first and cannot be closed; the others are files now, and terminals,
@@ -6480,7 +6773,7 @@ function syncTabs(thread) {
   tabs.panels.clear();
   tabs.thread = thread;
   const saved = storedTabs(thread);
-  const known = new Set(["file", "media", "terminal"]);
+  const known = new Set(["file", "media", "terminal", "browser"]);
   tabs.tabs = {};
   tabs.order = ["chat"];
   tabs.seq = 0;
@@ -6505,7 +6798,7 @@ function syncTabs(thread) {
 function tabTitle(id) {
   if (id === "chat") return t("Chat");
   const tab = tabs.tabs[id];
-  if (tab.kind === "terminal") return tab.title || t("Terminal");
+  if (tab.kind === "terminal" || tab.kind === "browser") return tab.title || t(tab.kind === "browser" ? "Browser" : "Terminal");
   return tab.kind === "media" ? tab.name : tab.path.split("/").pop();
 }
 
@@ -6520,8 +6813,8 @@ function drawTabs() {
     button.setAttribute("aria-selected", String(id === tabs.active));
     button.dataset.tab = id;
     if (tab?.preview) button.dataset.preview = "true";
-    if (tab && tab.kind !== "terminal") button.title = tab.kind === "media" ? tab.name : tab.path;
-    const icon = id === "chat" ? "message" : { media: "eye", terminal: "terminal" }[tab.kind] || "file";
+    if (tab && tab.kind !== "terminal") button.title = tab.kind === "media" ? tab.name : tab.kind === "browser" ? tab.url || tab.title : tab.path;
+    const icon = id === "chat" ? "message" : { media: "eye", terminal: "terminal", browser: "globe" }[tab.kind] || "file";
     button.append(drawn(icon));
     button.append(text("span", "doc-name", tabTitle(id)));
     button.addEventListener("click", () => showTab(id));
@@ -6575,6 +6868,7 @@ function closeTab(id) {
   const at = tabs.order.indexOf(id);
   if (at < 1) return;
   if (tabs.tabs[id]?.kind === "terminal") stopTerminal(id);
+  if (tabs.tabs[id]?.kind === "browser") stopBrowser(id);
   tabs.panels.get(id)?.remove();
   tabs.panels.delete(id);
   tabs.order.splice(at, 1);
@@ -6622,6 +6916,7 @@ function buildPanel(id) {
   if (tab.kind === "file") drawFileTab(id, panel, false);
   if (tab.kind === "media") drawMediaTab(id, panel);
   if (tab.kind === "terminal") startTerminal(id, panel);
+  if (tab.kind === "browser") startBrowser(id, panel);
 }
 
 async function drawFileTab(id, panel, source) {
@@ -6648,6 +6943,7 @@ async function drawFileTab(id, panel, source) {
   actions.append(action(t("Reload"), () => drawFileTab(id, panel, source)));
   actions.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
   actions.append(action(t("Reveal"), () => call("open_path", { thread, path: file.path, reveal: true })));
+  if (/\.html?$/i.test(file.path)) actions.append(action(t("Preview"), () => openBrowserTab("", file.path)));
   actions.append(action(t("Add to message"), () => {
     showTab("chat");
     mention(file.path);
@@ -6679,11 +6975,12 @@ function openNewMenu() {
   menu.replaceChildren();
   for (const [what, label, run] of [
     ["terminal", t("Terminal"), () => { closeQuickOpen(); openTerminalTab(); }],
+    ["browser", t("Browser"), () => { closeQuickOpen(); openBrowserTab(); }],
     ["file", t("File…"), () => openQuickOpen()],
   ]) {
     const row = text("div", "doc-item");
     row.dataset.item = what;
-    row.append(drawn(what === "terminal" ? "terminal" : "file"), text("span", null, label));
+    row.append(drawn(what === "terminal" ? "terminal" : what === "browser" ? "globe" : "file"), text("span", null, label));
     row.addEventListener("click", (event) => {
       event.stopPropagation();
       run();

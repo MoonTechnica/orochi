@@ -26,7 +26,7 @@ fn every_vendored_file_is_the_one_that_was_recorded() {
         );
     }
     assert!(
-        checked >= 17,
-        "the terminal's four files the PDF reader's three the Word reader's four the spreadsheet reader's two and the presentation reader's four"
+        checked >= 20,
+        "the terminal's four files the PDF reader's three the Word reader's four the spreadsheet reader's two the presentation reader's four and the model viewer's three"
     );
 }

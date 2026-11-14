@@ -176,6 +176,98 @@
     say({ kind: "opened", pages: viewer.slideCount });
   }
 
+  // A model is drawn by three.js from the bytes it was given; a .gltf that names outside files
+  // draws without them, since this frame can fetch nothing.
+  async function openModel(message) {
+    const blob = URL.createObjectURL(new Blob([message.lib], { type: "text/javascript" }));
+    const { THREE, GLTFLoader, OBJLoader, STLLoader, PLYLoader, OrbitControls } = await import(blob);
+    pagesHost.textContent = "";
+    pagesHost.style.padding = "0";
+    const host = document.createElement("div");
+    pagesHost.style.position = "relative";
+    host.style.cssText = "position:absolute;inset:0";
+    pagesHost.append(host);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    host.append(renderer.domElement);
+    const scene = new THREE.Scene();
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+    sun.position.set(3, 5, 4);
+    scene.add(sun);
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 10000);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    const ext = String(message.name || "").split(".").pop().toLowerCase();
+    const bytes = message.bytes;
+    const material = () => new THREE.MeshStandardMaterial({ color: 0xb8bcc6, roughness: 0.6, metalness: 0.1 });
+    let object;
+    if (ext === "glb" || ext === "gltf") {
+      object = await new Promise((done, bad) => new GLTFLoader().parse(ext === "gltf" ? new TextDecoder().decode(bytes) : bytes, "", (g) => done(g.scene), bad));
+    } else if (ext === "obj") {
+      object = new OBJLoader().parse(new TextDecoder().decode(bytes));
+      object.traverse((n) => { if (n.isMesh && !n.material?.map) n.material = material(); });
+    } else if (ext === "stl") {
+      object = new THREE.Mesh(new STLLoader().parse(bytes), material());
+    } else if (ext === "ply") {
+      const geometry = new PLYLoader().parse(bytes);
+      geometry.computeVertexNormals();
+      object = new THREE.Mesh(geometry, geometry.hasAttribute("color") ? new THREE.MeshStandardMaterial({ vertexColors: true }) : material());
+    } else {
+      throw new Error(`.${ext} is not a model this viewer reads`);
+    }
+    scene.add(object);
+
+    let triangles = 0;
+    const meshes = [];
+    object.traverse((n) => {
+      if (!n.isMesh) return;
+      meshes.push(n);
+      const g = n.geometry;
+      triangles += (g.index ? g.index.count : g.getAttribute("position")?.count || 0) / 3;
+    });
+    const box = new THREE.Box3().setFromObject(object);
+    const size = box.getSize(new THREE.Vector3());
+    const centre = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(size.x, size.y, size.z, 1e-6);
+    const grid = new THREE.GridHelper(radius * 3, 20, 0x666666, 0x444444);
+    grid.position.set(centre.x, box.min.y, centre.z);
+    scene.add(grid);
+    camera.position.copy(centre).add(new THREE.Vector3(radius * 1.2, radius * 0.9, radius * 1.6));
+    camera.near = radius / 100;
+    camera.far = radius * 100;
+    camera.updateProjectionMatrix();
+    controls.target.copy(centre);
+
+    const fit = () => {
+      const w = host.clientWidth || 600;
+      const h = host.clientHeight || 400;
+      renderer.setSize(w, h, false);
+      renderer.domElement.style.cssText = "width:100%;height:100%;display:block";
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    let wire = false;
+    const toggle = document.createElement("button");
+    toggle.textContent = "wireframe";
+    toggle.addEventListener("click", () => {
+      wire = !wire;
+      for (const m of meshes) for (const mat of [].concat(m.material)) mat.wireframe = wire;
+    });
+    document.getElementById("bar").append(toggle);
+    countHost.textContent = `${Math.round(triangles).toLocaleString()} triangles · ${size.x.toFixed(2)} × ${size.y.toFixed(2)} × ${size.z.toFixed(2)}`;
+    const tick = () => {
+      controls.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    };
+    tick();
+    say({ kind: "opened", pages: 1, triangles: Math.round(triangles) });
+  }
+
   function applyZoom() {
     zoomHost.textContent = `${Math.round(scale * 100)}%`;
     if (docx) docx.style.zoom = String(scale);
@@ -185,6 +277,7 @@
     if (message.type === "docx") return openDocx(message);
     if (message.type === "xlsx") return openSheets(message);
     if (message.type === "pptx") return openSlides(message);
+    if (message.type === "model") return openModel(message);
     return openPdf(message);
   }
 

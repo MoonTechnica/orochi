@@ -13,6 +13,15 @@ struct Open(Mutex<Client>);
 /// The shells in the window's terminal tabs.
 struct Shells(orochi_desktop::term::Terminals);
 
+/// The person's browser tabs: one connection to the broker per conversation, set up once.
+#[derive(Default)]
+struct Views {
+    ready: Mutex<bool>,
+    #[cfg(unix)]
+    clients:
+        Mutex<std::collections::HashMap<String, std::sync::Arc<Mutex<orochi::browser::Client>>>>,
+}
+
 fn fail(error: anyhow::Error) -> String {
     format!("{error:#}")
 }
@@ -758,6 +767,89 @@ fn data_dir() -> anyhow::Result<std::path::PathBuf> {
     Ok(orochi::config::Paths::resolve(None, chosen)?.data)
 }
 
+/// Whether the browser is on and which Chrome it would use.
+#[tauri::command]
+fn browser_status(open: State<'_, Open>) -> serde_json::Value {
+    let (config, _) = open.0.lock().unwrap().paths();
+    let config = orochi::config::Config::load(&config).unwrap_or_default();
+    #[cfg(unix)]
+    let chrome = orochi::browser::find_chrome(&config.browser)
+        .ok()
+        .map(|p| p.display().to_string());
+    #[cfg(not(unix))]
+    let chrome: Option<String> = None;
+    serde_json::json!({ "enabled": config.browser.enabled, "chrome": chrome })
+}
+
+/// One call of the person's browser tab (`view_*`): the answer is the broker's JSON.
+#[tauri::command]
+async fn browser_call(
+    open: State<'_, Open>,
+    views: State<'_, Views>,
+    thread: String,
+    tab: String,
+    tool: String,
+    mut args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = (&open, &views, &thread, &tab, &tool, &args);
+        Err("the browser tab is not available on this platform yet".to_owned())
+    }
+    #[cfg(unix)]
+    {
+        let (config_path, data) = open.0.lock().unwrap().paths();
+        if !*views.ready.lock().unwrap() {
+            let config = orochi::config::Config::load(&config_path).map_err(fail)?;
+            if !config.browser.enabled {
+                return Err("the browser is off: set `enabled = true` under [browser]".into());
+            }
+            orochi::browser::register(&data, orochi(), &config.browser).map_err(fail)?;
+            *views.ready.lock().unwrap() = true;
+        }
+        let client = {
+            let mut clients = views.clients.lock().unwrap();
+            if !clients.contains_key(&thread) {
+                let opened = orochi::browser::Client::open(&orochi(), &data).map_err(fail)?;
+                clients.insert(thread.clone(), std::sync::Arc::new(Mutex::new(opened)));
+            }
+            clients[&thread].clone()
+        };
+        // A preview serves a file of this conversation's folder, and only that: the folder is
+        // the window's to say, never the page's.
+        if tool == "view_preview" {
+            let cwd = open.0.lock().unwrap().cwd(&thread).map_err(fail)?;
+            args["root"] = serde_json::json!(cwd);
+        }
+        let scope = format!("user:{thread}:{tab}");
+        let request = orochi::browser::broker::Request {
+            scope,
+            tool,
+            args,
+            read_only: false,
+            cwd: None,
+        };
+        let closing = request.tool == "view_close";
+        let reply =
+            tauri::async_runtime::spawn_blocking(move || client.lock().unwrap().call(&request))
+                .await
+                .map_err(|e| e.to_string())?;
+        if closing {
+            views.clients.lock().unwrap().remove(&thread);
+        }
+        let reply = reply.map_err(|error| {
+            // The connection is broken (the broker stopped); the next call starts afresh.
+            views.clients.lock().unwrap().remove(&thread);
+            fail(error)
+        })?;
+        let said = reply["content"][0]["text"].as_str().unwrap_or("");
+        if reply["isError"] == true {
+            return Err(said.to_owned());
+        }
+        serde_json::from_str(said).map_err(|e| e.to_string())
+    }
+}
+
 #[tauri::command]
 fn term_open(
     app: tauri::AppHandle,
@@ -822,6 +914,7 @@ fn main() {
             let client = Client::open(&data_dir()?)?;
             app.manage(Open(Mutex::new(client)));
             app.manage(Shells(orochi_desktop::term::Terminals::default()));
+            app.manage(Views::default());
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -905,7 +998,9 @@ fn main() {
             term_open,
             term_write,
             term_resize,
-            term_close
+            term_close,
+            browser_status,
+            browser_call
         ])
         .build(tauri::generate_context!())
         .expect("orochi desktop failed to start")

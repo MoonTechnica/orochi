@@ -423,6 +423,11 @@ pub fn media(cwd: &Path, path: &str) -> Result<Media> {
             "ogg" => Some("audio/ogg"),
             "flac" => Some("audio/flac"),
             "pdf" => Some("application/pdf"),
+            "glb" => Some("model/gltf-binary"),
+            "gltf" => Some("model/gltf+json"),
+            "obj" => Some("model/obj"),
+            "stl" => Some("model/stl"),
+            "ply" => Some("model/ply"),
             "pptx" => {
                 Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
             }

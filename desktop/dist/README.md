@@ -99,6 +99,9 @@ by hand fails this list. Read from the npm packages of the same version on 2026-
 | JSZip | 3.10.1 | MIT (offered as MIT or GPL-3.0-or-later; taken as MIT) | docx-preview's one dependency | `acc7e41455a80765…` jszip.min.js<br>`566c953c6090b1218…` LICENSE |
 | SheetJS Community Edition (`xlsx.mini.min.js`) | 0.20.3 | Apache-2.0 | `.xlsx`, inside the same frame | `0cb353f830d7288385492c83d277b058ddeac664ca51cf1393aa1fd3e2b70939` xlsx.mini.min.js<br>`4d2a38ac35cda06a555c84074a819d413339cd3691b822cae50f8f322fe01f64` LICENSE |
 | `@aiden0z/pptx-renderer` (standalone browser build) | 1.4.0 | Apache-2.0; bundles JSZip (MIT), ECharts (Apache-2.0) and **mtx-decompressor 1.4.2 (MPL-2.0, unmodified; notice and licence copy kept in `vendor/pptx-renderer/`)** | `.pptx`, inside the same frame | `eed96db79a8300ef…` aiden0z-pptx-renderer.browser.es.js<br>`c71d239df91726fc…` LICENSE<br>`4e49f2e111bff02e…` THIRD_PARTY_NOTICES.md<br>`1f256ecad192880b…` licenses/mtx-decompressor-MPL-2.0.txt |
+| three.js (`three`) with its glTF, OBJ, STL and PLY loaders and `OrbitControls` | 0.170.0 | MIT | `.glb`, `.gltf`, `.obj`, `.stl`, `.ply`, inside the same frame | `0c20b66d8b36c8f7…` three-viewer.min.js (built, below)<br>`4c40a1ef62450b85…` LICENSE<br>`bc08aed9bbd42d2c…` entry.js |
+
+`three-viewer.min.js` is **built by us**, not a file from a package: `entry.js` beside it re-exports the pieces, and `npm install three@0.170.0 esbuild@0.24.0 && npx esbuild entry.js --bundle --format=esm --minify --legal-comments=none --outfile=three-viewer.min.js` produced it on 2026-11-15 (the loaders import `three` by bare name, which a blob URL cannot resolve, so they have to be bundled). Another esbuild may produce other bytes; the recorded hash is of this file.
 
 SheetJS's newer releases are not on npm (the npm `xlsx` is 0.18.5, which has known security fixes it lacks), so this one was read from `https://cdn.sheetjs.com/xlsx-0.20.3/` on 2026-11-15 and is pinned by hash.
 

@@ -3965,12 +3965,14 @@ const tableFixtures = {
   "log.jsonl": textFile("log.jsonl", '{"at":1,"who":"a"}\n{"at":2,"who":"b"}\n'),
   "broken.json": textFile("broken.json", '{"cut": [1, 2'),
 };
+tableFixtures["page.html"] = textFile("page.html", "<h1>hi</h1>");
+tableFixtures["part.stl"] = textFile("part.stl", "solid t\nendsolid t\n");
 tableFixtures["paper.pdf"] = textFile("paper.pdf", "", { binary: true, bytes: 9 });
 tableFixtures["memo.docx"] = textFile("memo.docx", "", { binary: true, bytes: 9 });
 tableFixtures["sales.xlsx"] = textFile("sales.xlsx", "", { binary: true, bytes: 9 });
 tableFixtures["deck.pptx"] = textFile("deck.pptx", "", { binary: true, bytes: 9 });
 const withFiles = () => tree({
-  tree_media: ({ path }) => path === "paper.pdf" || path === "memo.docx" || path === "sales.xlsx" || path === "deck.pptx"
+  tree_media: ({ path }) => path === "paper.pdf" || path === "part.stl" || path === "memo.docx" || path === "sales.xlsx" || path === "deck.pptx"
     ? { mime: "application/pdf", bytes: 9, data: "data:application/pdf;base64,JVBERi0xLjQ=" }
     : { mime: "application/octet-stream", bytes: 1, data: null },
   tree_list: ({ dir }) => dir === "" ? Object.keys(tableFixtures).map((name) => ({ name, path: name, kind: "file", size: 10, status: null, within: null })) : [],
@@ -4087,4 +4089,128 @@ test("a presentation goes to the sandboxed frame with its renderer", async () =>
   await settle(20);
   assert.equal(el("viewer").querySelectorAll("iframe")[0].getAttribute("sandbox"), "allow-scripts");
   assert.deepEqual(fetched, ["vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js"]);
+});
+
+// The browser tab -------------------------------------------------------------------------
+async function newBrowser(el) {
+  el("doc-tabs").querySelectorAll(".doc-new")[0].dispatch("click");
+  el("doc-menu").querySelectorAll(".doc-item").find((r) => r.dataset.item === "browser").dispatch("click");
+  await settle(60);
+}
+/// A tab keeps asking for frames until it is closed, so a test closes what it opened.
+async function closeBrowsers(el) {
+  for (const id of tabIds(el).filter((tab) => tab.startsWith("b"))) {
+    tabButton(el, id).querySelectorAll(".doc-close")[0].dispatch("click");
+  }
+  await settle(10);
+}
+const viewTools = (calls) => calls.filter(([name]) => name === "browser_call").map(([, a]) => a);
+
+test("a browser tab says why it is empty when the browser is off or there is no Chrome", async () => {
+  let status = { enabled: false, chrome: null };
+  const { el, calls } = await open({ browser_status: () => status, browser_call: {} });
+  await newBrowser(el);
+  assert.match(el("doc-body").render(), /The browser is off/);
+  assert.equal(viewTools(calls).length, 0, "nothing was asked of the broker");
+  status = { enabled: true, chrome: null };
+  await closeBrowsers(el);
+  await newBrowser(el);
+  assert.match(el("doc-body").render(), /No Chrome or Chromium/);
+  await closeBrowsers(el);
+});
+
+test("a browser tab sizes the page, asks for frames from the last it drew, paints them and closes with its tab", async () => {
+  const painted = [];
+  let seq = 0;
+  const { el, calls, window } = await open({
+    browser_status: { enabled: true, chrome: "/Applications/Google Chrome.app" },
+    browser_call: ({ tool }) => {
+      if (tool === "view_frame") return seq++ === 0 ? { url: "http://localhost:3000/", title: "Dev", frame: { seq: 4, jpeg: "QQ==", width: 100, height: 50 } } : { url: "http://localhost:3000/", title: "Dev" };
+      return {};
+    },
+  }, { setup: () => { globalThis.Image = class { set src(value) { painted.push(value); } }; } });
+  void window;
+  await newBrowser(el);
+  await settle(250);
+  const used = viewTools(calls);
+  assert.equal(used[0].tool, "view_resize");
+  assert.equal(used[0].args.width, 1024, "a page without a measured size gets a default one");
+  const frames = used.filter((c) => c.tool === "view_frame");
+  assert.equal(frames[0].args.since, 0);
+  assert.equal(frames[1].args.since, 4, "only what changed since the frame it drew");
+  assert.deepEqual(painted, ["data:image/jpeg;base64,QQ=="]);
+  assert.match(el("doc-tabs").render(), /Dev/, "the tab is named by the page's title");
+  assert.equal(el("doc-body").querySelectorAll(".browser-address")[0].value, "http://localhost:3000/");
+  await closeBrowsers(el);
+  await settle(30);
+  assert.equal(viewTools(calls).at(-1).tool, "view_close");
+});
+
+test("the address bar opens a web address, adds a scheme where one is missing, and refuses what is not one", async () => {
+  const { el, calls } = await open({ browser_status: { enabled: true, chrome: "chrome" }, browser_call: {} });
+  await newBrowser(el);
+  const address = el("doc-body").querySelectorAll(".browser-address")[0];
+  for (const typed of ["localhost:3000/x", "example.com/a", "file:///etc/passwd", "two words", ""]) {
+    address.value = typed;
+    address.dispatch("keydown", { key: "Enter" });
+    await settle(10);
+  }
+  const went = viewTools(calls).filter((c) => c.tool === "view_navigate").map((c) => c.args.url);
+  assert.deepEqual(went, ["http://localhost:3000/x", "https://example.com/a", "file:///etc/passwd"],
+    "the window sends what has a scheme and the broker refuses the rest; words and nothing go nowhere");
+  await closeBrowsers(el);
+});
+
+test("a click, a key and a composed word reach the page as the person made them", async () => {
+  const { el, calls } = await open({ browser_status: { enabled: true, chrome: "chrome" }, browser_call: {} });
+  await newBrowser(el);
+  const view = el("doc-body");
+  const canvas = view.querySelectorAll(".browser-canvas")[0];
+  const typing = view.querySelectorAll(".browser-typing")[0];
+  canvas.dispatch("mousedown", { clientX: 30, clientY: 40, button: 0, buttons: 1, detail: 1 });
+  typing.dispatch("keydown", { key: "a", code: "KeyA", keyCode: 65 });
+  typing.dispatch("keydown", { key: "Enter", code: "Enter", keyCode: 13 });
+  typing.dispatch("keydown", { key: "t", code: "KeyT", keyCode: 84, metaKey: true });
+  typing.dispatch("compositionupdate", { data: "にほん" });
+  typing.dispatch("compositionend", { data: "日本" });
+  await settle(20);
+  const input = viewTools(calls).filter((c) => c.tool === "view_input").map((c) => c.args);
+  assert.equal(input[0].kind, "mousePressed");
+  assert.equal(input[0].x, 30);
+  assert.equal(input[0].button, "left");
+  assert.deepEqual([input[1].kind, input[1].text, input[1].vk], ["keyDown", "a", 65]);
+  assert.deepEqual([input[2].kind, input[2].vk, input[2].text], ["rawKeyDown", 13, ""], "Enter is a key, not text");
+  assert.deepEqual(input.slice(3).map((i) => [i.type, i.text, i.commit]), [["ime", "にほん", false], ["ime", "日本", true]],
+    "⌘T went to the window, not the page");
+  await closeBrowsers(el);
+});
+
+test("an HTML file offers a preview, which opens a browser tab that serves that file from the folder", async () => {
+  const { el, calls } = await open(
+    { ...withFiles(), browser_status: { enabled: true, chrome: "chrome" }, browser_call: {} },
+  );
+  await openFileIn(el, "page.html");
+  const preview = el("viewer").querySelectorAll("button").find((b) => b.textContent === "Preview");
+  assert.ok(preview, "a Preview action beside the file's others");
+  preview.dispatch("click");
+  await settle(60);
+  const used = viewTools(calls);
+  const open_ = used.find((c) => c.tool === "view_preview");
+  assert.deepEqual(open_.args, { path: "page.html" });
+  assert.equal(used.some((c) => c.tool === "view_open"), false, "the page is not opened by address");
+  assert.match(el("doc-tabs").render(), /page\.html/);
+  await closeBrowsers(el);
+});
+
+test("a 3D model, text or binary, is drawn by the sandboxed frame with the bundled viewer and its own name", async () => {
+  const fetched = [];
+  const { el } = await open(withFiles(), {
+    setup: (window) => {
+      window.fetch = async (url) => { fetched.push(url); return { text: async () => url }; };
+    },
+  });
+  await openFileIn(el, "part.stl");
+  await settle(20);
+  assert.equal(el("viewer").querySelectorAll("iframe")[0].getAttribute("sandbox"), "allow-scripts");
+  assert.deepEqual(fetched, ["vendor/three/three-viewer.min.js"]);
 });

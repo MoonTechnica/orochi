@@ -230,6 +230,8 @@ fn timeline_media_is_bounded_and_stays_inside_the_thread() {
         ("clip.webm", "video/webm"),
         ("voice.mp3", "audio/mpeg"),
         ("paper.pdf", "application/pdf"),
+        ("cube.glb", "model/gltf-binary"),
+        ("part.stl", "model/stl"),
         (
             "deck.pptx",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
