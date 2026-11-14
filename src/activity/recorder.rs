@@ -133,6 +133,11 @@ impl Recorder {
                 self.finish_streams(db);
                 self.media(db, std::slice::from_ref(reference))?;
             }
+            Progress::Named(uri) => {
+                self.finish_streams(db);
+                let references = self.named_files(db, uri);
+                self.media(db, &references)?;
+            }
             Progress::Thinking(text) => {
                 if self.thinking {
                     self.close(db, true)?;

@@ -350,3 +350,59 @@ fn media_directories_of_threads_that_are_gone_are_swept() {
         "a thread that is gone does not"
     );
 }
+
+/// ACP's own way to hand over a file is a `resource_link` block, in an agent's message or in a
+/// tool's result. It is a name, not bytes: it is kept only if it points to media inside the
+/// places an agent's words may point, as a path written in a reply is.
+#[test]
+fn a_resource_link_to_a_file_is_kept_when_it_points_inside_the_tree_and_ignored_elsewhere() {
+    let data = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("clip.png"), [PNG, b"linked"].concat()).unwrap();
+    std::fs::write(work.path().join("tool.png"), [PNG, b"from a tool"].concat()).unwrap();
+    let activity = Activity::open(data.path(), 30).unwrap();
+    let (thread, turn, seat, attempt) = thread_in(&activity, work.path());
+    {
+        let mut recorder = Recorder::new(
+            orochi::activity::share(Activity::open(data.path(), 30).unwrap()),
+            Seat {
+                thread: thread.clone(),
+                turn,
+                seat,
+                attempt: Some(attempt),
+            },
+            true,
+        );
+        let link = |name: &str| {
+            media::link_of(&serde_json::json!({"type": "resource_link", "name": name, "uri": format!("file://{}/{name}", work.path().display())}))
+                .map(str::to_owned)
+        };
+        recorder.record(&ExecutionEvent::Progress(Progress::Named(
+            link("clip.png").unwrap(),
+        )));
+        recorder.record(&ExecutionEvent::Progress(Progress::Named(
+            "file:///etc/passwd.png".into(),
+        )));
+        recorder.record(&ExecutionEvent::Progress(Progress::Tool(Box::new(
+            ToolUpdate {
+                id: "call-1".into(),
+                status: Some("completed".into()),
+                output: Some(link("tool.png").unwrap()),
+                ..Default::default()
+            },
+        ))));
+        recorder.record(&ExecutionEvent::Finished);
+    }
+    let names: Vec<String> = activity
+        .media(&thread)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.name)
+        .collect();
+    assert_eq!(names, ["clip.png", "tool.png"]);
+    assert_eq!(
+        media::link_of(&serde_json::json!({"type": "image", "uri": "file:///x.png"})),
+        None,
+        "only a resource_link is a link"
+    );
+}

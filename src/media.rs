@@ -343,6 +343,20 @@ pub fn from_block(block: &serde_json::Value, fallback: &str) -> Option<MediaRef>
     })
 }
 
+/// The address a `resource_link` block names, which is only a name until the recorder has
+/// checked where it points.
+pub fn link_of(block: &serde_json::Value) -> Option<&str> {
+    if block["type"].as_str() != Some("resource_link") {
+        return None;
+    }
+    block["uri"].as_str().filter(|uri| uri.len() <= 1024)
+}
+
+/// Whether `path` is a file this module would keep as media, by its name alone.
+pub fn is_media_name(path: &Path) -> bool {
+    media_extension(path)
+}
+
 /// One muted line for a terminal, which does not draw pictures: `[image: shot.png · 184 KiB]`.
 pub fn describe(reference: &MediaRef) -> String {
     let (bytes, what) = match &reference.source {

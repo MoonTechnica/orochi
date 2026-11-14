@@ -148,6 +148,9 @@ pub enum Progress {
     Thinking(String),
     /// A picture or sound the agent put in its reply.
     Media(crate::media::MediaRef),
+    /// A file the agent linked to (`resource_link`): a name, kept only if it lies where an
+    /// agent's words may point.
+    Named(String),
     /// A tool call started or changed. Fields absent from an update stay `None`/empty.
     /// Boxed: it is by far the largest thing a progress event carries, and every other
     /// variant would otherwise pay for it.
@@ -307,6 +310,10 @@ pub(crate) fn tool_update(update: &Value) -> Option<ToolUpdate> {
                     lines.push(text);
                 } else if let Some(media) = crate::media::from_block(&item["content"], "result") {
                     tool.media.push(media);
+                } else if let Some(uri) = crate::media::link_of(&item["content"]) {
+                    // A link to a file is a name like any other: the recorder looks at what it
+                    // points to, inside the places an agent's words may point.
+                    lines.push(uri);
                 }
             }
             Some("diff") => {
@@ -363,9 +370,11 @@ fn progress(update: &Value) -> Option<Progress> {
         "session_info_update" => Some(Progress::Info(update["title"].as_str()?.into())),
         // Chunks and `config_option_update` are handled by the caller, which has the state
         // they change; anything else is kept verbatim rather than dropped.
-        "agent_message_chunk" => {
-            crate::media::from_block(&update["content"], "reply").map(Progress::Media)
-        }
+        "agent_message_chunk" => crate::media::from_block(&update["content"], "reply")
+            .map(Progress::Media)
+            .or_else(|| {
+                crate::media::link_of(&update["content"]).map(|uri| Progress::Named(uri.to_owned()))
+            }),
         "user_message_chunk" | "config_option_update" => None,
         _ => Some(Progress::Other(update.clone())),
     }

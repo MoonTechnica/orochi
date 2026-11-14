@@ -257,7 +257,8 @@ fn mcp_server_exposes_the_mailbox_tools_to_one_peer() {
             "set_status",
             "post",
             "read_channel",
-            "read_thread"
+            "read_thread",
+            "share_file"
         ]
     );
     let (error, peers) = server.tool("list_peers", json!({}));
@@ -2018,4 +2019,50 @@ fn an_assignment_that_tells_a_member_to_ask_the_user_is_not_a_question_to_the_us
         .post(&team.helper, "@you formal or casual?", None, true)
         .unwrap();
     assert_eq!(team.activity.mentions(None).unwrap().len(), 1);
+}
+
+/// `share_file` is how an agent hands the person something to look at: it names the file it
+/// means, inside the places an agent's words may point, and says it is in their chat. What is
+/// not a picture, a video or a sound, or lies elsewhere, is refused with the reason.
+#[test]
+fn an_agent_can_hand_over_a_picture_but_not_a_file_elsewhere_or_of_another_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let mailbox = Mailbox::open(dir.path(), &MailboxConfig::default()).unwrap();
+    let alice = mailbox
+        .register("repo", "alice", dir.path(), None, me())
+        .unwrap();
+    let mut server = Server::start(dir.path(), &alice.id);
+    let shots = tempfile::tempdir().unwrap();
+    let picture = shots.path().join("shot.png");
+    std::fs::write(&picture, b"\x89PNG\r\n\x1a\nbytes").unwrap();
+    std::fs::write(shots.path().join("notes.txt"), "words").unwrap();
+
+    let (error, shared) = server.tool(
+        "share_file",
+        json!({"path": picture, "caption": "the login page"}),
+    );
+    assert!(!error, "{shared}");
+    let named = shared["shared"].as_str().unwrap();
+    assert!(named.ends_with("shot.png"), "{shared}");
+    assert_eq!(shared["caption"], "the login page");
+    assert!(
+        std::path::Path::new(named).is_absolute(),
+        "the recorder reads this name"
+    );
+
+    for refused in [
+        shots.path().join("notes.txt").display().to_string(),
+        shots.path().join("missing.png").display().to_string(),
+        "/etc/passwd.png".to_owned(),
+        "/etc/hosts".to_owned(),
+    ] {
+        let (error, why) = server.tool("share_file", json!({"path": refused}));
+        assert!(error, "{refused}");
+        assert!(
+            why.as_str()
+                .unwrap()
+                .contains("not a picture, video or sound"),
+            "{why}"
+        );
+    }
 }

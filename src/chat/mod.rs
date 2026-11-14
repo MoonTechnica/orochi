@@ -7434,6 +7434,8 @@ impl<'v> Screen<'v> {
                 let line = crate::media::describe(&media);
                 self.result(MUTED, &format!("⎿ {line}"));
             }
+            // A terminal draws no pictures; the file is kept for the window to show.
+            Progress::Named(_) => {}
             Progress::Tool(update) => self.tool(*update),
             Progress::Plan(entries) => self.show_plan(entries),
             Progress::Route {

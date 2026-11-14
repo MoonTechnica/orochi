@@ -648,7 +648,7 @@ src/scheduler/      Execution, fallback, quota / circuit breaker
 src/process.rs      Agent supervisor processes, recording descendants, reclaiming after a forced kill
 src/mailbox.rs      Inter-process messages between agents (MCP server, retention-limited storage)
 src/browser.rs      A browser agents and the person share: host policy, config (`[browser]`); `browser/` holds the CDP pipe client, the broker with its tools and the person's-tab API, the loopback file server behind an HTML preview, and the unix broker process and MCP relay
-src/media.rs        Pictures, sound and video a conversation produced: sniffed from bytes, kept by hash beside the activity store
+src/media.rs        Pictures, sound and video a conversation produced (ACP image/audio blocks, `resource_link`, files a reply names, the mailbox's `share_file`): sniffed from bytes, kept by hash beside the activity store
 src/mcp.rs          The MCP servers a session is given: configured, named by the repository's own .mcp.json, and forwarded by an ACP client
 src/mcp/oauth.rs    Signing in to a remote MCP server on the agents' behalf (spec-order discovery, registration, PKCE, refresh; keychain or 0600 file)
 src/pane.rs         Reporting the console's state to an agent host's pane (Orca, OSC 9999), and keeping the host's hooks quiet in launched agents
