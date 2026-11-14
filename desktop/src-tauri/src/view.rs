@@ -536,6 +536,26 @@ pub struct Said {
     pub broadcast: bool,
 }
 
+/// One message between agents, with where each end sits: the office draws it as a line from one
+/// avatar to another, across rooms when the two work in different conversations of a project.
+/// A message never crosses projects — the mailbox is scoped to one repository.
+#[derive(Debug, Clone, Serialize)]
+pub struct Talk {
+    pub seq: i64,
+    pub project_id: String,
+    pub via: String,
+    pub from: String,
+    pub from_thread: Option<String>,
+    pub from_role: Option<String>,
+    pub to: String,
+    pub to_thread: Option<String>,
+    pub to_role: Option<String>,
+    pub text: String,
+    /// Milliseconds, as everything else the window reads.
+    pub at: i64,
+    pub mentions: Vec<String>,
+}
+
 /// What one look at a thread found: whether the agent running it has gone, and whether there
 /// is work nobody has picked up.
 #[derive(Debug, Clone, Serialize)]
@@ -1021,6 +1041,53 @@ impl Client {
                     .and_then(|json| serde_json::from_str(&json).ok())
                     .unwrap_or_default(),
                 broadcast: r.get::<_, i64>(14)? != 0,
+            })
+        })?;
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// What agents said to each other since `since` (milliseconds), newest first, across every
+    /// conversation: the person's own notes are the conversation's and are left out. Each end is
+    /// placed by the seat its peer is running, so a message between two conversations of one
+    /// project says which two.
+    pub fn chatter(&self, since: i64, limit: usize) -> Result<Vec<Talk>> {
+        let connection = self.activity.connection();
+        let end = |peer: &str, what: &str| {
+            format!(
+                "(SELECT {what} FROM attempts a JOIN seats s ON s.id=a.seat_id
+                  JOIN turns tn ON tn.id=s.turn_id WHERE a.peer_id={peer}
+                  ORDER BY a.rowid DESC LIMIT 1)"
+            )
+        };
+        let sql = format!(
+            "SELECT m.id, m.project_id, m.via, m.sender_name, {ft}, {fr},
+                    m.recipient_name, {tt}, {tr}, m.body, m.sent_at, m.mentions
+             FROM messages m
+             WHERE m.via <> 'user' AND m.sent_at >= ?1
+             ORDER BY m.id DESC LIMIT ?2",
+            ft = end("m.sender", "tn.thread_id"),
+            fr = end("m.sender", "s.role"),
+            tt = end("m.recipient", "tn.thread_id"),
+            tr = end("m.recipient", "s.role"),
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params![since / 1000, limit as i64], |r| {
+            Ok(Talk {
+                seq: r.get(0)?,
+                project_id: r.get(1)?,
+                via: r.get(2)?,
+                from: r.get(3)?,
+                from_thread: r.get(4)?,
+                from_role: r.get(5)?,
+                to: r.get(6)?,
+                to_thread: r.get(7)?,
+                to_role: r.get(8)?,
+                text: r.get(9)?,
+                at: r.get::<_, i64>(10)? * 1000,
+                mentions: r
+                    .get::<_, Option<String>>(11)?
+                    .and_then(|json| serde_json::from_str(&json).ok())
+                    .unwrap_or_default(),
             })
         })?;
         rows.map(|row| Ok(row?)).collect()

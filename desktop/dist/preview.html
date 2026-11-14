@@ -10,6 +10,7 @@
 <div id="app">
   <aside id="sidebar">
     <header>
+      <button type="button" id="office-btn" title="See every team at work"><span class="label">Office</span></button>
       <button type="button" id="activity" title="Every conversation, by what it needs"><span class="label">Activity</span><span id="activity-count"></span></button>
       <button id="new-thread" title="Start a thread here"><span class="label">New thread</span></button>
     </header>
@@ -130,6 +131,14 @@
     </section>
   </aside>
 
+  <section id="office" aria-label="Office" hidden>
+    <header id="office-head">
+      <h2 id="office-title">Office</h2>
+      <div id="office-stats"></div>
+    </header>
+    <div id="office-body"></div>
+  </section>
+
   <section id="settings" hidden>
     <nav id="settings-nav" aria-label="Settings"></nav>
     <div id="settings-main">
@@ -227,6 +236,7 @@
 <script src="preview-data.js"></script>
 <script src="preview-files.js"></script>
 <script src="preview-channel.js"></script>
+<script src="preview-office.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

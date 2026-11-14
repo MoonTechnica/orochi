@@ -1,0 +1,583 @@
+{
+  "sidebar": [
+    {
+      "id": "orochi",
+      "name": "orochi",
+      "root": "/work/orochi",
+      "pinned": false,
+      "collapsed": false,
+      "threads": [
+        {
+          "id": "t1",
+          "project": "orochi",
+          "project_id": "orochi",
+          "project_root": "/work/orochi",
+          "title": "Redesign the home screen",
+          "cwd": "/work/orochi",
+          "branch": "main",
+          "origin": "console",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1794635801680,
+          "status": "working",
+          "seats": 3,
+          "asking": 0,
+          "unread": 0,
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": 1794635801680,
+          "agent": "claude",
+          "provider": "anthropic",
+          "agents": [
+            {
+              "role": "lead",
+              "agent": "claude",
+              "provider": "anthropic",
+              "model": "opus",
+              "seats": 1,
+              "live": 1,
+              "lead": true,
+              "background": false,
+              "last_at": 1794636041680
+            },
+            {
+              "role": "designer",
+              "agent": "codex",
+              "provider": "openai",
+              "model": "gpt-6.1-sol",
+              "seats": 1,
+              "live": 1,
+              "lead": false,
+              "background": false,
+              "last_at": 1794636041680
+            },
+            {
+              "role": "reviewer",
+              "agent": "antigravity",
+              "provider": "google",
+              "model": "gemini",
+              "seats": 1,
+              "live": 1,
+              "lead": false,
+              "background": true,
+              "last_at": 1794636041680
+            }
+          ],
+          "mentions": 0
+        },
+        {
+          "id": "t2",
+          "project": "orochi",
+          "project_id": "orochi",
+          "project_root": "/work/orochi",
+          "title": "Fix the flaky mailbox test",
+          "cwd": "/work/orochi",
+          "branch": "main",
+          "origin": "console",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1794635201680,
+          "status": "needs_you",
+          "seats": 2,
+          "asking": 1,
+          "unread": 0,
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": 1794635201680,
+          "agent": "codex",
+          "provider": "openai",
+          "agents": [
+            {
+              "role": "lead",
+              "agent": "codex",
+              "provider": "openai",
+              "model": "gpt-6.1-sol",
+              "seats": 1,
+              "live": 1,
+              "lead": true,
+              "background": false,
+              "last_at": 1794636041680
+            },
+            {
+              "role": "tester",
+              "agent": "claude",
+              "provider": "anthropic",
+              "model": "sonnet",
+              "seats": 1,
+              "live": 0,
+              "lead": false,
+              "background": false,
+              "last_at": 1794636041680
+            }
+          ],
+          "mentions": 0
+        },
+        {
+          "id": "t5",
+          "project": "orochi",
+          "project_id": "orochi",
+          "project_root": "/work/orochi",
+          "title": "Tune the scorer's price premium",
+          "cwd": "/work/orochi",
+          "branch": "main",
+          "origin": "console",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1794549701680,
+          "status": "idle",
+          "seats": 1,
+          "asking": 0,
+          "unread": 0,
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": 1794549701680,
+          "agent": "claude",
+          "provider": "anthropic",
+          "agents": [
+            {
+              "role": "lead",
+              "agent": "claude",
+              "provider": "anthropic",
+              "model": "opus",
+              "seats": 1,
+              "live": 0,
+              "lead": true,
+              "background": false,
+              "last_at": 1794636041680
+            }
+          ],
+          "mentions": 0
+        }
+      ]
+    },
+    {
+      "id": "web",
+      "name": "web-app",
+      "root": "/work/web-app",
+      "pinned": false,
+      "collapsed": false,
+      "threads": [
+        {
+          "id": "t3",
+          "project": "web",
+          "project_id": "web",
+          "project_root": "/work/web",
+          "title": "Add sign-in with a magic link",
+          "cwd": "/work/web",
+          "branch": "main",
+          "origin": "console",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1794635981680,
+          "status": "working",
+          "seats": 3,
+          "asking": 0,
+          "unread": 0,
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": 1794635981680,
+          "agent": "claude",
+          "provider": "anthropic",
+          "agents": [
+            {
+              "role": "lead",
+              "agent": "claude",
+              "provider": "anthropic",
+              "model": "opus",
+              "seats": 1,
+              "live": 1,
+              "lead": true,
+              "background": false,
+              "last_at": 1794636041680
+            },
+            {
+              "role": "backend",
+              "agent": "codex",
+              "provider": "openai",
+              "model": "gpt-6.1-sol",
+              "seats": 1,
+              "live": 1,
+              "lead": false,
+              "background": false,
+              "last_at": 1794636041680
+            },
+            {
+              "role": "docs",
+              "agent": "claude",
+              "provider": "anthropic",
+              "model": "haiku",
+              "seats": 1,
+              "live": 1,
+              "lead": false,
+              "background": false,
+              "last_at": 1794636041680
+            }
+          ],
+          "mentions": 0
+        },
+        {
+          "id": "t4",
+          "project": "web",
+          "project_id": "web",
+          "project_root": "/work/web",
+          "title": "Dark mode for settings",
+          "cwd": "/work/web",
+          "branch": "main",
+          "origin": "console",
+          "worktree": false,
+          "pinned": false,
+          "archived": false,
+          "updated_at": 1794628901680,
+          "status": "idle",
+          "seats": 1,
+          "asking": 0,
+          "unread": 0,
+          "terminal": false,
+          "doing": null,
+          "background": 0,
+          "running_since": 1794628901680,
+          "agent": "codex",
+          "provider": "openai",
+          "agents": [
+            {
+              "role": "lead",
+              "agent": "codex",
+              "provider": "openai",
+              "model": "gpt-6-luna",
+              "seats": 1,
+              "live": 0,
+              "lead": true,
+              "background": false,
+              "last_at": 1794636041680
+            }
+          ],
+          "mentions": 0
+        }
+      ]
+    }
+  ],
+  "live_seats": [
+    {
+      "seat_id": "a",
+      "thread_id": "t1",
+      "project_id": "orochi",
+      "turn": "x",
+      "ordinal": 0,
+      "role": "lead",
+      "lead": true,
+      "read_only": false,
+      "title": "Coordinate",
+      "background": false,
+      "state": "working",
+      "started_at": 1794635811680,
+      "agent": "claude",
+      "model": "opus",
+      "doing": "Reading desktop/dist/app.js",
+      "provider": "anthropic"
+    },
+    {
+      "seat_id": "b",
+      "thread_id": "t1",
+      "project_id": "orochi",
+      "turn": "x",
+      "ordinal": 1,
+      "role": "designer",
+      "lead": false,
+      "read_only": false,
+      "title": "Office CSS",
+      "background": false,
+      "state": "working",
+      "started_at": 1794635901680,
+      "agent": "codex",
+      "model": "gpt-6.1-sol",
+      "doing": "Editing desktop/dist/app.css",
+      "provider": "openai"
+    },
+    {
+      "seat_id": "c",
+      "thread_id": "t1",
+      "project_id": "orochi",
+      "turn": "x",
+      "ordinal": 2,
+      "role": "reviewer",
+      "lead": false,
+      "read_only": true,
+      "title": "Review",
+      "background": true,
+      "state": "working",
+      "started_at": 1794636001680,
+      "agent": "antigravity",
+      "model": "gemini",
+      "doing": "Checking the empty state",
+      "provider": "google"
+    },
+    {
+      "seat_id": "d",
+      "thread_id": "t2",
+      "project_id": "orochi",
+      "turn": "x",
+      "ordinal": 0,
+      "role": "lead",
+      "lead": true,
+      "read_only": false,
+      "title": "Fix",
+      "background": false,
+      "state": "asking",
+      "started_at": 1794635301680,
+      "agent": "codex",
+      "model": "gpt-6.1-sol",
+      "doing": "Run cargo test --test mailbox?",
+      "provider": "openai"
+    },
+    {
+      "seat_id": "e",
+      "thread_id": "t3",
+      "project_id": "web",
+      "turn": "x",
+      "ordinal": 0,
+      "role": "lead",
+      "lead": true,
+      "read_only": false,
+      "title": "Magic link",
+      "background": false,
+      "state": "working",
+      "started_at": 1794635991680,
+      "agent": "claude",
+      "model": "opus",
+      "doing": "Planning the token flow",
+      "provider": "anthropic"
+    },
+    {
+      "seat_id": "f",
+      "thread_id": "t3",
+      "project_id": "web",
+      "turn": "x",
+      "ordinal": 1,
+      "role": "backend",
+      "lead": false,
+      "read_only": false,
+      "title": "API",
+      "background": false,
+      "state": "working",
+      "started_at": 1794636011680,
+      "agent": "codex",
+      "model": "gpt-6.1-sol",
+      "doing": "Editing src/auth.ts",
+      "provider": "openai"
+    },
+    {
+      "seat_id": "g",
+      "thread_id": "t3",
+      "project_id": "web",
+      "turn": "x",
+      "ordinal": 2,
+      "role": "docs",
+      "lead": false,
+      "read_only": false,
+      "title": "Docs",
+      "background": false,
+      "state": "working",
+      "started_at": 1794636041680,
+      "agent": "claude",
+      "model": "haiku",
+      "doing": "Writing README section",
+      "provider": "anthropic"
+    }
+  ],
+  "live_tasks": [
+    {
+      "item_id": 1,
+      "thread_id": "t1",
+      "project_id": "orochi",
+      "turn": "x",
+      "seat_id": "a",
+      "role": "lead",
+      "key": "k",
+      "title": "Task: find every caller of drawStatus",
+      "started_at": 1794636081680,
+      "calls": 4,
+      "doing": null
+    },
+    {
+      "item_id": 2,
+      "thread_id": "t3",
+      "project_id": "web",
+      "turn": "x",
+      "seat_id": "f",
+      "role": "backend",
+      "key": "k2",
+      "title": "Task: run the auth tests",
+      "started_at": 1794636091680,
+      "calls": 1,
+      "doing": null
+    }
+  ],
+  "agent_icons": {},
+  "loop": 50,
+  "script": [
+    {
+      "t": 2,
+      "from": [
+        "t1",
+        "designer"
+      ],
+      "to": [
+        "t1",
+        "lead"
+      ],
+      "text": "Cards need a 3px gap. Pushing the CSS now."
+    },
+    {
+      "t": 6,
+      "from": [
+        "t1",
+        "lead"
+      ],
+      "to": [
+        "t1",
+        "reviewer"
+      ],
+      "text": "Review the empty state once it lands."
+    },
+    {
+      "t": 10,
+      "from": [
+        "t1",
+        "designer"
+      ],
+      "to": [
+        "t2",
+        "tester"
+      ],
+      "text": "Home screen is in. Can you rerun the mailbox test?"
+    },
+    {
+      "t": 14,
+      "from": [
+        "t2",
+        "tester"
+      ],
+      "to": [
+        "t2",
+        "lead"
+      ],
+      "text": "The sleep hides it. Take Order::place instead."
+    },
+    {
+      "t": 18,
+      "from": [
+        "t3",
+        "lead"
+      ],
+      "to": [
+        "t3",
+        "backend"
+      ],
+      "text": "@backend mint the token, 15 min expiry.",
+      "mentions": [
+        "backend"
+      ]
+    },
+    {
+      "t": 22,
+      "from": [
+        "t3",
+        "backend"
+      ],
+      "to": [
+        "t3",
+        "docs"
+      ],
+      "text": "Endpoint is /auth/magic. Document it."
+    },
+    {
+      "t": 26,
+      "from": [
+        "t3",
+        "docs"
+      ],
+      "to": [
+        "t1",
+        "lead"
+      ],
+      "text": "Need the new card names for the README."
+    },
+    {
+      "t": 30,
+      "from": [
+        "t1",
+        "lead"
+      ],
+      "to": [
+        "t3",
+        "docs"
+      ],
+      "text": "Cards are Room, Desk, Bubble."
+    },
+    {
+      "t": 34,
+      "from": [
+        "t1",
+        "reviewer"
+      ],
+      "to": [
+        "t1",
+        "lead"
+      ],
+      "text": "Empty state looks good. Approved."
+    }
+  ],
+  "doings": {
+    "a": [
+      "Reading desktop/dist/app.js",
+      "Searching for drawStatus",
+      "Planning the room layout"
+    ],
+    "b": [
+      "Editing desktop/dist/app.css",
+      "Editing desktop/dist/app.js",
+      "Running node --test"
+    ],
+    "c": [
+      "Checking the empty state",
+      "Reading the diff",
+      "Checking dark mode"
+    ],
+    "e": [
+      "Planning the token flow",
+      "Reviewing the API",
+      "Reading src/auth.ts"
+    ],
+    "f": [
+      "Editing src/auth.ts",
+      "Running the auth tests",
+      "Editing src/mail.ts"
+    ],
+    "g": [
+      "Writing README section",
+      "Reading docs/api.md",
+      "Editing docs/auth.md"
+    ],
+    "d": [
+      "Run cargo test --test mailbox?"
+    ]
+  },
+  "finish": {
+    "reviewer": {
+      "thread": "t1",
+      "from": 30
+    },
+    "room": {
+      "thread": "t3",
+      "from": 36
+    }
+  }
+}

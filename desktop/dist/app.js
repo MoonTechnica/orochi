@@ -17,6 +17,17 @@ const call = async (name, args) => {
 const state = {
   // The settings page that is open, or null while the conversation is in its place.
   settings: null,
+  // The office overview is the window's home: it holds the main area until a conversation is chosen.
+  office: true,
+  officeSig: "",
+  // Who has just arrived, is leaving, or has left; rooms that are wrapping up or closing. Each
+  // lasts for a moment, so the office changes the way a place does rather than between frames.
+  officeLast: null,
+  officeWrap: new Map(),
+  officeLeaving: new Map(),
+  officeHidden: new Set(),
+  officeNew: new Map(),
+  officeUntil: 0,
   thread: null,
   projects: [],
   prompts: [],
@@ -103,6 +114,7 @@ const AT = {
 };
 /// The words the markup ships with, said again in the window's language once it is open.
 const LABELS = {
+  "office-btn": "Office",
   activity: "Activity",
   "new-thread": "New thread",
   "projects-label": "Projects",
@@ -112,6 +124,7 @@ const LABELS = {
   "say-hint": "Delivered when the agent next checks.",
   "member-also-label": "also send to the channel",
   "member-send": "Reply",
+  "office-title": "Office",
 };
 
 /// The window's own words. It says them in the language the machine is set to, because a
@@ -136,6 +149,7 @@ const WORDS = {
     "working…": "作業しています…",
     "waiting for your answer": "あなたの返答を待っています",
     done: "完了",
+    "Open the question": "質問を開く",
     failed: "失敗",
     everyone: "全員",
     "No folder": "フォルダ未選択",
@@ -338,6 +352,18 @@ const WORDS = {
     Changes: "変更",
     Plan: "計画",
     Activity: "アクティビティ",
+    Office: "オフィス",
+    "at work": "稼働中",
+    assistants: "アシスタント",
+    "need you": "あなた待ち",
+    "rooms open": "稼働中のチーム",
+    messages: "メッセージ",
+    done: "完了",
+    everyone: "全員",
+    "Off duty": "待機中",
+    lead: "リード",
+    "The office is quiet. Start a thread to put someone to work.": "オフィスは静かです。スレッドを始めて仕事を任せましょう。",
+    "Nobody is here yet.": "まだ誰もいません。",
     "Needs you": "対応が必要",
     Working: "作業中",
     "In the background": "バックグラウンドで作業中",
@@ -4839,6 +4865,7 @@ async function openSettings(page) {
   remember("settings-page", page);
   el("thread").hidden = true;
   el("side").hidden = true;
+  el("office").hidden = true;
   el("settings").hidden = false;
   await drawSettings();
 }
@@ -4847,8 +4874,10 @@ function closeSettings() {
   if (!state.settings) return;
   state.settings = null;
   el("settings").hidden = true;
-  el("thread").hidden = false;
-  el("side").hidden = false;
+  // Leaving settings returns to where it was opened from: the office, or the conversation.
+  el("office").hidden = !state.office;
+  el("thread").hidden = state.office;
+  el("side").hidden = state.office;
 }
 
 el("settings-close").addEventListener("click", closeSettings);
@@ -5786,6 +5815,8 @@ window.addEventListener?.("resize", () => {
       applyWidth(which);
     }
   }
+  // The office's lines are placed from where its avatars are.
+  drawWires();
 });
 
 
@@ -5800,7 +5831,505 @@ function widen() {
 }
 
 // Loop ----------------------------------------------------------------------
+// Office --------------------------------------------------------------------
+// The window's home: every conversation's team at work in one place, as a small company. A
+// project is a floor, a conversation is a room with its own team, an agent is someone at a
+// desk — typing while it works, a hand up when it needs the person, an assistant beside it for
+// each sub-agent its CLI runs. It reads what the sidebar and the live seats already carry, so
+// it costs no query of its own.
+const ROOM_ORDER = { needs_you: 0, working: 1, queued: 2, background: 3, held: 4 };
+const QUIET_ROOMS = 8;
+
+function leaveOffice() {
+  if (!state.office) return;
+  state.office = false;
+  el("office").hidden = true;
+  el("thread").hidden = false;
+  el("side").hidden = false;
+}
+
+function enterOffice() {
+  state.office = true;
+  state.settings = null;
+  el("settings").hidden = true;
+  el("thread").hidden = true;
+  el("side").hidden = true;
+  el("office").hidden = false;
+  state.officeSig = "";
+  drawOffice();
+}
+
+const CHATTER_MS = 5 * 60 * 1000;
+const sameRole = (a, b) => Boolean(a) && Boolean(b) && lowered(a) === lowered(b);
+
+/// What agents said to each other lately, across every conversation (`chatter`): each message
+/// knows which conversation's seat sent it and which received it, so the office can draw it
+/// over one avatar and as a line to another, across rooms when the two work in different
+/// conversations of one project. Never across projects: the mailbox belongs to one repository.
+async function readChatter() {
+  if (Date.now() - (state.chatterAt || 0) < 3000) return;
+  state.chatterAt = Date.now();
+  state.talk = (await call("chatter", { since: Date.now() - CHATTER_MS })) || [];
+}
+
+/// The conversation's title, for a line that leaves its room.
+const titleOf = (id) => state.projects.flatMap((p) => p.threads).find((th) => th.id === id)?.title || "";
+
+/// Everyone a message is for: the seat it was sent to and whoever its text mentions, among the
+/// sender's own conversation (a mention names a member of the channel it was written in).
+function addressees(line) {
+  const out = [];
+  if (line.to_thread && line.to_role) out.push({ thread: line.to_thread, role: line.to_role });
+  for (const name of line.mentions || []) {
+    if (["you", "channel"].includes(lowered(name)) || !line.from_thread) continue;
+    if (!out.some((o) => o.thread === line.from_thread && sameRole(o.role, name))) {
+      out.push({ thread: line.from_thread, role: name });
+    }
+  }
+  return out;
+}
+
+/// A character for an agent: a bust drawn in one ink, whose hair, glasses and headset come from
+/// its name so the same agent is the same face every time, and whose expression is what it is
+/// doing (typing, talking, a hand up, asleep). Monochrome on purpose: the ring and the bubble say
+/// the rest, and a colour is kept for the person.
+function character(m, mood) {
+  const NS = "http://www.w3.org/2000/svg";
+  const seed = [...`${m.role || ""}|${m.agent || ""}`].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
+  const hair = seed % 5;
+  const extra = (seed >> 4) % 4;
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 40 40");
+  svg.setAttribute("class", "char");
+  svg.setAttribute("aria-hidden", "true");
+  const add = (tag, attrs, klass) => {
+    const node = document.createElementNS(NS, tag);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+    if (klass) node.setAttribute("class", klass);
+    svg.append(node);
+    return node;
+  };
+  // Shoulders, and a tie for the one in charge.
+  add("path", { d: "M5 41 Q5 29 20 28 Q35 29 35 41 Z" }, "c-body");
+  if (m.lead) add("path", { d: "M18.4 28.6 L21.6 28.6 L22.4 36 L20 38 L17.6 36 Z" }, "c-tie");
+  // A raised hand, for the one asking.
+  if (mood === "ask" || mood === "bye") {
+    const arm = document.createElementNS(NS, "g");
+    arm.setAttribute("class", mood === "bye" ? "wave" : "");
+    for (const [tag, attrs, klass] of [
+      ["rect", { x: 31, y: 12, width: 4, height: 17, rx: 2 }, "c-arm"],
+      ["circle", { cx: 33, cy: 11, r: 3 }, "c-skin"],
+    ]) {
+      const node = document.createElementNS(NS, tag);
+      for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+      node.setAttribute("class", klass);
+      arm.append(node);
+    }
+    svg.append(arm);
+  }
+  // Behind the head: a bun or long hair.
+  if (hair === 3) add("circle", { cx: 20, cy: 6.5, r: 4 }, "c-hair");
+  if (hair === 4) add("path", { d: "M10.5 18 Q10 6 20 6 Q30 6 29.5 18 L29.5 25 L25 25 L25 16 L15 16 L15 25 L10.5 25 Z" }, "c-hair");
+  add("circle", { cx: 20, cy: 17, r: 8.5 }, "c-skin");
+  // In front of the face: short hair, a cap.
+  if (hair === 1) add("path", { d: "M11.5 15.5 Q12 8 20 8 Q28 8 28.5 15.5 Q24 11.5 20 12 Q15.5 11.5 11.5 15.5 Z" }, "c-hair");
+  if (hair === 2) {
+    add("path", { d: "M11 14.5 Q12 7.5 20 7.5 Q28 7.5 29 14.5 Z" }, "c-hair");
+    add("rect", { x: 20, y: 13, width: 12, height: 2.4, rx: 1.2 }, "c-hair");
+  }
+  // Eyes and mouth.
+  const sleeping = mood === "idle";
+  if (sleeping) {
+    add("path", { d: "M14.5 17.5 Q16.5 19 18.5 17.5 M21.5 17.5 Q23.5 19 25.5 17.5", fill: "none" }, "c-line");
+  } else {
+    const y = mood === "work" ? 18 : 17;
+    add("circle", { cx: 16.5, cy: y, r: mood === "ask" ? 1.7 : 1.3 }, "c-eye");
+    add("circle", { cx: 23.5, cy: y, r: mood === "ask" ? 1.7 : 1.3 }, "c-eye");
+  }
+  if (mood === "talk") add("ellipse", { cx: 20, cy: 22.4, rx: 2.2, ry: 1.6 }, "c-mouth talk");
+  else if (mood === "ask") add("ellipse", { cx: 20, cy: 22.6, rx: 1.6, ry: 2 }, "c-mouth");
+  else add("path", { d: sleeping ? "M18.5 22.5 L21.5 22.5" : "M17.5 22 Q20 24 22.5 22", fill: "none" }, "c-line");
+  // Glasses, a headset, or an antenna.
+  if (extra === 0) {
+    add("circle", { cx: 16.5, cy: 17.5, r: 3.1, fill: "none" }, "c-frame");
+    add("circle", { cx: 23.5, cy: 17.5, r: 3.1, fill: "none" }, "c-frame");
+    add("path", { d: "M19.6 17.3 L20.4 17.3", fill: "none" }, "c-frame");
+  }
+  if (extra === 1) {
+    add("path", { d: "M11.2 18 Q11 8.5 20 8.5 Q29 8.5 28.8 18", fill: "none" }, "c-frame");
+    add("rect", { x: 9.6, y: 16.5, width: 3.2, height: 5.5, rx: 1.4 }, "c-set");
+    add("rect", { x: 27.2, y: 16.5, width: 3.2, height: 5.5, rx: 1.4 }, "c-set");
+    add("path", { d: "M12 22 Q13 25.5 17 25.5", fill: "none" }, "c-frame");
+  }
+  if (extra === 2) {
+    add("path", { d: "M20 8.7 L20 3.6", fill: "none" }, "c-frame");
+    add("circle", { cx: 20, cy: 3, r: 1.7 }, "c-set");
+  }
+  // Working: a laptop in front, its lid facing the person looking.
+  if (mood === "work" || mood === "talk") {
+    add("rect", { x: 9, y: 31, width: 22, height: 10, rx: 2 }, "c-lid");
+    add("rect", { x: 17.5, y: 34.5, width: 5, height: 3, rx: 1.2 }, "c-glow");
+  }
+  return svg;
+}
+
+/// Someone in a room: a round avatar whose ring says what it is doing (solid and pulsing while it
+/// works, dashed while idle, raised for the person), with what it is saying beside it.
+function desk(thread, m) {
+  const seat = state.live.find((s) => s.thread_id === thread.id && s.role === m.role);
+  const working = m.live > 0;
+  const asking = thread.status === "needs_you" && m.lead;
+  const key = `${thread.id}:${lowered(m.role)}`;
+  const leaving = state.officeLeaving.has(key);
+  if (!working && !leaving && !m.lead && state.officeHidden.has(key)) return null;
+  const node = text("div", "desk");
+  if (leaving) node.dataset.leaving = "true";
+  if (state.officeNew.has(key)) node.dataset.arriving = "true";
+  node.dataset.live = String(working);
+  node.dataset.lead = String(Boolean(m.lead));
+  node.dataset.asking = String(asking);
+  node.dataset.background = String(Boolean(m.background));
+  const what = (seat?.doing || seat?.title || "").split("\n")[0].replace(/^Task:\s*/, "");
+  const lines = state.talk || [];
+  const finished = thread.wrap === "done";
+  const talk = finished ? null : lines.find((line) => line.from_thread === thread.id && sameRole(line.from_role, m.role));
+  const heard = finished ? null : lines.find((line) => addressees(line).some((o) => o.thread === thread.id && sameRole(o.role, m.role)) && line !== talk);
+  const said = asking ? t("Needs you") : talk ? talk.text : working ? what || t("working…") : "";
+  const clip = (value, n) => (value.length > n ? `${value.slice(0, n - 1)}…` : value);
+  const bubble = text("div", "bubble");
+  bubble.dataset.kind = asking ? "ask" : talk ? "talk" : "work";
+  if (talk && !asking) {
+    const to = addressees(talk)[0];
+    const away = to && to.thread !== thread.id ? titleOf(to.thread) : "";
+    const who = to?.role || (talk.to && talk.to !== "channel" ? talk.to : t("everyone"));
+    bubble.append(text("span", "to", `→ ${who}${away ? ` · ${clip(away, 18)}` : ""}`));
+  }
+  bubble.append(text("span", "words", clip(said, talk ? 90 : 64)));
+  if (working && !asking && !talk) bubble.append(text("span", "dots", " …"));
+  bubble.hidden = !said;
+  node.append(bubble);
+  // Any seat is a way into its conversation; the one asking is the way to the question itself.
+  node.addEventListener("click", () => (asking ? answerAt(thread.id) : select(thread.id)));
+  if (asking) {
+    bubble.setAttribute("role", "button");
+    bubble.setAttribute("tabindex", "0");
+    bubble.setAttribute("title", t("Open the question"));
+    bubble.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault?.();
+        answerAt(thread.id);
+      }
+    });
+  }
+  node.dataset.thread = thread.id;
+  node.dataset.role = m.role || "";
+  if (heard) {
+    const mail = text("span", "mail");
+    mail.setAttribute("title", `${heard.from}: ${heard.text}`);
+    node.append(mail);
+  }
+  const avatar = text("div", "avatar");
+  const frame = text("span", "frame");
+  frame.append(character(m, leaving ? "bye" : asking ? "ask" : talk ? "talk" : working ? "work" : "idle"));
+  avatar.append(frame);
+  const badge = face(m.agent, m.provider);
+  badge.classList?.add?.("badge");
+  avatar.append(badge);
+  node.append(avatar);
+  node.append(text("div", "who", m.role || (m.lead ? t("lead") : m.agent)));
+  const meta = text("div", "meta");
+  if (working && seat?.started_at) {
+    const clock = text("span", "since", span(Date.now() - seat?.started_at));
+    clock.dataset.at = String(seat?.started_at);
+    meta.append(clock);
+  }
+  if (m.model) meta.append(text("span", "model", m.model));
+  node.append(meta);
+  const helpers = tasksOf(seat);
+  if (helpers.length) {
+    const row = text("div", "interns");
+    for (const item of helpers) {
+      const intern = text("div", "intern");
+      intern.dataset.live = "true";
+      const title = (item.title || t("sub-agent")).replace(/^Task:\s*/, "");
+      intern.setAttribute("title", title);
+      intern.append(text("span", "dot"), text("span", "label", title));
+      row.append(intern);
+    }
+    node.append(row);
+  }
+  return node;
+}
+
+function room(thread, wrap = null) {
+  const node = text("section", "room");
+  node.dataset.status = wrap === "done" ? "done" : thread.status;
+  if (wrap === "closing") node.dataset.closing = "true";
+  if (state.officeNew.has(thread.id)) node.dataset.arriving = "true";
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "room-head";
+  head.append(drawn(wrap === "done" ? "check" : MARKS[thread.status] || "circle", "state"));
+  head.append(text("span", "name", thread.title || t("New conversation")));
+  if (wrap === "done") head.append(text("span", "finished", t("done")));
+  head.append(text("span", "since", since(thread.running_since || thread.updated_at)));
+  head.addEventListener("click", () => select(thread.id));
+  node.append(head);
+  const floor = text("div", "floor");
+  for (const m of members(thread)) {
+    const seat = desk(thread, m);
+    if (seat) floor.append(seat);
+  }
+  if (!floor.children?.length) floor.append(text("p", "empty", t("Nobody is here yet.")));
+  node.append(floor);
+  return node;
+}
+
+
+/// The lines: one per recent message, from the avatar that said it to each avatar it is for,
+/// with a small envelope travelling along it. Drawn over the whole office, so a line may leave
+/// one room and arrive in another. Placed from where the avatars are, so it is drawn after the
+/// layout and again when the window changes size.
+function drawWires() {
+  const host = el("office-body");
+  host.querySelectorAll?.(".wires")?.forEach?.((old) => old.remove?.());
+  if (typeof host.getBoundingClientRect !== "function" || !state.office) return;
+  const base = host.getBoundingClientRect();
+  const desks = [...host.querySelectorAll(".desk")].filter((d) => d.dataset.thread);
+  const centre = (d) => {
+    const box = (d.querySelector(".avatar") || d).getBoundingClientRect();
+    return [box.left - base.left + host.scrollLeft + box.width / 2, box.top - base.top + host.scrollTop + box.height / 2];
+  };
+  const find = (thread, role) => desks.find((d) => d.dataset.thread === thread && sameRole(d.dataset.role, role));
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "wires");
+  svg.setAttribute("width", String(host.scrollWidth));
+  svg.setAttribute("height", String(host.scrollHeight));
+  svg.setAttribute("aria-hidden", "true");
+  let drawn_ = 0;
+  for (const line of (state.talk || []).slice(0, 8)) {
+    const from = find(line.from_thread, line.from_role);
+    if (!from) continue;
+    for (const to of addressees(line)) {
+      const end = find(to.thread, to.role);
+      if (!end || end === from) continue;
+      const [x1, y1] = centre(from);
+      const [x2, y2] = centre(end);
+      const lift = Math.min(70, 24 + Math.hypot(x2 - x1, y2 - y1) / 5);
+      const d = `M${x1},${y1} Q${(x1 + x2) / 2},${Math.min(y1, y2) - lift} ${x2},${y2}`;
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("d", d);
+      path.setAttribute("class", to.thread === line.from_thread ? "wire" : "wire across");
+      path.setAttribute("id", `wire-${line.seq}-${drawn_}`);
+      svg.append(path);
+      const mail = document.createElementNS(NS, "g");
+      mail.setAttribute("class", "letter");
+      const box = document.createElementNS(NS, "rect");
+      for (const [k, v] of Object.entries({ x: -6, y: -4, width: 12, height: 8, rx: 1.5 })) box.setAttribute(k, String(v));
+      const flap = document.createElementNS(NS, "path");
+      flap.setAttribute("d", "M-6,-4 L0,1 L6,-4");
+      const move = document.createElementNS(NS, "animateMotion");
+      move.setAttribute("dur", "2.6s");
+      move.setAttribute("repeatCount", "indefinite");
+      move.setAttribute("begin", `${(drawn_ % 4) * 0.5}s`);
+      const route = document.createElementNS(NS, "mpath");
+      route.setAttribute("href", `#wire-${line.seq}-${drawn_}`);
+      move.append(route);
+      mail.append(box, flap, move);
+      svg.append(mail);
+      drawn_ += 1;
+    }
+  }
+  host.append(svg);
+}
+
+const WRAP_UP_MS = 60 * 1000;
+const LEAVE_MS = 2400;
+const ARRIVE_MS = 900;
+const CLOSE_MS = 1300;
+
+/// What changed since the last look, as a place would show it: a room opening, an agent who
+/// finished waving and leaving, a conversation that ended staying a minute as done, one that was
+/// deleted closing. The first look has nothing to compare and draws everything at rest.
+function stepOffice(all, active) {
+  const now = Date.now();
+  // Nothing has been read yet: what arrives first is the office as it already is, at rest.
+  if (!state.officeLast && !all.length) return;
+  const cur = new Map(active.map((th) => [th.id, {
+    thread: th,
+    live: new Set(members(th).filter((m) => m.live > 0).map((m) => lowered(m.role))),
+    roles: new Set(members(th).map((m) => lowered(m.role))),
+    lead: new Set(members(th).filter((m) => m.lead).map((m) => lowered(m.role))),
+  }]));
+  const last = state.officeLast;
+  if (last) {
+    for (const [id, was] of last.rooms) {
+      const is = cur.get(id);
+      if (is) {
+        for (const role of was.live) {
+          if (!is.live.has(role) && !was.lead.has(role)) state.officeLeaving.set(`${id}:${role}`, now + LEAVE_MS);
+        }
+        for (const role of is.live) {
+          state.officeLeaving.delete(`${id}:${role}`);
+          state.officeHidden.delete(`${id}:${role}`);
+        }
+        for (const role of is.roles) if (!was.roles.has(role)) state.officeNew.set(`${id}:${role}`, now + ARRIVE_MS);
+      } else if (!state.officeWrap.has(id)) {
+        const still = all.find((th) => th.id === id);
+        state.officeWrap.set(id, still
+          ? { thread: was.thread, kind: "done", until: now + WRAP_UP_MS }
+          : { thread: was.thread, kind: "closing", until: now + CLOSE_MS });
+      }
+    }
+    for (const id of cur.keys()) {
+      if (!last.rooms.has(id)) state.officeNew.set(id, now + ARRIVE_MS);
+      state.officeWrap.delete(id);
+    }
+  }
+  state.officeLast = { rooms: cur };
+  for (const [id, wrap] of state.officeWrap) {
+    // A room wrapping up that is deleted meanwhile closes at once.
+    if (wrap.kind === "done" && !all.some((th) => th.id === id)) {
+      state.officeWrap.set(id, { ...wrap, kind: "closing", until: Math.min(wrap.until, now + CLOSE_MS) });
+    } else if (wrap.until <= now) state.officeWrap.delete(id);
+  }
+  for (const [key, until] of state.officeLeaving) {
+    if (until <= now) {
+      state.officeLeaving.delete(key);
+      state.officeHidden.add(key);
+    }
+  }
+  for (const [key, until] of state.officeNew) if (until <= now) state.officeNew.delete(key);
+  const untils = [...state.officeWrap.values()].map((w) => w.until).concat([...state.officeLeaving.values(), ...state.officeNew.values()]);
+  state.officeUntil = untils.length ? Math.min(...untils) : 0;
+}
+
+function drawOffice() {
+  const all = state.projects.flatMap((p) => p.threads.map((th) => ({ ...th, where: p.name })));
+  const busy = (th) => th.status in ROOM_ORDER || members(th).some((m) => m.live > 0);
+  const active = all.filter(busy);
+  stepOffice(all, active);
+  const wrapped = [...state.officeWrap].map(([id, w]) => ({ ...(all.find((th) => th.id === id) || w.thread), where: all.find((th) => th.id === id)?.where || w.thread.where, wrap: w.kind }));
+  const quiet = all.filter((th) => !busy(th) && !state.officeWrap.has(th.id)).slice(0, QUIET_ROOMS);
+  const tasks = state.tasks || [];
+  const sig = JSON.stringify([
+    [...state.officeWrap].map(([id, w]) => [id, w.kind]),
+    [...state.officeLeaving.keys()],
+    [...state.officeHidden],
+    [...state.officeNew.keys()],
+    all.map((th) => [th.id, th.title, th.status, th.asking, th.where, members(th).map((m) => [m.role, m.agent, m.model, m.live, m.lead])]),
+    state.live.map((s) => [s.seat_id, s.doing, s.title]),
+    tasks.map((x) => [x.item_id, x.title, x.calls]),
+    (state.talk || []).map((l) => l.seq),
+    state.icons ? Object.keys(state.icons) : null,
+  ]);
+  if (sig === state.officeSig) return;
+  state.officeSig = sig;
+
+  // Only what can be drawn is counted: a message whose sender has left the office has no one to say it.
+  const seated = new Set();
+  for (const th of [...active, ...wrapped]) {
+    for (const m of members(th)) {
+      const key = `${th.id}:${lowered(m.role)}`;
+      if (m.live > 0 || m.lead || !state.officeHidden.has(key)) seated.add(key);
+    }
+  }
+  const stats = el("office-stats");
+  stats.replaceChildren();
+  const asking = all.reduce((n, th) => n + (th.asking > 0 ? 1 : 0), 0);
+  for (const [n, label, key] of [
+    [state.live.length, "at work", "work"],
+    [tasks.length, "assistants", "tasks"],
+    [asking, "need you", "ask"],
+    [(state.talk || []).filter((line) => seated.has(`${line.from_thread}:${lowered(line.from_role)}`)).length, "messages", "talk"],
+    [active.length, "rooms open", "rooms"],
+  ]) {
+    const chip = text("span", "stat");
+    chip.dataset.stat = key;
+    chip.append(text("b", null, String(n)), text("span", null, t(label)));
+    stats.append(chip);
+  }
+
+  const host = el("office-body");
+  host.replaceChildren();
+  if (!active.length && !wrapped.length) {
+    const empty = text("div", "office-empty");
+    const row = text("div", "floor");
+    for (const provider of ["anthropic", "openai", "google"]) {
+      const idle = text("div", "desk");
+      idle.dataset.live = "false";
+      idle.dataset.lead = "false";
+      const avatar = text("div", "avatar");
+      const frame = text("span", "frame");
+      frame.append(character({ role: provider, agent: provider }, "idle"));
+      avatar.append(frame);
+      idle.append(avatar);
+      row.append(idle);
+    }
+    empty.append(row, text("p", "empty", t("The office is quiet. Start a thread to put someone to work.")));
+    host.append(empty);
+  }
+  const floors = new Map();
+  for (const th of [...active, ...wrapped]) {
+    if (!floors.has(th.where)) floors.set(th.where, []);
+    floors.get(th.where).push(th);
+  }
+  const rank = (rows) => Math.min(...rows.map((th) => (th.wrap ? 6 : ROOM_ORDER[th.status] ?? 5)));
+  for (const [where, rows] of [...floors].sort((a, b) => rank(a[1]) - rank(b[1]))) {
+    rows.sort((a, b) => (a.wrap ? 6 : ROOM_ORDER[a.status] ?? 5) - (b.wrap ? 6 : ROOM_ORDER[b.status] ?? 5));
+    const level = text("section", "level");
+    level.append(text("h3", null, where));
+    const rooms = text("div", "rooms plan");
+    for (const th of rows) rooms.append(room(th, th.wrap || null));
+    level.append(rooms);
+    host.append(level);
+  }
+  if (quiet.length) {
+    const level = text("section", "level quiet");
+    level.append(text("h3", null, t("Off duty")));
+    const row = text("div", "off-duty");
+    for (const th of quiet) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "chip";
+      const lead = members(th)[0];
+      chip.append(face(lead?.agent, lead?.provider));
+      chip.append(text("span", "name", th.title || t("New conversation")));
+      chip.append(text("span", "where", th.where));
+      chip.addEventListener("click", () => select(th.id));
+      row.append(chip);
+    }
+    level.append(row);
+    host.append(level);
+  }
+  // After the layout has settled, so the avatars are where the lines are drawn to.
+  (window.requestAnimationFrame || ((f) => setTimeout(f, 0)))(drawWires);
+}
+
+// Seconds pass without a change in the data, so only the clocks are touched.
+setInterval(() => {
+  if (!state.office) return;
+  // A leaving agent or a room wrapping up has a time of its own; the office is drawn again then.
+  if (state.officeUntil && Date.now() >= state.officeUntil) {
+    state.officeSig = "";
+    drawOffice();
+  }
+  for (const node of document.querySelectorAll?.("#office-body .since[data-at]") || []) {
+    node.textContent = span(Date.now() - Number(node.dataset.at));
+  }
+}, 1000);
+
+el("office-btn").addEventListener("click", enterOffice);
+
+/// Opens the conversation that is asking and brings its question into view.
+async function answerAt(id) {
+  await select(id);
+  el("timeline").querySelectorAll?.(".ask")?.[0]?.scrollIntoView?.({ block: "center" });
+}
+
 async function select(id) {
+  leaveOffice();
   closeSettings();
   if (id !== state.thread) {
     closeMember();
@@ -5850,6 +6379,10 @@ async function refresh(full) {
   folderLabel();
   // An open panel follows what it is showing; it never takes the conversation's place.
   if (state.panel || state.settings) await drawScreen();
+  if (state.office && !state.settings) {
+    await readChatter();
+    drawOffice();
+  }
 
   if (!state.thread) {
     el("thread-title").textContent = "Nothing selected";
@@ -5897,8 +6430,8 @@ async function refresh(full) {
   const ended = state.tree.status === "working" && thread.thread.status !== "working";
   state.tree.status = thread.thread.status;
   if (filesShown() && (ended || !state.tree.dirs.has(""))) await drawFiles(true);
-  // Looking at a conversation is what makes it read.
-  await call("seen", { thread: state.thread });
+  // Looking at a conversation is what makes it read; the office behind it is not looking.
+  if (!state.office) await call("seen", { thread: state.thread });
 }
 
 el("composer").addEventListener("submit", async (event) => {
@@ -5998,4 +6531,5 @@ for (const [id, word] of [
   el(id).setAttribute("placeholder", t(word));
 }
 
+enterOffice();
 refresh(true);

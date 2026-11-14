@@ -9,6 +9,8 @@ channel in `preview-channel.js`, generated from `../tests/channel.json` (a lead,
 continued across two seats, an assignment with its bar, an `@you` mention and an open trial;
 `preview.html?thread` opens the first thread panel).
 
+`preview.html?office` draws the home screen, the office, from `tests/office.json` (three floors, one team asking, sub-agents beside their seats).
+
 ```sh
 node desktop/tests/make-preview.mjs
 cd desktop/dist && python3 -m http.server 8731   # then open /preview.html
@@ -70,3 +72,13 @@ first line of the post, once, whether or not the window is in front when the con
 the one being looked at; in the conversation in view and in front it is only marked seen
 (`see_mentions`, also after an answer). The dock badge counts open questions plus unseen
 mentions, and the sidebar row carries an `@` before its other marks until the mention is seen.
+
+## The office (home)
+
+The window opens on the **Office**, not on a conversation: a project is a floor, a conversation a
+room, an agent someone at a desk. Working agents type and say what they are doing in a bubble, a
+conversation that asks has its lead raise a hand, a sub-agent its CLI runs (`live_tasks`) is an
+assistant beside its seat, and quiet conversations wait in "Off duty". It reads only what the
+sidebar and `live_seats` already carry, redraws when that data changes, and only the clocks tick
+each second. The Office button in the sidebar returns to it; choosing a conversation leaves it,
+and the office does not mark the conversation behind it as read.

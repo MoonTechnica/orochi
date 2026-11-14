@@ -41,7 +41,7 @@ async function openSettingsPage(el, page) {
 async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) {
   const calls = [];
   page([
-    "sidebar", "projects", "projects-head", "projects-label", "add-project", "sidebar-foot", "new-thread", "activity", "activity-count",
+    "sidebar", "projects", "projects-head", "projects-label", "add-project", "sidebar-foot", "new-thread", "office-btn", "office", "office-head", "office-title", "office-stats", "office-body", "activity", "activity-count",
     "status-bar", "accounts", "counts", "route-picker", "route", "route-name", "route-menu",
     "effort", "effort-name",
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
@@ -1231,6 +1231,13 @@ test("comments on a diff collect, and go as one message", async () => {
   assert.equal(el("review-form").hidden, true, "and the list empties behind it");
 });
 
+/// Chooses a conversation from the office, the way a person does on opening the window.
+async function select_(el) {
+  const row = el("office-body").querySelectorAll(".chip")[0] || el("office-body").querySelectorAll(".room-head")[0];
+  if (row) row.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
 test("a thread that appears while the window is open is drawn, not just listed", async () => {
   // The window opens on an empty store, as a first run does.
   const answers = { sidebar: [], thread: null, folders: [], changed: [] };
@@ -1250,8 +1257,13 @@ test("a thread that appears while the window is open is drawn, not just listed",
     "the first thread to appear is drawn, not only added to the list",
   );
   assert.ok(
+    !calls.some(([name]) => name === "seen"),
+    "the office is home, and it is not looking at the thread behind it",
+  );
+  await select_(el);
+  assert.ok(
     calls.some(([name]) => name === "seen"),
-    "and looking at it is what makes it read",
+    "choosing it is what makes it read",
   );
 });
 
@@ -1286,7 +1298,8 @@ test("everything that is not a conversation lives behind the row at the foot", a
 
   el("settings-close").dispatch("click");
   assert.equal(el("settings").hidden, true, "and closed is closed");
-  assert.equal(el("thread").hidden, false, "with the conversation back in its place");
+  assert.equal(el("office").hidden, false, "with the office back, where it was opened from");
+  assert.equal(el("thread").hidden, true, "and no conversation in front of it");
 });
 
 test("a thread nobody has written in yet says so, rather than being Untitled", async () => {
@@ -3519,4 +3532,129 @@ test("a project's own + preselects it even when its folder is gone, and says so;
   assert.match(all.el("spawn-project").render(), /Choose a project…/, "empty only when all are gone");
   assert.equal(all.el("spawn-go").disabled, true);
   assert.equal(never(all.calls), false);
+});
+
+test("the office is the window's home: a team at work, a hand up for what needs the person", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const [first, second] = project.threads;
+  first.status = "working";
+  first.agents = [
+    { role: "lead", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 1, lead: true, background: false, last_at: 1 },
+    { role: "reviewer", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: false, background: false, last_at: 1 },
+  ];
+  second.status = "needs_you";
+  second.asking = 1;
+  const live = [
+    { seat_id: "a", thread_id: first.id, role: "lead", lead: true, doing: "Editing src/main.rs", started_at: Date.now() - 5000 },
+    { seat_id: "b", thread_id: first.id, role: "reviewer", lead: false, doing: "Reading the diff", started_at: Date.now() - 5000 },
+  ];
+  const tasks = [{ item_id: 1, thread_id: first.id, seat_id: "a", role: "lead", title: "Task: find callers", started_at: Date.now(), calls: 2 }];
+  const { el } = await open({ sidebar: [project], live_seats: live, live_tasks: tasks });
+  assert.equal(el("office").hidden, false, "it opens on the office");
+  assert.equal(el("thread").hidden, true, "not on a conversation");
+  const drawn_ = el("office-body").render();
+  assert.match(drawn_, /Editing src\/main\.rs/, "what each agent is doing is said over its desk");
+  assert.match(drawn_, /find callers/, "a sub-agent is an assistant beside its seat");
+  assert.match(drawn_, /Needs you/, "a conversation that asks has its lead put a hand up");
+  const stats = el("office-stats").render();
+  assert.match(stats, /2.*at work/s);
+  assert.match(stats, /1.*assistants/s);
+});
+
+test("the office draws who speaks to whom, across rooms, and what is addressed to a seat marks it", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const [first, second] = project.threads;
+  first.title = "Home screen";
+  second.title = "Docs";
+  first.status = "working";
+  second.status = "working";
+  first.agents = [
+    { role: "lead", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 1, lead: true, background: false, last_at: 1 },
+    { role: "designer", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: false, background: false, last_at: 1 },
+  ];
+  second.agents = [
+    { role: "writer", agent: "claude", provider: "anthropic", model: "haiku", seats: 1, live: 1, lead: true, background: false, last_at: 1 },
+  ];
+  const now = Date.now();
+  const chatter = [
+    // Across two conversations of one project.
+    { seq: 2, project_id: "p", via: "mailbox", from: "designer", from_thread: first.id, from_role: "designer", to: "writer", to_thread: second.id, to_role: "writer", text: "The gap is 3px, document it.", at: now, mentions: [] },
+    // Within one: the mention names the seat when the post has no recipient of its own.
+    { seq: 1, project_id: "p", via: "mailbox", from: "lead", from_thread: first.id, from_role: "lead", to: "channel", to_thread: null, to_role: null, text: "@designer start on the cards", at: now, mentions: ["designer"] },
+  ];
+  const { el } = await open({ sidebar: [project], chatter });
+  const drawn_ = el("office-body").render();
+  assert.match(drawn_, /→ writer · Docs/, "a line that leaves its room says where it goes");
+  assert.match(drawn_, /The gap is 3px/, "and what was said is over whoever said it");
+  assert.match(drawn_, /→ designer/, "a mention is the addressee of a post that has none");
+  const marked = el("office-body").querySelectorAll(".mail");
+  assert.equal(marked.length, 2, "whoever was spoken to carries the envelope: the writer and the designer");
+  assert.match(el("office-stats").render(), /2.*messages/s);
+});
+
+test("the office shows people leaving, a room wrapping up as done, and one closing when it is deleted", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const [first, second] = project.threads;
+  first.status = "working";
+  first.agents = [
+    { role: "lead", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 1, lead: true, background: false, last_at: 1 },
+    { role: "helper", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: false, background: false, last_at: 1 },
+  ];
+  second.status = "working";
+  second.agents = [
+    { role: "solo", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 1, lead: true, background: false, last_at: 1 },
+  ];
+  const answers = { sidebar: [project], changed: [] };
+  const { el, tick } = await open(answers);
+  const rooms = () => el("office-body").querySelectorAll(".room");
+  const desks = () => el("office-body").querySelectorAll(".desk");
+  assert.equal(rooms().length, 2, "two rooms open at the first look");
+  assert.ok(!rooms().some((r) => r.dataset.arriving), "the first look draws everything at rest");
+
+  // A helper finishes while the conversation goes on: it waves and leaves, the lead stays.
+  first.agents[1].live = 0;
+  answers.changed = [first.id];
+  await tick();
+  const helper = desks().find((d) => d.dataset.role === "helper");
+  assert.equal(helper.dataset.leaving, "true", "someone who finished is leaving");
+  assert.ok(desks().some((d) => d.dataset.role === "lead"), "and the lead is not");
+
+  // The conversation ends: its room stays as done for a while, in the room it was in.
+  first.status = "unread";
+  first.agents[0].live = 0;
+  answers.changed = [first.id];
+  await tick();
+  const done = rooms().find((r) => r.dataset.status === "done");
+  assert.ok(done, "a conversation that ended is wrapping up, not gone");
+  assert.match(el("office-stats").render(), /1.*rooms open/s, "and it is not counted as open");
+
+  // The other conversation is deleted: its room closes.
+  project.threads = [first];
+  answers.changed = [second.id];
+  await tick();
+  assert.ok(rooms().some((r) => r.dataset.closing === "true"), "a deleted conversation's room closes");
+});
+
+test("the office's question bubble opens the conversation that asks, and any seat opens its own", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const [first, second] = project.threads;
+  first.status = "working";
+  first.agents = [{ role: "lead", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 1, lead: true, background: false, last_at: 1 }];
+  second.status = "needs_you";
+  second.asking = 1;
+  second.agents = [{ role: "fixer", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: true, background: false, last_at: 1 }];
+  const answers = { sidebar: [project], thread: recorded.thread, changed: [] };
+  const { el, calls } = await open(answers);
+  assert.equal(el("office").hidden, false, "it starts on the office");
+  const ask = el("office-body").querySelectorAll(".bubble").find((b) => b.dataset.kind === "ask");
+  assert.ok(ask, "the question is a bubble");
+  assert.equal(ask.getAttribute("role"), "button", "and one that can be pressed");
+  el("office-body").querySelectorAll(".desk").find((d) => d.dataset.asking === "true").dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(el("office").hidden, true, "pressing it leaves the office");
+  assert.equal(el("thread").hidden, false, "for the conversation");
+  assert.ok(
+    calls.some(([name, args]) => name === "thread" && args?.id === second.id),
+    "the one that was asking, not the first in the list",
+  );
 });

@@ -708,6 +708,97 @@ fn the_room_is_timed_on_the_same_clock_as_the_conversation() {
     }
 }
 
+/// The office draws a message as a line between two avatars, so each end must say which
+/// conversation's seat it is — and the person's own notes are not between agents at all.
+#[test]
+fn a_message_between_agents_says_which_conversation_each_end_works_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _prompt) = fixture(dir.path());
+    let second;
+    {
+        let store = share(Activity::open(dir.path(), 30).unwrap());
+        let db = store.lock().unwrap();
+        second = db
+            .create_thread(
+                "proj",
+                std::path::Path::new("/tmp/orochi"),
+                Some("main"),
+                "repo-hash",
+                Origin::Console,
+                &Overrides::default(),
+                "ask",
+            )
+            .unwrap();
+        let turn = db
+            .queue_turn(&second, "Write the docs", &[], "auto", "terminal")
+            .unwrap();
+        let seat = db
+            .create_seat(&turn, 0, "writer", true, false, None, None)
+            .unwrap();
+        db.create_attempt(&seat, &candidate(), false, None).unwrap();
+        // The first conversation's lead is peer p1, the second's writer p2.
+        db.connection()
+            .execute(
+                "UPDATE attempts SET peer_id='p1' WHERE seat_id IN
+                   (SELECT s.id FROM seats s JOIN turns t ON t.id=s.turn_id
+                    WHERE t.thread_id=?1 AND s.role='implementer')",
+                [&first],
+            )
+            .unwrap();
+        db.connection()
+            .execute("UPDATE attempts SET peer_id='p2' WHERE seat_id=?1", [&seat])
+            .unwrap();
+        for (sender, name, recipient, to, via, body, at) in [
+            (
+                "p1",
+                "implementer",
+                "p2",
+                "writer",
+                "mailbox",
+                "document the retry rule",
+                1_769_000_100i64,
+            ),
+            (
+                "u",
+                "user",
+                "p1",
+                "implementer",
+                "user",
+                "prefer the simpler shape",
+                1_769_000_101,
+            ),
+        ] {
+            db.connection()
+                .execute(
+                    "INSERT INTO messages (project_id, sender, sender_name, recipient,
+                                           recipient_name, via, body, sent_at)
+                     VALUES ('proj', ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![sender, name, recipient, to, via, body, at],
+                )
+                .unwrap();
+        }
+    }
+    let client = Client::open(dir.path()).unwrap();
+    let talk = client.chatter(1_769_000_000_000, 10).unwrap();
+    assert_eq!(
+        talk.len(),
+        1,
+        "the person's note is the conversation's, not the office's"
+    );
+    assert_eq!(talk[0].from_thread.as_deref(), Some(first.as_str()));
+    assert_eq!(talk[0].from_role.as_deref(), Some("implementer"));
+    assert_eq!(talk[0].to_thread.as_deref(), Some(second.as_str()));
+    assert_eq!(talk[0].to_role.as_deref(), Some("writer"));
+    assert_eq!(
+        talk[0].at, 1_769_000_100_000,
+        "on the same clock as the rest of the window"
+    );
+    assert!(
+        client.chatter(1_769_000_200_000, 10).unwrap().is_empty(),
+        "and only what is recent"
+    );
+}
+
 /// A host outlives the call that started it, and goes on writing to stderr as it works. The
 /// pipe it was started with is read for long enough to say why it stopped, and then it must
 /// keep being read — the first line written after the reader went away killed the host, which

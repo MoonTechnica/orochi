@@ -311,6 +311,12 @@ fn room(open: State<'_, Open>, thread: String) -> Result<Vec<Said>, String> {
     open.0.lock().unwrap().room(&thread).map_err(fail)
 }
 
+/// What agents said to each other lately across every conversation, for the office.
+#[tauri::command]
+fn chatter(open: State<'_, Open>, since: i64) -> Result<Vec<orochi_desktop::view::Talk>, String> {
+    open.0.lock().unwrap().chatter(since, 60).map_err(fail)
+}
+
 /// Leaves a note in the room. It reaches the agents when they next read their messages; with
 /// a `member` it is a reply in that member's thread, and a mention reaches whoever it names.
 #[tauri::command]
@@ -791,6 +797,7 @@ fn main() {
             ensure_host,
             watch,
             room,
+            chatter,
             say,
             agents,
             refresh_quota,

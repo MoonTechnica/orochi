@@ -1542,3 +1542,122 @@ button:disabled { opacity: .5; cursor: default; }
 .select.gone { opacity: .7; }
 .select.gone .name { text-decoration: line-through; text-decoration-color: var(--muted); }
 #spawn-about .later.gone { color: var(--danger); }
+
+/* Office ------------------------------------------------------------------ */
+/* A floor plan, in one ink: each project is an office, each conversation a room along its
+   corridor, each agent an avatar whose ring says what it is doing. Only a question for the
+   person is coloured. */
+#office { grid-column: 2 / 4; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+#office-head { display: flex; align-items: center; gap: 16px; padding: 12px var(--gutter); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#office-title { margin: 0; font-size: 14px; }
+#office-stats { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.stat { display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; }
+.stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+.stat[data-stat="ask"] b { color: var(--brand); }
+#office-body { position: relative; overflow: auto; padding: var(--gutter); min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 22px; }
+.level h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.rooms.plan { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px 22px; align-items: start; padding: 22px; border: 3px solid var(--line); border-radius: 14px; background: var(--panel); }
+.room { position: relative; background: var(--bg); border: 2px solid var(--line); border-radius: 6px; }
+.room[data-status="working"] { border-color: var(--muted); }
+.room[data-status="needs_you"] { border-color: var(--brand); }
+.room-head { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; border-bottom: 1px dashed var(--line); border-radius: 0; padding: 6px 10px; background: transparent; text-align: left; }
+.room-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.room-head .since { color: var(--muted); font-size: 11px; }
+.room-head:hover { background: var(--raised); }
+.floor { display: flex; flex-wrap: wrap; gap: 74px 8px; padding: 84px 12px 14px; min-height: 150px; align-items: flex-start; justify-content: center; }
+.desk { position: relative; display: flex; flex-direction: column; align-items: center; width: 100px; }
+.avatar { position: relative; width: 56px; height: 56px; border-radius: 50%; background: var(--raised); border: 2px dashed var(--line); }
+.avatar .frame { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; display: block; }
+.avatar .char { width: 100%; height: 100%; display: block; }
+.avatar .badge { position: absolute; right: -6px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%; background: var(--bg) !important; border: 1.5px solid var(--muted); color: var(--text); font-size: 10px; filter: grayscale(1); }
+.avatar .badge[data-icon="vendor"] img { width: 12px; height: 12px; }
+/* The character, in one ink: light features on the dark ground, the other way round on light. */
+.char .c-body { fill: var(--muted); }
+.char .c-skin { fill: var(--text); fill-opacity: .92; }
+.char .c-hair { fill: var(--muted); }
+.char .c-arm { fill: var(--muted); }
+.char .c-tie { fill: var(--bg); }
+.char .c-eye, .char .c-mouth { fill: var(--bg); }
+.char .c-line { stroke: var(--bg); stroke-width: 1.4; stroke-linecap: round; }
+.char .c-frame { stroke: var(--bg); stroke-width: 1.2; stroke-linecap: round; }
+.char .c-set { fill: var(--bg); stroke: var(--bg); }
+.char .c-lid { fill: var(--raised); stroke: var(--text); stroke-width: 1.2; }
+.char .c-glow { fill: var(--text); animation: type 1s steps(2) infinite; }
+.char .c-eye { transform-box: fill-box; transform-origin: center; animation: look 4.5s ease-in-out infinite; }
+.desk[data-live="false"] .char .c-eye { animation: none; }
+.char .c-mouth.talk { transform-box: fill-box; transform-origin: center; animation: talk .35s ease-in-out infinite alternate; }
+@keyframes type { 50% { opacity: .25; } }
+@keyframes look { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+@keyframes talk { from { transform: scaleY(.45); } to { transform: scaleY(1.1); } }
+.desk[data-live="true"] .avatar .frame { animation: bob 1.8s ease-in-out infinite; }
+@keyframes bob { 50% { transform: translateY(-1px); } }
+.desk[data-live="true"] .avatar { border: 2px solid var(--text); }
+.desk[data-live="true"] .avatar::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--text); animation: ring 1.8s ease-out infinite; }
+.desk[data-live="false"] { opacity: .55; }
+.desk[data-asking="true"] .avatar, .desk[data-asking="true"] .avatar::after { border-color: var(--brand); }
+@keyframes ring { from { transform: scale(1); opacity: .7; } to { transform: scale(1.5); opacity: 0; } }
+.who { margin-top: 5px; font-size: 11px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desk[data-lead="true"] .who { text-decoration: underline; text-underline-offset: 3px; }
+.desk .meta { display: flex; gap: 5px; max-width: 100%; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.desk .meta .since { font-variant-numeric: tabular-nums; color: var(--text); }
+.desk .meta .model { overflow: hidden; text-overflow: ellipsis; }
+.bubble { position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 100px; padding: 5px 10px; border: 1.5px solid var(--muted); border-radius: 14px; background: var(--raised); color: var(--text); font-size: 11px; line-height: 1.35; z-index: 2; text-align: left; }
+/* The tail: a square turned on its corner, so the bubble reads as spoken by the avatar below. */
+.bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; width: 9px; height: 9px; background: var(--raised); border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); border-bottom-right-radius: 3px; transform: translateX(-50%) rotate(45deg); }
+.bubble .words { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.bubble .dots { color: var(--muted); animation: blink 1.2s steps(2) infinite; }
+.bubble[data-kind="talk"] { border-color: var(--text); }
+.bubble[data-kind="talk"] .words { -webkit-line-clamp: 4; }
+.bubble[data-kind="talk"]::after { border-color: var(--text); }
+.bubble .to { display: block; color: var(--muted); font-size: 10px; margin-bottom: 1px; }
+@keyframes blink { 50% { opacity: 0; } }
+.desk[data-asking="true"] .bubble, .bubble[data-kind="ask"] { background: var(--brand); border-color: var(--brand); color: #1b1d22; font-weight: 600; }
+.bubble[data-kind="ask"]::after { background: var(--brand); border-color: var(--brand); }
+.desk:hover .bubble { z-index: 6; }
+.desk:hover .bubble .words { -webkit-line-clamp: unset; }
+/* An envelope on the avatar of whoever was just spoken to. */
+.mail { position: absolute; top: -4px; right: 14px; width: 16px; height: 11px; border: 1.5px solid var(--text); border-radius: 2px; background: var(--bg); z-index: 3; animation: blink 1.2s steps(2) infinite; }
+.mail::before { content: ""; position: absolute; left: 1px; top: -1px; width: 9px; height: 9px; border-right: 1.5px solid var(--text); border-bottom: 1.5px solid var(--text); transform: translate(0, -3px) rotate(45deg) scale(.7); transform-origin: center; }
+.interns { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; align-items: flex-start; max-width: 100%; }
+.intern { display: flex; align-items: center; gap: 4px; max-width: 100%; font-size: 9px; color: var(--muted); }
+.intern .dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--text); flex: none; animation: blink 1.2s steps(2) infinite; }
+.intern .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-duty { display: flex; flex-wrap: wrap; gap: 6px; }
+.off-duty .chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; opacity: .75; max-width: 260px; }
+.off-duty .chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.off-duty .chip .where { color: var(--muted); font-size: 11px; }
+.off-duty .chip:hover { opacity: 1; }
+.office-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 0; color: var(--muted); }
+.office-empty .floor { padding-top: 10px; min-height: 0; }
+#office-btn { display: flex; align-items: center; justify-content: space-between; }
+@media (prefers-reduced-motion: reduce) { .desk .avatar::after, .intern .dot, .bubble .dots, .mail, .char *, .avatar .frame { animation: none !important; } }
+
+/* Lines between avatars: one ink, drawn over the rooms. A line that leaves its room is dotted. */
+.wires { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 4; overflow: visible; }
+.wire { fill: none; stroke: var(--text); stroke-opacity: .55; stroke-width: 1.5; stroke-dasharray: 5 4; animation: flow 1.4s linear infinite; }
+.wire.across { stroke-opacity: .8; stroke-width: 2; stroke-dasharray: 2 5; stroke-linecap: round; }
+@keyframes flow { to { stroke-dashoffset: -18; } }
+.letter rect { fill: var(--text); }
+.letter path { fill: none; stroke: var(--bg); stroke-width: 1.2; }
+@media (prefers-reduced-motion: reduce) { .wire { animation: none; } }
+
+/* Coming and going: a room or a person arriving, someone waving and leaving, a room wrapping up
+   (dashed, with its tick) and one closing. */
+@keyframes arrive { from { opacity: 0; transform: translateY(10px) scale(.92); } }
+.room[data-arriving], .desk[data-arriving] { animation: arrive .7s ease-out; }
+.desk[data-leaving] { animation: leave 2.4s ease-in forwards; }
+@keyframes leave { 0%, 55% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateX(46px); } }
+.char .wave { transform-box: fill-box; transform-origin: 50% 90%; animation: wave .45s ease-in-out infinite alternate; }
+@keyframes wave { from { transform: rotate(-14deg); } to { transform: rotate(14deg); } }
+.room[data-closing] { animation: closing 1.2s ease-in forwards; pointer-events: none; }
+@keyframes closing { to { opacity: 0; transform: scale(.95); } }
+.room[data-status="done"] { border-style: dashed; border-color: var(--muted); }
+.room[data-status="done"] .floor { opacity: .7; }
+.room-head .finished { color: var(--text); font-size: 11px; border: 1px solid var(--muted); border-radius: 999px; padding: 0 8px; }
+@media (prefers-reduced-motion: reduce) { .room[data-arriving], .desk[data-arriving], .desk[data-leaving], .room[data-closing], .char .wave { animation: none !important; } .desk[data-leaving] { opacity: .4; } }
+
+.desk { cursor: pointer; }
+.bubble[data-kind="ask"] { cursor: pointer; }
+.bubble[data-kind="ask"]:hover { filter: brightness(1.08); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 35%, transparent); }
+.bubble[data-kind="ask"]:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.desk:hover .avatar { border-color: var(--text); }
