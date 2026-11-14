@@ -351,3 +351,87 @@ async fn a_real_chrome_previews_a_page_from_a_folder_and_it_cannot_reach_anythin
     );
     view(browser.call(tab("view_close", json!({}))).await);
 }
+
+fn chrome_of(profile: &std::path::Path) -> Vec<i32> {
+    let ps = std::process::Command::new("ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter(|l| l.contains(&format!("--user-data-dir={}", profile.display())))
+        .filter(|l| !l.contains("--type="))
+        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+#[test]
+#[ignore = "needs a Chrome or Chromium on this machine"]
+fn a_broker_killed_outright_leaves_no_chrome_in_the_way_of_the_next_and_ends_its_chrome_when_asked()
+{
+    let config = BrowserConfig {
+        enabled: true,
+        ..BrowserConfig::default()
+    };
+    let data = tempfile::tempdir().unwrap();
+    let data = std::fs::canonicalize(data.path()).unwrap();
+    let executable = std::path::PathBuf::from(env!("CARGO_BIN_EXE_orochi"));
+    orochi::browser::register(&data, executable.clone(), &config).unwrap();
+    let profile = data.join("browser/profile");
+    let frame = |client: &mut orochi::browser::Client| {
+        client
+            .call(&Request {
+                scope: "user:t:p".into(),
+                tool: "view_frame".into(),
+                args: json!({"width": 400, "height": 300}),
+                read_only: false,
+                cwd: None,
+            })
+            .unwrap()
+    };
+    let pid = |name: &str| -> i32 {
+        std::fs::read_to_string(data.join("browser").join(name))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+
+    let mut first = orochi::browser::Client::open(&executable, &data).unwrap();
+    assert!(frame(&mut first)["isError"] != true);
+    let broker = pid("broker.pid");
+    assert!(!chrome_of(&profile).is_empty(), "a Chrome is running");
+
+    // The broker dies without a chance to stop anything.
+    unsafe { libc::kill(broker, libc::SIGKILL) };
+    drop(first);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let orphans = chrome_of(&profile);
+    println!("left behind: {orphans:?}");
+
+    // The next one starts all the same: it ends what was left and takes the profile.
+    let mut second = orochi::browser::Client::open(&executable, &data).unwrap();
+    let again = frame(&mut second);
+    assert!(again["isError"] != true, "{again}");
+    for orphan in orphans {
+        assert!(
+            !chrome_of(&profile).contains(&orphan),
+            "the old Chrome {orphan} is gone"
+        );
+    }
+
+    // A broker asked to stop takes its Chrome with it.
+    let broker = pid("broker.pid");
+    drop(second);
+    unsafe { libc::kill(broker, libc::SIGTERM) };
+    for _ in 0..50 {
+        if chrome_of(&profile).is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        chrome_of(&profile).is_empty(),
+        "no Chrome outlives its broker"
+    );
+}

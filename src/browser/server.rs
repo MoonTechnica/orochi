@@ -150,6 +150,46 @@ pub fn serve_broker(args: &[std::ffi::OsString]) -> ExitCode {
     }
 }
 
+/// A Chrome left behind by a broker that was killed outright still holds the profile, and the
+/// next one then refuses to start ("the browser ended"). Chrome names its owner in the
+/// profile's `SingletonLock` link (`host-pid`); if that process is alive and is a Chrome using
+/// this very profile, it is ended, and the stale lock files go.
+fn reap_stale_chrome(profile: &Path) {
+    let lock = profile.join("SingletonLock");
+    if let Ok(target) = std::fs::read_link(&lock)
+        && let Some(pid) = target
+            .to_string_lossy()
+            .rsplit('-')
+            .next()
+            .and_then(|p| p.parse::<i32>().ok())
+        && pid > 1
+    {
+        let command = std::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if command.contains(&format!("--user-data-dir={}", profile.display())) {
+            // SAFETY: a plain signal to a process that was just checked to be ours.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            for _ in 0..30 {
+                // SAFETY: signal 0 only asks whether the process exists.
+                if unsafe { libc::kill(pid, 0) } != 0 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            // SAFETY: as above.
+            if unsafe { libc::kill(pid, 0) } == 0 {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+    for name in ["SingletonLock", "SingletonSocket", "SingletonCookie"] {
+        let _ = std::fs::remove_file(profile.join(name));
+    }
+}
+
 async fn broker_main(data: &Path) -> Result<()> {
     use std::sync::{
         Arc,
@@ -160,6 +200,7 @@ async fn broker_main(data: &Path) -> Result<()> {
     let chrome = find_chrome(&config)?;
     let profile = dir(data).join("profile");
     std::fs::create_dir_all(&profile)?;
+    reap_stale_chrome(&profile);
     let args: Vec<String> = [
         "--headless=new",
         "--remote-debugging-pipe",
@@ -196,8 +237,19 @@ async fn broker_main(data: &Path) -> Result<()> {
     let open = Arc::new(AtomicUsize::new(0));
     let idle = config.idle_secs as i64;
     let mut tick = tokio::time::interval(Duration::from_secs(5));
+    // Ending on a signal lets `Browser` drop, which is what stops Chrome with it.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     loop {
         tokio::select! {
+            _ = terminate.recv() => {
+                let _ = std::fs::remove_file(&socket);
+                return Ok(());
+            }
+            _ = hangup.recv() => {
+                let _ = std::fs::remove_file(&socket);
+                return Ok(());
+            }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 let (browser, last, open) = (browser.clone(), last.clone(), open.clone());
