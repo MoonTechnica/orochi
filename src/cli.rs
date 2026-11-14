@@ -896,7 +896,14 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     // The browser's tools are offered to the sessions this process starts.
     #[cfg(unix)]
     if joins && config.browser.enabled {
-        crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
+        // No tools for a browser that is not there: a Chrome or Chromium on this machine, or
+        // the one `browser.chrome` names.
+        match crate::browser::find_chrome(&config.browser) {
+            Ok(_) => {
+                crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
+            }
+            Err(error) => tracing::debug!(%error, "no browser for the agents"),
+        }
     }
     let _membership = if joins && config.mailbox.enabled {
         let membership = crate::mailbox::join(

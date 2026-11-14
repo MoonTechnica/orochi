@@ -37,6 +37,9 @@ impl Workspace {
         config.decision.backend = Some(orochi::config::DecisionBackend::Off);
         // A test never touches the keychain of the machine it runs on.
         config.mcp.keychain = false;
+        // The browser is on wherever a Chrome is, so which servers an agent is given would
+        // depend on the machine; the tests of it are `tests/browser*.rs`.
+        config.browser.enabled = false;
         // Quota is read before each run by default; a test never starts a real CLI to read it.
         config.quota.refresh_before_run = false;
         config.decision.keychain = false;

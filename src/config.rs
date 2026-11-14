@@ -376,8 +376,9 @@ impl Default for ConsoleConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BrowserConfig {
-    /// Offers every agent session the `browser_*` tools. Off until the browser has been run
-    /// against a real Chrome here.
+    /// Offers every agent session the `browser_*` tools, and says so in its prompt, when a
+    /// Chrome or Chromium is on this machine. The browser itself starts the first time a tool
+    /// is used and stops when it has been idle.
     pub enabled: bool,
     /// Hosts an agent may navigate to: exact names, or `*.example.com` for its subdomains.
     /// Loopback only by default, which is the dev-server case.
@@ -395,7 +396,7 @@ pub struct BrowserConfig {
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             allow: ["localhost", "127.0.0.1", "[::1]", "*.localhost"]
                 .map(String::from)
                 .to_vec(),
@@ -613,10 +614,12 @@ const WEB: crate::types::Abilities = crate::types::Abilities {
     image: false,
 };
 impl AgentConfig {
-    /// What the user said this agent can do.
+    /// What the user said this agent can do, and what Orochi gives every agent it can: its own
+    /// browser, wherever the tools reach the agent (not a sandboxed one, not an adviser).
     pub fn abilities(&self) -> crate::types::Abilities {
         crate::types::Abilities {
-            browser: self.browser,
+            browser: self.browser
+                || (!self.sandboxed && !self.routing_only && crate::browser::active()),
             web: self.web,
             image: self.image,
         }

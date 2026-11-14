@@ -874,3 +874,60 @@ async fn a_preview_serves_one_folder_to_a_tab_that_may_load_nothing_else() {
     assert_eq!(fetch(&format!("{base}index.html"), "POST").0, 404);
     assert_eq!(fetch(&format!("{base}index.html"), "HEAD").1, "");
 }
+
+#[tokio::test]
+async fn a_screenshot_can_be_kept_as_a_png_in_the_project_folder_and_nowhere_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let browser = start(dir.path(), &config()).await;
+    browser
+        .call(request(
+            "a",
+            "browser_navigate",
+            json!({"url": "http://localhost:3000/"}),
+        ))
+        .await;
+    let with = |path: &str, read_only: bool| {
+        let mut r = request("a", "browser_screenshot", json!({"path": path}));
+        r.cwd = Some(project.path().to_path_buf());
+        r.read_only = read_only;
+        r
+    };
+    let kept = browser.call(with("shots/login.png", false)).await;
+    assert!(!failed(&kept), "{kept}");
+    let text: String = kept["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    assert!(
+        text.contains("share_file"),
+        "it says what to do next: {text}"
+    );
+    assert!(project.path().join("shots/login.png").is_file());
+    assert!(
+        kept["content"][0]["type"] == "image",
+        "the picture is still given back to the agent"
+    );
+    for refused in [
+        "../outside.png",
+        "/tmp/abs.png",
+        "notes.txt",
+        "a/../../b.png",
+    ] {
+        let result = browser.call(with(refused, false)).await;
+        assert!(failed(&result), "{refused}: {result}");
+    }
+    assert!(
+        !project
+            .path()
+            .parent()
+            .unwrap()
+            .join("outside.png")
+            .exists()
+    );
+    let looking = browser.call(with("shots/looked.png", true)).await;
+    assert!(failed(&looking), "a seat that may only look writes nothing");
+    assert!(!project.path().join("shots/looked.png").exists());
+}

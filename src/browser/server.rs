@@ -70,6 +70,10 @@ pub fn register(data: &Path, executable: PathBuf, config: &BrowserConfig) -> Res
     Ok(())
 }
 
+pub fn is_registered() -> bool {
+    ACTIVE.get().is_some()
+}
+
 /// The MCP server to attach to one agent session: (name, command, args).
 pub fn server_for(read_only: bool, cwd: &Path) -> Option<(&'static str, PathBuf, Vec<String>)> {
     let active = ACTIVE.get()?;

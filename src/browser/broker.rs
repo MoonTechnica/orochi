@@ -134,8 +134,11 @@ pub fn definitions(config: &BrowserConfig, read_only: bool) -> Value {
         ),
         (
             "browser_screenshot",
-            "A picture of the page, or of one element.",
-            object(json!({"ref": {"type": "string"}}), &[]),
+            "A picture of the page, or of one element. With `path` (a .png inside the project folder) it is also saved there, so that share_file can hand it to the person.",
+            object(
+                json!({"ref": {"type": "string"}, "path": {"type": "string"}}),
+                &[],
+            ),
         ),
         (
             "browser_click",
@@ -1047,9 +1050,19 @@ impl Browser {
                 let data = shot["data"]
                     .as_str()
                     .context("the browser sent no picture")?;
-                Ok(
-                    json!({"content": [{"type": "image", "data": data, "mimeType": "image/png"}], "isError": false}),
-                )
+                let mut content =
+                    vec![json!({"type": "image", "data": data, "mimeType": "image/png"})];
+                // Kept as a file when asked, so the picture can be handed to the person with
+                // `share_file`: not every agent CLI shows the person an image a tool returns.
+                if let Some(path) = string("path") {
+                    if request.read_only {
+                        bail!("this session may only look, and saving a picture writes a file");
+                    }
+                    let saved = save_picture(request.cwd.as_deref(), &path, data)?;
+                    content.push(json!({"type": "text", "text": format!(
+                        "saved to {}; hand it to the person with share_file", saved.display())}));
+                }
+                Ok(json!({"content": content, "isError": false}))
             }
             "browser_click" | "browser_hover" => {
                 let reference = need("ref")?;
@@ -1261,6 +1274,33 @@ impl Browser {
 }
 
 /// What the browser said happened, kept for the tools that ask.
+/// Writes a screenshot to `path` inside the project folder, and nowhere else.
+fn save_picture(cwd: Option<&Path>, path: &str, data: &str) -> Result<PathBuf> {
+    let root = std::fs::canonicalize(cwd.context("this session has no project folder")?)?;
+    let relative = Path::new(path);
+    anyhow::ensure!(
+        relative.is_relative()
+            && relative
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+            && relative
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("png")),
+        "{path} is not a relative .png path inside the project folder"
+    );
+    let full = root.join(relative);
+    if let Some(parent) = full.parent() {
+        std::fs::create_dir_all(parent)?;
+        anyhow::ensure!(
+            std::fs::canonicalize(parent)?.starts_with(&root),
+            "{path} leaves the project folder"
+        );
+    }
+    let bytes = crate::media::decode_base64(data).context("the picture was not readable")?;
+    std::fs::write(&full, bytes)?;
+    Ok(full)
+}
+
 /// Whether a confined tab may load `url`: from its own origin, or from bytes the page carries.
 fn confined(origin: &str, url: &str) -> bool {
     url.strip_prefix(origin)

@@ -18,3 +18,15 @@ pub mod preview;
 mod server;
 #[cfg(unix)]
 pub use server::*;
+
+/// Whether the sessions this process starts are offered Orochi's browser.
+pub fn active() -> bool {
+    #[cfg(unix)]
+    {
+        server::is_registered()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
