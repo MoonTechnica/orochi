@@ -422,6 +422,14 @@ pub fn media(cwd: &Path, path: &str) -> Result<Media> {
             "wav" => Some("audio/wav"),
             "ogg" => Some("audio/ogg"),
             "flac" => Some("audio/flac"),
+            "pdf" => Some("application/pdf"),
+            "pptx" => {
+                Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+            }
+            "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "docx" => {
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            }
             _ => None,
         })
         .unwrap_or("application/octet-stream");

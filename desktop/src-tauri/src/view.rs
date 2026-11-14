@@ -1224,7 +1224,7 @@ impl Client {
         })
     }
 
-    fn cwd(&self, thread: &str) -> Result<std::path::PathBuf> {
+    pub fn cwd(&self, thread: &str) -> Result<std::path::PathBuf> {
         let cwd: String = self.activity.connection().query_row(
             "SELECT cwd FROM threads WHERE id=?1",
             [thread],

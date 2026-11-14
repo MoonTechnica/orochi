@@ -456,6 +456,37 @@ const WORDS = {
     Name: "名前",
     Content: "内容",
     "Open in editor": "エディタで開く",
+    "Opening…": "開いています…",
+    "too large to preview": "プレビューするには大きすぎます",
+    "viewer did not load": "ビューアを読み込めませんでした",
+    "could not be read": "読み込めませんでした",
+    Chat: "チャット",
+    "Close tab": "タブを閉じる",
+    "New tab": "新しいタブ",
+    "Open in tab": "タブで開く",
+    "Filter rows…": "行を絞り込む…",
+    row: "行",
+    rows: "行",
+    columns: "列",
+    "Show more": "さらに表示",
+    "Nothing to show as a table.": "表にできる内容がありません。",
+    "Only the first rows are shown": "先頭の行だけを表示しています",
+    Table: "表",
+    Tree: "ツリー",
+    more: "件",
+    Terminal: "ターミナル",
+    "File…": "ファイル…",
+    "restored — the shell was started again": "復元しました — シェルを新しく起動しました",
+    "press Enter to start another": "Enter で新しく起動",
+    "the shell ended": "シェルが終了しました",
+    "Only this many terminals per conversation": "ターミナルは会話ごとにこの数までです",
+    "no longer kept": "もう保存されていません",
+    Previous: "前へ",
+    Next: "次へ",
+    "Actual size": "実寸",
+    "Find a file…": "ファイルを探す…",
+    "Tabs are full": "タブがいっぱいです",
+    "This file could not be read.": "このファイルは読めませんでした。",
     Reveal: "Finder で表示",
     "Add to message": "メッセージに追加",
     "Copy path": "パスをコピー",
@@ -1419,6 +1450,7 @@ function drawTimeline(thread, said = []) {
       voice = who;
     }
     else if (item.kind === "checks") turn.append(checks(item, thread.seats));
+    else if (item.kind === "media") turn.append(mediaFigure(item, thread.thread.id));
 
   }
   flush();
@@ -4030,6 +4062,8 @@ async function drawMember(thread) {
       voice = who;
     } else if (line.kind === "checks") {
       body.append(checks(line, thread.seats));
+    } else if (line.kind === "media") {
+      body.append(mediaFigure(line, thread.thread.id));
     }
   }
   flush();
@@ -5520,10 +5554,11 @@ function drawViewer() {
   const actions = text("div", "viewer-actions");
   actions.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
   actions.append(action(t("Reveal"), () => call("open_path", { thread, path: file.path, reveal: true })));
+  actions.append(action(t("Open in tab"), () => openFileTab(file.path, { line: tree.line })));
   actions.append(action(t("Add to message"), () => mention(file.path)));
   actions.append(action(t("Copy path"), () => window.navigator?.clipboard?.writeText?.(file.path)));
-  if (isMarkdown(file.path) && !file.binary) {
-    actions.append(action(tree.source ? t("Rendered") : t("Source"), () => {
+  if (viewKind(file)) {
+    actions.append(action(viewToggleLabel(file, tree.source), () => {
       tree.source = !tree.source;
       drawViewer();
     }));
@@ -5547,6 +5582,12 @@ function drawViewer() {
     host.append(bar);
   }
 
+  fileBody(host, file, { thread, line: tree.line, source: tree.source, redraw: drawViewer });
+}
+
+/// What a file shows: the picture, a note for a binary, the rendered page or the numbered text.
+/// The Files pane's viewer and a file tab draw the same thing.
+function fileBody(host, file, o) {
   if (file.image) {
     const image = document.createElement("img");
     image.className = "image";
@@ -5555,17 +5596,19 @@ function drawViewer() {
     host.append(image);
     return;
   }
+  if (file.binary && /\.(pdf|docx|xlsx|pptx)$/i.test(file.path)) {
+    frameView(host, file, o, file.path.split(".").pop().toLowerCase());
+    return;
+  }
   if (file.binary) {
     const line = text("p", "empty");
     line.append(document.createTextNode(`${t("binary or not UTF-8")} · ${size(file.bytes)} · `));
-    line.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
+    line.append(action(t("Open in editor"), () => call("open_path", { thread: o.thread, path: file.path, reveal: false })));
     host.append(line);
     return;
   }
-  if (isMarkdown(file.path) && !tree.source) {
-    const rendered = text("div", "rendered");
-    rendered.append(markdown(file.text));
-    host.append(rendered);
+  if (!o.source && documentView(host, file)) {
+    // Drawn as what it is.
   } else {
     const code = text("div", "code");
     const lines = file.text.split("\n");
@@ -5574,7 +5617,7 @@ function drawViewer() {
     lines.forEach((source, index) => {
       const number = index + 1;
       const row = text("div", "line");
-      if (number === tree.line) {
+      if (number === o.line) {
         row.dataset.hit = "true";
         hit = row;
       }
@@ -5585,7 +5628,7 @@ function drawViewer() {
         if (!note) return;
         state.comments.push([file.path, number, note]);
         drawReview();
-        drawViewer();
+        o.redraw();
       }, "no");
       no.title = t("Comment on this line");
       row.append(no);
@@ -5598,9 +5641,73 @@ function drawViewer() {
   if (file.truncated) {
     const line = text("p", "empty");
     line.append(document.createTextNode(`${size(file.bytes - 512 * 1024)} ${t("not shown")} · `));
-    line.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
+    line.append(action(t("Open in editor"), () => call("open_path", { thread: o.thread, path: file.path, reveal: false })));
     host.append(line);
   }
+}
+
+// A PDF or a Word file is untrusted input for a large parser, so it is parsed in viewer.html, a frame of the
+// app's own with an opaque origin (no allow-same-origin: no storage, no parent, no IPC). It is
+// handed the library's source and the file's bytes and answers with a page count (§4.7.1).
+const FRAME_LIBRARIES = {
+  pdf: (get) => Promise.all([get("pdfjs/pdf.min.mjs"), get("pdfjs/pdf.worker.min.mjs")])
+    .then(([lib, worker]) => ({ lib, worker })),
+  pptx: (get) => get("pptx-renderer/aiden0z-pptx-renderer.browser.es.js").then((lib) => ({ lib })),
+  xlsx: (get) => get("sheetjs/xlsx.mini.min.js").then((script) => ({ scripts: [script] })),
+  docx: (get) => Promise.all([get("jszip/jszip.min.js"), get("docx-preview/docx-preview.min.js")])
+    .then((scripts) => ({ scripts })),
+};
+const frameLibraries = {};
+function frameLibrary(type) {
+  frameLibraries[type] ??= FRAME_LIBRARIES[type]((name) => window.fetch(`vendor/${name}`).then((r) => r.text()));
+  return frameLibraries[type];
+}
+
+function dataBytes(url) {
+  const raw = atob(String(url).slice(String(url).indexOf(",") + 1));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function frameView(host, file, o, type) {
+  const holder = text("div", "pdf-view");
+  const note = text("p", "empty", t("Opening…"));
+  holder.append(note);
+  host.append(holder);
+  const fallback = (why) => {
+    note.textContent = "";
+    note.append(document.createTextNode(`${why} · ${size(file.bytes)} · `));
+    note.append(action(t("Open in editor"), () => call("open_path", { thread: o.thread, path: file.path, reveal: false })));
+    holder.querySelectorAll?.("iframe").forEach((frame) => frame.remove());
+  };
+  (async () => {
+    const [media, libs] = await Promise.all([
+      quietly("tree_media", { thread: o.thread, path: file.path }),
+      frameLibrary(type).catch(() => null),
+    ]);
+    if (!media?.data) return fallback(t("too large to preview"));
+    if (!libs) return fallback(t("viewer did not load"));
+    const frame = document.createElement("iframe");
+    frame.className = "viewer-frame";
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("src", "viewer.html");
+    const listen = (event) => {
+      if (event.source !== frame.contentWindow) return;
+      const message = event.data || {};
+      if (message.kind === "ready") {
+        const bytes = dataBytes(media.data);
+        frame.contentWindow.postMessage({ kind: "open", type, ...libs, bytes }, "*", [bytes]);
+      } else if (message.kind === "opened") {
+        note.remove();
+      } else if (message.kind === "error") {
+        window.removeEventListener("message", listen);
+        fallback(t("could not be read"));
+      }
+    };
+    window.addEventListener("message", listen);
+    holder.append(frame);
+  })();
 }
 
 function drawHits(host) {
@@ -5829,6 +5936,857 @@ function widen() {
   const px = Math.max(widthOf("right"), Math.min(Math.round(window_ / 2), room));
   el("app").style.setProperty("--right", `${px}px`);
 }
+
+// Documents -----------------------------------------------------------------
+// What a file is shown as besides its text (docs/conversation-tabs-design.md §4.7): Markdown
+// rendered, a delimited file as a table, JSON as a tree. All of it is Orochi's own code over
+// text it was already given, built from DOM nodes and never from markup.
+const TABLE_ROWS = 500;
+
+function viewKind(file) {
+  if (file.binary || file.image) return null;
+  if (isMarkdown(file.path)) return "markdown";
+  if (/\.(csv|tsv)$/i.test(file.path)) return "table";
+  if (/\.(json|jsonl|ndjson)$/i.test(file.path)) return "json";
+  return null;
+}
+
+/// RFC 4180: quoted fields may hold the delimiter, quotes (doubled) and line breaks.
+function parseDelimited(source, delimiter) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  const text_ = String(source ?? "").replace(/^﻿/, "");
+  for (let i = 0; i < text_.length; i += 1) {
+    const c = text_[i];
+    if (quoted) {
+      if (c === '"') {
+        if (text_[i + 1] === '"') { field += '"'; i += 1; } else quoted = false;
+      } else field += c;
+    } else if (c === '"' && field === "") quoted = true;
+    else if (c === delimiter) { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text_[i + 1] === "\n") i += 1;
+      row.push(field);
+      field = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  if (field !== "" || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function sniffDelimiter(source) {
+  const head = String(source ?? "").split("\n").slice(0, 5).join("\n");
+  const counts = [",", "\t", ";", "|"].map((d) => [d, head.split(d).length - 1]);
+  return counts.sort((a, b) => b[1] - a[1])[0][1] ? counts[0][0] : ",";
+}
+
+const compareCells = (a, b) => {
+  const x = Number(a);
+  const y = Number(b);
+  if (a !== "" && b !== "" && !Number.isNaN(x) && !Number.isNaN(y)) return x - y;
+  return String(a).localeCompare(String(b));
+};
+
+function tableOf(host, rows, { truncated, note }) {
+  const [head, ...data] = rows;
+  const view = { sort: -1, up: true, filter: "", shown: TABLE_ROWS };
+  const wrap = text("div", "table-view");
+  const bar = text("div", "table-bar");
+  const filter = text("input", "table-filter");
+  filter.type = "search";
+  filter.placeholder = t("Filter rows…");
+  filter.setAttribute("aria-label", t("Filter rows…"));
+  const counts = text("span", "table-count");
+  bar.append(filter, counts);
+  const scroller = text("div", "table-scroll");
+  const table = text("table", "data");
+  scroller.append(table);
+  wrap.append(bar, scroller);
+  const more = text("div", "table-more");
+  wrap.append(more);
+  const draw = () => {
+    let list = data;
+    const needle = view.filter.trim().toLowerCase();
+    if (needle) list = list.filter((r) => r.some((c) => c.toLowerCase().includes(needle)));
+    if (view.sort >= 0) {
+      list = [...list].sort((a, b) => compareCells(a[view.sort] ?? "", b[view.sort] ?? "") * (view.up ? 1 : -1));
+    }
+    table.replaceChildren();
+    const thead = text("thead");
+    const tr = text("tr");
+    tr.append(text("th", "n", "#"));
+    head.forEach((name, column) => {
+      const th = text("th", null, name);
+      th.dataset.column = String(column);
+      if (view.sort === column) {
+        th.dataset.sort = view.up ? "up" : "down";
+        th.append(drawn(view.up ? "chevron-up" : "chevron-down", "sort"));
+      }
+      th.addEventListener("click", () => {
+        view.up = view.sort === column ? !view.up : true;
+        view.sort = column;
+        draw();
+      });
+      tr.append(th);
+    });
+    thead.append(tr);
+    const tbody = text("tbody");
+    list.slice(0, view.shown).forEach((r, index) => {
+      const row = text("tr");
+      row.className = "r";
+      row.append(text("td", "n", String(index + 1)));
+      head.forEach((_, column) => row.append(text("td", null, r[column] ?? "")));
+      tbody.append(row);
+    });
+    table.append(thead, tbody);
+    counts.textContent = `${list.length} ${t(list.length === 1 ? "row" : "rows")} · ${head.length} ${t("columns")}`;
+    more.replaceChildren();
+    if (list.length > view.shown) {
+      more.append(action(`${t("Show more")} (${list.length - view.shown})`, () => {
+        view.shown += TABLE_ROWS;
+        draw();
+      }));
+    }
+    if (truncated) more.append(text("p", "empty", note));
+  };
+  filter.addEventListener("input", () => {
+    view.filter = filter.value;
+    view.shown = TABLE_ROWS;
+    draw();
+  });
+  draw();
+  host.append(wrap);
+}
+
+function tableView(host, file) {
+  const delimiter = /\.tsv$/i.test(file.path) ? "\t" : sniffDelimiter(file.text);
+  // A file cut at the read limit ends mid-row: the last row is not trusted.
+  const rows = parseDelimited(file.text, delimiter);
+  if (file.truncated) rows.pop();
+  if (!rows.length) {
+    host.append(text("p", "empty", t("Nothing to show as a table.")));
+    return;
+  }
+  tableOf(host, rows, { truncated: file.truncated, note: `${t("Only the first rows are shown")} (${size(file.bytes)})` });
+}
+
+function jsonLeaf(value) {
+  const kind = value === null ? "null" : typeof value;
+  const node = text("span", `json-leaf ${kind}`, kind === "string" ? JSON.stringify(value) : String(value));
+  return node;
+}
+
+function jsonNode(value, key, open) {
+  const branch = value !== null && typeof value === "object";
+  const row = text("div", "json-row");
+  const label = key === null ? null : text("span", "json-key", `${key}: `);
+  if (!branch) {
+    if (label) row.append(label);
+    row.append(jsonLeaf(value));
+    return row;
+  }
+  const entries = Array.isArray(value) ? value.map((v, i) => [i, v]) : Object.entries(value);
+  const toggle = text("button", "json-toggle");
+  toggle.type = "button";
+  row.append(toggle);
+  if (label) row.append(label);
+  row.append(text("span", "json-summary", Array.isArray(value) ? `[${entries.length}]` : `{${entries.length}}`));
+  const children = text("div", "json-children");
+  let filled = false;
+  const set = (on) => {
+    toggle.replaceChildren(drawn(on ? "chevron-down" : "chevron-right", "fold"));
+    toggle.setAttribute("aria-expanded", String(on));
+    children.hidden = !on;
+    if (on && !filled) {
+      filled = true;
+      entries.slice(0, 200).forEach(([k, v]) => children.append(jsonNode(v, k, false)));
+      if (entries.length > 200) children.append(text("div", "json-more", `${entries.length - 200} ${t("more")}`));
+    }
+  };
+  toggle.addEventListener("click", () => set(children.hidden));
+  const wrap = text("div", "json-branch");
+  wrap.append(row, children);
+  set(open);
+  return wrap;
+}
+
+function jsonView(host, file) {
+  let value;
+  const lines = file.text.split("\n").filter((l) => l.trim());
+  try {
+    value = /\.(jsonl|ndjson)$/i.test(file.path) ? lines.map((l) => JSON.parse(l)) : JSON.parse(file.text);
+  } catch {
+    // A file cut at the limit, or not JSON at all: its text is what there is to read.
+    return false;
+  }
+  // Lines of the same few keys are a table already.
+  if (Array.isArray(value) && value.length && value.every((v) => v && typeof v === "object" && !Array.isArray(v))) {
+    const keys = [...new Set(value.flatMap((v) => Object.keys(v)))].slice(0, 40);
+    if (keys.length && /\.(jsonl|ndjson)$/i.test(file.path)) {
+      const cell = (v) => (v === undefined ? "" : typeof v === "object" && v !== null ? JSON.stringify(v) : String(v));
+      tableOf(host, [keys, ...value.map((v) => keys.map((k) => cell(v[k])))], { truncated: false, note: "" });
+      return true;
+    }
+  }
+  const tree = text("div", "json-tree");
+  tree.append(jsonNode(value, null, true));
+  host.append(tree);
+  return true;
+}
+
+/// A file drawn as what it is, or false to leave it as text.
+function documentView(host, file) {
+  const kind = viewKind(file);
+  if (kind === "markdown") {
+    const rendered = text("div", "rendered");
+    rendered.append(markdown(file.text));
+    host.append(rendered);
+    return true;
+  }
+  if (kind === "table") {
+    tableView(host, file);
+    return true;
+  }
+  if (kind === "json") return jsonView(host, file);
+  return false;
+}
+
+const viewToggleLabel = (file, source) => {
+  const kind = viewKind(file);
+  if (kind === "table") return source ? t("Table") : t("Source");
+  if (kind === "json") return source ? t("Tree") : t("Source");
+  return source ? t("Rendered") : t("Source");
+};
+
+// Media ---------------------------------------------------------------------
+// Pictures, recordings and sound a conversation produced (docs/conversation-tabs-design.md §4).
+// The bytes are files beside the store, answered by the `orochi-media` scheme by thread and
+// hash; the page only ever shows them through <img>, <video> and <audio>.
+const MEDIA_BASE = (window.navigator?.userAgent || "").includes("Windows")
+  ? "http://orochi-media.localhost"
+  : "orochi-media://localhost";
+const mediaUrl = (thread, sha) => `${MEDIA_BASE}/${thread}/${sha}`;
+
+/// The element that plays or shows one piece of media, or a note when its bytes are gone.
+function mediaElement(d, thread) {
+  if (!d.kept) return text("p", "empty", t("no longer kept"));
+  const src = mediaUrl(thread, d.sha);
+  let node;
+  if (d.kind === "video") {
+    node = document.createElement("video");
+    node.setAttribute("controls", "");
+    node.setAttribute("preload", "metadata");
+    node.muted = true;
+  } else if (d.kind === "audio") {
+    node = document.createElement("audio");
+    node.setAttribute("controls", "");
+    node.setAttribute("preload", "metadata");
+  } else {
+    node = document.createElement("img");
+    node.setAttribute("loading", "lazy");
+    node.setAttribute("alt", d.name);
+  }
+  node.className = `media-${d.kind}`;
+  node.setAttribute("src", src);
+  return node;
+}
+
+/// A piece of media in the conversation, under what produced it. Clicking opens it in a tab.
+function mediaFigure(item, thread) {
+  const d = item.data || {};
+  const figure = text("figure", "media-card");
+  figure.dataset.sha = d.sha || "";
+  const body = mediaElement(d, thread);
+  if (d.kept) body.addEventListener("click", () => openMediaTab(d));
+  figure.append(body);
+  const caption = text("figcaption", null, `${d.name || ""} · ${d.mime || ""} · ${size(d.bytes || 0)}`);
+  figure.append(caption);
+  return figure;
+}
+
+/// Every piece of media in the conversation in view, in the order it appeared.
+function threadMedia() {
+  const seen = new Set();
+  const out = [];
+  for (const item of state.view?.items || []) {
+    const d = item.data;
+    if (item.kind !== "media" || !d?.sha || seen.has(d.sha)) continue;
+    seen.add(d.sha);
+    out.push(d);
+  }
+  return out;
+}
+
+function openMediaTab(d) {
+  if (!tabs.thread || !d?.sha) return;
+  const existing = tabs.order.find((id) => tabs.tabs[id]?.sha === d.sha);
+  if (existing) return showTab(existing);
+  if (tabs.order.length >= TAB_LIMIT) {
+    report(`${t("Tabs are full")} (${TAB_LIMIT})`);
+    return;
+  }
+  const id = `m${++tabs.seq}`;
+  tabs.order.push(id);
+  tabs.tabs[id] = { kind: "media", sha: d.sha, name: d.name, mime: d.mime, media: d.kind, bytes: d.bytes, kept: d.kept };
+  showTab(id);
+}
+
+function drawMediaTab(id, panel) {
+  const tab = tabs.tabs[id];
+  const thread = tabs.thread;
+  panel.replaceChildren();
+  const all = threadMedia();
+  const at = all.findIndex((d) => d.sha === tab.sha);
+  const head = text("div", "viewer-head");
+  head.append(text("span", "crumbs", tab.name));
+  panel.append(head);
+  const bar = text("div", "viewer-actions");
+  const go = (step) => {
+    const next = all[at + step];
+    if (!next) return;
+    Object.assign(tab, { sha: next.sha, name: next.name, mime: next.mime, media: next.kind, bytes: next.bytes, kept: next.kept });
+    persistTabs();
+    drawTabs();
+    drawMediaTab(id, panel);
+  };
+  const prev = action(t("Previous"), () => go(-1));
+  const next = action(t("Next"), () => go(1));
+  if (at <= 0) prev.disabled = true;
+  if (at < 0 || at >= all.length - 1) next.disabled = true;
+  bar.append(prev, next);
+  const body = text("div", "media-stage");
+  body.dataset.fit = "true";
+  if (tab.media === "image") {
+    bar.append(action(t("Actual size"), () => {
+      body.dataset.fit = body.dataset.fit === "true" ? "false" : "true";
+    }));
+  }
+  bar.append(text("span", "media-meta", `${tab.mime} · ${size(tab.bytes || 0)}${at >= 0 ? ` · ${at + 1}/${all.length}` : ""}`));
+  panel.append(bar);
+  body.append(mediaElement({ ...tab, kind: tab.media, sha: tab.sha, kept: tab.kept !== false }, thread));
+  panel.append(body);
+}
+
+// Terminal -------------------------------------------------------------------
+// A shell in a tab (docs/conversation-tabs-design.md §3.4). The shell is a PTY the core side
+// of this window started in the conversation's folder; xterm.js draws it. What it prints lives
+// in xterm's scrollback and nowhere else, and only the person's keystrokes reach it.
+const TERMINALS_PER_THREAD = 6;
+// Shells outlive switching to another conversation (a dev server should not die because
+// something else was looked at); the tab's panel is rebuilt around the same xterm.
+const shells = new Map();
+let xtermReady = null;
+let exitHeard = false;
+
+function loadXterm() {
+  if (window.Terminal && window.FitAddon) return Promise.resolve();
+  xtermReady ??= new Promise((resolve, reject) => {
+    const host = document.head || document.body || el("app");
+    const add = (node) => host.append(node);
+    const css = document.createElement("link");
+    css.setAttribute("rel", "stylesheet");
+    css.setAttribute("href", "vendor/xterm/xterm.css");
+    add(css);
+    const script = (src) => new Promise((done, fail) => {
+      const node = document.createElement("script");
+      node.setAttribute("src", src);
+      node.onload = done;
+      node.onerror = () => fail(new Error(`${src} did not load`));
+      add(node);
+    });
+    script("vendor/xterm/xterm.js").then(() => script("vendor/xterm/addon-fit.js")).then(resolve, reject);
+  });
+  return xtermReady;
+}
+
+function termTheme() {
+  const style = window.getComputedStyle?.(document.documentElement);
+  const read = (name, fallback) => style?.getPropertyValue?.(name)?.trim() || fallback;
+  return {
+    background: read("--bg", "#111216"),
+    foreground: read("--text", "#e6e8ee"),
+    cursor: read("--brand", "#f7b731"),
+  };
+}
+
+function listenForExit() {
+  if (exitHeard) return;
+  const listen = window.__TAURI__?.event?.listen;
+  if (!listen) return;
+  exitHeard = true;
+  listen("term-exit", (event) => {
+    const { id, code } = event.payload || {};
+    for (const entry of shells.values()) {
+      if (entry.sid !== id) continue;
+      entry.sid = null;
+      entry.exited = true;
+      const how = code === null || code === undefined ? "the shell ended" : `exited with code ${code}`;
+      entry.term?.write(`\r\n\x1b[2m[${t(how)} — ${t("press Enter to start another")}]\x1b[0m\r\n`);
+    }
+  });
+}
+
+async function connectShell(entry) {
+  const Channel = window.__TAURI__?.core?.Channel;
+  const channel = Channel ? new Channel() : { onmessage: null };
+  channel.onmessage = (bytes) => entry.term.write(new Uint8Array(bytes));
+  const opened = await call("term_open", { thread: entry.thread, cols: entry.term.cols, rows: entry.term.rows, onData: channel });
+  if (!opened) {
+    entry.exited = true;
+    return;
+  }
+  entry.sid = opened.id;
+  entry.exited = false;
+  const tab = tabs.tabs[entry.id];
+  if (tab && tabs.thread === entry.thread && tab.title !== opened.shell) {
+    tab.title = opened.shell;
+    persistTabs();
+    drawTabs();
+  }
+}
+
+function fitShell(entry) {
+  if (!entry.term || !entry.fit) return;
+  try {
+    entry.fit.fit();
+  } catch {
+    // A hidden panel has no size to fit to; it is fitted when it is shown.
+    return;
+  }
+  if (entry.sid) quietly("term_resize", { id: entry.sid, cols: entry.term.cols, rows: entry.term.rows });
+}
+
+async function startTerminal(id, panel) {
+  const thread = tabs.thread;
+  const key = `${thread}:${id}`;
+  const existing = shells.get(key);
+  if (existing) {
+    panel.append(existing.host);
+    fitShell(existing);
+    return;
+  }
+  const host = text("div", "term-host");
+  panel.append(host);
+  const entry = { id, thread, host, term: null, fit: null, sid: null, exited: false };
+  shells.set(key, entry);
+  listenForExit();
+  try {
+    await loadXterm();
+  } catch (error) {
+    host.append(text("p", "empty", String(error.message || error)));
+    return;
+  }
+  if (shells.get(key) !== entry) return;
+  const term = new window.Terminal({
+    cursorBlink: true,
+    fontSize: 13,
+    scrollback: 10000,
+    fontFamily: 'ui-monospace, "SF Mono", Menlo, monospace',
+    theme: termTheme(),
+  });
+  const fit = new window.FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  Object.assign(entry, { term, fit });
+  fitShell(entry);
+  term.onData((data) => {
+    if (entry.exited && (data === "\r" || data === "\n")) {
+      entry.exited = false;
+      connectShell(entry);
+    } else if (entry.sid) {
+      quietly("term_write", { id: entry.sid, data });
+    }
+  });
+  if (window.ResizeObserver) new window.ResizeObserver(() => fitShell(entry)).observe(host);
+  if (tabs.tabs[id]?.restored) {
+    delete tabs.tabs[id].restored;
+    term.write(`\x1b[2m${t("restored — the shell was started again")}\x1b[0m\r\n`);
+  }
+  await connectShell(entry);
+  if (tabs.active === id && tabs.thread === thread) term.focus?.();
+}
+
+function focusShell(id) {
+  const entry = shells.get(`${tabs.thread}:${id}`);
+  if (!entry) return;
+  fitShell(entry);
+  entry.term?.focus?.();
+}
+
+function stopTerminal(id) {
+  const key = `${tabs.thread}:${id}`;
+  const entry = shells.get(key);
+  if (!entry) return;
+  shells.delete(key);
+  if (entry.sid) quietly("term_close", { id: entry.sid });
+  entry.term?.dispose?.();
+  entry.host.remove();
+}
+
+function openTerminalTab() {
+  if (!tabs.thread) return;
+  const mine = tabs.order.filter((id) => tabs.tabs[id]?.kind === "terminal").length;
+  if (mine >= TERMINALS_PER_THREAD) {
+    report(`${t("Only this many terminals per conversation")} (${TERMINALS_PER_THREAD})`);
+    return;
+  }
+  if (tabs.order.length >= TAB_LIMIT) {
+    report(`${t("Tabs are full")} (${TAB_LIMIT})`);
+    return;
+  }
+  const id = `t${++tabs.seq}`;
+  tabs.order.push(id);
+  tabs.tabs[id] = { kind: "terminal", title: t("Terminal") };
+  showTab(id);
+}
+
+// Tabs ----------------------------------------------------------------------
+// The centre column of a conversation is a row of tabs (docs/conversation-tabs-design.md §3):
+// Chat is always the first and cannot be closed; the others are files now, and terminals,
+// browsers and media as they are built. Which tabs a thread has is this window's own
+// convenience, so it lives in this window's storage and nowhere else; what a tab shows is
+// read when it is shown and never kept.
+const TAB_LIMIT = 12;
+
+const tabs = { thread: null, order: ["chat"], active: "chat", tabs: {}, panels: new Map(), seq: 0 };
+
+function storedTabs(thread) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`tabs:${thread}`) || "null");
+    if (!saved || !Array.isArray(saved.order) || typeof saved.tabs !== "object") return null;
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+function persistTabs() {
+  if (!tabs.thread) return;
+  remember(`tabs:${tabs.thread}`, { order: tabs.order, active: tabs.active, tabs: tabs.tabs, seq: tabs.seq });
+}
+
+/// Brings the strip to the conversation in view. Another thread has its own tabs; coming back
+/// to one restores them, a file read again from the disk.
+function syncTabs(thread) {
+  if (tabs.thread === thread) return;
+  for (const panel of tabs.panels.values()) panel.remove();
+  tabs.panels.clear();
+  tabs.thread = thread;
+  const saved = storedTabs(thread);
+  const known = new Set(["file", "media", "terminal"]);
+  tabs.tabs = {};
+  tabs.order = ["chat"];
+  tabs.seq = 0;
+  if (saved) {
+    for (const id of saved.order) {
+      const tab = saved.tabs[id];
+      if (id !== "chat" && tab && known.has(tab.kind)) {
+        // A process cannot be restored: a terminal comes back as a new shell, and says so.
+        if (tab.kind === "terminal") tab.restored = true;
+        tabs.tabs[id] = tab;
+        tabs.order.push(id);
+      }
+    }
+    tabs.seq = Number(saved.seq) || tabs.order.length;
+    tabs.active = tabs.order.includes(saved.active) ? saved.active : "chat";
+  } else {
+    tabs.active = "chat";
+  }
+  showTab(tabs.active);
+}
+
+function tabTitle(id) {
+  if (id === "chat") return t("Chat");
+  const tab = tabs.tabs[id];
+  if (tab.kind === "terminal") return tab.title || t("Terminal");
+  return tab.kind === "media" ? tab.name : tab.path.split("/").pop();
+}
+
+function drawTabs() {
+  const strip = el("doc-tabs");
+  strip.hidden = !tabs.thread;
+  strip.replaceChildren();
+  for (const id of tabs.order) {
+    const tab = tabs.tabs[id];
+    const button = text("div", "doc-tab");
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(id === tabs.active));
+    button.dataset.tab = id;
+    if (tab?.preview) button.dataset.preview = "true";
+    if (tab && tab.kind !== "terminal") button.title = tab.kind === "media" ? tab.name : tab.path;
+    const icon = id === "chat" ? "message" : { media: "eye", terminal: "terminal" }[tab.kind] || "file";
+    button.append(drawn(icon));
+    button.append(text("span", "doc-name", tabTitle(id)));
+    button.addEventListener("click", () => showTab(id));
+    // A tab opened to have a look is replaced by the next look; touching it keeps it.
+    button.addEventListener("dblclick", () => {
+      if (tab?.preview) {
+        tab.preview = false;
+        persistTabs();
+        drawTabs();
+      }
+    });
+    if (id !== "chat") {
+      const close = text("button", "doc-close", "×");
+      close.type = "button";
+      close.setAttribute("aria-label", t("Close tab"));
+      close.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeTab(id);
+      });
+      button.append(close);
+    }
+    strip.append(button);
+  }
+  const add = text("button", "doc-new", "+");
+  add.type = "button";
+  add.id = "doc-new";
+  add.title = t("New tab");
+  add.setAttribute("aria-label", t("New tab"));
+  add.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openNewMenu();
+  });
+  strip.append(add);
+}
+
+function showTab(id) {
+  if (!tabs.order.includes(id)) id = "chat";
+  tabs.active = id;
+  el("split").hidden = id !== "chat";
+  el("doc-body").hidden = id === "chat";
+  if (id !== "chat") {
+    if (!tabs.panels.has(id)) buildPanel(id);
+    for (const [other, panel] of tabs.panels) panel.hidden = other !== id;
+    if (tabs.tabs[id].kind === "terminal") focusShell(id);
+  }
+  persistTabs();
+  drawTabs();
+}
+
+function closeTab(id) {
+  const at = tabs.order.indexOf(id);
+  if (at < 1) return;
+  if (tabs.tabs[id]?.kind === "terminal") stopTerminal(id);
+  tabs.panels.get(id)?.remove();
+  tabs.panels.delete(id);
+  tabs.order.splice(at, 1);
+  delete tabs.tabs[id];
+  if (tabs.active === id) tabs.active = tabs.order[Math.min(at, tabs.order.length) - 1] || "chat";
+  showTab(tabs.active);
+}
+
+/// Opens a file in a tab. `preview` is how a look is told from a keeper: one preview tab is
+/// reused for the next look, unless it was kept.
+function openFileTab(path, { line = null, preview = false } = {}) {
+  if (!tabs.thread || !path) return;
+  const existing = tabs.order.find((id) => tabs.tabs[id]?.path === path);
+  if (existing) {
+    tabs.tabs[existing].line = line;
+    if (!preview) tabs.tabs[existing].preview = false;
+    tabs.panels.get(existing)?.remove();
+    tabs.panels.delete(existing);
+    showTab(existing);
+    return;
+  }
+  const reuse = preview ? tabs.order.find((id) => tabs.tabs[id]?.preview) : null;
+  if (!reuse && tabs.order.length >= TAB_LIMIT) {
+    report(`${t("Tabs are full")} (${TAB_LIMIT})`);
+    return;
+  }
+  let id = reuse;
+  if (reuse) {
+    tabs.panels.get(reuse)?.remove();
+    tabs.panels.delete(reuse);
+  } else {
+    id = `f${++tabs.seq}`;
+    tabs.order.push(id);
+  }
+  tabs.tabs[id] = { kind: "file", path, line, preview };
+  showTab(id);
+}
+
+function buildPanel(id) {
+  const tab = tabs.tabs[id];
+  const panel = text("section", "doc-panel");
+  panel.dataset.tab = id;
+  el("doc-body").append(panel);
+  tabs.panels.set(id, panel);
+  if (tab.kind === "file") drawFileTab(id, panel, false);
+  if (tab.kind === "media") drawMediaTab(id, panel);
+  if (tab.kind === "terminal") startTerminal(id, panel);
+}
+
+async function drawFileTab(id, panel, source) {
+  const tab = tabs.tabs[id];
+  const thread = tabs.thread;
+  const file = await call("tree_read", { thread, path: tab.path });
+  // The tab may have been closed, or the conversation changed, while the file was read.
+  if (!tabs.panels.has(id) || tabs.panels.get(id) !== panel || tabs.thread !== thread) return;
+  panel.replaceChildren();
+  if (!file) {
+    panel.append(text("p", "empty", t("This file could not be read.")));
+    return;
+  }
+  const head = text("div", "viewer-head");
+  head.append(text("span", "crumbs", file.path));
+  head.append(badge(file.status));
+  panel.append(head);
+  const meta = text("div", "viewer-meta");
+  meta.append(
+    text("span", null, file.binary || file.image ? size(file.bytes) : `${file.lines} ${t("lines")} · ${size(file.bytes)}`),
+  );
+  panel.append(meta);
+  const actions = text("div", "viewer-actions");
+  actions.append(action(t("Reload"), () => drawFileTab(id, panel, source)));
+  actions.append(action(t("Open in editor"), () => call("open_path", { thread, path: file.path, reveal: false })));
+  actions.append(action(t("Reveal"), () => call("open_path", { thread, path: file.path, reveal: true })));
+  actions.append(action(t("Add to message"), () => {
+    showTab("chat");
+    mention(file.path);
+  }));
+  actions.append(action(t("Copy path"), () => window.navigator?.clipboard?.writeText?.(file.path)));
+  if (viewKind(file)) {
+    actions.append(action(viewToggleLabel(file, source), () => drawFileTab(id, panel, !source)));
+  }
+  panel.append(actions);
+  const body = text("div", "doc-file");
+  fileBody(body, file, { thread, line: tab.line, source, redraw: () => drawFileTab(id, panel, source) });
+  panel.append(body);
+}
+
+// Quick open: a file by name, in the conversation's tree, opened as a preview tab.
+const quick = { open: false, hits: [], at: 0, asked: 0, timer: null };
+
+function closeQuickOpen() {
+  quick.open = false;
+  el("doc-menu").hidden = true;
+}
+
+/// What a new tab can be: the `+` button and ⌘T.
+function openNewMenu() {
+  if (!tabs.thread) return;
+  quick.open = true;
+  const menu = el("doc-menu");
+  menu.hidden = false;
+  menu.replaceChildren();
+  for (const [what, label, run] of [
+    ["terminal", t("Terminal"), () => { closeQuickOpen(); openTerminalTab(); }],
+    ["file", t("File…"), () => openQuickOpen()],
+  ]) {
+    const row = text("div", "doc-item");
+    row.dataset.item = what;
+    row.append(drawn(what === "terminal" ? "terminal" : "file"), text("span", null, label));
+    row.addEventListener("click", (event) => {
+      event.stopPropagation();
+      run();
+    });
+    menu.append(row);
+  }
+}
+
+function openQuickOpen() {
+  if (!tabs.thread) return;
+  quick.open = true;
+  quick.hits = [];
+  quick.at = 0;
+  const menu = el("doc-menu");
+  menu.hidden = false;
+  menu.replaceChildren();
+  const input = text("input", "doc-find");
+  input.type = "search";
+  input.id = "doc-find";
+  input.placeholder = t("Find a file…");
+  input.setAttribute("aria-label", t("Find a file…"));
+  input.addEventListener("input", () => {
+    clearTimeout(quick.timer);
+    quick.timer = setTimeout(() => quickSearch(input.value), 120);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") quick.at = Math.min(quick.hits.length - 1, quick.at + 1);
+    else if (event.key === "ArrowUp") quick.at = Math.max(0, quick.at - 1);
+    else if (event.key === "Enter") {
+      const hit = quick.hits[quick.at];
+      if (hit) chooseQuick(hit);
+    } else if (event.key === "Escape") closeQuickOpen();
+    else return;
+    event.preventDefault();
+    drawQuick();
+  });
+  menu.append(input, text("div", "doc-hits"));
+  input.focus?.();
+}
+
+async function quickSearch(query) {
+  const asked = ++quick.asked;
+  const q = query.trim();
+  if (q.length < 2) {
+    quick.hits = [];
+  } else {
+    const hits = await quietly("tree_find", { thread: tabs.thread, query: q, by: "name", limit: 50 });
+    if (asked !== quick.asked) return;
+    quick.hits = hits || [];
+  }
+  quick.at = 0;
+  drawQuick();
+}
+
+function drawQuick() {
+  const host = el("doc-menu").querySelectorAll(".doc-hits")[0];
+  if (!host) return;
+  host.replaceChildren();
+  quick.hits.forEach((hit, index) => {
+    const row = text("div", "doc-hit", hit.path);
+    row.setAttribute("aria-selected", String(index === quick.at));
+    row.dataset.path = hit.path;
+    row.addEventListener("click", () => chooseQuick(hit));
+    host.append(row);
+  });
+}
+
+function chooseQuick(hit) {
+  closeQuickOpen();
+  openFileTab(hit.path, { line: hit.line ?? null, preview: true });
+}
+
+document.addEventListener("click", (event) => {
+  if (quick.open && !el("doc-menu").contains?.(event.target)) closeQuickOpen();
+});
+
+// Keys follow an editor's: they are taken on the window so a terminal or a page in a tab
+// cannot swallow them. Whether the native menu gets ⌘W first is not measured.
+document.addEventListener("keydown", (event) => {
+  if (!tabs.thread || state.office || state.settings) return;
+  const mod = event.metaKey || event.ctrlKey;
+  if (mod && !event.shiftKey && !event.altKey && event.key === "t") {
+    event.preventDefault();
+    openNewMenu();
+  } else if (mod && !event.shiftKey && !event.altKey && event.key === "p") {
+    event.preventDefault();
+    openQuickOpen();
+  } else if (mod && !event.shiftKey && !event.altKey && event.key === "w" && tabs.active !== "chat") {
+    event.preventDefault();
+    closeTab(tabs.active);
+  } else if (mod && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
+    const id = tabs.order[Number(event.key) - 1];
+    if (id) {
+      event.preventDefault();
+      showTab(id);
+    }
+  } else if (event.ctrlKey && event.key === "Tab") {
+    event.preventDefault();
+    const at = tabs.order.indexOf(tabs.active);
+    const step = event.shiftKey ? -1 : 1;
+    showTab(tabs.order[(at + step + tabs.order.length) % tabs.order.length]);
+  }
+});
 
 // Loop ----------------------------------------------------------------------
 // Office --------------------------------------------------------------------
@@ -6427,6 +7385,7 @@ async function refresh(full) {
   // The tree is read again when a turn in this thread ends, the moment it may have moved; a
   // streaming reply re-reads the conversation many times a second and must not re-read it.
   if (state.tree.thread !== thread.thread.id) state.tree = freshTree(thread.thread.id);
+  syncTabs(thread.thread.id);
   const ended = state.tree.status === "working" && thread.thread.status !== "working";
   state.tree.status = thread.thread.status;
   if (filesShown() && (ended || !state.tree.dirs.has(""))) await drawFiles(true);

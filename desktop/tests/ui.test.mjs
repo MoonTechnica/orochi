@@ -38,7 +38,7 @@ async function openSettingsPage(el, page) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
-async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) {
+async function open(answers = {}, { prompt, pick, language, stored = {}, setup } = {}) {
   const calls = [];
   page([
     "sidebar", "projects", "projects-head", "projects-label", "add-project", "sidebar-foot", "new-thread", "office-btn", "office", "office-head", "office-title", "office-stats", "office-body", "activity", "activity-count",
@@ -47,7 +47,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
     "thread", "thread-head", "thread-where", "thread-title", "thread-status",
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
-    "threads-ctl", "threads-menu", "mention-list", "split", "chat", "member-col", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
+    "doc-tabs", "doc-menu", "doc-body", "threads-ctl", "threads-menu", "mention-list", "split", "chat", "member-col", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
     "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
@@ -114,6 +114,8 @@ async function open(answers = {}, { prompt, pick, language, stored = {} } = {}) 
       },
     },
   };
+  // What a test needs in place before the page starts, as a plugin would have it.
+  setup?.(window);
   // A scope of its own, with the globals the page would have given it. The poll is held
   // rather than run, so a test drives time instead of waiting for it.
   let poll = () => {};
@@ -3657,4 +3659,432 @@ test("the office's question bubble opens the conversation that asks, and any sea
     calls.some(([name, args]) => name === "thread" && args?.id === second.id),
     "the one that was asking, not the first in the list",
   );
+});
+
+// Conversation tabs --------------------------------------------------------------------
+const tabIds = (el) => el("doc-tabs").querySelectorAll(".doc-tab").map((t) => t.dataset.tab);
+const tabButton = (el, id) => el("doc-tabs").querySelectorAll(".doc-tab").find((t) => t.dataset.tab === id);
+const thread_id = recorded.thread.thread.id;
+async function openInTab(el, path = "src/chat/term.rs") {
+  await filesTab(el);
+  for (const dir of ["src", "src/chat"]) {
+    row(el, dir).dispatch("click");
+    await settle();
+  }
+  row(el, path).dispatch("click");
+  await settle();
+  el("viewer").querySelectorAll("button").find((b) => b.textContent === "Open in tab").dispatch("click");
+  await settle();
+}
+
+test("a conversation opens on its Chat tab, which is the only one it has and cannot be closed", async () => {
+  const { el } = await open(tree());
+  assert.deepEqual(tabIds(el), ["chat"]);
+  assert.equal(el("doc-tabs").hidden, false);
+  assert.equal(tabButton(el, "chat").getAttribute("aria-selected"), "true");
+  assert.equal(tabButton(el, "chat").querySelectorAll(".doc-close").length, 0);
+  assert.equal(el("split").hidden, false, "the chat is what shows");
+  assert.equal(el("doc-body").hidden, true);
+});
+
+test("a file opened in a tab is read, shown in place of the chat, and the chat is kept for when it is back", async () => {
+  const { el, calls } = await open(tree());
+  await openInTab(el);
+  assert.deepEqual(tabIds(el), ["chat", "f1"]);
+  assert.equal(tabButton(el, "f1").getAttribute("aria-selected"), "true");
+  assert.equal(el("split").hidden, true);
+  assert.equal(el("doc-body").hidden, false);
+  assert.match(el("doc-body").render(), /fn a\(\) \{/, "the file's text is drawn");
+  assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "src/chat/term.rs"));
+  el("message").value = "half a thought";
+  tabButton(el, "chat").dispatch("click");
+  assert.equal(el("split").hidden, false);
+  assert.equal(el("doc-body").hidden, true);
+  assert.equal(el("message").value, "half a thought", "the draft was not touched");
+  tabButton(el, "f1").dispatch("click");
+  assert.equal(el("doc-body").hidden, false);
+});
+
+test("closing a tab goes to its neighbour, and Chat has nothing to close", async () => {
+  const { el } = await open(tree());
+  await openInTab(el);
+  tabButton(el, "f1").querySelectorAll(".doc-close")[0].dispatch("click");
+  assert.deepEqual(tabIds(el), ["chat"]);
+  assert.equal(el("split").hidden, false);
+  assert.equal(el("doc-body").hidden, true);
+});
+
+test("a tab opened to look is replaced by the next look; a kept one is not", async () => {
+  const { el } = await open(tree());
+  const find = () => {
+    el("doc-tabs").querySelectorAll(".doc-new")[0].dispatch("click");
+    el("doc-menu").querySelectorAll(".doc-item").find((r) => r.dataset.item === "file").dispatch("click");
+  };
+  find();
+  const ask = async (path) => {
+    el("doc-menu").querySelectorAll("input")[0].value = path;
+    el("doc-menu").querySelectorAll("input")[0].dispatch("input");
+    await settle(160);
+  };
+  await ask("term");
+  el("doc-menu").querySelectorAll(".doc-hit")[0].dispatch("click");
+  await settle();
+  assert.deepEqual(tabIds(el), ["chat", "f1"]);
+  assert.equal(tabButton(el, "f1").dataset.preview, "true");
+  // Another look takes the same tab.
+  find();
+  await ask("term");
+  el("doc-menu").querySelectorAll(".doc-hit")[0].dispatch("click");
+  await settle();
+  assert.deepEqual(tabIds(el), ["chat", "f1"], "one preview tab, reused");
+  // Touching it keeps it.
+  tabButton(el, "f1").dispatch("dblclick");
+  assert.equal(tabButton(el, "f1").dataset.preview, undefined);
+});
+
+test("the tabs a conversation had come back with it, and no other conversation sees them", async () => {
+  const stored = {
+    [`tabs:${thread_id}`]: JSON.stringify({
+      order: ["chat", "f1"], active: "f1", seq: 1,
+      tabs: { f1: { kind: "file", path: "src/chat/term.rs", line: null, preview: false } },
+    }),
+  };
+  const { el, calls } = await open(tree(), { stored });
+  assert.deepEqual(tabIds(el), ["chat", "f1"]);
+  assert.equal(el("doc-body").hidden, false, "it was the tab in view");
+  assert.ok(calls.some(([name, args]) => name === "tree_read" && args.path === "src/chat/term.rs"), "and its file is read again");
+  const other = await open(tree(), { stored: { "tabs:someone-else": stored[`tabs:${thread_id}`] } });
+  assert.deepEqual(tabIds(other.el), ["chat"]);
+});
+
+test("a tab that names something this window cannot draw is left out rather than breaking the strip", async () => {
+  const stored = {
+    [`tabs:${thread_id}`]: JSON.stringify({ order: ["chat", "x1", "f1"], active: "x1", seq: 2,
+      tabs: { x1: { kind: "hologram" }, f1: { kind: "file", path: "README.md", line: null } } }),
+  };
+  const { el } = await open(tree(), { stored });
+  assert.deepEqual(tabIds(el), ["chat", "f1"]);
+  assert.equal(tabButton(el, "chat").getAttribute("aria-selected"), "true");
+});
+
+test("there are at most twelve tabs, and the window says so", async () => {
+  const tabsMap = {};
+  const order = ["chat"];
+  for (let i = 1; i <= 11; i += 1) {
+    order.push(`f${i}`);
+    tabsMap[`f${i}`] = { kind: "file", path: `file${i}.txt`, line: null, preview: false };
+  }
+  const { el } = await open(tree(), { stored: { [`tabs:${thread_id}`]: JSON.stringify({ order, active: "chat", seq: 11, tabs: tabsMap }) } });
+  assert.equal(tabIds(el).length, 12);
+  await openInTab(el);
+  assert.equal(tabIds(el).length, 12, "no thirteenth");
+  assert.match(el("notice").textContent, /Tabs are full/);
+});
+
+// Media in the conversation ------------------------------------------------------------
+function withMedia(extra = []) {
+  const base = recorded.thread;
+  const reply = base.items.find((i) => i.kind === "agent_message");
+  const at = reply.at + 1;
+  const made = (n, data) => ({
+    ...reply, seq: 900 + n, kind: "media", text: data.name, status: "completed", key: `media:${data.sha}`, at: at + n,
+    data: { source: "inline", from: null, ext: "png", kept: true, ...data },
+  });
+  return {
+    ...base,
+    items: [
+      ...base.items,
+      made(1, { sha: "a".repeat(64), mime: "image/png", kind: "image", bytes: 2048, name: "page.png" }),
+      made(2, { sha: "b".repeat(64), mime: "video/mp4", kind: "video", bytes: 4_000_000, name: "demo.mp4" }),
+      made(3, { sha: "c".repeat(64), mime: "audio/mpeg", kind: "audio", bytes: 90_000, name: "voice.mp3" }),
+      made(4, { sha: "d".repeat(64), mime: "image/png", kind: "image", bytes: 100, name: "old.png", kept: false }),
+      ...extra,
+    ],
+  };
+}
+
+test("a picture, a recording and a sound an agent produced are shown where it produced them, from the media scheme", async () => {
+  const { el } = await open({ thread: withMedia() });
+  const cards = el("timeline").querySelectorAll(".media-card");
+  assert.deepEqual(cards.map((c) => c.dataset.sha[0]), ["a", "b", "c", "d"]);
+  const sources = cards.map((card) => card.children[0]);
+  assert.deepEqual(sources.map((n) => n.tagName), ["IMG", "VIDEO", "AUDIO", "P"]);
+  const id = recorded.thread.thread.id;
+  assert.equal(sources[0].getAttribute("src"), `orochi-media://localhost/${id}/${"a".repeat(64)}`);
+  assert.equal(sources[1].getAttribute("src"), `orochi-media://localhost/${id}/${"b".repeat(64)}`);
+  assert.equal(sources[0].getAttribute("loading"), "lazy");
+  assert.ok(sources[1].getAttribute("controls") !== null && sources[1].muted, "a recording never starts loud");
+  assert.match(cards[0].render(), /page\.png · image\/png · 2\.0 KiB/);
+  assert.match(cards[3].render(), /no longer kept/, "bytes that were dropped are said to be, not drawn as a broken picture");
+  assert.equal(el("timeline").querySelectorAll("script").length, 0);
+});
+
+test("a picture opens in a tab that steps through the conversation's media", async () => {
+  const { el } = await open({ thread: withMedia() });
+  const card = (n) => el("timeline").querySelectorAll(".media-card")[n];
+  card(0).children[0].dispatch("click");
+  await settle();
+  assert.deepEqual(tabIds(el), ["chat", "m1"]);
+  assert.equal(el("split").hidden, true);
+  assert.match(el("doc-body").render(), /page\.png/);
+  assert.match(el("doc-body").render(), /1\/4/, "which one of how many");
+  const buttons = () => el("doc-body").querySelectorAll("button");
+  const press = (label) => buttons().find((b) => b.textContent === label);
+  assert.equal(press("Previous").disabled, true, "nothing before the first");
+  press("Next").dispatch("click");
+  await settle();
+  assert.match(el("doc-body").render(), /demo\.mp4/);
+  assert.equal(el("doc-body").querySelectorAll("video").length, 1);
+  // The same picture opened again is the tab it already has.
+  card(1).children[0].dispatch("click");
+  assert.deepEqual(tabIds(el), ["chat", "m1"]);
+  // A media tab comes back with its conversation.
+  assert.match(el("doc-tabs").render(), /demo\.mp4/);
+});
+
+test("a media tab whose conversation no longer lists it says its bytes are gone rather than breaking", async () => {
+  const stored = {
+    [`tabs:${thread_id}`]: JSON.stringify({
+      order: ["chat", "m1"], active: "m1", seq: 1,
+      tabs: { m1: { kind: "media", sha: "e".repeat(64), name: "gone.png", mime: "image/png", media: "image", bytes: 10, kept: false } },
+    }),
+  };
+  const { el } = await open({}, { stored });
+  assert.deepEqual(tabIds(el), ["chat", "m1"]);
+  assert.match(el("doc-body").render(), /no longer kept/);
+});
+
+// Terminals ------------------------------------------------------------------------------
+function fakeXterm(window) {
+  const made = [];
+  window.Terminal = class {
+    constructor(options) { this.options = options; this.cols = 90; this.rows = 28; this.written = []; this.handlers = []; made.push(this); }
+    loadAddon() {}
+    open() {}
+    write(data) { this.written.push(typeof data === "string" ? data : new TextDecoder().decode(data)); }
+    onData(fn) { this.handlers.push(fn); }
+    focus() { this.focused = true; }
+    dispose() { this.disposed = true; }
+    type(data) { for (const fn of this.handlers) fn(data); }
+    get text() { return this.written.join(""); }
+  };
+  window.FitAddon = { FitAddon: class { fit() {} } };
+  return made;
+}
+function fakeChannelAndEvents(window) {
+  const heard = new Map();
+  window.__TAURI__.event = { listen(name, fn) { heard.set(name, fn); return Promise.resolve(() => {}); } };
+  const channels = [];
+  window.__TAURI__.core.Channel = class { constructor() { channels.push(this); } };
+  return { heard, channels };
+}
+async function newTerminal(el) {
+  el("doc-tabs").querySelectorAll(".doc-new")[0].dispatch("click");
+  el("doc-menu").querySelectorAll(".doc-item").find((r) => r.dataset.item === "terminal").dispatch("click");
+  await settle(40);
+}
+
+test("a terminal tab starts the user's shell in the conversation's folder, and what is typed reaches it", async () => {
+  const { el, calls, window } = await open({ term_open: { id: "term-7", shell: "zsh" }, term_write: null, term_resize: null, term_close: null });
+  const terms = fakeXterm(window);
+  const { channels } = fakeChannelAndEvents(window);
+  await newTerminal(el);
+  assert.deepEqual(tabIds(el), ["chat", "t1"]);
+  assert.equal(tabButton(el, "t1").getAttribute("aria-selected"), "true");
+  const opened = calls.find(([name]) => name === "term_open");
+  assert.equal(opened[1].thread, thread_id);
+  assert.equal(opened[1].cols, 90);
+  assert.equal(opened[1].rows, 28);
+  assert.equal(tabButton(el, "t1").querySelectorAll(".doc-name")[0].textContent, "zsh", "the tab is named for the shell");
+  // What the shell prints is drawn; what is typed goes back to it.
+  channels[0].onmessage(new TextEncoder().encode("hello from the shell").buffer);
+  assert.match(terms[0].text, /hello from the shell/);
+  terms[0].type("ls\r");
+  assert.deepEqual(calls.findLast(([name]) => name === "term_write")[1], { id: "term-7", data: "ls\r" });
+  assert.equal(terms[0].options.scrollback, 10000);
+});
+
+test("a shell that ended says so, and Enter starts another in the same tab", async () => {
+  const { el, calls, window } = await open({ term_open: { id: "term-1", shell: "zsh" } });
+  const terms = fakeXterm(window);
+  const { heard } = fakeChannelAndEvents(window);
+  await newTerminal(el);
+  heard.get("term-exit")({ payload: { id: "term-1", code: 3 } });
+  assert.match(terms[0].text, /exited with code 3/);
+  terms[0].type("x");
+  assert.ok(!calls.some(([name]) => name === "term_write"), "an ended shell takes no keys");
+  terms[0].type("\r");
+  await settle();
+  assert.equal(calls.filter(([name]) => name === "term_open").length, 2);
+});
+
+test("closing a terminal tab closes its shell, and a conversation keeps at most six", async () => {
+  const { el, calls, window } = await open({ term_open: { id: "term-1", shell: "zsh" }, term_close: null });
+  const terms = fakeXterm(window);
+  fakeChannelAndEvents(window);
+  await newTerminal(el);
+  tabButton(el, "t1").querySelectorAll(".doc-close")[0].dispatch("click");
+  assert.deepEqual(calls.findLast(([name]) => name === "term_close")[1], { id: "term-1" });
+  assert.equal(terms[0].disposed, true);
+  assert.deepEqual(tabIds(el), ["chat"]);
+  for (let i = 0; i < 6; i += 1) await newTerminal(el);
+  assert.equal(tabIds(el).filter((id) => id.startsWith("t")).length, 6);
+  await newTerminal(el);
+  assert.equal(tabIds(el).filter((id) => id.startsWith("t")).length, 6);
+  assert.match(el("notice").textContent, /terminals per conversation/);
+});
+
+test("a terminal tab that was open before comes back as a new shell and says so", async () => {
+  const stored = { [`tabs:${thread_id}`]: JSON.stringify({ order: ["chat", "t1"], active: "t1", seq: 1, tabs: { t1: { kind: "terminal", title: "zsh" } } }) };
+  let terms;
+  const { el, calls } = await open({ term_open: { id: "term-9", shell: "zsh" } }, {
+    stored,
+    setup: (window) => { window.__TAURI__.core.Channel = class {}; terms = fakeXterm(window); },
+  });
+  await settle(40);
+  assert.deepEqual(tabIds(el), ["chat", "t1"]);
+  assert.equal(calls.filter(([name]) => name === "term_open").length, 1, "a fresh shell, since a process cannot be restored");
+  assert.match(terms[0].text, /restored/);
+});
+
+// Documents: a file shown as what it is ----------------------------------------------------
+const textFile = (path, body, more = {}) => ({
+  path, bytes: body.length, modified_at: 1, text: body, lines: body.split("\n").length,
+  truncated: false, binary: false, image: null, status: null, ...more,
+});
+async function openFileIn(el, path, window) {
+  void window;
+  await filesTab(el);
+  row(el, path).dispatch("click");
+  await settle();
+}
+const tableFixtures = {
+  "data.csv": textFile("data.csv", 'name,qty,note\nbolt,10,"a, b"\nnut,2,"line one\nline two"\nwasher,100,"say ""hi"""\n'),
+  "data.tsv": textFile("data.tsv", "a\tb\n1\t2\n"),
+  "tree.json": textFile("tree.json", '{"name":"orochi","tags":["a","b"],"nested":{"n":1,"ok":true,"none":null}}'),
+  "log.jsonl": textFile("log.jsonl", '{"at":1,"who":"a"}\n{"at":2,"who":"b"}\n'),
+  "broken.json": textFile("broken.json", '{"cut": [1, 2'),
+};
+tableFixtures["paper.pdf"] = textFile("paper.pdf", "", { binary: true, bytes: 9 });
+tableFixtures["memo.docx"] = textFile("memo.docx", "", { binary: true, bytes: 9 });
+tableFixtures["sales.xlsx"] = textFile("sales.xlsx", "", { binary: true, bytes: 9 });
+tableFixtures["deck.pptx"] = textFile("deck.pptx", "", { binary: true, bytes: 9 });
+const withFiles = () => tree({
+  tree_media: ({ path }) => path === "paper.pdf" || path === "memo.docx" || path === "sales.xlsx" || path === "deck.pptx"
+    ? { mime: "application/pdf", bytes: 9, data: "data:application/pdf;base64,JVBERi0xLjQ=" }
+    : { mime: "application/octet-stream", bytes: 1, data: null },
+  tree_list: ({ dir }) => dir === "" ? Object.keys(tableFixtures).map((name) => ({ name, path: name, kind: "file", size: 10, status: null, within: null })) : [],
+  tree_read: ({ path }) => tableFixtures[path] || files.text,
+});
+
+test("a CSV reads as a table: quoted commas, doubled quotes and line breaks stay in their cells", async () => {
+  const { el } = await open(withFiles());
+  await openFileIn(el, "data.csv");
+  const rendered = el("viewer").render();
+  assert.match(rendered, /th name/);
+  assert.match(rendered, /td a, b/, "a comma inside quotes is not a column");
+  assert.match(rendered, /say "hi"/, "doubled quotes are one quote");
+  assert.equal(el("viewer").querySelectorAll(".r").length, 3, "a quoted line break is not a row");
+  assert.match(el("viewer").render(), /3 rows · 3 columns/);
+});
+
+test("a table sorts by a column, numbers as numbers, filters by what is typed, and shows the source", async () => {
+  const { el } = await open(withFiles());
+  await openFileIn(el, "data.csv");
+  const first = () => el("viewer").querySelectorAll(".r")[0].render();
+  el("viewer").querySelectorAll("th").find((th) => th.dataset.column === "1").dispatch("click");
+  assert.match(first(), /nut/, "2 before 10 before 100");
+  el("viewer").querySelectorAll("th").find((th) => th.dataset.column === "1").dispatch("click");
+  assert.match(first(), /washer/, "again, the other way");
+  const filter = el("viewer").querySelectorAll(".table-filter")[0];
+  filter.value = "bolt";
+  filter.dispatch("input");
+  assert.equal(el("viewer").querySelectorAll(".r").length, 1);
+  el("viewer").querySelectorAll("button").find((b) => b.textContent === "Source").dispatch("click");
+  assert.match(el("viewer").render(), /bolt,10/, "the source is the file's own text");
+  assert.equal(el("viewer").querySelectorAll("table").length, 0);
+});
+
+test("a TSV splits on tabs, and a table past the page size offers the rest", async () => {
+  const many = textFile("big.csv", `k\n${Array.from({ length: 700 }, (_, i) => String(i)).join("\n")}\n`);
+  tableFixtures["big.csv"] = many;
+  const { el } = await open(withFiles());
+  await openFileIn(el, "data.tsv");
+  assert.match(el("viewer").render(), /th a[\s\S]*th b/);
+  await openFileIn(el, "big.csv");
+  assert.equal(el("viewer").querySelectorAll(".r").length, 500);
+  const more = el("viewer").querySelectorAll("button").find((b) => /Show more \(200\)/.test(b.textContent));
+  more.dispatch("click");
+  assert.equal(el("viewer").querySelectorAll(".r").length, 700);
+  delete tableFixtures["big.csv"];
+});
+
+test("JSON is a tree that opens as it is looked at; JSONL with the same keys is a table; broken JSON stays text", async () => {
+  const { el } = await open(withFiles());
+  await openFileIn(el, "tree.json");
+  assert.match(el("viewer").render(), /name: /);
+  assert.match(el("viewer").render(), /"orochi"/);
+  assert.equal(el("viewer").querySelectorAll(".json-children")[1].hidden, true, "deeper levels are closed");
+  el("viewer").querySelectorAll(".json-toggle")[1].dispatch("click");
+  assert.equal(el("viewer").querySelectorAll(".json-children")[1].hidden, false);
+  await openFileIn(el, "log.jsonl");
+  assert.match(el("viewer").render(), /th at[\s\S]*th who/);
+  assert.equal(el("viewer").querySelectorAll(".r").length, 2);
+  await openFileIn(el, "broken.json");
+  assert.match(el("viewer").render(), /\{"cut": \[1, 2/, "what cannot be a tree is read as text");
+});
+
+test("a PDF is parsed in a sandboxed frame with no same-origin, and is handed bytes, not a path", async () => {
+  const { el } = await open(withFiles(), {
+    setup: (window) => {
+      window.fetch = async (url) => ({ text: async () => `source of ${url}` });
+      globalThis.atob ??= (value) => Buffer.from(value, "base64").toString("binary");
+    },
+  });
+  await openFileIn(el, "paper.pdf");
+  await settle(20);
+  const frame = el("viewer").querySelectorAll("iframe")[0];
+  assert.ok(frame, "the document is drawn in a frame");
+  assert.equal(frame.getAttribute("sandbox"), "allow-scripts", "no allow-same-origin: an opaque origin, no IPC");
+  assert.equal(frame.getAttribute("src"), "viewer.html");
+});
+
+test("a Word file goes to the same sandboxed frame, with the libraries it needs", async () => {
+  const fetched = [];
+  const { el } = await open(withFiles(), {
+    setup: (window) => {
+      window.fetch = async (url) => { fetched.push(url); return { text: async () => url }; };
+    },
+  });
+  await openFileIn(el, "memo.docx");
+  await settle(20);
+  const frame = el("viewer").querySelectorAll("iframe")[0];
+  assert.equal(frame.getAttribute("sandbox"), "allow-scripts");
+  assert.deepEqual(fetched, ["vendor/jszip/jszip.min.js", "vendor/docx-preview/docx-preview.min.js"]);
+});
+
+test("a spreadsheet goes to the sandboxed frame with only the one library it needs", async () => {
+  const fetched = [];
+  const { el } = await open(withFiles(), {
+    setup: (window) => {
+      window.fetch = async (url) => { fetched.push(url); return { text: async () => url }; };
+    },
+  });
+  await openFileIn(el, "sales.xlsx");
+  await settle(20);
+  assert.equal(el("viewer").querySelectorAll("iframe")[0].getAttribute("sandbox"), "allow-scripts");
+  assert.deepEqual(fetched, ["vendor/sheetjs/xlsx.mini.min.js"]);
+});
+
+test("a presentation goes to the sandboxed frame with its renderer", async () => {
+  const fetched = [];
+  const { el } = await open(withFiles(), {
+    setup: (window) => {
+      window.fetch = async (url) => { fetched.push(url); return { text: async () => url }; };
+    },
+  });
+  await openFileIn(el, "deck.pptx");
+  await settle(20);
+  assert.equal(el("viewer").querySelectorAll("iframe")[0].getAttribute("sandbox"), "allow-scripts");
+  assert.deepEqual(fetched, ["vendor/pptx-renderer/aiden0z-pptx-renderer.browser.es.js"]);
 });

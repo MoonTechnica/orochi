@@ -10,6 +10,9 @@ use tauri::{Manager, State};
 /// is not), so the window holds it behind a mutex and never across an await.
 struct Open(Mutex<Client>);
 
+/// The shells in the window's terminal tabs.
+struct Shells(orochi_desktop::term::Terminals);
+
 fn fail(error: anyhow::Error) -> String {
     format!("{error:#}")
 }
@@ -755,11 +758,70 @@ fn data_dir() -> anyhow::Result<std::path::PathBuf> {
     Ok(orochi::config::Paths::resolve(None, chosen)?.data)
 }
 
+#[tauri::command]
+fn term_open(
+    app: tauri::AppHandle,
+    open: State<'_, Open>,
+    shells: State<'_, Shells>,
+    thread: String,
+    cols: u16,
+    rows: u16,
+    on_data: tauri::ipc::Channel<Vec<u8>>,
+) -> Result<orochi_desktop::term::Opened, String> {
+    use tauri::Emitter;
+    let cwd = open.0.lock().unwrap().cwd(&thread).map_err(fail)?;
+    shells
+        .0
+        .open(
+            &cwd,
+            None,
+            (cols, rows),
+            move |bytes| {
+                let _ = on_data.send(bytes);
+            },
+            move |id, code| {
+                let _ = app.emit("term-exit", serde_json::json!({ "id": id, "code": code }));
+            },
+        )
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn term_write(shells: State<'_, Shells>, id: String, data: String) -> Result<(), String> {
+    shells.0.write(&id, data.as_bytes()).map_err(fail)
+}
+
+#[tauri::command]
+fn term_resize(shells: State<'_, Shells>, id: String, cols: u16, rows: u16) -> Result<(), String> {
+    shells.0.resize(&id, cols, rows).map_err(fail)
+}
+
+#[tauri::command]
+fn term_close(shells: State<'_, Shells>, id: String) -> Result<(), String> {
+    shells.0.close(&id).map_err(fail)
+}
+
 fn main() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol("orochi-media", |_context, request| {
+            let data = data_dir().unwrap_or_default();
+            let range = request
+                .headers()
+                .get("range")
+                .and_then(|value| value.to_str().ok());
+            let reply = orochi_desktop::media::serve(&data, request.uri().path(), range);
+            let mut response = tauri::http::Response::builder().status(reply.status);
+            for (name, value) in &reply.headers {
+                response = response.header(*name, value);
+            }
+            response
+                .body(std::borrow::Cow::Owned(reply.body))
+                .unwrap_or_default()
+        })
         .setup(|app| {
             let client = Client::open(&data_dir()?)?;
             app.manage(Open(Mutex::new(client)));
+            app.manage(Shells(orochi_desktop::term::Terminals::default()));
             Ok(())
         })
         .plugin(tauri_plugin_dialog::init())
@@ -839,8 +901,18 @@ fn main() {
             set_route,
             notify,
             badge,
-            agent_icons
+            agent_icons,
+            term_open,
+            term_write,
+            term_resize,
+            term_close
         ])
-        .run(tauri::generate_context!())
-        .expect("orochi desktop failed to start");
+        .build(tauri::generate_context!())
+        .expect("orochi desktop failed to start")
+        // Nothing a terminal started outlives the window.
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                app.state::<Shells>().0.close_all();
+            }
+        });
 }

@@ -226,7 +226,23 @@ fn timeline_media_is_bounded_and_stays_inside_the_thread() {
     assert_eq!(image.mime, "image/png");
     assert_eq!(image.bytes, 3 * 1024 * 1024);
     assert!(image.data.unwrap().starts_with("data:image/png;base64,"));
-    for (path, mime) in [("clip.webm", "video/webm"), ("voice.mp3", "audio/mpeg")] {
+    for (path, mime) in [
+        ("clip.webm", "video/webm"),
+        ("voice.mp3", "audio/mpeg"),
+        ("paper.pdf", "application/pdf"),
+        (
+            "deck.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        (
+            "sales.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "memo.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+    ] {
         write(&tree.repo.join(path), b"test bytes");
         let media = client.tree_media(&thread, path).unwrap();
         assert_eq!(media.mime, mime);

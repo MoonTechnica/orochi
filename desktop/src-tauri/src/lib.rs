@@ -4,4 +4,6 @@
 //! the window changes are rows too. `view` is that whole contract; `main.rs` is a shell that
 //! hands it to a webview.
 pub mod files;
+pub mod media;
+pub mod term;
 pub mod view;

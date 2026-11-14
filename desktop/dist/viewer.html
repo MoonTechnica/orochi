@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- The frame every third-party document parser runs in. The window loads it as
+     <iframe sandbox="allow-scripts"> with no allow-same-origin: an opaque origin, no storage, no
+     parent access, no Tauri IPC. It gets bytes and library source by postMessage and answers with
+     counts only (docs/conversation-tabs-design.md §4.7.1). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' blob:; worker-src blob:; style-src 'unsafe-inline'; img-src blob: data:; connect-src 'none'">
+<title>Viewer</title>
+<style>
+  :root { color-scheme: light dark; --bg: #2b2b2e; --bar: #1f1f22; --fg: #e8e8ea; }
+  @media (prefers-color-scheme: light) { :root { --bg: #d9d9dc; --bar: #f2f2f4; --fg: #1d1d1f; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #bar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; background: var(--bar); }
+  #bar button { font: inherit; color: inherit; background: transparent; border: 1px solid #8884; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+  #pages { flex: 1; overflow: auto; padding: 12px 0; text-align: center; }
+  .page { display: block; margin: 0 auto 12px; background: #fff; box-shadow: 0 1px 4px #0006; }
+  #sheets { display: flex; gap: 4px; padding: 0 10px 8px; text-align: left; flex-wrap: wrap; }
+  #sheets button { font: inherit; color: inherit; background: transparent; border: 1px solid #8884; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+  #sheets button[data-on="true"] { background: #8883; }
+  #grid { overflow: auto; text-align: left; padding: 0 10px; }
+  #grid table { border-collapse: collapse; background: #fff; color: #111; }
+  #grid td { border: 1px solid #ccc; padding: 2px 8px; white-space: nowrap; }
+  #slides { padding: 0 12px; }
+  #note { padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="bar"><button id="out" title="Zoom out">−</button><button id="in" title="Zoom in">+</button><span id="zoom"></span><span id="count"></span></div>
+<div id="pages"></div>
+<script src="viewer.js"></script>
+</body>
+</html>

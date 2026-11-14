@@ -1661,3 +1661,72 @@ button:disabled { opacity: .5; cursor: default; }
 .bubble[data-kind="ask"]:hover { filter: brightness(1.08); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 35%, transparent); }
 .bubble[data-kind="ask"]:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .desk:hover .avatar { border-color: var(--text); }
+
+/* Conversation tabs: Chat first, then whatever was opened beside it. */
+#doc-tabs { display: flex; align-items: stretch; gap: 1px; padding: 0 8px; border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
+.doc-tab {
+  display: flex; align-items: center; gap: 6px; flex: none; max-width: 220px; padding: 6px 10px; font-size: 12px;
+  color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; user-select: none;
+}
+.doc-tab:hover { color: var(--text); background: var(--raised); }
+.doc-tab[aria-selected="true"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--brand); }
+.doc-tab[data-preview="true"] .doc-name { font-style: italic; }
+.doc-tab .icon { width: 14px; height: 14px; flex: none; }
+.doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-close { border: 0; background: none; color: var(--muted); font-size: 14px; line-height: 1; padding: 0 2px; border-radius: 4px; }
+.doc-close:hover { color: var(--text); background: var(--line); }
+.doc-new { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 0 10px; flex: none; }
+.doc-new:hover { color: var(--text); }
+#doc-menu {
+  position: absolute; z-index: 9; top: 74px; left: 12px; width: min(520px, 92%); max-height: 60%; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.35);
+}
+.doc-find { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+.doc-hit { padding: 5px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-hit[aria-selected="true"], .doc-hit:hover { background: var(--line); }
+#doc-body { display: flex; flex: 1; min-height: 0; min-width: 0; position: relative; }
+.doc-panel { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.doc-file { flex: 1; min-height: 0; overflow: auto; }
+
+/* Media: a figure under what produced it, and the tab that opens it. */
+.media-card { margin: 8px 0; max-width: 100%; }
+.media-card img, .media-card video { display: block; max-width: 100%; max-height: 360px; border-radius: var(--radius); border: 1px solid var(--line); cursor: zoom-in; background: var(--raised); }
+.media-card audio { display: block; width: min(420px, 100%); }
+.media-card figcaption { margin-top: 4px; font-size: 11px; color: var(--muted); }
+.media-stage { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: center; justify-content: center; padding: 12px; background: var(--raised); }
+.media-stage[data-fit="true"] img, .media-stage[data-fit="true"] video { max-width: 100%; max-height: 100%; }
+.media-stage[data-fit="false"] img { max-width: none; max-height: none; align-self: flex-start; }
+.media-meta { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+/* Terminal tab */
+.term-host { flex: 1; min-height: 0; min-width: 0; padding: 6px 0 0 10px; background: var(--bg); overflow: hidden; }
+.term-host .xterm { height: 100%; }
+.doc-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+.doc-item:hover { background: var(--line); }
+.doc-item .icon { width: 14px; height: 14px; }
+
+/* Tables and JSON, drawn from a file's own text */
+.table-view { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.table-bar { display: flex; align-items: center; gap: 12px; padding: 8px var(--gutter); border-bottom: 1px solid var(--line); }
+.table-filter { flex: 1; max-width: 320px; }
+.table-count { color: var(--muted); font-size: 12px; }
+.table-scroll { overflow: auto; flex: 1; min-height: 0; }
+table.data { border-collapse: collapse; font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; min-width: 100%; }
+table.data th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--line); cursor: pointer; white-space: nowrap; user-select: none; }
+table.data th .sort { width: 12px; height: 12px; margin-left: 4px; vertical-align: -2px; }
+table.data td { padding: 3px 10px; border-bottom: 1px solid var(--line); white-space: pre-wrap; max-width: 420px; overflow-wrap: anywhere; vertical-align: top; }
+table.data .n { color: var(--muted); text-align: right; cursor: default; }
+.table-more { padding: 8px var(--gutter); }
+.json-tree { padding: 8px var(--gutter); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; overflow: auto; }
+.json-branch, .json-row { display: block; }
+.json-children { margin-left: 16px; border-left: 1px solid var(--line); padding-left: 8px; }
+.json-toggle { border: 0; background: none; color: var(--muted); padding: 0 4px 0 0; width: 14px; }
+.json-key { color: var(--brand); }
+.json-summary, .json-more { color: var(--muted); }
+.json-leaf.string { color: var(--ok); }
+.json-leaf.number, .json-leaf.boolean { color: var(--text); }
+.json-leaf.null { color: var(--muted); font-style: italic; }
+
+.pdf-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.viewer-frame { flex: 1; min-height: 480px; width: 100%; border: 0; background: transparent; }

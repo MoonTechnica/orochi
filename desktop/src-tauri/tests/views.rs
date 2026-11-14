@@ -1603,3 +1603,53 @@ fn adding_a_project_makes_the_project_and_nothing_else() {
     );
     assert!(client.add_project(&dir.path().join("nowhere")).is_err());
 }
+
+/// A picture an agent produced is a row of the timeline the window already draws from, and its
+/// bytes are answered by the media scheme from the same data directory — the two halves the
+/// page joins by thread and hash.
+#[test]
+fn a_kept_picture_is_in_the_thread_and_answered_by_the_media_scheme() {
+    use orochi::media::{self, MediaRef, Source};
+    let dir = tempfile::tempdir().unwrap();
+    let (thread, _) = fixture(dir.path());
+    let png = b"\x89PNG\r\n\x1a\nshot".to_vec();
+    let kept = media::keep(
+        dir.path(),
+        &thread,
+        &MediaRef {
+            name: "shot.png".into(),
+            source: Source::Inline(png.clone()),
+        },
+    )
+    .unwrap()
+    .unwrap();
+    {
+        let store = share(Activity::open(dir.path(), 30).unwrap());
+        let db = store.lock().unwrap();
+        db.keep_media(&thread, &kept).unwrap();
+        let turn = db.thread(&thread).unwrap().unwrap().items[0].turn.clone();
+        db.item(
+            &thread,
+            &turn,
+            None,
+            ItemKind::Media,
+            Some("completed"),
+            Some(&format!("media:{}", kept.sha)),
+            "shot.png",
+            Some(&serde_json::to_string(&kept).unwrap()),
+        )
+        .unwrap();
+    }
+    let client = Client::open(dir.path()).unwrap();
+    let view = client.thread(&thread).unwrap().unwrap();
+    let item = view
+        .items
+        .iter()
+        .find(|i| i.kind == "media")
+        .expect("a media row");
+    assert_eq!(item.data.as_ref().unwrap()["sha"], kept.sha);
+    assert_eq!(item.data.as_ref().unwrap()["kept"], true);
+    let reply = orochi_desktop::media::serve(dir.path(), &format!("/{thread}/{}", kept.sha), None);
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.body, png);
+}

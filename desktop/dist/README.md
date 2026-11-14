@@ -82,3 +82,25 @@ assistant beside its seat, and quiet conversations wait in "Off duty". It reads 
 sidebar and `live_seats` already carry, redraws when that data changes, and only the clocks tick
 each second. The Office button in the sidebar returns to it; choosing a conversation leaves it,
 and the office does not mark the conversation behind it as read.
+
+## Vendored libraries
+
+The window has no bundler and its CSP names no CDN, so a library it uses is a file here, pinned
+to an exact version, with its licence beside it and its SHA-256 recorded. A file changed
+by hand fails this list. Read from the npm packages of the same version on 2026-11-14.
+
+| Library | Version | Licence | Used for | Files (SHA-256) |
+|---|---|---|---|---|
+| xterm.js (`@xterm/xterm`) | 6.0.0 | MIT | the terminal tab | `ba3ea256ce0620a0…` addon-fit.js<br>`b569f629d00f2626…` LICENSE<br>`854a7c0fb70e8b1a…` xterm.css<br>`14903579ff54664c…` xterm.js
+| `@xterm/addon-fit` | 0.11.0 | MIT | sizing the terminal to its tab | (above, `addon-fit.js`) |
+
+| pdf.js (`pdfjs-dist`) | 6.5.438 | Apache-2.0 | the PDF viewer, inside `viewer.html`'s sandboxed frame | `3a88402882cfa3e7…` pdf.min.mjs<br>`1e64c8240e54735e…` pdf.worker.min.mjs<br>`0d542e0c8804e39a…` LICENSE |
+| docx-preview | 0.4.1 | Apache-2.0 | `.docx`, inside the same frame | `c4a133c65a112799…` docx-preview.min.js<br>`8668bf4417d161e4…` LICENSE |
+| JSZip | 3.10.1 | MIT (offered as MIT or GPL-3.0-or-later; taken as MIT) | docx-preview's one dependency | `acc7e41455a80765…` jszip.min.js<br>`566c953c6090b1218…` LICENSE |
+| SheetJS Community Edition (`xlsx.mini.min.js`) | 0.20.3 | Apache-2.0 | `.xlsx`, inside the same frame | `0cb353f830d7288385492c83d277b058ddeac664ca51cf1393aa1fd3e2b70939` xlsx.mini.min.js<br>`4d2a38ac35cda06a555c84074a819d413339cd3691b822cae50f8f322fe01f64` LICENSE |
+| `@aiden0z/pptx-renderer` (standalone browser build) | 1.4.0 | Apache-2.0; bundles JSZip (MIT), ECharts (Apache-2.0) and **mtx-decompressor 1.4.2 (MPL-2.0, unmodified; notice and licence copy kept in `vendor/pptx-renderer/`)** | `.pptx`, inside the same frame | `eed96db79a8300ef…` aiden0z-pptx-renderer.browser.es.js<br>`c71d239df91726fc…` LICENSE<br>`4e49f2e111bff02e…` THIRD_PARTY_NOTICES.md<br>`1f256ecad192880b…` licenses/mtx-decompressor-MPL-2.0.txt |
+
+SheetJS's newer releases are not on npm (the npm `xlsx` is 0.18.5, which has known security fixes it lacks), so this one was read from `https://cdn.sheetjs.com/xlsx-0.20.3/` on 2026-11-15 and is pinned by hash.
+
+Full hashes are in `dist/vendor/<library>/SHA256SUMS`. Only the two minified builds are kept: the
+CMaps (for non-embedded CJK fonts), standard fonts and WebAssembly decoders are not shipped yet.
