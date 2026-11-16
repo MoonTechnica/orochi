@@ -283,7 +283,7 @@
       "started_at": 1794635811680,
       "agent": "claude",
       "model": "opus",
-      "doing": "Reading desktop/dist/app.js",
+      "doing": "Reading desktop/src/app.js",
       "provider": "anthropic"
     },
     {
@@ -301,7 +301,7 @@
       "started_at": 1794635901680,
       "agent": "codex",
       "model": "gpt-6.1-sol",
-      "doing": "Editing desktop/dist/app.css",
+      "doing": "Editing desktop/src/app.css",
       "provider": "openai"
     },
     {
@@ -540,13 +540,13 @@
   ],
   "doings": {
     "a": [
-      "Reading desktop/dist/app.js",
+      "Reading desktop/src/app.js",
       "Searching for drawStatus",
       "Planning the room layout"
     ],
     "b": [
-      "Editing desktop/dist/app.css",
-      "Editing desktop/dist/app.js",
+      "Editing desktop/src/app.css",
+      "Editing desktop/src/app.js",
       "Running node --test"
     ],
     "c": [

@@ -1,6 +1,6 @@
 //! The window's rendering, driven from `cargo test` so it is covered by the same command as
 //! everything else. The scenarios live in `desktop/tests/ui.test.mjs`, which runs the real
-//! `dist/app.js` against view output recorded from a real run.
+//! `src/app.js` against view output recorded from a real run.
 use std::process::Command;
 
 #[test]

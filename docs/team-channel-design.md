@@ -79,7 +79,7 @@ does; it never shows a conversation and a reply thread under the same word.
   `mail`.
 - **The desktop** hides items with `lane > 0`, merges every room message into the body in time
   order and shows a completion turn as "from the helpers" (`drawTimeline`,
-  `desktop/dist/app.js:1191`); it notifies, only while unfocused, on a new prompt and on a
+  `desktop/src/app.js:1191`); it notifies, only while unfocused, on a new prompt and on a
   conversation that finished or failed (`notify`, `app.js:2482`).
 - **What a resume needs is recorded**: `attempts.acp_session_id` (`src/activity.rs:2728`).
 
@@ -294,7 +294,7 @@ print them.
   the pinned thread row grows and shrinks without leaving a half-written row; ↓ lists members,
   Enter opens a thread, a line typed there is a reply in it, Esc returns to the channel.
 - `tests/cli_e2e.rs`: `threads send` with a mention and with `--thread`, `threads mentions`.
-- `desktop/dist/preview-data.js`: a channel with a lead, two members (one continued), a mention
+- `desktop/src/preview-data.js`: a channel with a lead, two members (one continued), a mention
   of the user and an open trial, so the channel, the bars, the panel and the notification state
   can be looked at without an agent.
 
@@ -370,7 +370,7 @@ been run against a real agent CLI.
   `@channel`, `@you` and the lead's own name are never taken as a note to a member.
 - **Pane.** An agent's mention of `@you` puts the host pane in `waiting` with the text, until the
   person next types (`Session::mentioned`); it is not tied to the mention being marked seen.
-- **Desktop.** As §3, §5 and §6, built by `desktop/dist/app.js`, except that a thread opens in a
+- **Desktop.** As §3, §5 and §6, built by `desktop/src/app.js`, except that a thread opens in a
   column of its own inside the chat area, beside the body and left of the right section (whose
   tabs it never replaces), with a draggable width; the lead is offered in the `@`
   list as `lead`. The window does not pass the name the lead has in the room, so `@lead` in a

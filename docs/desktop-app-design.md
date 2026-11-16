@@ -13,7 +13,7 @@ Written: 2026-09-20.
 | P4 The user in the room | **Implemented and validated against a real CLI** ([2026-09-20](real-validation-20260920.md)). Claude Sonnet read a note left mid-turn and acted on it; Haiku, told plainly to, did not. The mechanism is sound; whether it is read depends on the model, so "delivered when the agent next checks" stays the wording |
 
 The window's **appearance** was checked on 2026-09-20 by rendering the same `app.js` and
-`app.css` in a browser against the recorded view output (`desktop/dist/preview.html`), which
+`app.css` in a browser against the recorded view output (`desktop/src/preview.html`), which
 found four things and fixed them: tables stretched to the window's width, form controls left
 in the browser's own style, a heading that named the conversation while showing a screen, and
 `---`/`+++` diff lines coloured as changes. It has not been looked at inside the Tauri window

@@ -68,7 +68,7 @@ env = { CARGO_TARGET_DIR = "{{config_root}}/target" }
 run = "cargo test --locked"
 
 [tasks."desktop:preview"]
-description = "Regenerate desktop/dist/preview.html from index.html"
+description = "Regenerate desktop/src/preview.html from index.html"
 run = "node desktop/tests/make-preview.mjs"
 
 [tasks.check]

@@ -21,9 +21,9 @@ const recorded = {
 /// The window's script, read once and given a fresh scope per test. Importing it again would
 /// not do: an ES module is evaluated once per URL, so every test after the first would be
 /// looking at the first one's screen.
-const source = readFileSync(join(here, "../dist/app.js"), "utf8");
-const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
-const css = readFileSync(join(here, "../dist/app.css"), "utf8");
+const source = readFileSync(join(here, "../src/app.js"), "utf8");
+const markup = readFileSync(join(here, "../src/index.html"), "utf8");
+const css = readFileSync(join(here, "../src/app.css"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
 /// The one way to a settings page: the row at the foot, then its nav. Setup is a dialog the
@@ -52,7 +52,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {}, setup }
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
-    "panel", "panel-head", "panel-title", "panel-close", "panel-body",
+    "panel", "panel-head", "panel-title", "panel-close", "panel-body", "activity-page", "activity-page-title", "activity-page-close", "activity-page-body",
     "settings", "settings-nav", "settings-main", "settings-head", "settings-title", "settings-close", "settings-body",
     "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-details", "setup-cancel", "setup-later", "setup-go",
         "app", "side", "sidebar-resizer", "side-resizer", "member-resizer",
@@ -205,7 +205,7 @@ test("the fixtures carry the fields the core actually sends", async () => {
   }
   // And the page reads no seat field the core does not send. `seat.` only: `s.` is any short
   // name in the file, and guessing at those is how a wrong field got read in the first place.
-  const source = readFileSync(join(here, "../dist/app.js"), "utf8");
+  const source = readFileSync(join(here, "../src/app.js"), "utf8");
   for (const [, field] of source.matchAll(/\bseat\.([a-z_]+)/g)) {
     assert.ok(field in seat, `the page reads seat.${field}, which is not sent`);
   }
@@ -1537,7 +1537,7 @@ test("an agent a seat's CLI runs inside a Task is a row under that seat, in the 
   assert.match(inner.render(), /sub-agent[\s\S]*Audit the parser[\s\S]*src\/parser\.rs[\s\S]*2m/, "what it was asked, what it is doing, for how long");
   assert.doesNotMatch(inner.render(), /Task:/, "the Task's own word for itself is dropped");
   el("activity").dispatch("click");
-  const bucket = el("panel-body").querySelectorAll(".bucket").find((b) => b.dataset.bucket === "In the background");
+  const bucket = el("activity-page-body").querySelectorAll(".bucket").find((b) => b.dataset.bucket === "In the background");
   assert.match(bucket.render(), /spec[\s\S]*Research Agents API model support[\s\S]*sub-agent[\s\S]*Audit the parser/);
   const timeline = el("timeline").render();
   assert.match(timeline, /Audit the parser · 2 calls inside/, "the Task counts what ran inside it");
@@ -1552,7 +1552,7 @@ test("the Activity screen sorts every conversation by what it needs, and puts do
   for (const th of rest) th.status = "idle";
   const { el, calls } = await open({ sidebar: projects });
   el("activity").dispatch("click");
-  const body = () => el("panel-body");
+  const body = () => el("activity-page-body");
   const bucket = (name) => body().querySelectorAll(".bucket").find((b) => b.dataset.bucket === name);
   assert.match(bucket("Needs you").render(), new RegExp(asking.title));
   assert.match(bucket("In the background").render(), new RegExp(background.title));

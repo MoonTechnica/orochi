@@ -1,10 +1,10 @@
-//! A library the window ships is a file in `dist/vendor`, and the list beside it is what it was
+//! A library the window ships is a file in `src/vendor`, and the list beside it is what it was
 //! when it was read from its package. A file edited by hand, or replaced, fails here.
 use sha2::{Digest, Sha256};
 
 #[test]
 fn every_vendored_file_is_the_one_that_was_recorded() {
-    let vendor = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist/vendor");
+    let vendor = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/vendor");
     let mut checked = 0;
     for library in std::fs::read_dir(&vendor).unwrap().flatten() {
         let sums = std::fs::read_to_string(library.path().join("SHA256SUMS"))

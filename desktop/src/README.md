@@ -1,3 +1,8 @@
+This folder is the window's frontend, written by hand and loaded as it is (`frontendDist` in
+`../src-tauri/tauri.conf.json`). There is no bundler and no build step, so nothing here is generated
+except `preview*.js`/`preview.html` (below). It was `desktop/dist` until 2026-11-17, a name that
+read as build output.
+
 # Looking at the window without building it
 
 `preview.html` is generated from `index.html` by `../tests/make-preview.mjs`, so the page that
@@ -13,7 +18,7 @@ continued across two seats, an assignment with its bar, an `@you` mention and an
 
 ```sh
 node desktop/tests/make-preview.mjs
-cd desktop/dist && python3 -m http.server 8731   # then open /preview.html
+cd desktop/src && python3 -m http.server 8731   # then open /preview.html
 ```
 
 The window's *behavior* is checked by `../tests/ui.test.mjs` and the Rust tests beside it; this
@@ -105,5 +110,5 @@ by hand fails this list. Read from the npm packages of the same version on 2026-
 
 SheetJS's newer releases are not on npm (the npm `xlsx` is 0.18.5, which has known security fixes it lacks), so this one was read from `https://cdn.sheetjs.com/xlsx-0.20.3/` on 2026-11-15 and is pinned by hash.
 
-Full hashes are in `dist/vendor/<library>/SHA256SUMS`. Only the two minified builds are kept: the
+Full hashes are in `src/vendor/<library>/SHA256SUMS`. Only the two minified builds are kept: the
 CMaps (for non-embedded CJK fonts), standard fonts and WebAssembly decoders are not shipped yet.
