@@ -52,7 +52,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {}, setup }
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
-    "panel", "panel-head", "panel-title", "panel-close", "panel-body",
+    "panel", "panel-head", "panel-title", "panel-close", "panel-body", "activity-page", "activity-page-title", "activity-page-close", "activity-page-body",
     "settings", "settings-nav", "settings-main", "settings-head", "settings-title", "settings-close", "settings-body",
     "setup", "setup-head", "setup-title", "setup-close", "setup-body", "setup-foot", "setup-details", "setup-cancel", "setup-later", "setup-go",
         "app", "side", "sidebar-resizer", "side-resizer", "member-resizer",
@@ -1518,7 +1518,7 @@ test("an agent a seat's CLI runs inside a Task is a row under that seat, in the 
   assert.match(inner.render(), /sub-agent[\s\S]*Audit the parser[\s\S]*src\/parser\.rs[\s\S]*2m/, "what it was asked, what it is doing, for how long");
   assert.doesNotMatch(inner.render(), /Task:/, "the Task's own word for itself is dropped");
   el("activity").dispatch("click");
-  const bucket = el("panel-body").querySelectorAll(".bucket").find((b) => b.dataset.bucket === "In the background");
+  const bucket = el("activity-page-body").querySelectorAll(".bucket").find((b) => b.dataset.bucket === "In the background");
   assert.match(bucket.render(), /spec[\s\S]*Research Agents API model support[\s\S]*sub-agent[\s\S]*Audit the parser/);
   const timeline = el("timeline").render();
   assert.match(timeline, /Audit the parser · 2 calls inside/, "the Task counts what ran inside it");
@@ -1533,7 +1533,7 @@ test("the Activity screen sorts every conversation by what it needs, and puts do
   for (const th of rest) th.status = "idle";
   const { el, calls } = await open({ sidebar: projects });
   el("activity").dispatch("click");
-  const body = () => el("panel-body");
+  const body = () => el("activity-page-body");
   const bucket = (name) => body().querySelectorAll(".bucket").find((b) => b.dataset.bucket === name);
   assert.match(bucket("Needs you").render(), new RegExp(asking.title));
   assert.match(bucket("In the background").render(), new RegExp(background.title));

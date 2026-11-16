@@ -3660,14 +3660,22 @@ function drawActivity(host) {
     if (name === "Done") done.push(...shown);
     const bucket = text("section", "bucket");
     bucket.dataset.bucket = name;
-    bucket.append(text("h3", null, `${t(name)} ${shown.length || ""}`.trim()));
-    if (!shown.length) bucket.append(text("p", "empty", t("Nothing here.")));
+    const heading = text("h3", null, t(name));
+    if (shown.length) heading.append(text("span", "count", String(shown.length)));
+    bucket.append(heading);
+    if (!shown.length) {
+      bucket.dataset.empty = "true";
+      bucket.append(text("p", "empty", t("Nothing here.")));
+    }
     for (const th of shown) {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "row";
       row.append(drawn(MARKS[th.status] || "circle", "state"));
-      row.append(text("span", "name", th.title || t("New conversation")));
+      const title = th.title || t("New conversation");
+      row.title = title;
+      row.append(text("span", "name", title));
+      if (th.unread > 0) row.append(text("span", "unread", String(th.unread)));
       row.append(text("span", "where", th.where));
       row.append(text("span", "since", since(th.running_since || th.updated_at)));
       row.addEventListener("click", () => {
@@ -4952,10 +4960,12 @@ function gauge(fraction) {
 async function openPanel(panel) {
   // Setup is a dialog of its own: it is what the window asks first, not a screen over it.
   if (panel === "setup") return openSetup();
-  // Activity and Search are asked for and dismissed; everything else is a settings page.
-  if (panel === "activity" || panel === "search") {
+  // Activity is a page in the conversation's place, like Settings; Search is asked for and
+  // dismissed as a dialog.
+  if (panel === "activity") return openActivity();
+  if (panel === "search") {
     state.panel = panel;
-    el("panel-title").textContent = panel === "activity" ? t("Activity") : t("Search");
+    el("panel-title").textContent = t("Search");
     el("panel").showModal();
     await drawScreen();
     return;
@@ -4965,9 +4975,38 @@ async function openPanel(panel) {
 }
 
 function closePanel() {
+  if (state.panel === "activity") return closeActivity();
   state.panel = null;
   el("panel").close();
 }
+
+async function openActivity() {
+  state.panel = "activity";
+  state.settings = null;
+  el("settings").hidden = true;
+  el("thread").hidden = true;
+  el("side").hidden = true;
+  el("office").hidden = true;
+  el("activity-page").hidden = false;
+  await drawScreen();
+}
+
+function closeActivity() {
+  if (state.panel !== "activity") return;
+  state.panel = null;
+  el("activity-page").hidden = true;
+  // Leaving returns to where it was opened from: the office, or the conversation.
+  el("office").hidden = !state.office;
+  el("thread").hidden = state.office;
+  el("side").hidden = state.office;
+}
+
+el("activity-page-close").addEventListener("click", closeActivity);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.panel === "activity" && !el("panel").open && !el("confirm").open) {
+    closeActivity();
+  }
+});
 
 el("panel-close").addEventListener("click", closePanel);
 el("panel").addEventListener("close", () => {
@@ -4993,6 +5032,7 @@ const SETTINGS_PAGES = [
 
 async function openSettings(page) {
   state.settings = page;
+  closeActivity();
   remember("settings-page", page);
   el("thread").hidden = true;
   el("side").hidden = true;
@@ -5045,7 +5085,7 @@ async function drawSettings() {
 
 async function drawScreen() {
   if (state.settings) return drawSettings();
-  const host = el("panel-body");
+  const host = el(state.panel === "activity" ? "activity-page-body" : "panel-body");
   // The palette is typed into; redrawing it on every refresh would take the typing away.
   if (state.panel === "search" && host.children?.length) return;
   host.replaceChildren();
@@ -7590,6 +7630,8 @@ function leaveOffice() {
 function enterOffice() {
   state.office = true;
   state.settings = null;
+  state.panel = state.panel === "activity" ? null : state.panel;
+  el("activity-page").hidden = true;
   el("settings").hidden = true;
   el("thread").hidden = true;
   el("side").hidden = true;
@@ -8187,6 +8229,7 @@ async function answerAt(id) {
 async function select(id) {
   leaveOffice();
   closeSettings();
+  closeActivity();
   if (id !== state.thread) {
     closeMember();
     state.members = [];
