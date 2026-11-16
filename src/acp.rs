@@ -635,7 +635,8 @@ impl Client {
                             value["toolCall"]["kind"].as_str(),
                             Some("read" | "search" | "fetch" | "think") | None
                         );
-                        // A command may write, so a read-only seat asks whatever the approval mode.
+                        // A command may write, so a read-only seat asks unless the approval mode
+                        // is auto (the console's default): the user chose not to be asked.
                         // A request that does not say what it is (codex-acp names the call by
                         // id alone) is not taken for a read either: it is asked about.
                         let runs = matches!(
@@ -645,6 +646,7 @@ impl Client {
                         let decision = if active {
                             if read_only
                                 && runs
+                                && permission != PermissionMode::Allow
                                 && !coordination_tool(&value)
                                 && let Some(events) = &permission_events
                             {

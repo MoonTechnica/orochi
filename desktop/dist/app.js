@@ -7778,6 +7778,9 @@ function drawWires() {
     for (const to of addressees(line)) {
       const end = find(to.thread, to.role);
       if (!end || end === from) continue;
+      // A letter in flight needs somebody awake at one end; after everyone stopped it looped for the
+      // whole chatter window (five minutes), as if a message were still on its way.
+      if (from.dataset.live !== "true" && end.dataset.live !== "true") continue;
       const [x1, y1] = centre(from);
       const [x2, y2] = centre(end);
       const lift = Math.min(70, 24 + Math.hypot(x2 - x1, y2 - y1) / 5);
