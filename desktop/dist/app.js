@@ -3572,19 +3572,20 @@ function drawStatus() {
         fill.style.width = `${Math.min(100, Math.max(0, used))}%`;
         meter.append(fill);
         node.append(meter);
-        node.append(text("span", "used", `${used}%`));
+        const spent = text("span", "used", `${used}%`);
+        // Each pool is its own: one that is nearly or wholly used is red, whatever the other says.
+        meter.dataset.level = spent.dataset.level = used >= 90 ? "high" : "ok";
+        node.append(spent);
         // A reset already past says nothing about when this one comes back.
         if (reset && reset * 1000 > Date.now()) node.append(text("span", "reset", span(reset * 1000 - Date.now())));
         return used;
       };
       // Two pools are two readings, named, so neither is mistaken for the other.
       const many = known.tiers.length > 0 && known.window;
-      let used = 0;
-      if (known.window) used = meterOf(known.window[0], known.window[1], many ? t("all models") : "");
+      if (known.window) meterOf(known.window[0], known.window[1], many ? t("all models") : "");
       for (const [tier, remaining, reset] of known.tiers) {
         meterOf(remaining, reset, tier.charAt(0).toUpperCase() + tier.slice(1));
       }
-      node.dataset.tight = String(used >= 90);
     }
     if (known.own.length) node.title = known.own.join(" · ");
     node.addEventListener("click", () => openPanel("agents"));

@@ -1444,7 +1444,10 @@ test("the status bar says what each account has left and how many conversations 
     /claude[\s\S]*all models[\s\S]*13%[\s\S]*Fable[\s\S]*100%/,
     "the whole account and the Fable week, both, in that order",
   );
-  assert.equal(el("accounts").querySelectorAll(".meter").length, 2, "one meter each");
+  const meters = el("accounts").querySelectorAll(".meter");
+  assert.equal(meters.length, 2, "one meter each");
+  // A pool that is used up is red, and the other is not made red by it.
+  assert.deepEqual(meters.map((m) => m.dataset.level), ["ok", "high"]);
   assert.match(accounts, /codex[\s\S]*cooling 4m/, "an account cooling down says for how long");
   assert.doesNotMatch(accounts, /gemini/, "an account nothing is known about is left out");
   const counts = el("counts").render();

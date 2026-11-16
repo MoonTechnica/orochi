@@ -756,6 +756,8 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .account .meter span { display: block; height: 100%; background: var(--ok); }
 .account[data-tight="true"] .meter span { background: var(--danger); }
 .account[data-tight="true"] .used { color: var(--danger); }
+.account .meter[data-level="high"] span { background: var(--danger); }
+.account .used[data-level="high"] { color: var(--danger); }
 #counts button { border: none; padding: 0; color: var(--muted); }
 #counts button:hover { color: var(--text); }
 
