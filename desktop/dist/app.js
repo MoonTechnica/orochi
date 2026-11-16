@@ -353,7 +353,6 @@ const WORDS = {
     "Nobody has come or gone yet.": "まだ誰の出入りもありません。",
     "Nothing said yet.": "まだ何も話されていません。",
     "an attempt that failed, and what it said": "失敗した試行と、その内容",
-    "nothing to verify": "検証対象なし",
     Team: "チーム",
     Changes: "変更",
     Plan: "計画",
@@ -1251,26 +1250,16 @@ function chip(item) {
   return node;
 }
 
-function checks(item, seats = []) {
+function checks(item) {
   const d = item.data || {};
   const node = text("div", "checks");
-  // A seat that may change nothing has nothing to check. "Unverified" says a check was owed
-  // and not made; here none was ever owed, and the two read very differently to someone
-  // looking at a discussion that went perfectly well.
-  const seat = seats.find((s) => s.turn === item.turn && s.ordinal === item.lane);
-  const nothing =
-    d.outcome === "partial_success" && !(d.checks || []).length && seat?.read_only;
-  const verdict = nothing
-    ? t("nothing to verify")
-    : {
-        success: "verified",
-        partial_success: "unverified",
-        failure: "failed",
-        cancelled: "stopped",
-      }[d.outcome] || d.outcome;
-  node.append(
-    text("div", d.outcome === "success" || nothing ? "pass" : "fail", verdict),
-  );
+  // Only what was established is said: "verified" where real checks passed, "failed" and
+  // "stopped" where it did not finish. A turn that ended with nothing checked says nothing — that
+  // is the common case, and a word for it on every turn read as a fault. The checks that did run
+  // are listed below, and the store keeps the outcome (`partial_success`, and `owed`) for
+  // learning and for `orochi runs`.
+  const verdict = { success: "verified", failure: "failed", cancelled: "stopped" }[d.outcome];
+  if (verdict) node.append(text("div", d.outcome === "success" ? "pass" : "fail", verdict));
   for (const check of d.checks || []) {
     const row = text("div", check.passed ? "pass" : "fail");
     row.append(drawn(check.passed ? "check" : "x"));
@@ -1474,7 +1463,7 @@ function drawTimeline(thread, said = []) {
       );
       voice = who;
     }
-    else if (item.kind === "checks") turn.append(checks(item, thread.seats));
+    else if (item.kind === "checks") turn.append(checks(item));
     else if (item.kind === "media") turn.append(mediaFigure(item, thread.thread.id));
 
   }
@@ -4135,7 +4124,7 @@ async function drawMember(thread) {
       body.append(node);
       voice = who;
     } else if (line.kind === "checks") {
-      body.append(checks(line, thread.seats));
+      body.append(checks(line));
     } else if (line.kind === "media") {
       body.append(mediaFigure(line, thread.thread.id));
     }

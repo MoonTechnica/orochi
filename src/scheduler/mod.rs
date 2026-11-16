@@ -855,6 +855,7 @@ async fn run_recorded(
         let started = now();
         let clock = Instant::now();
         let mut checks = Vec::new();
+        let mut owed = false;
         // What the failed checks printed. It reaches the conversation store and nothing else.
         let mut check_output = evaluator::Output::default();
         let before = if options.interactive {
@@ -948,7 +949,8 @@ async fn run_recorded(
             Ok(completed) => {
                 // A chat turn that changed nothing has nothing to verify; it stays unlabeled.
                 let unchanged = || before.is_some() && before == context::tree_fingerprint(root);
-                if *completed && options.verify && !unchanged() {
+                owed = *completed && options.verify && !unchanged();
+                if owed {
                     if !loud && !evaluator::checks(&config.evaluator, root).is_empty() {
                         report(Progress::Checking);
                     }
@@ -973,6 +975,7 @@ async fn run_recorded(
         report(Progress::Attempt {
             outcome: outcome.clone(),
             checks: checks.clone(),
+            owed,
             error: result.as_ref().err().map(|e| e.to_string()),
             usage: clients[index].usage(),
             output: std::mem::take(&mut check_output.0),

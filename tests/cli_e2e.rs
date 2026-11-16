@@ -3633,7 +3633,7 @@ fn a_lead_hires_a_lead_who_hires_an_engineer_and_the_work_merges_up_one_level_at
         .insert("MOCK_BEHAVIOR".into(), "org".into());
     w.config.agents[0]
         .env
-        .insert("MOCK_LEAD_DELAY".into(), "30".into());
+        .insert("MOCK_LEAD_DELAY".into(), "0".into());
     w.config.agents[0]
         .env
         .insert("MOCK_OUT".into(), root.to_string_lossy().into_owned());
@@ -3689,6 +3689,12 @@ fn a_lead_hires_a_lead_who_hires_an_engineer_and_the_work_merges_up_one_level_at
     let prompt = std::fs::read_to_string(root.join("prompt-api.txt")).unwrap();
     assert!(prompt.contains("You lead a team"), "{prompt}");
     assert!(prompt.contains("Organization: you are `api`"), "{prompt}");
+    // It is told to wait for its reports, not the lead's "answer without waiting for them".
+    assert!(
+        prompt.contains("Do not end your turn after starting reports"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("answer without waiting"), "{prompt}");
     let engineer = std::fs::read_to_string(root.join("prompt-eng.txt")).unwrap();
     assert!(!engineer.contains("You lead a team"), "{engineer}");
     assert!(engineer.contains("reporting to `api`"), "{engineer}");
@@ -3722,6 +3728,131 @@ fn a_lead_hires_a_lead_who_hires_an_engineer_and_the_work_merges_up_one_level_at
         .position(|l| l.starts_with("api (lead)"))
         .expect(&team);
     assert!(lines[api + 1].starts_with("  eng (engineer)"), "{team}");
+}
+
+#[test]
+fn a_lead_that_ends_before_its_reports_is_resumed_with_their_results_instead_of_being_replaced() {
+    let mut w = Workspace::new();
+    let root = w.dir.path().join("repo");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@localhost"]);
+    std::fs::write(root.join("source.txt"), "baseline").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    w.config.mailbox.enabled = true;
+    w.config.org.enabled = true;
+    w.config.org.max_depth = 3;
+    w.config.org.max_members = 6;
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "org".into());
+    env.insert("MOCK_LEAD_DELAY".into(), "0".into());
+    env.insert("MOCK_OUT".into(), root.to_string_lossy().into_owned());
+    // `api` answers as soon as it has started its engineer, which is still working.
+    env.insert("MOCK_EARLY_END".into(), "1".into());
+    env.insert("MOCK_ENG_DELAY".into(), "4".into());
+    w.config.scheduler.prompt_timeout_secs = 90;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Build the API with a team\n");
+    success(&output);
+    // Its engineer was not stopped with it: `api` was resumed with the engineer's result.
+    let resumed = std::fs::read_to_string(root.join("resumed.txt")).unwrap_or_else(|_| {
+        panic!(
+            "api was never resumed; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert!(resumed.contains("Your reports have finished"), "{resumed}");
+    assert!(resumed.contains("Background agent `eng`"), "{resumed}");
+    let integrated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("integrated.txt")).unwrap()).unwrap();
+    assert!(
+        integrated["result"]["merged"]
+            .to_string()
+            .contains("endpoint.txt"),
+        "{integrated}"
+    );
+    // And the lead above it got the integrated work, with nobody hired in its place.
+    let finished: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("finished.txt")).unwrap()).unwrap();
+    assert!(
+        finished["result"]["merged"]
+            .to_string()
+            .contains("endpoint.txt"),
+        "{finished}"
+    );
+    assert!(root.join("endpoint.txt").is_file());
+    let listed: serde_json::Value =
+        serde_json::from_slice(&w.run(&["threads", "--json"]).stdout).unwrap();
+    let thread = listed["projects"][0]["threads"][0]["id"].as_str().unwrap();
+    let team = String::from_utf8(w.run(&["threads", "team", thread]).stdout).unwrap();
+    let members: Vec<&str> = team
+        .lines()
+        .filter(|l| l.contains("(lead)") || l.contains("(engineer)"))
+        .collect();
+    assert_eq!(
+        members.len(),
+        2,
+        "one lead and its engineer, no replacement: {team}"
+    );
+}
+
+#[test]
+fn a_turn_that_changed_nothing_records_that_no_check_was_owed() {
+    let mut w = Workspace::new();
+    let root = w.dir.path().join("repo");
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@localhost"]);
+    std::fs::write(root.join("source.txt"), "baseline").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    w.config.evaluator.auto = true;
+    // An agent that only reads: the tree is as it was when the turn ends.
+    w.config.agents[0]
+        .env
+        .insert("MOCK_READ_ONLY".into(), "1".into());
+    success(&chat(&w, "What does source.txt say?\n"));
+    let listed: serde_json::Value =
+        serde_json::from_slice(&w.run(&["threads", "--json"]).stdout).unwrap();
+    let thread = listed["projects"][0]["threads"][0]["id"].as_str().unwrap();
+    let shown: serde_json::Value =
+        serde_json::from_slice(&w.run(&["threads", "show", thread, "--json"]).stdout).unwrap();
+    let checks: Vec<&serde_json::Value> = shown["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["kind"] == "checks")
+        .collect();
+    assert_eq!(checks.len(), 1, "{shown}");
+    let data = &checks[0]["data"];
+    // Nothing was changed, so nothing was owed a check: "unverified" would be the wrong word.
+    assert_eq!(data["owed"], false, "{data}");
+    assert_eq!(data["checks"].as_array().unwrap().len(), 0, "{data}");
 }
 
 #[test]

@@ -175,6 +175,10 @@ pub enum Progress {
     Attempt {
         outcome: crate::types::Outcome,
         checks: Vec<crate::types::CheckResult>,
+        /// Whether a check was owed: work was done that could be checked. A turn that changed
+        /// nothing, and a seat that may change nothing, owe none, so an empty list there is
+        /// not "unverified" but "nothing to verify".
+        owed: bool,
         error: Option<String>,
         usage: Usage,
         /// The tail of each failed check's output, by check name. It exists for the one place

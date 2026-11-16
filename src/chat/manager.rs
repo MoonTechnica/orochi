@@ -569,6 +569,8 @@ impl<'a> Manager<'a> {
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
             .and_then(|r| r);
+            // The tree moved past the first trial; its worktree is of no use now.
+            let _ = merge::discard(&root, &stale);
             let mut again = match again {
                 Ok(again) => again,
                 Err(error) => {

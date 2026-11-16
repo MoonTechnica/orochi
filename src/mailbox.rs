@@ -1843,7 +1843,12 @@ pub fn prompt_note_for(peer: &SessionPeer) -> Option<String> {
             others.join(", ")
         ));
     }
-    if peer.delegate {
+    if peer.delegate && peer.team && !peer.manager {
+        // A lead below the top is one long turn: it waits for its reports and does not answer
+        // without them (the sentence below is for the lead the person is talking to).
+        note.push_str(" You may also ask Orochi for reports with start_agent and a role: each one works in the background on one part you name, in a worktree of its own for a role that writes. That tool is the only way to start another agent. A report's worktree is yours to close once its result is in: review its changes (its path is in the result) and call finish_workspace with merge, which merges it into your own worktree;");
+        note.push_str(" the worktree is removed in every case. Do not end your turn after starting reports: you finish only when every one has reported and you have integrated what you accept.");
+    } else if peer.delegate {
         note.push_str(" You may also ask Orochi for helpers with start_agent: each one works in the background on one part you name; use write=true for implementation in a separate Git worktree, or omit it for read-only investigation, and its report reaches you as a message of its own after you have answered. Start them early for independent investigation, tell the user what you started, and answer without waiting for them. That tool is the only way to start another agent. A worktree is yours to close: when a writing helper's report comes back, review its changes (its path is in the report) and call finish_workspace with merge (into the user's tree), pr (a branch and a pull request) or discard; the worktree is removed in every case, and one still open when the conversation ends is closed by Orochi with its changes kept as a patch file.");
     }
     if peer.manager {

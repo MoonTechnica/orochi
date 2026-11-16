@@ -5375,6 +5375,7 @@ struct Decide<'d, 'a> {
 }
 
 /// A seat row for a helper under the turn that is running, if one is recorded.
+#[allow(clippy::too_many_arguments)]
 fn helper_seat(
     recorded: Option<&Recorded>,
     ordinal: usize,
@@ -5383,6 +5384,7 @@ fn helper_seat(
     write: bool,
     continues: Option<&str>,
     org: (Option<&str>, Option<&str>),
+    under: Option<&str>,
 ) -> Option<crate::activity::SeatRef> {
     recorded.and_then(|recorded| {
         let store = recorded.store();
@@ -5390,7 +5392,8 @@ fn helper_seat(
         let turn = match (&recorded.turn, continues) {
             (Some(turn), _) => turn.clone(),
             (None, Some(previous)) => store.seat_turn(previous).ok()?,
-            (None, None) => return None,
+            // No turn is running: a lead's report sits under the turn its lead's own seat does.
+            (None, None) => store.seat_turn(under?).ok()?,
         };
         let thread = recorded.thread.clone()?;
         let seat = store
@@ -5420,7 +5423,6 @@ fn grant<'a>(
     read_only: bool,
     decide: Decide<'_, 'a>,
 ) -> Vec<(String, String)> {
-    deliver_reports(feed, background, recorded);
     let ours: Vec<String> = crate::mailbox::ours()
         .into_iter()
         .map(|(id, _)| id)
@@ -5436,6 +5438,7 @@ fn grant<'a>(
         lead,
     } = decide;
     let lead = lead.as_str();
+    deliver_reports(feed, background, &env, recorded, lead);
     // What other projects' leads said to this one is heard like a helper's message.
     if let Ok(mail) = feed.mailbox.take_project_mail(&feed.channel) {
         for (from, body) in mail {
@@ -5480,9 +5483,16 @@ fn grant<'a>(
             .helpers
             .iter()
             .find(|h| h.name == request.requester_name && h.post.lead)
-            .map(|h| (h.name.clone(), h.descriptor.clone(), h.workspace.clone()));
+            .map(|h| {
+                (
+                    h.name.clone(),
+                    h.descriptor.clone(),
+                    h.workspace.clone(),
+                    h.seat.as_ref().map(|s| s.seat.clone()),
+                )
+            });
         let descriptor = match &sub {
-            Some((_, own, _)) => Some(own),
+            Some((_, own, ..)) => Some(own),
             None => descriptor,
         };
         let Some(descriptor) = descriptor else {
@@ -5573,7 +5583,7 @@ fn grant<'a>(
                 refuse(&format!("cannot hold the session directory: {error:#}"));
                 continue;
             }
-            let from = sub.as_ref().and_then(|(_, _, root)| root.clone());
+            let from = sub.as_ref().and_then(|(_, _, root, _)| root.clone());
             match crate::workspaces::Workspaces::open(env.root, &env.workspace).and_then(
                 |mut work| {
                     // A worktree the member still has open is where it goes on.
@@ -5630,6 +5640,7 @@ fn grant<'a>(
                 sub.as_ref().map(|(name, ..)| name.as_str()),
                 named.then_some(hired.name.as_str()),
             ),
+            sub.as_ref().and_then(|(.., seat)| seat.as_deref()),
         );
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
         // The worktree is a row from the moment it exists: a helper that never starts leaves
@@ -5727,13 +5738,16 @@ fn grant<'a>(
     started
 }
 
-/// Posts the results of members whose manager is another member to that manager's inbox. A
-/// manager that has left the room hears nothing, and its report is dropped: whatever the
-/// member wrote is in its worktree, which the conversation's sweep keeps as a patch.
-fn deliver_reports(
+/// Posts the results of members whose manager is another member to that manager's inbox, or,
+/// where the manager's turn has ended and it waits for them, keeps them for it; and resumes a
+/// waiting lead once its last report is in. A manager that is gone hears nothing: whatever its
+/// report wrote is in its worktree, which the conversation's sweep keeps as a patch.
+fn deliver_reports<'a>(
     feed: &Feed,
-    background: &mut background::Background<'_>,
+    background: &mut background::Background<'a>,
+    env: &background::Env<'a>,
     recorded: Option<&Recorded>,
+    lead: &str,
 ) {
     let thread = recorded.and_then(|r| r.thread.clone());
     for finished in std::mem::take(&mut background.reports) {
@@ -5741,14 +5755,100 @@ fn deliver_reports(
             continue;
         };
         let body = background::completion(std::slice::from_ref(&finished));
-        let _ = feed.mailbox.report(
-            &feed.channel,
-            thread.as_deref(),
-            &finished.name,
-            &manager,
-            &body,
-        );
+        if let Some(waiting) = background.waiting.iter_mut().find(|w| w.name == manager) {
+            waiting.results.push(body);
+        } else {
+            let _ = feed.mailbox.report(
+                &feed.channel,
+                thread.as_deref(),
+                &finished.name,
+                &manager,
+                &body,
+            );
+        }
     }
+    // A waiting lead goes on once none of its reports is still at work.
+    let ready: Vec<usize> = background
+        .waiting
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| {
+            !background
+                .org
+                .below(Some(&w.name))
+                .iter()
+                .any(|m| background.helpers.iter().any(|h| h.name == m.name))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    for index in ready.into_iter().rev() {
+        let waiting = background.waiting.remove(index);
+        resume_lead(background, env, recorded, lead, waiting);
+    }
+}
+
+/// Starts a lead that waited for its reports again, in its own session where the agent can
+/// load it and from its own thread otherwise, with what its reports said.
+fn resume_lead<'a>(
+    background: &mut background::Background<'a>,
+    env: &background::Env<'a>,
+    recorded: Option<&Recorded>,
+    lead: &str,
+    waiting: background::Waiting,
+) {
+    let previous = recorded
+        .and_then(|r| Some((r, r.thread.clone()?)))
+        .and_then(|(r, thread)| r.store().member_seat(&thread, &waiting.name).ok().flatten());
+    let resume = previous
+        .as_ref()
+        .and_then(|(_, c)| c.as_ref())
+        .filter(|c| c["loadable"].as_bool().unwrap_or(false))
+        .and_then(|c| c["session_id"].as_str().map(str::to_owned));
+    let results = waiting.results.join("\n\n");
+    let manager = waiting.post.parent.as_deref().unwrap_or(lead);
+    let ask = format!(
+        "Your reports have finished. Their results:\n\n{results}\n\nIntegrate what you accept into your own worktree (finish_workspace with merge), check the result, and then report to `{manager}`. Hire again only if something is missing.",
+    );
+    let task = if resume.is_some() {
+        ask
+    } else {
+        let history = recorded
+            .and_then(|r| {
+                r.store()
+                    .member_history(r.thread.as_deref()?, &waiting.name, 6_000)
+                    .ok()
+            })
+            .unwrap_or_default();
+        format!(
+            "You are continuing earlier work in your thread; your session is gone, so this is what was said:\n{history}\n\n{ask}"
+        )
+    };
+    let seat = helper_seat(
+        recorded,
+        100 + background.len(),
+        &waiting.name,
+        &waiting.title,
+        true,
+        previous.as_ref().map(|(seat, _)| seat.as_str()),
+        (
+            waiting.post.parent.as_deref(),
+            waiting.post.role.as_ref().map(|r| r.name.as_str()),
+        ),
+        None,
+    );
+    *background.resumes.entry(waiting.name.clone()).or_insert(0) += 1;
+    background.start(
+        env.clone(),
+        lead,
+        waiting.name,
+        waiting.title,
+        &task,
+        waiting.descriptor,
+        seat,
+        waiting.workspace,
+        resume,
+        waiting.post,
+    );
 }
 
 /// Decides one of the manager's requests: a plan, a listing, a stop, a merge trial or an
@@ -6026,6 +6126,7 @@ fn settle<'a>(
                     true,
                     None,
                     (None, None),
+                    None,
                 );
                 let descriptor = descriptor.unwrap_or_else(|| {
                     crate::router::profiler::profile("resolve merge conflicts", env.root)
@@ -6265,23 +6366,50 @@ fn on_helper(
                         &format!("  Background agent \"{name}\" was stopped by the user."),
                     ));
                 }
-                background.org.remove(&name);
-                // A lead that ends first leaves no report of its own running.
-                let orphans: Vec<String> = background
+                // A lead that ends while its reports still work is not over: they run on and it
+                // is resumed with what they report. Only one that failed, was stopped or has
+                // been resumed too often is let go, and takes its reports with it.
+                let reports_running = background
                     .org
                     .below(Some(&name))
                     .iter()
-                    .map(|m| m.name.clone())
-                    .collect();
-                for orphan in orphans {
-                    background.stop(&orphan);
-                }
-                // A report goes to the lead above it as a message; only the lead in the
-                // user's tree is woken by a turn of its own.
-                if finished.post.parent.is_some() {
-                    background.reports.push(finished);
+                    .any(|m| background.helpers.iter().any(|h| h.name == m.name));
+                let resumed = background.resumes.get(&name).copied().unwrap_or(0);
+                if finished.post.lead
+                    && matches!(finished.ending, background::Ending::Finished)
+                    && reports_running
+                    && resumed < background::MAX_RESUMES
+                {
+                    lines.push(view.paint(
+                        MUTED,
+                        &format!("  {name} waits for its reports and goes on when they are in"),
+                    ));
+                    background.waiting.push(background::Waiting {
+                        name: finished.name.clone(),
+                        title: finished.title.clone(),
+                        post: finished.post.clone(),
+                        descriptor: finished.descriptor.clone(),
+                        workspace: finished.workspace.clone(),
+                        results: vec![],
+                    });
                 } else {
-                    results.push(finished);
+                    background.org.remove(&name);
+                    let orphans: Vec<String> = background
+                        .org
+                        .below(Some(&name))
+                        .iter()
+                        .map(|m| m.name.clone())
+                        .collect();
+                    for orphan in orphans {
+                        background.stop(&orphan);
+                    }
+                    // A report goes to the lead above it as a message; only the lead in the
+                    // user's tree is woken by a turn of its own.
+                    if finished.post.parent.is_some() {
+                        background.reports.push(finished);
+                    } else {
+                        results.push(finished);
+                    }
                 }
                 if background.is_empty() {
                     lines.push(format!(

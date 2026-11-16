@@ -56,6 +56,22 @@ pub fn checks(config: &EvaluatorConfig, root: &Path) -> Vec<CheckCommand> {
             }
         }
     }
+    // Tests written for Node's own runner, in a project with no package.json to name them.
+    if !["Cargo.toml", "go.mod", "package.json"]
+        .iter()
+        .any(|file| root.join(file).is_file())
+        && std::fs::read_dir(root).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                [".test.js", ".test.mjs", ".test.cjs"]
+                    .iter()
+                    .any(|end| name.ends_with(end))
+            })
+        })
+    {
+        add("tests", "node", &["--test"]);
+    }
     if crate::context::git(root, &["rev-parse", "--git-dir"]).is_some() {
         add("git_diff", "git", &["diff", "--check"]);
         add("git_staged_diff", "git", &["diff", "--cached", "--check"]);

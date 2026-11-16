@@ -190,6 +190,7 @@ impl Recorder {
             Progress::Attempt {
                 outcome,
                 checks,
+                owed,
                 error,
                 usage,
                 output,
@@ -213,7 +214,7 @@ impl Recorder {
                     None,
                     None,
                     "",
-                    Some(&json!({"outcome": outcome, "checks": checks,
+                    Some(&json!({"outcome": outcome, "checks": checks, "owed": owed,
                         "error": error, "usage": usage})),
                 )?;
             }

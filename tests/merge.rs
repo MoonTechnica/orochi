@@ -167,6 +167,18 @@ fn an_apply_refuses_a_tree_that_moved_since_the_trial_and_writes_nothing() {
     assert_eq!(trial.state, State::Stale);
     assert!(!root.join("feature").exists(), "nothing was written");
     assert_eq!(read(&root.join("tracked")), "moved\n");
+    // A trial the tree has moved past is closed when it is superseded, not left to the sweep.
+    assert!(trial.worktree.exists());
+    merge::discard(&root, &trial).unwrap();
+    assert!(
+        !trial.worktree.exists(),
+        "the stale trial's worktree is gone"
+    );
+    assert_eq!(
+        read(&root.join("tracked")),
+        "moved\n",
+        "the tree is untouched"
+    );
 
     // A trial on the tree as it is now applies.
     let work = Workspaces::open(&root, &session).unwrap();

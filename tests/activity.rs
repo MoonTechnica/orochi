@@ -1337,6 +1337,52 @@ fn an_agent_title_that_is_orochis_own_preamble_never_names_the_thread() {
     );
 }
 
+/// The memory note and a lead's brief open a prompt too, and an agent that names its session
+/// after the prompt gives back their first words: those never name the thread, and a thread
+/// that already carries one is named again from the message that opened it.
+#[test]
+fn the_memory_note_and_a_leads_brief_never_name_a_thread_either() {
+    let dir = tempfile::tempdir().unwrap();
+    let thread = {
+        let activity = Activity::open(dir.path(), 30).unwrap();
+        let (thread, _, _) = thread_with_a_turn(&activity);
+        for echoed in [
+            "What Orochi remembers from earlier sessions with this user. These are standing preferences",
+            "You lead this work and the user has given it to you whole: how it divides is your decision",
+            "Your reports have finished. Their results:",
+        ] {
+            activity.title(&thread, echoed, false).unwrap();
+            let title: String = activity
+                .connection()
+                .query_row("SELECT title FROM threads WHERE id=?1", [&thread], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(title, "Fix the flaky test", "{echoed}");
+        }
+        // As a build that did not know the new wording left it.
+        activity
+            .connection()
+            .execute(
+                "UPDATE threads SET title='What Orochi remembers from earlier sessions with this user.…' WHERE id=?1",
+                [&thread],
+            )
+            .unwrap();
+        thread
+    };
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let title: String = activity
+        .connection()
+        .query_row("SELECT title FROM threads WHERE id=?1", [&thread], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        title, "Fix the flaky test",
+        "named again from the opening message"
+    );
+}
+
 /// The sidebar's context menus write rows, and the rows mean what they say: a hidden project
 /// keeps its conversations and comes back when something works in it; a deleted project
 /// takes every conversation with it, and `all_threads` is the one list that sees everything.

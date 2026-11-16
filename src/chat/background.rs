@@ -144,6 +144,21 @@ const BURST: Duration = Duration::from_secs(20);
 /// whole turn (30,355 tokens, 3 minutes) that said only that it was waiting.
 pub const HOLD: Duration = Duration::from_secs(300);
 
+/// A lead whose turn ended while its reports were still working. It is not over: its reports
+/// run on, their results are kept for it, and it is resumed with them once the last has
+/// reported (a model that has started its reports tends to answer and wait to be called).
+pub struct Waiting {
+    pub name: String,
+    pub title: String,
+    pub post: Post,
+    pub descriptor: TaskDescriptor,
+    pub workspace: Option<std::path::PathBuf>,
+    pub results: Vec<String>,
+}
+
+/// How many times one lead is resumed for its reports before it is let go.
+pub const MAX_RESUMES: usize = 3;
+
 #[derive(Default)]
 pub struct Background<'a> {
     pub helpers: Vec<Helper>,
@@ -157,11 +172,17 @@ pub struct Background<'a> {
     pub org: crate::org::Org,
     /// Results of members whose manager is another member, waiting to be posted to it.
     pub reports: Vec<Finished>,
+    /// Leads that ended before their reports did, and are resumed when those have reported.
+    pub waiting: Vec<Waiting>,
+    /// Times each lead has been resumed, so one that never settles is let go.
+    pub resumes: std::collections::BTreeMap<String, usize>,
 }
 
 impl<'a> Background<'a> {
+    /// Nothing is running and nothing is owed: no helper, no report on its way to a lead, and
+    /// no lead waiting for its reports.
     pub fn is_empty(&self) -> bool {
-        self.helpers.is_empty()
+        self.helpers.is_empty() && self.waiting.is_empty() && self.reports.is_empty()
     }
     pub fn len(&self) -> usize {
         self.helpers.len()
@@ -507,6 +528,8 @@ impl<'a> Background<'a> {
         self.group = 0;
         self.org.clear();
         self.reports.clear();
+        self.waiting.clear();
+        self.resumes.clear();
         count
     }
 

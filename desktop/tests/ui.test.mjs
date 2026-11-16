@@ -750,30 +750,34 @@ test("the window speaks the language the person set their machine to", async () 
   }
 });
 
-test("a turn with nothing to verify says so, rather than that it was not verified", async () => {
+test("a turn says it was verified or that it failed, and says nothing of what was never checked", async () => {
   const thread = structuredClone(recorded.thread);
   const seat = thread.seats[0];
-  thread.seats = [{ ...seat, seat_id: "s1", turn: "t1", ordinal: 0, role: "facilitator", read_only: true }];
+  thread.seats = [{ ...seat, seat_id: "s1", turn: "t1", ordinal: 0, role: "implementer", read_only: false }];
   const base = {
-    turn: "t1", turn_ordinal: 1, lane: 0, role: "facilitator", agent: "claude", model: "haiku",
+    turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "haiku",
     status: null, data: null, truncated: false, patches: 0, failed: false,
   };
-  thread.items = [
-    { ...base, seq: 1, kind: "user_message", text: "discuss it", at: 1000 },
-    { ...base, seq: 2, kind: "checks", text: "", at: 2000,
-      data: { outcome: "partial_success", checks: [] } },
+  const items = (data) => [
+    { ...base, seq: 1, kind: "user_message", text: "do it", at: 1000 },
+    { ...base, seq: 2, kind: "checks", text: "", at: 2000, data },
   ];
-  const { el } = await open({ thread, room: [] });
-  const drawn = el("timeline").render();
-  assert.doesNotMatch(drawn, /unverified/, `nothing was there to verify: ${drawn}`);
-  assert.match(drawn, /nothing to verify/i);
-
-  // A seat that could have changed something, and was not checked, still says unverified.
-  thread.seats = [{ ...seat, seat_id: "s1", turn: "t1", ordinal: 0, role: "implementer", read_only: false }];
-  thread.items[0].role = "implementer";
-  thread.items[1].role = "implementer";
-  const wrote = await open({ thread, room: [] });
-  assert.match(wrote.el("timeline").render(), /unverified/);
+  const draw = async (data) => {
+    thread.items = items(data);
+    return (await open({ thread, room: [] })).el("timeline").render();
+  };
+  // Nothing checked, whether none was owed or none could be run: no word about it, however the
+  // seat is placed. The checks that did run are still listed.
+  for (const owed of [true, false, undefined]) {
+    const drawn = await draw({ outcome: "partial_success", checks: [], owed });
+    assert.doesNotMatch(drawn, /unverified|nothing to verify|verified/, `owed=${owed}: ${drawn}`);
+  }
+  const diff = await draw({ outcome: "partial_success", owed: true, checks: [{ name: "git_diff", passed: true }] });
+  assert.doesNotMatch(diff, /unverified/);
+  assert.match(diff, /git_diff/, "the checks that ran are listed");
+  // What was established is said.
+  assert.match(await draw({ outcome: "success", checks: [{ name: "tests", passed: true }] }), /verified/);
+  assert.match(await draw({ outcome: "failure", checks: [{ name: "tests", passed: false }] }), /failed/);
 });
 
 test("what a failed attempt said is kept, folded, and not read as the agent's own words", async () => {

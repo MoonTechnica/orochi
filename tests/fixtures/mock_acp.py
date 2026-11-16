@@ -291,7 +291,15 @@ def org_team(request):
     if "working in the background for" in text:
         name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
         (Path(os.environ["MOCK_OUT"]) / f"prompt-{name}.txt").write_text(text)
-        if "You lead a team" in text:
+        if "Your reports have finished" in text:
+            # A lead that ended before its reports is resumed with their results, and integrates.
+            proc, tool = mailbox_tools()
+            out = Path(os.environ["MOCK_OUT"])
+            (out / "resumed.txt").write_text(text)
+            (out / "heard.txt").write_text(json.dumps([{"body": text}]))
+            (out / "integrated.txt").write_text(json.dumps(tool("finish_workspace", name="eng", how="merge")))
+            proc.terminate()
+        elif "You lead a team" in text:
             proc, tool = mailbox_tools()
             out = Path(os.environ["MOCK_OUT"])
             (out / "offered-api.txt").write_text(",".join(offered))
@@ -300,6 +308,12 @@ def org_team(request):
             (Path(os.environ["MOCK_OUT"]) / "hired.txt").write_text(json.dumps(hired))
             # Closing a report before its result has arrived is refused, with what to do instead.
             (out / "early-finish.txt").write_text(json.dumps(tool("finish_workspace", name="eng", how="merge")))
+            if os.environ.get("MOCK_EARLY_END"):
+                # Answers and waits to be called, as a model that has started its reports does.
+                proc.terminate()
+                send({"method": "session/update", "params": {"sessionId": session, "update": {
+                    "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: reports started, will integrate when they are in. "}}}})
+                return
             got = []
             deadline = time.time() + 40
             while time.time() < deadline and not any("Background agent `eng`" in m["body"] for m in got):

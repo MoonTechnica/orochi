@@ -65,12 +65,17 @@ const TITLE_CHARS: usize = 60;
 /// How the text Orochi puts ahead of a task begins (`mailbox::prompt_note_for`,
 /// `chat::LANGUAGE`, a memory note, a helper's brief). An agent title starting with one of these
 /// is the preamble echoed back.
-const ORCHESTRATION: [&str; 5] = [
+const ORCHESTRATION: [&str; 8] = [
     "Coordination: you are peer",
     "Language: write your answer",
     "What you have told Orochi",
+    // The memory note opens with these words since the note was reworded (`memory.rs`).
+    "What Orochi remembers from earlier sessions",
     "You are `",
     "Previous conversation (context):",
+    // What a lead is told when the whole request is its to divide, and when it is resumed.
+    "You lead this work and the user has given it to you whole",
+    "Your reports have finished",
 ];
 
 fn derive_title(text: &str) -> String {
@@ -3167,15 +3172,21 @@ fn repair_merges(connection: &Connection) -> Result<()> {
 
 fn repair_titles(connection: &Connection) -> Result<()> {
     let mut statement = connection.prepare(
-        "SELECT t.id, (SELECT i.text FROM items i WHERE i.thread_id=t.id AND i.kind='user_message'
+        "SELECT t.id, t.title, (SELECT i.text FROM items i WHERE i.thread_id=t.id AND i.kind='user_message'
                        ORDER BY i.id LIMIT 1)
-         FROM threads t WHERE t.titled=0 AND (t.title LIKE 'Coordination: you are peer%'
-                                              OR t.title LIKE 'Language: write your answer%')",
+         FROM threads t WHERE t.titled=0 AND t.title<>''",
     )?;
-    let named: Vec<(String, Option<String>)> = statement
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let rows: Vec<(String, String, Option<String>)> = statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (thread, first) in named {
+    for (thread, title, first) in rows {
+        // A name Orochi derived from its own preamble names the preamble, not the work.
+        if !ORCHESTRATION
+            .iter()
+            .any(|lead| title.trim_start().starts_with(lead))
+        {
+            continue;
+        }
         let title = first.map(|text| derive_title(&text)).unwrap_or_default();
         connection.execute(
             "UPDATE threads SET title=?2 WHERE id=?1",

@@ -3885,3 +3885,39 @@ fn a_held_request_keeps_its_attachments_and_an_older_plain_one_is_its_text() {
     assert_eq!(plain, "Summarize the README");
     assert!(none.is_empty());
 }
+
+#[test]
+fn a_project_with_tests_for_nodes_own_runner_and_no_package_json_gets_them_run() {
+    use orochi::{config::EvaluatorConfig, evaluator::checks};
+    let dir = tempfile::tempdir().unwrap();
+    let config = EvaluatorConfig::default();
+    // Nothing to run: no test file, no manifest.
+    std::fs::write(dir.path().join("index.html"), "<p>hi</p>").unwrap();
+    assert!(
+        checks(&config, dir.path())
+            .iter()
+            .all(|c| c.name != "tests")
+    );
+    // A test file in the folder: Node's own runner, which finds it.
+    std::fs::write(dir.path().join("server.test.js"), "").unwrap();
+    let found = checks(&config, dir.path());
+    let tests = found
+        .iter()
+        .find(|c| c.name == "tests")
+        .expect("node tests");
+    assert_eq!(
+        (tests.command.as_str(), tests.args.as_slice()),
+        ("node", &["--test".to_string()][..])
+    );
+    // A package.json names its own scripts, and the runner is not added beside them.
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"scripts":{"lint":"x"}}"#,
+    )
+    .unwrap();
+    assert!(
+        checks(&config, dir.path())
+            .iter()
+            .all(|c| c.command != "node")
+    );
+}

@@ -290,6 +290,12 @@ pub fn apply(source: &Path, directory: &Path, trial: &mut Trial) -> Result<Vec<P
     Ok(written)
 }
 
+/// Closes a trial's own worktree: one the tree has moved past is of no use to anyone, and
+/// leaving it lying until the conversation ends is a worktree that outlives its purpose.
+pub fn discard(source: &Path, trial: &Trial) -> Result<()> {
+    remove_worktree(source, &trial.worktree)
+}
+
 fn remove_worktree(source: &Path, worktree: &Path) -> Result<()> {
     if !worktree.exists() {
         return Ok(());
