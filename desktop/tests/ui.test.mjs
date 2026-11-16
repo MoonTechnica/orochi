@@ -1624,16 +1624,16 @@ test("a project's conversations sit on the card of the checkout they work in, an
   assert.equal(folded.querySelectorAll(".state").length, 1, "with a mark only for what is working");
 });
 
-test("an agent is drawn with its vendor's own icon where that app is installed, and a letter where not", async () => {
+test("an agent is drawn with its vendor's mark", async () => {
   const projects = structuredClone(recorded.sidebar);
   projects[0].threads[0].agents = [{ role: "fixer", agent: "claude", provider: "anthropic", model: "opus", seats: 1, live: 0, lead: true, background: false, last_at: 1 }];
   projects[0].threads[1].agents = [{ role: "fixer", agent: "gemini", provider: "google", model: "pro", seats: 1, live: 0, lead: true, background: false, last_at: 1 }];
   const { el } = await open({ sidebar: projects, agent_icons: { anthropic: "data:image/png;base64,AAAA" } });
   const faces = el("projects").querySelectorAll(".face");
   const claude = faces.find((f) => f.dataset.provider === "anthropic");
-  assert.equal(claude.querySelectorAll("img")[0].getAttribute("src"), "data:image/png;base64,AAAA");
+  assert.equal(claude.querySelectorAll("img")[0].getAttribute("src"), "vendor/brands/anthropic.svg", "the vendor's mark, not an app's own icon");
   const gemini = faces.find((f) => f.dataset.provider === "google");
-  assert.equal(gemini.textContent, "G", "no icon installed: its letter");
+  assert.equal(gemini.querySelectorAll("img")[0].getAttribute("src"), "vendor/brands/google.svg", "no app installed: the bundled mark");
 });
 
 test("a conversation opens onto the agents inside it: role, agent, model, and who is working now", async () => {
@@ -1672,7 +1672,7 @@ test("in the conversation an agent speaks as its own icon, and the person as the
   const posts = el("timeline").querySelectorAll(".post");
   const agent = posts.find((p) => p.dataset.who !== "you");
   assert.equal(agent.querySelectorAll(".face")[0].dataset.provider, "openai");
-  assert.equal(agent.querySelectorAll("img")[0].getAttribute("src"), "data:image/png;base64,AAAA");
+  assert.equal(agent.querySelectorAll("img")[0].getAttribute("src"), "vendor/brands/openai.svg");
   const person = posts.find((p) => p.dataset.who === "you");
   assert.equal(person.querySelectorAll(".face").length, 0);
 });

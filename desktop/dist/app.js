@@ -734,6 +734,7 @@ const STATES = {
 /// Who is working, drawn as the agent it is: Orochi runs several, and which one took a
 /// conversation is the first thing to tell apart. A letter on the provider's colour rather than
 /// a vendor's logo, which is theirs to draw.
+const BRANDS = new Set(["anthropic", "openai", "google"]);
 const FACES = { anthropic: "C", openai: "O", google: "G" };
 function face(agent, provider) {
   const node = text("span", "face", "");
@@ -744,7 +745,7 @@ function face(agent, provider) {
   node.dataset.provider = provider || "other";
   node.setAttribute("title", agent);
   // The vendor's own icon where its app is installed here; a letter on its colour otherwise.
-  const icon = state.icons?.[provider];
+  const icon = BRANDS.has(provider) ? `vendor/brands/${provider}.svg` : state.icons?.[provider];
   if (icon) {
     const image = document.createElement("img");
     image.setAttribute("src", icon);
@@ -3493,6 +3494,20 @@ function link(label, target, imageSyntax = false) {
 // Status bar ----------------------------------------------------------------
 // What each account has left and when it resets, and how many conversations need what —
 // always on screen, because routing turns on the first and supervising on the second.
+function accountProvider(agent) {
+  const name = String(agent || "").toLowerCase();
+  if (/claude|anthropic/.test(name)) return "anthropic";
+  if (/codex|openai|gpt/.test(name)) return "openai";
+  if (/gemini|antigravity|google/.test(name)) return "google";
+  for (const project of state.projects || []) {
+    for (const thread of project.threads || []) {
+      const hit = (thread.agents || []).find((m) => m.agent === agent && m.provider);
+      if (hit) return hit.provider;
+    }
+  }
+  return "other";
+}
+
 function drawStatus() {
   const host = el("accounts");
   host.replaceChildren();
@@ -3526,6 +3541,7 @@ function drawStatus() {
     if (!known.cooling && !known.window) continue;
     const node = text("button", "account");
     node.type = "button";
+    node.append(face(known.agent, accountProvider(known.agent)));
     node.append(text("span", "name", known.agent));
     if (known.cooling) {
       node.append(text("span", "used", `${t("cooling")} ${span(known.cooling * 1000)}`));
@@ -7592,6 +7608,11 @@ function addressees(line) {
 /// its name so the same agent is the same face every time, and whose expression is what it is
 /// doing (typing, talking, a hand up, asleep). Monochrome on purpose: the ring and the bubble say
 /// the rest, and a colour is kept for the person.
+function hueOf(m) {
+  const seed = [...`${m.role || ""}|${m.agent || ""}`].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
+  return (seed * 137) % 360;
+}
+
 function character(m, mood) {
   const NS = "http://www.w3.org/2000/svg";
   const seed = [...`${m.role || ""}|${m.agent || ""}`].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
@@ -7682,6 +7703,7 @@ function desk(thread, m) {
   const leaving = state.officeLeaving.has(key);
   if (!working && !leaving && !m.lead && state.officeHidden.has(key)) return null;
   const node = text("div", "desk");
+  node.style.setProperty("--hue", String(hueOf(m)));
   if (leaving) node.dataset.leaving = "true";
   if (state.officeNew.has(key)) node.dataset.arriving = "true";
   node.dataset.live = String(working);

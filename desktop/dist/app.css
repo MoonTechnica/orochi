@@ -1564,25 +1564,27 @@ button:disabled { opacity: .5; cursor: default; }
 .room-head .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .room-head .since { color: var(--muted); font-size: 11px; }
 .room-head:hover { background: var(--raised); }
-.floor { display: flex; flex-wrap: wrap; gap: 74px 8px; padding: 84px 12px 14px; min-height: 150px; align-items: flex-start; justify-content: center; }
-.desk { position: relative; display: flex; flex-direction: column; align-items: center; width: 100px; }
-.avatar { position: relative; width: 56px; height: 56px; border-radius: 50%; background: var(--raised); border: 2px dashed var(--line); }
+.floor { display: flex; flex-wrap: wrap; gap: 74px 12px; padding: 84px 12px 14px; min-height: 150px; align-items: flex-start; justify-content: center; }
+.desk { position: relative; display: flex; flex-direction: column; align-items: center; width: 172px; }
+.avatar { position: relative; width: 56px; height: 56px; border-radius: 50%; background: hsl(var(--hue, 210) 40% 22% / .55); border: 2px dashed var(--line); }
 .avatar .frame { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; display: block; }
 .avatar .char { width: 100%; height: 100%; display: block; }
-.avatar .badge { position: absolute; right: -6px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%; background: var(--bg) !important; border: 1.5px solid var(--muted); color: var(--text); font-size: 10px; filter: grayscale(1); }
-.avatar .badge[data-icon="vendor"] img { width: 12px; height: 12px; }
+.avatar .badge { position: absolute; right: -8px; bottom: -6px; width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--bg); color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.avatar .badge[data-icon="vendor"] { background: #fff !important; }
+.avatar .badge[data-icon="vendor"] img { width: 16px; height: 16px; }
 /* The character, in one ink: light features on the dark ground, the other way round on light. */
-.char .c-body { fill: var(--muted); }
-.char .c-skin { fill: var(--text); fill-opacity: .92; }
-.char .c-hair { fill: var(--muted); }
-.char .c-arm { fill: var(--muted); }
+.desk { --hue: 210; --tint: hsl(var(--hue) 62% 62%); --deep: hsl(var(--hue) 45% 34%); }
+.char .c-body { fill: var(--tint); }
+.char .c-skin { fill: #f1cfae; }
+.char .c-hair { fill: var(--deep); }
+.char .c-arm { fill: var(--tint); }
 .char .c-tie { fill: var(--bg); }
 .char .c-eye, .char .c-mouth { fill: var(--bg); }
 .char .c-line { stroke: var(--bg); stroke-width: 1.4; stroke-linecap: round; }
 .char .c-frame { stroke: var(--bg); stroke-width: 1.2; stroke-linecap: round; }
 .char .c-set { fill: var(--bg); stroke: var(--bg); }
-.char .c-lid { fill: var(--raised); stroke: var(--text); stroke-width: 1.2; }
-.char .c-glow { fill: var(--text); animation: type 1s steps(2) infinite; }
+.char .c-lid { fill: var(--raised); stroke: var(--tint); stroke-width: 1.2; }
+.char .c-glow { fill: var(--tint); animation: type 1s steps(2) infinite; }
 .char .c-eye { transform-box: fill-box; transform-origin: center; animation: look 4.5s ease-in-out infinite; }
 .desk[data-live="false"] .char .c-eye { animation: none; }
 .char .c-mouth.talk { transform-box: fill-box; transform-origin: center; animation: talk .35s ease-in-out infinite alternate; }
@@ -1591,25 +1593,26 @@ button:disabled { opacity: .5; cursor: default; }
 @keyframes talk { from { transform: scaleY(.45); } to { transform: scaleY(1.1); } }
 .desk[data-live="true"] .avatar .frame { animation: bob 1.8s ease-in-out infinite; }
 @keyframes bob { 50% { transform: translateY(-1px); } }
-.desk[data-live="true"] .avatar { border: 2px solid var(--text); }
-.desk[data-live="true"] .avatar::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--text); animation: ring 1.8s ease-out infinite; }
+.desk[data-live="true"] .avatar { border: 2px solid var(--tint); }
+.desk[data-live="true"] .avatar::after { content: ""; position: absolute; inset: -2px; border-radius: 50%; border: 2px solid var(--tint); animation: ring 1.8s ease-out infinite; }
 .desk[data-live="false"] { opacity: .55; }
 .desk[data-asking="true"] .avatar, .desk[data-asking="true"] .avatar::after { border-color: var(--brand); }
 @keyframes ring { from { transform: scale(1); opacity: .7; } to { transform: scale(1.5); opacity: 0; } }
 .who { margin-top: 5px; font-size: 11px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who { color: var(--tint); }
 .desk[data-lead="true"] .who { text-decoration: underline; text-underline-offset: 3px; }
 .desk .meta { display: flex; gap: 5px; max-width: 100%; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .desk .meta .since { font-variant-numeric: tabular-nums; color: var(--text); }
 .desk .meta .model { overflow: hidden; text-overflow: ellipsis; }
-.bubble { position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 168px; padding: 5px 10px; border: 1.5px solid var(--muted); border-radius: 14px; background: var(--raised); color: var(--text); font-size: 11px; line-height: 1.35; z-index: 2; text-align: left; }
+.bubble { position: absolute; bottom: calc(100% + 2px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 168px; padding: 5px 10px; border: 1.5px solid var(--tint, var(--muted)); border-radius: 14px; background: var(--raised); color: var(--text); font-size: 11px; line-height: 1.35; z-index: 2; text-align: left; }
 /* The tail: a square turned on its corner, so the bubble reads as spoken by the avatar below. */
-.bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; width: 9px; height: 9px; background: var(--raised); border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); border-bottom-right-radius: 3px; transform: translateX(-50%) rotate(45deg); }
+.bubble::after { content: ""; position: absolute; left: 50%; bottom: -6px; width: 9px; height: 9px; background: var(--raised); border-right: 1.5px solid var(--tint, var(--muted)); border-bottom: 1.5px solid var(--tint, var(--muted)); border-bottom-right-radius: 3px; transform: translateX(-50%) rotate(45deg); }
 .bubble .words { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; word-break: auto-phrase; line-break: strict; }
 .bubble[data-stock] { max-width: none; white-space: nowrap; }
 .bubble .dots { color: var(--muted); animation: blink 1.2s steps(2) infinite; }
-.bubble[data-kind="talk"] { border-color: var(--text); }
+.bubble[data-kind="talk"] { border-color: var(--tint); }
 .bubble[data-kind="talk"] .words { -webkit-line-clamp: 4; }
-.bubble[data-kind="talk"]::after { border-color: var(--text); }
+.bubble[data-kind="talk"]::after { border-color: var(--tint); }
 .bubble .to { display: block; color: var(--muted); font-size: 10px; margin-bottom: 1px; }
 @keyframes blink { 50% { opacity: 0; } }
 .desk[data-asking="true"] .bubble, .bubble[data-kind="ask"] { background: var(--brand); border-color: var(--brand); color: #1b1d22; font-weight: 600; }
@@ -1764,3 +1767,10 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .orgmember .ro { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .orgmember .what { color: var(--muted); }
 .orgmember[data-live="false"] .name { color: var(--muted); }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .avatar { background: hsl(var(--hue, 210) 60% 90%); } :root:not([data-theme="dark"]) .desk { --tint: hsl(var(--hue) 55% 42%); --deep: hsl(var(--hue) 45% 28%); } }
+/* The OpenAI mark is black: on the dark ground it is drawn white, and on a badge's white disc as it is. */
+.face[data-provider="openai"][data-icon="vendor"] img { filter: invert(1); }
+.avatar .badge[data-provider="openai"] img { filter: none; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .face[data-provider="openai"][data-icon="vendor"] img { filter: none; } }
+.account .face { width: 18px; height: 18px; }
+.account .face[data-icon="vendor"] img { width: 18px; height: 18px; }
