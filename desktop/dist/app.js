@@ -7668,8 +7668,11 @@ function desk(thread, m) {
     const who = to?.role || (talk.to && talk.to !== "channel" ? talk.to : t("everyone"));
     bubble.append(text("span", "to", `→ ${who}${away ? ` · ${clip(away, 18)}` : ""}`));
   }
+  // Orochi's own fixed wording is kept on one line; only what an agent said is wrapped.
+  const stock = asking || (!talk && working && !what);
+  if (stock) bubble.dataset.stock = "true";
   bubble.append(text("span", "words", clip(said, talk ? 90 : 64)));
-  if (working && !asking && !talk) bubble.append(text("span", "dots", " …"));
+  if (working && !asking && !talk && !stock) bubble.append(text("span", "dots", " …"));
   bubble.hidden = !said;
   node.append(bubble);
   // Any seat is a way into its conversation; the one asking is the way to the question itself.
