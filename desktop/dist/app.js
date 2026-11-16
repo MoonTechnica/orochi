@@ -8084,19 +8084,36 @@ async function refresh(full) {
   state.projects = projects || [];
   state.prompts = prompts || [];
   state.folders = folders || [];
+  // The list is what the person opened the window for: it is drawn as soon as it is read, and
+  // again once the seats and tasks that mark it are known. Nothing slower stands before it.
+  if (!state.firstPaint) {
+    state.firstPaint = true;
+    state.tasks = state.tasks || [];
+    drawSidebar();
+  }
   state.live = (await call("live_seats", {})) || [];
   state.tasks = (await call("live_tasks", {})) || [];
   state.mentions = (await call("mentions", {})) || [];
   await notify();
   // The accounts change when a probe runs, not when a key is pressed: read at most twice a
-  // minute.
-  if (Date.now() - state.agentsAt > 30000) {
-    // The probes run only where the last reading is stale, so this is cheap when it is fresh.
-    await call("refresh_quota", {}).catch(() => {});
-    state.agents = (await call("agents", {})) || [];
-    // The routes that have run here: what the route menu offers besides Auto.
-    state.routes = (await call("insights", {})) || [];
+  // minute, and never waited for. A probe starts the vendor's own CLI and takes seconds; the
+  // conversation and the list do not stand behind it, and the status bar fills in when it is in.
+  if (Date.now() - state.agentsAt > 30000 && !state.agentsBusy) {
+    state.agentsBusy = true;
     state.agentsAt = Date.now();
+    (async () => {
+      try {
+        // The probes run only where the last reading is stale, so this is cheap when it is fresh.
+        await call("refresh_quota", {}).catch(() => {});
+        state.agents = (await call("agents", {})) || [];
+        // The routes that have run here: what the route menu offers besides Auto.
+        state.routes = (await call("insights", {})) || [];
+      } finally {
+        state.agentsBusy = false;
+        drawStatus();
+        drawRoute();
+      }
+    })();
   }
   drawStatus();
   drawRoute();
