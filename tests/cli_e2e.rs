@@ -3637,6 +3637,10 @@ fn a_lead_hires_a_lead_who_hires_an_engineer_and_the_work_merges_up_one_level_at
     w.config.agents[0]
         .env
         .insert("MOCK_OUT".into(), root.to_string_lossy().into_owned());
+    // The engineer is still working when its lead first tries to close its worktree.
+    w.config.agents[0]
+        .env
+        .insert("MOCK_ENG_DELAY".into(), "4".into());
     w.config.scheduler.prompt_timeout_secs = 90;
     w.config.scheduler.discovery_timeout_secs = 20;
     let output = chat(&w, "Build the API with a team\n");
@@ -3688,6 +3692,12 @@ fn a_lead_hires_a_lead_who_hires_an_engineer_and_the_work_merges_up_one_level_at
     let engineer = std::fs::read_to_string(root.join("prompt-eng.txt")).unwrap();
     assert!(!engineer.contains("You lead a team"), "{engineer}");
     assert!(engineer.contains("reporting to `api`"), "{engineer}");
+    // Closing a report before its result has arrived is refused, and says to wait for the result
+    // from `orochi` and try again rather than end without the integration.
+    let early = std::fs::read_to_string(root.join("early-finish.txt")).unwrap();
+    assert!(early.contains("still working"), "{early}");
+    assert!(early.contains("read_messages"), "{early}");
+    assert!(early.contains("without integrating"), "{early}");
     // A lead below the top lists and stops its own team and nothing more.
     let offered = std::fs::read_to_string(root.join("offered-api.txt")).unwrap();
     for tool in ["start_agent", "finish_workspace", "list_work", "stop_agent"] {

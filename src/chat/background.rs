@@ -596,7 +596,7 @@ fn prompt(
         format!("{}\n\n", post.brief)
     };
     let others = if post.lead {
-        "You lead a team: start reports only with start_agent, wait for them with read_messages (their results arrive there as messages from `orochi`), integrate what you accept in your own worktree, and do not finish while any report is still working. Never start another Orochi."
+        "You lead a team: start reports only with start_agent, wait for them with read_messages (their results arrive there as messages from `orochi`), integrate what you accept in your own worktree, and do not finish while any report is still working. A report that says it is done in a message is not finished until its result arrives from `orochi`: if finish_workspace says it is still working, wait with read_messages and call it again instead of ending without the integration. Never start another Orochi."
     } else {
         "Never start another agent or another Orochi."
     };

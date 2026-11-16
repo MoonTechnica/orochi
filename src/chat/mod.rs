@@ -6146,7 +6146,7 @@ fn finish(
         answer(
             "refused",
             &format!(
-                "`{}` is still working; wait for its report, or stop it first",
+                "`{}` is still working: a message from it saying it is done is not its end. Its result arrives as a message from `orochi`; wait for it with read_messages (pass wait_seconds) and call finish_workspace again, or stop it first. Do not end your own work without integrating it.",
                 request.name
             ),
         );

@@ -298,6 +298,8 @@ def org_team(request):
             (out / "stray-stop.txt").write_text(json.dumps(tool("stop_agent", name="nobody")))
             hired = tool("start_agent", name="eng", role="engineer", title="Write the endpoint", task="Write endpoint.txt")
             (Path(os.environ["MOCK_OUT"]) / "hired.txt").write_text(json.dumps(hired))
+            # Closing a report before its result has arrived is refused, with what to do instead.
+            (out / "early-finish.txt").write_text(json.dumps(tool("finish_workspace", name="eng", how="merge")))
             got = []
             deadline = time.time() + 40
             while time.time() < deadline and not any("Background agent `eng`" in m["body"] for m in got):
@@ -307,6 +309,7 @@ def org_team(request):
             proc.terminate()
         else:
             (root / "endpoint.txt").write_text(f"written by {name}\n")
+            time.sleep(float(os.environ.get("MOCK_ENG_DELAY", "0")))
         send({"method": "session/update", "params": {"sessionId": session, "update": {
             "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: done. "}}}})
         return
