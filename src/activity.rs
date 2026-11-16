@@ -392,6 +392,10 @@ pub struct ProjectRow {
     /// The folder is no longer there (a temporary directory, a deleted checkout): its
     /// conversations can be read but nothing can be started in it.
     pub missing: bool,
+    /// The checkout's own branch, read where there is no conversation to say it: a project with
+    /// none still has its primary checkout, and the list draws it by this name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub threads: Vec<ThreadRow>,
 }
 
@@ -1219,6 +1223,7 @@ impl Activity {
                         root,
                         pinned,
                         collapsed,
+                        branch: None,
                         threads: vec![],
                     });
                     projects.last_mut().expect("just pushed")
@@ -1235,10 +1240,19 @@ impl Activity {
         )?;
         let empty = statement.query_map(params![hidden], |r| {
             let root: String = r.get(2)?;
+            let branch = Path::new(&root)
+                .is_dir()
+                .then(|| {
+                    crate::context::git(Path::new(&root), &["rev-parse", "--abbrev-ref", "HEAD"])
+                })
+                .flatten()
+                .map(|b| b.trim().to_owned())
+                .filter(|b| !b.is_empty() && b != "HEAD");
             Ok(ProjectRow {
                 id: r.get(0)?,
                 name: r.get(1)?,
                 missing: !Path::new(&root).is_dir(),
+                branch,
                 root,
                 pinned: r.get::<_, i64>(3)? != 0,
                 collapsed: r.get::<_, i64>(4)? != 0,

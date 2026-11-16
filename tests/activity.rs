@@ -1383,6 +1383,39 @@ fn the_memory_note_and_a_leads_brief_never_name_a_thread_either() {
     );
 }
 
+/// A project that has lost every conversation still has its primary checkout, and the list names
+/// it by its branch, which no conversation is left to say.
+#[test]
+fn a_project_without_conversations_reports_the_branch_of_its_own_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let root = repo.path().canonicalize().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-b", "trunk"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@localhost"]);
+    std::fs::write(root.join("file"), "x").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    activity.project_for(&root, "salt").unwrap();
+    let projects = activity.sidebar(20, false).unwrap();
+    assert_eq!(projects.len(), 1);
+    assert!(projects[0].threads.is_empty());
+    assert_eq!(projects[0].branch.as_deref(), Some("trunk"));
+}
+
 /// The sidebar's context menus write rows, and the rows mean what they say: a hidden project
 /// keeps its conversations and comes back when something works in it; a deleted project
 /// takes every conversation with it, and `all_threads` is the one list that sees everything.

@@ -707,7 +707,14 @@ function drawSidebar() {
       if (!places.has(key)) places.set(key, []);
       places.get(key).push(thread);
     }
-    for (const [cwd, threads] of places) section.append(place(project, cwd, threads));
+    // The primary checkout is always there, with or without a conversation in it: it is where a
+    // thread starts from the project's own plus, and a project is not an empty heading.
+    const ordered = new Map();
+    if (![...places.values()].some((threads) => threads.some((th) => !th.worktree))) {
+      ordered.set(project.root, []);
+    }
+    for (const [cwd, threads] of places) ordered.set(cwd, threads);
+    for (const [cwd, threads] of ordered) section.append(place(project, cwd, threads));
     host.append(section);
   }
 }
@@ -821,7 +828,9 @@ function place(project, cwd, threads) {
   head.className = "place-head";
   const live = threads.some((t) => ["working", "background", "needs_you"].includes(t.status));
   head.append(text("span", live ? "dot live" : "dot", ""));
-  const first = threads[0];
+  // With no conversation yet, the card is the project's own checkout and its branch is read from
+  // the folder.
+  const first = threads[0] || { branch: project.branch, worktree: null };
   // A checkout is known by its branch; the original clone says so, and an extra worktree
   // also names its folder, the one thing that tells two of them apart.
   head.append(drawn("git-branch", "icon"));
@@ -861,7 +870,7 @@ function place(project, cwd, threads) {
         marks.append(flag);
       }
     }
-    marks.addEventListener("click", () => select(threads[0].id));
+    marks.addEventListener("click", () => threads[0] && select(threads[0].id));
     card.append(marks);
     return card;
   }

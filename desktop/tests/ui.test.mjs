@@ -1283,6 +1283,25 @@ async function select_(el) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
+test("a project with no conversation still has its primary checkout, named by its branch", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  project.threads = [];
+  project.branch = "main";
+  const { el } = await open({ sidebar: [project], thread: null });
+  const side = el("projects");
+  const places = side.querySelectorAll(".place");
+  assert.equal(places.length, 1, "one card: the project's own checkout");
+  assert.match(places[0].render(), /main/, "named by its branch");
+  assert.match(places[0].render(), /primary/i, "and marked as the primary");
+  assert.match(places[0].render(), /0/, "with none of its conversations");
+
+  // With a conversation in it, it is that one card and not a second empty one beside it.
+  const used = structuredClone(recorded.sidebar[0]);
+  used.threads = used.threads.slice(0, 1).map((th) => ({ ...th, worktree: null, cwd: used.root }));
+  const again = await open({ sidebar: [used] });
+  assert.equal(again.el("projects").querySelectorAll(".place").length, 1);
+});
+
 test("a conversation opens at its newest end, and one being read further up is left where it is", async () => {
   const project = structuredClone(recorded.sidebar[0]);
   const answers = { sidebar: [project], thread: recorded.thread, changed: [] };
@@ -3773,6 +3792,15 @@ test("the office shows people leaving, a room wrapping up as done, and one closi
   answers.changed = [second.id];
   await tick();
   assert.ok(rooms().some((r) => r.dataset.closing === "true"), "a deleted conversation's room closes");
+
+  // Every conversation deleted: the rooms close, and what is left is the quiet office, not a blank.
+  project.threads = [];
+  answers.changed = [first.id];
+  await tick();
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await tick();
+  assert.match(el("office-body").render(), /The office is quiet|office-empty/, "an office with nobody in it says so");
+  assert.equal(rooms().length, 0, "and no room is left on the floor");
 });
 
 test("the office's question bubble opens the conversation that asks, and any seat opens its own", async () => {
