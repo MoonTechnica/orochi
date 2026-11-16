@@ -3826,10 +3826,22 @@ fn a_handover_the_decision_model_picked_comes_first_and_the_agent_that_ran_out_i
 fn a_provider_s_own_words_for_when_a_limit_lifts_give_the_reset() {
     use orochi::{agents::reset_in_text, types::now};
     let time = now();
-    // The date form Codex prints, in local time: a day after the one the text is read on, so
-    // it is in the future whenever the test runs before then.
+    // The date form Codex prints, in local time. Two days on in civil terms (Howard Hinnant's days-to-date), so the test does not age.
+    let days = time / 86_400 + 2;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let name = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ][usize::try_from(month - 1).expect("a month")];
     let dated = reset_in_text(
-        "You've hit your usage limit. Visit https://chatgpt.com/settings/usage or try again at Nov 16th, 2026 4:54 AM.",
+        &format!("You've hit your usage limit. Visit https://chatgpt.com/settings/usage or try again at {name} {day}th, {year} 4:54 AM."),
         time,
     )
     .expect("the dated form is read");

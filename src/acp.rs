@@ -684,6 +684,7 @@ impl Client {
                                 allow_once_option(&value)
                             } else if let Some(events) = &permission_events
                                 && permission == PermissionMode::Ask
+                                && (!read_only || writes)
                             {
                                 let (tx, rx) = oneshot::channel();
                                 if events
@@ -695,7 +696,15 @@ impl Client {
                                     None
                                 }
                             } else {
-                                choose_permission(&value, permission).await
+                                // Reading is what a read-only seat is for, so it is never asked
+                                // about; its commands are (above) unless the mode is auto.
+                                let mode =
+                                    if read_only && !writes && permission == PermissionMode::Ask {
+                                        PermissionMode::Allow
+                                    } else {
+                                        permission
+                                    };
+                                choose_permission(&value, mode).await
                             }
                         } else {
                             None

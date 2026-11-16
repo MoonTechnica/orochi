@@ -1678,7 +1678,13 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                             reasoning: cli.reasoning.clone(),
                             mode: cli.mode.clone(),
                         },
-                        cli.permission.unwrap_or(config.scheduler.permission).key(),
+                        // A thread is a console's, which starts on auto unless told to ask.
+                        cli.permission
+                            .unwrap_or(match config.scheduler.permission {
+                                PermissionMode::Ask => PermissionMode::Allow,
+                                chosen => chosen,
+                            })
+                            .key(),
                     )?;
                     if let Some(mode) = cli.sandbox {
                         activity.set_thread_sandbox(&id, Some(mode.key()))?;

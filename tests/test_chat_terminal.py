@@ -813,9 +813,13 @@ MOCK_RESET_IN = "60"
 
 class LimitTextSaysWhenItLifts(unittest.TestCase):
     def test_a_limit_whose_error_gives_no_reset_takes_the_date_the_agent_says_it_lifts(self):
-        # The error gives no reset; the reply says "try again at Nov 16th, 2026 4:54 AM". The
+        # The error gives no reset; the reply says "try again at <tomorrow> 4:54 AM". The
         # cooldown is that time, not a short back-off that would retry a limit that still holds.
         import datetime
+        # Tomorrow, so the date is in the future whenever this runs.
+        lifts = datetime.datetime.now().replace(hour=4, minute=54, second=0, microsecond=0) \
+            + datetime.timedelta(days=1)
+        said = f"{lifts:%b} {lifts.day}th, {lifts.year} 4:54 AM"
         work = Path(tempfile.mkdtemp())
         repo = work / "repo"
         repo.mkdir()
@@ -849,6 +853,7 @@ command = "python3"
 args = ["{TESTS / 'fixtures/mock_acp.py'}"]
 [agents.env]
 MOCK_BEHAVIOR = "limit_text"
+MOCK_LIMIT_AT = "{said}"
 MOCK_MODELS = "sol-test,astra-test"
 MOCK_LOG = "{work / 'agent.jsonl'}"
 """)
@@ -867,7 +872,7 @@ MOCK_LOG = "{work / 'agent.jsonl'}"
             while time.time() < deadline and "every agent is out of quota" not in (work / "host.log").read_text():
                 time.sleep(2)
             self.assertIn("every agent is out of quota", (work / "host.log").read_text())
-            expected = time.mktime(datetime.datetime(2026, 11, 16, 4, 54).timetuple())
+            expected = time.mktime(lifts.timetuple())
             con = sqlite3.connect(work / "data" / "telemetry.sqlite3")
             record = json.loads(con.execute(
                 "SELECT record FROM runtime WHERE agent='test' AND model='*'").fetchone()[0])
@@ -1386,7 +1391,7 @@ class BackgroundAgents(unittest.TestCase):
             c.close()
 
     def test_a_helper_that_wants_to_run_a_command_is_asked_about_by_name(self):
-        c = Console(behavior="delegate", mailbox=True, env={
+        c = Console(behavior="delegate", mailbox=True, args=("--permission", "ask"), env={
             "MOCK_HELPERS": "spec:Research the API",
             "MOCK_HELPER_ASK": "spec",
             "MOCK_HELPER_DELAYS": "spec:0.2",
@@ -1426,7 +1431,7 @@ class BackgroundAgents(unittest.TestCase):
             c.close()
 
     def test_inside_a_host_pane_the_helpers_are_its_seats_blocked_while_one_asks_and_idle_while_a_report_waits(self):
-        c = Console(behavior="delegate", mailbox=True, host=True, env={
+        c = Console(behavior="delegate", mailbox=True, host=True, args=("--permission", "ask"), env={
             "MOCK_HELPERS": "spec:Research the API,explorer:Map the flow",
             "MOCK_HELPER_ASK": "spec",
             "MOCK_HELPER_DELAYS": "spec:0.2,explorer:60",

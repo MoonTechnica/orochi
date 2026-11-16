@@ -186,11 +186,7 @@ impl<'a> Background<'a> {
             json: false,
             // A member continued in its own thread picks its session up where it left it.
             resume,
-            permission: if workspace.is_some() {
-                env.permission
-            } else {
-                PermissionMode::Allow
-            },
+            permission: env.permission,
             interactive: true,
             attachments: vec![],
             peer: Some(name.clone()),
@@ -198,14 +194,7 @@ impl<'a> Background<'a> {
             read_only: workspace.is_none(),
             place: None,
             seat: seat.clone(),
-            answerer: answerer(
-                if workspace.is_some() {
-                    env.permission
-                } else {
-                    PermissionMode::Allow
-                },
-                env.headless,
-            ),
+            answerer: answerer(env.permission, env.headless),
             background: true,
         };
         let run_root = workspace.clone().unwrap_or_else(|| env.root.to_path_buf());

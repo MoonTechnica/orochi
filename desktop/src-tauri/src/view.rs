@@ -1000,7 +1000,8 @@ impl Client {
             &self.store.repository_id(&root)?,
             Origin::Desktop,
             &orochi::types::Overrides::default(),
-            "ask",
+            // Auto, as a terminal console starts; the thread's approval control changes it.
+            "allow",
         )?;
         if sandbox.is_some() {
             self.activity.set_thread_sandbox(&id, sandbox)?;
