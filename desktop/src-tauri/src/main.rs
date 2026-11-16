@@ -415,6 +415,23 @@ fn tree_files(
 }
 
 #[tauri::command]
+fn git_overview(
+    open: State<'_, Open>,
+    thread: String,
+) -> Result<orochi_desktop::view::GitOverview, String> {
+    open.0.lock().unwrap().git_overview(&thread).map_err(fail)
+}
+
+#[tauri::command]
+fn git_show(open: State<'_, Open>, thread: String, hash: String) -> Result<String, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .git_show(&thread, &hash)
+        .map_err(fail)
+}
+
+#[tauri::command]
 fn tree_patch(
     open: State<'_, Open>,
     thread: String,
@@ -960,6 +977,8 @@ fn main() {
             board,
             team,
             tree_files,
+            git_overview,
+            git_show,
             tree_patch,
             tree_refresh,
             tree_list,

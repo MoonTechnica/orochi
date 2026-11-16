@@ -1776,3 +1776,27 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .account .face[data-icon="vendor"] img { width: 18px; height: 18px; }
 
 .account .sublabel { color: var(--muted); font-size: 11px; margin: 0 2px 0 6px; white-space: nowrap; }
+
+/* The git pane of a checkout: where it is, its worktrees and branches, and the history as lines. */
+#pane-git { overflow: auto; }
+.git-head { display: flex; align-items: center; gap: 8px; padding: 2px 0 10px; font-size: 13px; }
+.git-head .git-state { color: var(--muted); font-size: 12px; margin-left: auto; }
+.git-section { margin-bottom: 14px; }
+.git-section h4 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.git-item { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 2px 0; min-width: 0; }
+.git-item[data-current="true"] .git-name { color: var(--ok); }
+.git-item .git-name { font-weight: 600; flex: none; }
+.git-item .git-subject, .git-item .git-path { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.git-hash { color: var(--muted); font: 11px ui-monospace, "SF Mono", Menlo, monospace; flex: none; }
+.git-graph { display: flex; flex-direction: column; }
+.git-commit { display: flex; align-items: center; height: 24px; cursor: pointer; min-width: 0; }
+.git-commit:hover { background: var(--raised); }
+.git-commit svg { flex: none; overflow: visible; }
+.git-line { fill: none; stroke-width: 1.6; }
+.git-words { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; font-size: 12px; }
+.git-words .git-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.git-words .git-when { color: var(--muted); font-size: 11px; flex: none; }
+.git-ref { flex: none; font-size: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--text); }
+.git-ref[data-kind="head"] { border-color: var(--ok); color: var(--ok); }
+.git-ref[data-kind="remote"], .git-ref[data-kind="tag"] { color: var(--muted); }
+.git-detail { margin: 2px 0 6px; padding: 8px; font: 11px/1.45 ui-monospace, "SF Mono", Menlo, monospace; background: var(--raised); border-radius: 6px; overflow: auto; max-height: 340px; white-space: pre; }

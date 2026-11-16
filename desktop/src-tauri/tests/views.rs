@@ -487,6 +487,79 @@ fn every_conversation_can_be_deleted_from_the_window() {
     );
 }
 
+/// The git pane of a project's own checkout: where it is, what is changed, its worktrees and
+/// branches, and a history to draw as a graph, all read from git as it is now.
+#[test]
+fn a_checkouts_git_is_one_screen_read_from_the_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let repo = dir.path().join("checkout");
+    std::fs::create_dir(&repo).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .args(["-c", "user.email=t@e", "-c", "user.name=t"])
+                .args(args)
+                .current_dir(&repo)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    };
+    git(&["init", "-q", "-b", "trunk"]);
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    git(&["branch", "side"]);
+    std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+    git(&["commit", "-qam", "second"]);
+    // One staged, one unstaged, one new file.
+    std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+    git(&["add", "b.txt"]);
+    std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+
+    let client = Client::open(dir.path()).unwrap();
+    let thread = client.new_thread(&repo, false, None).unwrap();
+    let overview = client.git_overview(&thread).unwrap();
+    assert_eq!(overview.branch.as_deref(), Some("trunk"));
+    assert_eq!(
+        (overview.staged, overview.unstaged, overview.untracked),
+        (1, 1, 1)
+    );
+    assert_eq!(overview.worktrees.len(), 1);
+    assert!(overview.worktrees[0].primary && overview.worktrees[0].current);
+    let names: Vec<_> = overview.branches.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, ["side", "trunk"]);
+    assert!(
+        overview
+            .branches
+            .iter()
+            .any(|b| b.current && b.name == "trunk")
+    );
+    // Newest first, and each commit says where it came from.
+    assert_eq!(overview.commits.len(), 2);
+    assert_eq!(overview.commits[0].subject, "second");
+    assert_eq!(
+        overview.commits[0].parents,
+        [overview.commits[1].hash.clone()]
+    );
+    assert!(overview.commits[0].refs.iter().any(|r| r.contains("trunk")));
+    assert!(overview.commits[1].refs.contains(&"side".to_owned()));
+
+    let shown = client.git_show(&thread, &overview.commits[0].hash).unwrap();
+    assert!(
+        shown.contains("second") && shown.contains("+two"),
+        "{shown}"
+    );
+    // Only a commit's own name is passed to git: nothing else is looked up through it.
+    assert!(client.git_show(&thread, "--output=/tmp/x").is_err());
+    assert!(client.git_show(&thread, "xyz1234").is_err());
+}
+
 /// §6.5: the working tree is the authority for review, so the Changes pane reads `git diff`
 /// as well as the patches a turn recorded. The stored ones are what remains once the tree has
 /// moved on; the live ones are what is actually there now.

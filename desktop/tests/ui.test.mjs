@@ -48,7 +48,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {}, setup }
     "timeline", "composer", "message", "composer-row", "composer-hint", "interrupt", "send",
     "folder-picker", "folder", "folder-name", "folder-menu",
     "doc-tabs", "doc-menu", "doc-body", "stage", "pane-handle", "group-0", "group-1", "doc-tabs-2", "doc-body-2", "threads-ctl", "threads-menu", "mention-list", "split", "chat", "member-col", "member-head", "member-title", "member-close", "member-body", "member-form", "member-mentions", "member-reply", "member-row", "member-also", "member-also-box", "member-also-label", "member-send",
-    "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan",
+    "tabs", "pane-team", "pane-work", "work", "pane-changes", "pane-plan", "pane-git",
     "roster", "room", "say-form", "say", "say-hint",
     "scopes", "files", "review-form", "review-list", "review-send",
     "notice", "account", "account-mark", "account-name", "account-chevron", "account-menu",
@@ -2905,7 +2905,7 @@ test("a thread's bar says how many replies, the last one, and where the member s
 
 test("the bar opens the thread as a column beside the body, and the side pane is left exactly as it was", async () => {
   const { el, calls } = await open(channel());
-  const fixed = () => el("tabs").querySelectorAll("button").filter((b) => b.dataset.pane).map((b) => b.dataset.pane);
+  const fixed = () => el("tabs").querySelectorAll("button").filter((b) => b.dataset.pane && !b.hidden).map((b) => b.dataset.pane);
   const side = () => el("side").render();
   const panes = () => ["team", "work", "changes", "plan", "files"].map((p) => el(`pane-${p}`).hidden);
   assert.equal(el("member-col").hidden, true, "no thread column until one is opened");
@@ -4078,10 +4078,65 @@ test("a project's own checkout opens with a shell where the chat would be, keepi
   assert.equal(terms.length, 1);
   // The tabs go on being tabs: another can be added beside it.
   assert.ok(el("doc-tabs").querySelectorAll(".doc-new").length > 0);
-  // The side holds what a checkout has: the changes and the files, not a conversation's team.
+  // The side holds what a checkout has: the changes, the files and its git, not a conversation's team.
   const visible = el("tabs").querySelectorAll(".tab").filter((tab) => !tab.hidden).map((tab) => tab.dataset.pane);
-  assert.deepEqual(visible, ["changes", "files"]);
+  assert.deepEqual(visible, ["changes", "files", "git"]);
   assert.match(el("thread-where").textContent, /main/, "named by its branch");
+});
+
+test("a checkout's Git tab says where it is, lists its worktrees and branches, and draws the history as lines", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  project.threads = [];
+  project.branch = "main";
+  const commits = [
+    { hash: "m".repeat(40), parents: ["a".repeat(40), "b".repeat(40)], refs: ["HEAD -> main"], subject: "Merge feature", at: Math.floor(Date.now() / 1000) - 60 },
+    { hash: "a".repeat(40), parents: ["c".repeat(40)], refs: [], subject: "On main", at: Math.floor(Date.now() / 1000) - 3600 },
+    { hash: "b".repeat(40), parents: ["c".repeat(40)], refs: ["feature", "origin/feature"], subject: "On the feature", at: Math.floor(Date.now() / 1000) - 7200 },
+    { hash: "c".repeat(40), parents: [], refs: ["tag: v1"], subject: "The beginning", at: Math.floor(Date.now() / 1000) - 86400 },
+  ];
+  const { el, calls } = await open({
+    sidebar: [project], thread: null, ...tree(),
+    git_overview: {
+      branch: "main", staged: 1, unstaged: 2, untracked: 0,
+      worktrees: [
+        { path: "/p/repo", head: "mmmmmmm", branch: "main", current: true, primary: true },
+        { path: "/p/repo-feature", head: "bbbbbbb", branch: "feature", current: false, primary: false },
+      ],
+      branches: [
+        { name: "feature", head: "bbbbbbb", current: false, subject: "On the feature" },
+        { name: "main", head: "mmmmmmm", current: true, subject: "Merge feature" },
+      ],
+      commits,
+    },
+    git_show: "commit mmmm\n\n    Merge feature\n\n a.txt | 1 +\n",
+  });
+  el("projects").querySelectorAll(".place-head")[0].dispatch("click");
+  await settle(60);
+  el("tabs").querySelectorAll(".tab").find((tab) => tab.dataset.pane === "git").dispatch("click");
+  await settle(60);
+
+  const pane = el("pane-git");
+  const drawn = pane.render();
+  assert.match(drawn, /main/);
+  assert.match(drawn, /1 staged/);
+  assert.match(drawn, /2 unstaged/);
+  assert.match(drawn, /Worktrees/);
+  assert.match(drawn, /repo-feature/, "a worktree beside the clone");
+  assert.match(drawn, /Branches/);
+  const rows = pane.querySelectorAll(".git-commit");
+  assert.equal(rows.length, 4, "one row per commit, newest first");
+  assert.match(rows[0].render(), /Merge feature/);
+  assert.match(rows[2].render(), /feature/, "a branch is named on its commit");
+  // The merge draws the line on down and one over to the second parent's lane; the commit under
+  // it on the first lane has the other lane passing it, the line in and the line on.
+  assert.equal(rows[0].querySelectorAll(".git-line").length, 2);
+  assert.equal(rows[1].querySelectorAll(".git-line").length, 3);
+
+  // A commit opens to what it changed, asked for when it is opened.
+  rows[0].dispatch("click");
+  await settle(40);
+  assert.match(pane.render(), /a\.txt \| 1 \+/);
+  assert.equal(calls.filter(([name]) => name === "git_show").length, 1);
 });
 
 test("choosing a conversation after the checkout brings the chat and every pane back", async () => {
@@ -4099,7 +4154,7 @@ test("choosing a conversation after the checkout brings the chat and every pane 
   el("projects").querySelectorAll(".place-head")[0].dispatch("click");
   await settle(80);
   assert.match(el("doc-tabs").querySelectorAll(".doc-tab")[0].render(), /Terminal/);
-  assert.deepEqual(side(), ["changes", "files"]);
+  assert.deepEqual(side(), ["changes", "files", "git"]);
 
   el("projects").querySelectorAll(".thread")[0].dispatch("click");
   await settle(80);

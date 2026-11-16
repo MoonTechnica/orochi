@@ -102,6 +102,50 @@ pub struct Prompt {
 /// the thread's id: `ws:<project>` (`View::cwd`).
 pub const WORKSPACE: &str = "ws:";
 
+/// One commit of the history graph: its parents say where the lines go.
+#[derive(Debug, Clone, Serialize)]
+pub struct GitCommit {
+    pub hash: String,
+    pub parents: Vec<String>,
+    /// Branches, tags and `HEAD` that point at it, as `git log --decorate` says them.
+    pub refs: Vec<String>,
+    pub subject: String,
+    /// Seconds.
+    pub at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitWorktree {
+    pub path: String,
+    pub head: String,
+    pub branch: Option<String>,
+    /// The folder the window is looking at.
+    pub current: bool,
+    /// The clone itself, which `git worktree list` names first.
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GitBranch {
+    pub name: String,
+    pub head: String,
+    pub current: bool,
+    pub subject: String,
+}
+
+/// A checkout's git as one screen: where it is, what is changed, which worktrees and branches
+/// there are, and the recent history to draw as a graph.
+#[derive(Debug, Clone, Serialize)]
+pub struct GitOverview {
+    pub branch: Option<String>,
+    pub staged: usize,
+    pub unstaged: usize,
+    pub untracked: usize,
+    pub worktrees: Vec<GitWorktree>,
+    pub branches: Vec<GitBranch>,
+    pub commits: Vec<GitCommit>,
+}
+
 /// A folder a thread can be started in: one the store already knows about.
 #[derive(Debug, Clone, Serialize)]
 pub struct Folder {
@@ -1239,6 +1283,126 @@ impl Client {
             "branch" => vec!["diff", "--merge-base", "HEAD@{upstream}"],
             other => anyhow::bail!("no diff scope called {other}"),
         })
+    }
+
+    /// The checkout's git, read from the disk: nothing here is kept. `thread` is a conversation or
+    /// a project's own checkout (`ws:<project>`); either gives the folder.
+    pub fn git_overview(&self, thread: &str) -> Result<GitOverview> {
+        let cwd = self.cwd(thread)?;
+        let git = |args: &[&str]| orochi::context::git(&cwd, args).unwrap_or_default();
+        let lines = |text: &str| text.lines().filter(|l| !l.is_empty()).count();
+        let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .trim()
+            .to_owned();
+        let here = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
+        let mut worktrees: Vec<GitWorktree> = vec![];
+        for block in git(&["worktree", "list", "--porcelain"]).split("\n\n") {
+            let mut entry = GitWorktree {
+                path: String::new(),
+                head: String::new(),
+                branch: None,
+                current: false,
+                primary: worktrees.is_empty(),
+            };
+            for line in block.lines() {
+                if let Some(path) = line.strip_prefix("worktree ") {
+                    entry.path = path.to_owned();
+                } else if let Some(head) = line.strip_prefix("HEAD ") {
+                    entry.head = head.chars().take(7).collect();
+                } else if let Some(name) = line.strip_prefix("branch ") {
+                    entry.branch = Some(name.trim_start_matches("refs/heads/").to_owned());
+                }
+            }
+            if entry.path.is_empty() {
+                continue;
+            }
+            entry.current = std::path::Path::new(&entry.path)
+                .canonicalize()
+                .is_ok_and(|p| p == here);
+            worktrees.push(entry);
+        }
+        let branches = git(&[
+            "for-each-ref",
+            "--format=%(refname:short)%09%(objectname:short)%09%(HEAD)%09%(contents:subject)",
+            "refs/heads",
+        ])
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(4, '\t');
+            Some(GitBranch {
+                name: fields.next()?.to_owned(),
+                head: fields.next()?.to_owned(),
+                current: fields.next()? == "*",
+                subject: fields.next().unwrap_or("").to_owned(),
+            })
+        })
+        .collect();
+        // Orochi's own refs (`refs/orochi/kept/…`) are left out: they are what it keeps of a
+        // deleted worktree, not part of the project's history.
+        let commits = git(&[
+            "log",
+            "HEAD",
+            "--branches",
+            "--tags",
+            "--remotes",
+            "--topo-order",
+            "-n",
+            "60",
+            "--format=%H%x09%P%x09%D%x09%ct%x09%s",
+        ])
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(5, '\t');
+            Some(GitCommit {
+                hash: fields.next()?.to_owned(),
+                parents: fields
+                    .next()?
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect(),
+                refs: fields
+                    .next()?
+                    .split(", ")
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                at: fields.next()?.parse().unwrap_or(0),
+                subject: fields.next().unwrap_or("").to_owned(),
+            })
+        })
+        .collect();
+        Ok(GitOverview {
+            branch: (branch != "HEAD" && !branch.is_empty()).then_some(branch),
+            staged: lines(&git(&["diff", "--cached", "--name-only"])),
+            unstaged: lines(&git(&["diff", "--name-only"])),
+            untracked: lines(&git(&["ls-files", "--others", "--exclude-standard"])),
+            worktrees,
+            branches,
+            commits,
+        })
+    }
+
+    /// One commit, as `git show` says it: who, when, the message, what changed and how. Cut at
+    /// 200 KB, which is longer than anyone reads.
+    pub fn git_show(&self, thread: &str, hash: &str) -> Result<String> {
+        ensure!(
+            (7..=40).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+            "not a commit"
+        );
+        let cwd = self.cwd(thread)?;
+        let text = orochi::context::git(
+            &cwd,
+            &[
+                "show",
+                "--stat",
+                "--patch",
+                "-M",
+                "--format=%H%n%an <%ae>%n%ad%n%n%B",
+                hash,
+            ],
+        )
+        .unwrap_or_default();
+        Ok(orochi::context::bounded(&text, 200_000))
     }
 
     pub fn cwd(&self, thread: &str) -> Result<std::path::PathBuf> {

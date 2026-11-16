@@ -357,6 +357,16 @@ const WORDS = {
     "an attempt that failed, and what it said": "失敗した試行と、その内容",
     "all models": "全体",
     "Primary checkout": "プライマリ",
+    Git: "Git",
+    Worktrees: "worktree",
+    Branches: "ブランチ",
+    History: "履歴",
+    detached: "デタッチ",
+    clean: "変更なし",
+    staged: "ステージ済み",
+    unstaged: "未ステージ",
+    untracked: "未追跡",
+    "No commits yet.": "まだコミットがありません。",
     Team: "チーム",
     Changes: "変更",
     Plan: "計画",
@@ -5383,6 +5393,7 @@ function showPane(pane, { draw = true } = {}) {
   }
   // The tree is read when it is looked at, not while it is out of sight.
   if (pane === "files" && draw) drawFiles(true);
+  if (pane === "git" && draw) drawGit();
 }
 for (const tab of document.querySelectorAll(".tab")) {
   tab.addEventListener("click", () => showPane(tab.dataset.pane));
@@ -8236,7 +8247,8 @@ async function openWorkspace(project) {
 /// the plan are a conversation's.
 function paneMode(workspace) {
   for (const tab of document.querySelectorAll(".tab")) {
-    tab.hidden = workspace && !["changes", "files"].includes(tab.dataset.pane);
+    // The git of a checkout is read with no conversation to ask about; a conversation has its own.
+    tab.hidden = workspace ? !["changes", "files", "git"].includes(tab.dataset.pane) : tab.dataset.pane === "git";
   }
   const shown = [...document.querySelectorAll(".tab")].find((tab) => tab.getAttribute("aria-selected") === "true");
   if (workspace && shown?.hidden) showPane("changes");
@@ -8269,7 +8281,165 @@ async function drawWorkspace() {
   if (state.tree.thread !== id) state.tree = freshTree(id);
   syncTabs(id);
   drawChanges(view);
+  if (el("pane-git") && !el("pane-git").hidden) drawGit();
   if (filesShown() && !state.tree.dirs.has("")) await drawFiles(true);
+}
+
+// Git ------------------------------------------------------------------------
+// A checkout's git on one screen, read from the disk when it is looked at: where it is and what is
+// changed, its worktrees and branches, and the recent history drawn as the lines git draws.
+const GIT_ROW = 24;
+const GIT_LANE = 14;
+const GIT_HUES = [210, 150, 30, 280, 340, 90, 190, 50];
+const gitHue = (lane) => `hsl(${GIT_HUES[lane % GIT_HUES.length]} 60% 58%)`;
+
+/// Where each commit sits and where the lines go, newest first: a lane is a line waiting for the
+/// commit it expects, a commit takes the lane that expects it (or a free one), and hands the lane on
+/// to its first parent; further parents take lanes of their own.
+function gitLayout(commits) {
+  let lanes = [];
+  return commits.map((commit) => {
+    let col = lanes.indexOf(commit.hash);
+    const fresh = col < 0;
+    if (fresh) {
+      col = lanes.indexOf(null);
+      if (col < 0) {
+        col = lanes.length;
+        lanes.push(commit.hash);
+      } else {
+        lanes[col] = commit.hash;
+      }
+    }
+    const before = lanes.slice();
+    // Lines that were all waiting for this commit end at it.
+    const joining = lanes.map((hash, lane) => (hash === commit.hash && lane !== col ? lane : -1)).filter((lane) => lane >= 0);
+    for (const lane of joining) lanes[lane] = null;
+    const [first, ...others] = commit.parents;
+    lanes[col] = first ?? null;
+    const forks = [];
+    for (const parent of others) {
+      let lane = lanes.indexOf(parent);
+      if (lane < 0) {
+        lane = lanes.indexOf(null);
+        if (lane < 0) {
+          lane = lanes.length;
+          lanes.push(parent);
+        } else {
+          lanes[lane] = parent;
+        }
+      }
+      forks.push(lane);
+    }
+    while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    return { col, fresh, before, joining, forks, after: lanes.slice() };
+  });
+}
+
+function gitRow(commit, place, width, onOpen) {
+  const row = text("div", "git-commit");
+  row.dataset.hash = commit.hash;
+  const svg = svgNode("svg", { width, height: GIT_ROW, viewBox: `0 0 ${width} ${GIT_ROW}` }, "gutter");
+  const x = (lane) => lane * GIT_LANE + GIT_LANE / 2 + 2;
+  const mid = GIT_ROW / 2;
+  const line = (d, lane) => {
+    const path = svgNode("path", { d, stroke: gitHue(lane) }, "git-line");
+    svg.append(path);
+  };
+  // The lines that pass this row, whole; the one into the commit from above, the ones out of it below.
+  place.before.forEach((hash, lane) => {
+    if (hash === null || lane === place.col || place.joining.includes(lane)) return;
+    line(`M${x(lane)},0 V${GIT_ROW}`, lane);
+  });
+  if (!place.fresh) line(`M${x(place.col)},0 V${mid}`, place.col);
+  if (place.after[place.col] !== null && place.after[place.col] !== undefined) line(`M${x(place.col)},${mid} V${GIT_ROW}`, place.col);
+  for (const lane of place.joining) line(`M${x(lane)},0 C${x(lane)},${mid} ${x(place.col)},${mid} ${x(place.col)},${mid}`, lane);
+  for (const lane of place.forks) line(`M${x(place.col)},${mid} C${x(place.col)},${GIT_ROW} ${x(lane)},${mid} ${x(lane)},${GIT_ROW}`, lane);
+  const node = svgNode("circle", { cx: x(place.col), cy: mid, r: 4, fill: gitHue(place.col) }, "git-node");
+  svg.append(node);
+  row.append(svg);
+  const words = text("div", "git-words");
+  for (const name of commit.refs) {
+    const head = name.startsWith("HEAD");
+    const shown = name.replace(/^HEAD -> /, "").replace(/^tag: /, "");
+    const chip = text("span", "git-ref", shown);
+    chip.dataset.kind = name.startsWith("tag: ") ? "tag" : head ? "head" : name.includes("/") ? "remote" : "branch";
+    words.append(chip);
+  }
+  words.append(text("span", "git-subject", commit.subject));
+  words.append(text("span", "git-hash", commit.hash.slice(0, 7)));
+  if (commit.at) words.append(text("span", "git-when", since(commit.at * 1000)));
+  row.append(words);
+  row.addEventListener("click", onOpen);
+  return row;
+}
+
+async function drawGit() {
+  const host = el("pane-git");
+  const id = state.workspace ? workspaceId(state.workspace) : state.thread;
+  if (!host || !id) return;
+  const git = await call("git_overview", { thread: id });
+  const now = state.workspace ? workspaceId(state.workspace) : state.thread;
+  if (!git || now !== id) return;
+  host.replaceChildren();
+  const head = text("div", "git-head");
+  head.append(drawn("git-branch", "icon"));
+  head.append(text("b", null, git.branch || t("detached")));
+  const changed = [
+    [git.staged, "staged"],
+    [git.unstaged, "unstaged"],
+    [git.untracked, "untracked"],
+  ].filter(([n]) => n > 0);
+  head.append(text("span", "git-state", changed.length ? changed.map(([n, word]) => `${n} ${t(word)}`).join(" · ") : t("clean")));
+  host.append(head);
+
+  const section = (title, count) => {
+    const node = text("section", "git-section");
+    node.append(text("h4", null, count === undefined ? title : `${title} · ${count}`));
+    host.append(node);
+    return node;
+  };
+  if (git.worktrees.length > 1) {
+    const list = section(t("Worktrees"), git.worktrees.length);
+    for (const tree of git.worktrees) {
+      const row = text("div", "git-item");
+      row.dataset.current = String(tree.current);
+      row.append(text("span", "git-name", tree.branch || t("detached")));
+      if (tree.primary) row.append(text("span", "badge", t("primary")));
+      row.append(text("span", "git-path", tree.path.split("/").filter(Boolean).pop() || tree.path));
+      row.append(text("span", "git-hash", tree.head));
+      list.append(row);
+    }
+  }
+  if (git.branches.length) {
+    const list = section(t("Branches"), git.branches.length);
+    for (const branch of git.branches) {
+      const row = text("div", "git-item");
+      row.dataset.current = String(branch.current);
+      row.append(text("span", "git-name", branch.name));
+      row.append(text("span", "git-subject", branch.subject));
+      row.append(text("span", "git-hash", branch.head));
+      list.append(row);
+    }
+  }
+  const history = section(t("History"));
+  if (!git.commits.length) {
+    history.append(text("p", "empty", t("No commits yet.")));
+    return;
+  }
+  const placed = gitLayout(git.commits);
+  const width = Math.max(1, ...placed.map((p) => Math.max(p.before.length, p.after.length, p.col + 1, ...p.forks.map((f) => f + 1)))) * GIT_LANE + 4;
+  const graph = text("div", "git-graph");
+  git.commits.forEach((commit, index) => {
+    const detail = text("pre", "git-detail");
+    detail.hidden = true;
+    const row = gitRow(commit, placed[index], width, async () => {
+      detail.hidden = !detail.hidden;
+      if (detail.hidden || detail.childElementCount || detail.textContent) return;
+      detail.textContent = (await call("git_show", { thread: id, hash: commit.hash })) || "";
+    });
+    graph.append(row, detail);
+  });
+  history.append(graph);
 }
 
 async function select(id) {
