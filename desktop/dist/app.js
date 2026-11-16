@@ -59,6 +59,8 @@ const state = {
   // already announced.
   view: null,
   members: [],
+  // The project's own checkout, when one is open in place of a conversation.
+  workspace: null,
   // Messages whose envelope has been sent (seq -> when, 0 for one that was already old), and
   // whose receive icon the person has opened.
   flown: new Map(),
@@ -354,6 +356,7 @@ const WORDS = {
     "Nothing said yet.": "まだ何も話されていません。",
     "an attempt that failed, and what it said": "失敗した試行と、その内容",
     "all models": "全体",
+    "Primary checkout": "プライマリ",
     Team: "チーム",
     Changes: "変更",
     Plan: "計画",
@@ -822,7 +825,10 @@ function place(project, cwd, threads) {
   const key = `fold:${project.id}:${cwd}`;
   const folded = state.open.has(key);
   const card = text("div", "place");
-  card.dataset.current = String(threads.some((t) => t.id === state.thread));
+  // The primary checkout is where the project's own folder is looked at, a conversation or not.
+  const primary = !threads.some((th) => th.worktree) && cwd === project.root;
+  const here = primary && state.workspace?.project === project.id;
+  card.dataset.current = String(here || threads.some((t) => t.id === state.thread));
   const head = document.createElement("button");
   head.type = "button";
   head.className = "place-head";
@@ -837,12 +843,23 @@ function place(project, cwd, threads) {
   head.append(text("span", "name", first.branch || t("no branch")));
   if (!first.worktree) head.append(text("span", "badge", t("primary")));
   head.append(text("span", "tally", String(threads.length)));
-  head.append(drawn(folded ? "chevron-right" : "chevron-down", "fold"));
-  head.addEventListener("click", () => {
+  const fold = drawn(folded ? "chevron-right" : "chevron-down", "fold");
+  head.append(fold);
+  const toggle = () => {
     folded ? state.open.delete(key) : state.open.add(key);
     remember("open", [...state.open]);
     drawSidebar();
-  });
+  };
+  if (primary) {
+    // The card opens the checkout; folding the conversations under it is the arrow's.
+    head.addEventListener("click", () => openWorkspace(project));
+    fold.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggle();
+    });
+  } else {
+    head.addEventListener("click", toggle);
+  }
   card.append(head);
   if (first.worktree) {
     const folder = text("div", "branch");
@@ -7025,7 +7042,7 @@ function syncTabs(thread) {
   tabs.thread = thread;
   const saved = storedTabs(thread);
   const known = new Set(["file", "media", "terminal", "browser"]);
-  tabs.tabs = {};
+  tabs.tabs = inWorkspace() ? { chat: { kind: "terminal", title: t("Terminal") } } : {};
   tabs.order = ["chat"];
   tabs.seq = 0;
   tabs.ratio = 0.5;
@@ -7064,8 +7081,11 @@ function syncTabs(thread) {
   showTab(tabs.active);
 }
 
+/// A project's own checkout has a shell where a conversation has its chat.
+const inWorkspace = () => String(tabs.thread || "").startsWith("ws:");
+
 function tabTitle(id) {
-  if (id === "chat") return t("Chat");
+  if (id === "chat") return t(inWorkspace() ? "Terminal" : "Chat");
   const tab = tabs.tabs[id];
   if (tab.kind === "terminal" || tab.kind === "browser") return tab.title || t(tab.kind === "browser" ? "Browser" : "Terminal");
   return tab.kind === "media" ? tab.name : tab.path.split("/").pop();
@@ -7094,7 +7114,7 @@ function drawStrip(g) {
     if (tabs.groups.length === 2 && id === group.active) button.dataset.pane = g === tabs.focus ? "focus" : "shown";
     if (tab?.preview) button.dataset.preview = "true";
     if (tab && tab.kind !== "terminal") button.title = tab.kind === "media" ? tab.name : tab.kind === "browser" ? tab.url || tab.title : tab.path;
-    const icon = id === "chat" ? "message" : { media: "eye", terminal: "terminal", browser: "globe" }[tab.kind] || "file";
+    const icon = id === "chat" ? (inWorkspace() ? "terminal" : "message") : { media: "eye", terminal: "terminal", browser: "globe" }[tab.kind] || "file";
     button.append(drawn(icon));
     button.append(text("span", "doc-name", tabTitle(id)));
     button.addEventListener("click", () => showTab(id));
@@ -7166,15 +7186,17 @@ function drawStrip(g) {
 const clampRatio = (r) => Math.max(0.2, Math.min(0.8, Number.isFinite(r) ? r : 0.5));
 
 /// What a tab draws into: the chat's own element, or its panel.
-const elementOf = (id) => (id === "chat" ? el("split") : tabs.panels.get(id));
+const elementOf = (id) => (id === "chat" && !inWorkspace() ? el("split") : tabs.panels.get(id));
 
 /// Puts each side's tab on screen, in its own body, the left side a share of the width.
 function layoutGroups() {
   const two = tabs.groups.length === 2;
   el("group-1").hidden = !two;
   el("pane-handle").hidden = !two;
+  // With no conversation there is no chat to show: the base tab is a shell.
+  el("split").hidden = inWorkspace();
   tabs.groups.forEach((group, g) => {
-    if (group.active && group.active !== "chat" && !tabs.panels.has(group.active)) buildPanel(group.active);
+    if (group.active && (group.active !== "chat" || inWorkspace()) && !tabs.panels.has(group.active)) buildPanel(group.active);
     for (const id of group.ids) {
       const node = elementOf(id);
       if (!node) continue;
@@ -8193,6 +8215,63 @@ async function answerAt(id) {
   el("timeline").querySelectorAll?.(".ask")?.[0]?.scrollIntoView?.({ block: "center" });
 }
 
+/// A project's own checkout, looked at without a conversation: the window's tabs and panes, with a
+/// shell in the folder where the chat would be. It is named `ws:<project>`, as a thread is named by
+/// its id, and whatever needs a folder is given the project's root (`View::cwd`).
+const workspaceId = (ws) => `ws:${ws.project}`;
+
+async function openWorkspace(project) {
+  leaveOffice();
+  closeSettings();
+  closeMember();
+  state.members = [];
+  state.workspace = { project: project.id, root: project.root, name: project.name };
+  state.thread = null;
+  // What a checkout's changes are is what is in its tree, not what a turn said.
+  state.scope = "unstaged";
+  await refresh(true);
+}
+
+/// The panes that mean something with no conversation: the changes and the files. Team, work and
+/// the plan are a conversation's.
+function paneMode(workspace) {
+  for (const tab of document.querySelectorAll(".tab")) {
+    tab.hidden = workspace && !["changes", "files"].includes(tab.dataset.pane);
+  }
+  const shown = [...document.querySelectorAll(".tab")].find((tab) => tab.getAttribute("aria-selected") === "true");
+  if (workspace && shown?.hidden) showPane("changes");
+}
+
+async function drawWorkspace() {
+  const ws = state.workspace;
+  const project = state.projects.find((p) => p.id === ws.project);
+  if (!project) {
+    state.workspace = null;
+    return;
+  }
+  ws.root = project.root;
+  ws.name = project.name;
+  // The checkout's own branch, from a conversation that has worked in it, else from the folder.
+  const branch = project.threads.find((th) => !th.worktree && th.cwd === project.root)?.branch || project.branch;
+  paneMode(true);
+  const id = workspaceId(ws);
+  const view = { thread: { id, project: project.name, branch, cwd: project.root, status: "idle", title: "", worktree: null }, seats: [], items: [], files: [] };
+  el("thread-where").textContent = `${project.name} · ${branch || "—"}`;
+  el("thread-title").textContent = t("Primary checkout");
+  el("thread-status").textContent = "";
+  el("threads-ctl").hidden = true;
+  el("interrupt").hidden = true;
+  state.cwd = project.root;
+  state.where = `${project.name} · ${branch || "—"}`;
+  state.view = view;
+  state.said = [];
+  state.members = [];
+  if (state.tree.thread !== id) state.tree = freshTree(id);
+  syncTabs(id);
+  drawChanges(view);
+  if (filesShown() && !state.tree.dirs.has("")) await drawFiles(true);
+}
+
 async function select(id) {
   leaveOffice();
   closeSettings();
@@ -8200,6 +8279,7 @@ async function select(id) {
     closeMember();
     state.members = [];
   }
+  state.workspace = null;
   state.thread = id;
   await call("seen", { thread: id });
   await refresh(true);
@@ -8250,7 +8330,9 @@ async function refresh(full) {
   // Not awaited: the check runs `node --version` and asks the login shell, and the
   // conversation should not wait a second for it. The dialog opens over whatever is drawn.
   checkSetup();
-  if (!state.thread) {
+  // A conversation chosen by any route leaves the checkout; none is chosen for one that is open.
+  if (state.workspace && state.thread) state.workspace = null;
+  if (!state.thread && !state.workspace) {
     state.thread = state.projects.flatMap((p) => p.threads)[0]?.id || null;
     // A thread chosen here was not on screen a moment ago, whatever the feed said moved:
     // drawing the list without drawing the conversation leaves a window that lists one
@@ -8266,6 +8348,11 @@ async function refresh(full) {
     drawOffice();
   }
 
+  if (state.workspace) {
+    if (full) await drawWorkspace();
+    return;
+  }
+  paneMode(false);
   if (!state.thread) {
     el("thread-title").textContent = "Nothing selected";
     el("timeline").replaceChildren(
@@ -8380,7 +8467,7 @@ el("new-thread").addEventListener("click", async (event) => {
   closeFolders();
   const open = state.projects.flatMap((p) => p.threads.map((t) => [p, t]))
     .find(([, t]) => t.id === state.thread);
-  const root = open?.[0].root ?? state.folders[0]?.root;
+  const root = open?.[0].root ?? state.workspace?.root ?? state.folders[0]?.root;
   await (root ? startIn(root) : askSpawn(null, null, false));
 });
 

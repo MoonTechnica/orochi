@@ -98,6 +98,10 @@ pub struct Prompt {
     pub workspace: Option<String>,
 }
 
+/// What the window puts before a project's id to name its own checkout, as it names a thread by
+/// the thread's id: `ws:<project>` (`View::cwd`).
+pub const WORKSPACE: &str = "ws:";
+
 /// A folder a thread can be started in: one the store already knows about.
 #[derive(Debug, Clone, Serialize)]
 pub struct Folder {
@@ -1238,6 +1242,17 @@ impl Client {
     }
 
     pub fn cwd(&self, thread: &str) -> Result<std::path::PathBuf> {
+        // A project's own checkout is looked at without a conversation in it: the window names it
+        // `ws:<project>`, and whatever needs a folder (a shell, the file tree, the changes) is
+        // given the project's root as it would be given a thread's.
+        if let Some(project) = thread.strip_prefix(WORKSPACE) {
+            let root: String = self.activity.connection().query_row(
+                "SELECT root FROM projects WHERE id=?1",
+                [project],
+                |r| r.get(0),
+            )?;
+            return Ok(std::path::PathBuf::from(root));
+        }
         let cwd: String = self.activity.connection().query_row(
             "SELECT cwd FROM threads WHERE id=?1",
             [thread],

@@ -4052,6 +4052,63 @@ async function newTerminal(el) {
   await settle(40);
 }
 
+test("a project's own checkout opens with a shell where the chat would be, keeping the tabs and the panes that mean something", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  project.threads = [];
+  project.branch = "main";
+  const { el, calls, window } = await open({
+    sidebar: [project], thread: null, ...tree(),
+    term_open: { id: "term-9", shell: "zsh" }, term_write: null, term_resize: null, term_close: null,
+  });
+  const terms = fakeXterm(window);
+  fakeChannelAndEvents(window);
+  el("projects").querySelectorAll(".place-head")[0].dispatch("click");
+  await settle(80);
+
+  // The base tab is a shell, and the chat is not on the screen.
+  const base = el("doc-tabs").querySelectorAll(".doc-tab")[0];
+  assert.match(base.render(), /Terminal/);
+  assert.doesNotMatch(base.render(), /Chat/);
+  assert.equal(base.querySelectorAll(".doc-close").length, 0, "the base tab is never closed, as the chat never was");
+  assert.equal(el("split").hidden, true, "no chat where there is no conversation");
+  // The shell is started in the project's folder, named as a thread is named.
+  const opened = calls.find(([name]) => name === "term_open");
+  assert.ok(opened, "a shell is started");
+  assert.equal(opened[1].thread, `ws:${project.id}`);
+  assert.equal(terms.length, 1);
+  // The tabs go on being tabs: another can be added beside it.
+  assert.ok(el("doc-tabs").querySelectorAll(".doc-new").length > 0);
+  // The side holds what a checkout has: the changes and the files, not a conversation's team.
+  const visible = el("tabs").querySelectorAll(".tab").filter((tab) => !tab.hidden).map((tab) => tab.dataset.pane);
+  assert.deepEqual(visible, ["changes", "files"]);
+  assert.match(el("thread-where").textContent, /main/, "named by its branch");
+});
+
+test("choosing a conversation after the checkout brings the chat and every pane back", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  project.threads = project.threads.slice(0, 1).map((th) => ({ ...th, worktree: null, cwd: project.root }));
+  const { el, window } = await open({
+    sidebar: [project], thread: recorded.thread, ...tree(),
+    term_open: { id: "term-9", shell: "zsh" }, term_write: null, term_resize: null, term_close: null,
+  });
+  fakeXterm(window);
+  fakeChannelAndEvents(window);
+  const side = () => el("tabs").querySelectorAll(".tab").filter((tab) => !tab.hidden).map((tab) => tab.dataset.pane);
+  assert.equal(side().length, 5, "a conversation has every pane");
+
+  el("projects").querySelectorAll(".place-head")[0].dispatch("click");
+  await settle(80);
+  assert.match(el("doc-tabs").querySelectorAll(".doc-tab")[0].render(), /Terminal/);
+  assert.deepEqual(side(), ["changes", "files"]);
+
+  el("projects").querySelectorAll(".thread")[0].dispatch("click");
+  await settle(80);
+  const base = el("doc-tabs").querySelectorAll(".doc-tab")[0];
+  assert.match(base.render(), /Chat/, "the chat is back");
+  assert.equal(el("split").hidden, false);
+  assert.equal(side().length, 5, "and every pane");
+});
+
 test("a terminal tab starts the user's shell in the conversation's folder, and what is typed reaches it", async () => {
   const { el, calls, window } = await open({ term_open: { id: "term-7", shell: "zsh" }, term_write: null, term_resize: null, term_close: null });
   const terms = fakeXterm(window);

@@ -549,6 +549,21 @@ fn the_changes_pane_reads_the_working_tree_as_well_as_what_was_recorded() {
         1,
         "and the branch scope is everything since the merge base"
     );
+
+    // A project's own checkout is read the same way with no conversation in it: the window names
+    // it by the project, and the folder is the project's root.
+    let folder = client.cwd(&thread).unwrap();
+    let project = client
+        .sidebar(20, false)
+        .unwrap()
+        .into_iter()
+        .find(|p| std::path::Path::new(&p.root) == folder)
+        .expect("the project the conversation is in")
+        .id;
+    let own = format!("{}{project}", view::WORKSPACE);
+    assert_eq!(client.cwd(&own).unwrap(), folder);
+    assert_eq!(client.tree_files(&own, "staged").unwrap().len(), 1);
+    assert!(client.cwd("ws:no-such-project").is_err());
 }
 
 /// Comments on a diff become the next message, rather than a review mechanism of their own.
