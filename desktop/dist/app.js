@@ -365,7 +365,6 @@ const WORDS = {
     messages: "メッセージ",
     done: "完了",
     everyone: "全員",
-    "Off duty": "待機中",
     lead: "リード",
     "The office is quiet. Start a thread to put someone to work.": "オフィスは静かです。スレッドを始めて仕事を任せましょう。",
     "Nobody is here yet.": "まだ誰もいません。",
@@ -7544,7 +7543,6 @@ for (const g of [0, 1]) {
 // each sub-agent its CLI runs. It reads what the sidebar and the live seats already carry, so
 // it costs no query of its own.
 const ROOM_ORDER = { needs_you: 0, working: 1, queued: 2, background: 3, held: 4 };
-const QUIET_ROOMS = 8;
 
 function leaveOffice() {
   if (!state.office) return;
@@ -8071,7 +8069,6 @@ function drawOffice() {
   const active = all.filter(busy);
   stepOffice(all, active);
   const wrapped = [...state.officeWrap].map(([id, w]) => ({ ...(all.find((th) => th.id === id) || w.thread), where: all.find((th) => th.id === id)?.where || w.thread.where, wrap: w.kind }));
-  const quiet = all.filter((th) => !busy(th) && !state.officeWrap.has(th.id)).slice(0, QUIET_ROOMS);
   const tasks = state.tasks || [];
   const sig = JSON.stringify([
     [...state.officeWrap].map(([id, w]) => [id, w.kind]),
@@ -8143,24 +8140,6 @@ function drawOffice() {
     const rooms = text("div", "rooms plan");
     for (const th of rows) rooms.append(room(th, th.wrap || null));
     level.append(rooms);
-    host.append(level);
-  }
-  if (quiet.length) {
-    const level = text("section", "level quiet");
-    level.append(text("h3", null, t("Off duty")));
-    const row = text("div", "off-duty");
-    for (const th of quiet) {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "chip";
-      const lead = members(th)[0];
-      chip.append(face(lead?.agent, lead?.provider));
-      chip.append(text("span", "name", th.title || t("New conversation")));
-      chip.append(text("span", "where", th.where));
-      chip.addEventListener("click", () => select(th.id));
-      row.append(chip);
-    }
-    level.append(row);
     host.append(level);
   }
   // After the layout has settled, so the avatars are where the lines are drawn to.

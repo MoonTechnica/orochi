@@ -1631,11 +1631,6 @@ button:disabled { opacity: .5; cursor: default; }
 .intern { display: flex; align-items: center; gap: 4px; max-width: 100%; font-size: 9px; color: var(--muted); }
 .intern .dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--text); flex: none; animation: blink 1.2s steps(2) infinite; }
 .intern .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.off-duty { display: flex; flex-wrap: wrap; gap: 6px; }
-.off-duty .chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; opacity: .75; max-width: 260px; }
-.off-duty .chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.off-duty .chip .where { color: var(--muted); font-size: 11px; }
-.off-duty .chip:hover { opacity: 1; }
 .office-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 0; color: var(--muted); }
 .office-empty .floor { padding-top: 10px; min-height: 0; }
 #office-btn { display: flex; align-items: center; justify-content: space-between; }

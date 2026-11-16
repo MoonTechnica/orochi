@@ -1259,10 +1259,22 @@ test("comments on a diff collect, and go as one message", async () => {
 
 /// Chooses a conversation from the office, the way a person does on opening the window.
 async function select_(el) {
-  const row = el("office-body").querySelectorAll(".chip")[0] || el("office-body").querySelectorAll(".room-head")[0];
+  // A conversation is chosen from its room in the office, or from the list at the side.
+  const row = el("office-body").querySelectorAll(".room-head")[0] || el("projects").querySelectorAll(".thread")[0];
   if (row) row.dispatch("click");
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
+
+test("the office shows who is at work, and leaves the conversations that are not to the list at the side", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  for (const th of project.threads) th.status = "idle";
+  const { el } = await open({ sidebar: [project] });
+  const office = el("office-body").render();
+  assert.doesNotMatch(office, /Off duty|待機中/, "a second list of conversations in the office");
+  assert.equal(el("office-body").querySelectorAll(".chip").length, 0);
+  // They are all in the list at the side, which is where a conversation is chosen from.
+  assert.ok(el("projects").querySelectorAll(".thread").length >= project.threads.length);
+});
 
 test("a thread that appears while the window is open is drawn, not just listed", async () => {
   // The window opens on an empty store, as a first run does.
