@@ -14,7 +14,7 @@ window, §8 for Orochi inside Orca); this document is the evidence that design c
 | Orca 1.4.215, installed at `/Applications/Orca.app` | The main process (`app.asar` → `out/main/index.js`) for how status reaches the window; `orca --help` for its concepts |
 | Orca's bundled Japanese dictionary (`out/renderer/assets/ja-*.js`), flattened: 14 737 labels keyed by component | What every screen offers, by component name (`auto.components.<area>.<Component>`). Labels are quoted in Japanese as shown, with an English gloss |
 | Two screenshots of the user's Orca window (sidebar, a Claude Code pane, status bar) | What the labels look like assembled |
-| Orochi's desktop app, `desktop/dist/preview.html` rendered against `desktop/tests/*.json` in Chrome | Orochi's side of every comparison |
+| Orochi's desktop app, `desktop/src/preview.html` rendered against `desktop/tests/*.json` in Chrome | Orochi's side of every comparison |
 
 Nothing was checked by running Orca's features; a label proves a screen exists, not how well it
 works. Where a behavior is inferred from a label rather than seen, the row says so.

@@ -21,9 +21,9 @@ const recorded = {
 /// The window's script, read once and given a fresh scope per test. Importing it again would
 /// not do: an ES module is evaluated once per URL, so every test after the first would be
 /// looking at the first one's screen.
-const source = readFileSync(join(here, "../dist/app.js"), "utf8");
-const markup = readFileSync(join(here, "../dist/index.html"), "utf8");
-const css = readFileSync(join(here, "../dist/app.css"), "utf8");
+const source = readFileSync(join(here, "../src/app.js"), "utf8");
+const markup = readFileSync(join(here, "../src/index.html"), "utf8");
+const css = readFileSync(join(here, "../src/app.css"), "utf8");
 
 /// Loads the app with the recorded answers in place of a core, and returns what it drew.
 /// The one way to a settings page: the row at the foot, then its nav. Setup is a dialog the
@@ -205,7 +205,7 @@ test("the fixtures carry the fields the core actually sends", async () => {
   }
   // And the page reads no seat field the core does not send. `seat.` only: `s.` is any short
   // name in the file, and guessing at those is how a wrong field got read in the first place.
-  const source = readFileSync(join(here, "../dist/app.js"), "utf8");
+  const source = readFileSync(join(here, "../src/app.js"), "utf8");
   for (const [, field] of source.matchAll(/\bseat\.([a-z_]+)/g)) {
     assert.ok(field in seat, `the page reads seat.${field}, which is not sent`);
   }

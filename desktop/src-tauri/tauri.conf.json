@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.moon-technica.orochi",
   "build": {
-    "frontendDist": "../dist"
+    "frontendDist": "../src"
   },
   "app": {
     "windows": [

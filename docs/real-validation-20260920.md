@@ -117,7 +117,7 @@ updates as they are said rather than at the end of the turn.
 
 - **Antigravity and Gemini** remain unvalidated here, as in earlier records.
 - **The desktop window inside Tauri.** Its page was checked by rendering the same `app.js` and
-  `app.css` in a browser (`desktop/dist/preview.html`), which found and fixed four layout
+  `app.css` in a browser (`desktop/src/preview.html`), which found and fixed four layout
   defects; the packaged window uses the same WebKit but its own chrome, and has not been
   looked at.
 - **`collaborate` on real agents.** The seats of one chat turn are measured above; the
