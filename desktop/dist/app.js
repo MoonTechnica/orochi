@@ -7795,6 +7795,44 @@ function desk(thread, m) {
   return node;
 }
 
+/// The conversation's agents as an organization: the lead on top, each member under the lead that
+/// hired it, to any depth. A helper nobody is named as hiring hangs from the lead; a manager that
+/// is not (or no longer) there leaves its reports under the lead too, and a loop is cut.
+function chart(thread) {
+  const all = members(thread);
+  const heads = all.filter((m) => m.lead && !m.manager);
+  const root = heads[0];
+  const under = new Map();
+  const roots = [];
+  const taken = new Set();
+  for (const m of all) {
+    let boss = m.manager && all.find((o) => o !== m && sameRole(o.role, m.manager));
+    if (!boss && !heads.includes(m) && root) boss = root;
+    if (boss) {
+      if (!under.has(boss)) under.set(boss, []);
+      under.get(boss).push(m);
+    } else roots.push(m);
+  }
+  const build = (m, path) => {
+    taken.add(m);
+    const kids = (under.get(m) || []).filter((k) => !path.has(k)).flatMap((k) => build(k, new Set([...path, k])));
+    const seat = desk(thread, m);
+    if (!seat) return kids;
+    const branch = text("div", "branch");
+    branch.append(seat);
+    if (kids.length) {
+      const row = text("div", "kids");
+      row.append(...kids);
+      branch.append(row);
+    }
+    return [branch];
+  };
+  const out = roots.flatMap((m) => build(m, new Set([m])));
+  // Whatever a cycle left out is still somebody in the room.
+  for (const m of all) if (!taken.has(m)) out.push(...build(m, new Set([m])));
+  return out;
+}
+
 function room(thread, wrap = null) {
   const node = text("section", "room");
   node.dataset.status = wrap === "done" ? "done" : thread.status;
@@ -7810,15 +7848,64 @@ function room(thread, wrap = null) {
   head.addEventListener("click", () => select(thread.id));
   node.append(head);
   const floor = text("div", "floor");
-  for (const m of members(thread)) {
-    const seat = desk(thread, m);
-    if (seat) floor.append(seat);
-  }
+  const tree = text("div", "tree");
+  for (const branch of chart(thread)) tree.append(branch);
+  if (tree.children?.length) floor.append(tree);
   if (!floor.children?.length) floor.append(text("p", "empty", t("Nobody is here yet.")));
   node.append(floor);
   return node;
 }
 
+
+/// Each room takes as many columns as its chart needs, in the order the rooms come, and no more
+/// is done to fit them together: a gap beside a wide room is left alone. Where even the whole row
+/// is too narrow the chart is shrunk (`fitTrees`).
+const PACK_GAP = 22;
+function packRooms(host) {
+  for (const grid of host.querySelectorAll(".rooms.plan")) {
+    if (typeof getComputedStyle !== "function") break;
+    const tracks = getComputedStyle(grid).gridTemplateColumns?.split(" ").map(parseFloat).filter((n) => n > 0) || [];
+    const rooms = [...(grid.children || [])].filter((c) => c.classList?.contains("room"));
+    for (const room of rooms) {
+      room.style.gridColumn = "";
+      const tree = room.querySelector?.(".tree");
+      if (tree) {
+        tree.style.transform = "";
+        tree.style.margin = "";
+      }
+    }
+    if (!tracks.length) continue;
+    for (const room of rooms) {
+      const tree = room.querySelector(".tree");
+      if (!tree || !(tree.offsetWidth > 0)) continue;
+      const need = tree.offsetWidth + 24 + 4;
+      const span = Math.max(1, Math.min(tracks.length, Math.ceil((need + PACK_GAP) / (tracks[0] + PACK_GAP))));
+      if (span > 1) room.style.gridColumn = `span ${span}`;
+    }
+    fitTrees(grid);
+  }
+}
+
+/// Each chart is drawn at its natural size and shrunk, never past a legible 45%, when it is wider
+/// than its room; a transform leaves the layout box alone, so the room's height is taken back by
+/// hand. Beyond that it scrolls.
+function fitTrees(host) {
+  for (const floor of host.querySelectorAll(".floor")) {
+    const tree = [...(floor.children || [])].find((c) => c.classList?.contains("tree"));
+    if (!tree || typeof tree.offsetWidth !== "number") continue;
+    tree.style.transform = "";
+    tree.style.margin = "";
+    const style = getComputedStyle(floor);
+    const room = floor.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+    const wide = tree.offsetWidth;
+    if (!(room > 0) || !(wide > 0)) continue;
+    const scale = Math.max(0.45, Math.min(1, room / wide));
+    if (scale >= 1) continue;
+    tree.style.transformOrigin = "top left";
+    tree.style.transform = `scale(${scale})`;
+    tree.style.margin = `0 0 ${-(tree.offsetHeight * (1 - scale))}px ${Math.max(0, (room - wide * scale) / 2)}px`;
+  }
+}
 
 /// The lines: one per recent message, from the avatar that said it to each avatar it is for,
 /// with a small envelope travelling along it. Drawn over the whole office, so a line may leave
@@ -7828,6 +7915,7 @@ function drawWires() {
   const host = el("office-body");
   host.querySelectorAll?.(".wires")?.forEach?.((old) => old.remove?.());
   if (typeof host.getBoundingClientRect !== "function" || !state.office) return;
+  packRooms(host);
   const base = host.getBoundingClientRect();
   const desks = [...host.querySelectorAll(".desk")].filter((d) => d.dataset.thread);
   const centre = (d) => {
@@ -7841,6 +7929,24 @@ function drawWires() {
   svg.setAttribute("width", String(host.scrollWidth));
   svg.setAttribute("height", String(host.scrollHeight));
   svg.setAttribute("aria-hidden", "true");
+  // The chart's lines: from under a lead to the top of each report, in elbows.
+  for (const branch of host.querySelectorAll(".branch")) {
+    const head = [...branch.children].find((c) => c.classList?.contains("desk"));
+    const row = [...branch.children].find((c) => c.classList?.contains("kids"));
+    if (!head || !row) continue;
+    const box = head.getBoundingClientRect();
+    const x1 = box.left - base.left + host.scrollLeft + box.width / 2;
+    const y1 = box.bottom - base.top + host.scrollTop + 4;
+    const ends = [...row.children].map((kid) => {
+      const top = (kid.querySelector(".desk") || kid).getBoundingClientRect();
+      return [top.left - base.left + host.scrollLeft + top.width / 2, top.top - base.top + host.scrollTop - 4];
+    });
+    const bend = Math.min(...ends.map((e) => e[1])) - 22;
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", ends.map(([x2, y2]) => `M${x1},${y1} V${bend} H${x2} V${y2}`).join(" "));
+    path.setAttribute("class", "org-line");
+    svg.append(path);
+  }
   let drawn_ = 0;
   const now = Date.now();
   let pending = 0;

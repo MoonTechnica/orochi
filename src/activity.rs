@@ -370,6 +370,10 @@ pub struct AgentUse {
     pub background: bool,
     /// When it last took a seat.
     pub last_at: i64,
+    /// The lead that hired it, by name; none for the conversation's own lead and for a helper
+    /// the lead started itself, which the chart hangs from the lead.
+    #[serde(default)]
+    pub manager: Option<String>,
 }
 
 /// A project section of the sidebar, with the threads under it.
@@ -1254,7 +1258,8 @@ impl Activity {
     fn agents_by_thread(&self) -> Result<std::collections::BTreeMap<String, Vec<AgentUse>>> {
         let mut statement = self.connection.prepare(
             "SELECT tn.thread_id, s.role, a.agent, a.provider, a.model, count(*),
-                    sum(s.ended_at IS NULL), max(s.lead), max(s.background), max(s.started_at)
+                    sum(s.ended_at IS NULL), max(s.lead), max(s.background), max(s.started_at),
+                    max(s.manager)
              FROM seats s
              JOIN turns tn ON tn.id=s.turn_id
              JOIN attempts a ON a.seat_id=s.id
@@ -1276,6 +1281,7 @@ impl Activity {
                     lead: r.get::<_, i64>(7)? != 0,
                     background: r.get::<_, i64>(8)? != 0,
                     last_at: r.get(9)?,
+                    manager: r.get(10)?,
                 },
             ))
         })? {

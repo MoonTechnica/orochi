@@ -3583,6 +3583,24 @@ test("the office is the window's home: a team at work, a hand up for what needs 
   assert.match(stats, /1.*assistants/s);
 });
 
+test("the office draws a team as an organization: the lead on top, each member under who hired it", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const [first] = project.threads;
+  first.status = "working";
+  const seat = (role, lead, manager) => ({ role, agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead, background: !lead, last_at: 1, manager: manager || null });
+  first.agents = [seat("lead", true), seat("frontend-lead", false), seat("server-lead", false, "lead"), seat("api-engineer", false, "server-lead")];
+  const { el } = await open({ sidebar: [project] });
+  const branches = el("office-body").querySelectorAll(".branch");
+  assert.equal(branches.length, 4, "every member is a branch of the chart");
+  const roles = (node) => node.querySelectorAll(".desk").map((d) => d.dataset.role);
+  const top = branches[0];
+  assert.deepEqual(roles(top), ["lead", "frontend-lead", "server-lead", "api-engineer"], "the lead's branch holds everyone");
+  const kids = top.querySelectorAll(".kids")[0];
+  assert.deepEqual(kids.querySelectorAll(".desk").map((d) => d.dataset.role).slice(0, 2), ["frontend-lead", "server-lead"], "a lead's reports sit side by side under it");
+  const server = branches.find((b) => b.querySelectorAll(".desk")[0]?.dataset.role === "server-lead");
+  assert.deepEqual(roles(server), ["server-lead", "api-engineer"], "and a lead of leads has its own reports one level further down");
+});
+
 test("the office draws who speaks to whom, across rooms, and what is addressed to a seat marks it", async () => {
   const project = structuredClone(recorded.sidebar[0]);
   const [first, second] = project.threads;
