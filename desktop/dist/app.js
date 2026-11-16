@@ -3530,9 +3530,16 @@ function drawStatus() {
   host.append(again);
   const byAgent = new Map();
   for (const row of state.agents) {
-    const known = byAgent.get(row.agent) || { agent: row.agent, cooling: 0, window: null };
+    const known = byAgent.get(row.agent) || { agent: row.agent, cooling: 0, window: null, own: [] };
     if (row.model === "*" && row.cooling > known.cooling) known.cooling = row.cooling;
-    for (const [, remaining, reset] of row.windows || []) {
+    // The meter is the account's own allowance; a window that does not route (Claude's
+    // Fable week) is one model's, so it is named in the tooltip and never taken for the account's.
+    known.own = [];
+    for (const [bucket, remaining, reset, routes] of row.windows || []) {
+      if (!routes) {
+        known.own.push(`${bucket} ${Math.round((1 - remaining) * 100)}%`);
+        continue;
+      }
       if (!known.window || remaining < known.window[0]) known.window = [remaining, reset];
     }
     byAgent.set(row.agent, known);
@@ -3560,6 +3567,7 @@ function drawStatus() {
       }
       node.dataset.tight = String(used >= 90);
     }
+    if (known.own.length) node.title = known.own.join(" · ");
     node.addEventListener("click", () => openPanel("agents"));
     host.append(node);
   }
@@ -5164,7 +5172,7 @@ async function drawSettingsPage(page, host) {
           [a.model === "*" ? "whole account" : a.model],
           [a.status],
           [a.cooling ? `${a.cooling}s` : "—", true],
-          [a.windows.length ? gauge(a.windows[0][1]) : "—"],
+          [a.windows.some((w) => w[3]) ? gauge(Math.min(...a.windows.filter((w) => w[3]).map((w) => w[1]))) : "—"],
         ]),
       ),
     );
