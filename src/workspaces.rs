@@ -147,6 +147,10 @@ pub struct Workspace {
     /// What the helper was for, which names its commit and pull request.
     #[serde(default)]
     pub title: String,
+    /// The workspace this one was cut from and merges back into: a lead's own, where its
+    /// report works for a lead other than the one in the user's tree. None is the user's tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 pub const DEFAULT_TEMPLATE: &str = "{repository}/.orochi/sessions";
@@ -355,6 +359,24 @@ impl Workspaces {
         self.create_titled(name, "")
     }
     pub fn create_titled(&mut self, name: &str, title: &str) -> Result<PathBuf> {
+        self.create_under(name, title, None)
+    }
+    /// A workspace cut from `parent`'s worktree as it is now rather than from the user's tree:
+    /// the branch of a lead's work a report of that lead builds on, merged back there.
+    pub fn create_under(
+        &mut self,
+        name: &str,
+        title: &str,
+        parent: Option<&str>,
+    ) -> Result<PathBuf> {
+        let source = match parent {
+            None => self.source.clone(),
+            Some(parent) => self
+                .find(parent)
+                .with_context(|| format!("no workspace named `{parent}` to work from"))?
+                .root
+                .clone(),
+        };
         ensure!(
             !name.is_empty()
                 && name.len() <= 64
@@ -376,12 +398,12 @@ impl Workspaces {
             }
             ordinal += 1;
         };
-        let repository = PathBuf::from(git(&self.source, &["rev-parse", "--show-toplevel"])?);
-        let relative = self.source.strip_prefix(&repository)?;
-        let base = snapshot(&self.source)
-            .context("writable helpers require a Git repository with a commit")?;
+        let repository = PathBuf::from(git(&source, &["rev-parse", "--show-toplevel"])?);
+        let relative = source.strip_prefix(&repository)?;
+        let base =
+            snapshot(&source).context("writable helpers require a Git repository with a commit")?;
         git(
-            &self.source,
+            &source,
             &[
                 "worktree",
                 "add",
@@ -395,6 +417,7 @@ impl Workspaces {
             root: root.1.join(relative),
             base,
             title: title.trim().chars().take(80).collect(),
+            parent: parent.map(str::to_owned),
         });
         self.save()?;
         Ok(root.1.join(relative))
@@ -407,6 +430,52 @@ impl Workspaces {
     }
     pub fn names(&self) -> Vec<String> {
         self.workspaces.iter().map(|w| w.name.clone()).collect()
+    }
+    /// The top of the tree a workspace merges into: its parent's worktree, else the user's.
+    fn merge_top(&self, index: usize) -> Result<PathBuf> {
+        match &self.workspaces[index].parent {
+            Some(parent) => {
+                let parent = self
+                    .find(parent)
+                    .with_context(|| format!("the workspace `{parent}` it was cut from is gone"))?;
+                Ok(self.worktree(parent))
+            }
+            None => Ok(PathBuf::from(git(
+                &self.source,
+                &["rev-parse", "--show-toplevel"],
+            )?)),
+        }
+    }
+    /// Levels below the user's tree: 0 for a report of the lead there.
+    pub fn depth(&self, name: &str) -> usize {
+        let mut depth = 0;
+        let mut at = self.find(name).and_then(|w| w.parent.as_deref());
+        while let Some(parent) = at {
+            depth += 1;
+            at = self.find(parent).and_then(|w| w.parent.as_deref());
+            if depth > self.workspaces.len() {
+                break;
+            }
+        }
+        depth
+    }
+    /// Every workspace under `name`, at any depth.
+    pub fn descendants(&self, name: &str) -> Vec<String> {
+        let mut found = vec![];
+        let mut queue = vec![name.to_owned()];
+        while let Some(parent) = queue.pop() {
+            for child in self
+                .workspaces
+                .iter()
+                .filter(|w| w.parent.as_deref() == Some(parent.as_str()))
+            {
+                if !found.contains(&child.name) {
+                    found.push(child.name.clone());
+                    queue.push(child.name.clone());
+                }
+            }
+        }
+        found
     }
     /// The worktree itself (`root` is the directory inside it the session works in).
     fn worktree(&self, workspace: &Workspace) -> PathBuf {
@@ -455,17 +524,25 @@ impl Workspaces {
         };
         match how {
             Finish::Discard => keep(&mut closed, self),
-            Finish::Merge => match self.merge(&worktree, &base, &head, name) {
-                Ok((merged, conflicts)) if conflicts.is_empty() => closed.merged = merged,
-                Ok((_, conflicts)) => {
-                    closed.conflicts = conflicts;
-                    keep(&mut closed, self);
+            Finish::Merge => {
+                match self.merge(&worktree, &base, &head, name, &self.merge_top(index)?) {
+                    Ok((merged, conflicts)) if conflicts.is_empty() => closed.merged = merged,
+                    Ok((_, conflicts)) => {
+                        closed.conflicts = conflicts;
+                        keep(&mut closed, self);
+                    }
+                    Err(error) => {
+                        closed.error = Some(format!("{error:#}"));
+                        keep(&mut closed, self);
+                    }
                 }
-                Err(error) => {
-                    closed.error = Some(format!("{error:#}"));
-                    keep(&mut closed, self);
-                }
-            },
+            }
+            Finish::Pr if self.workspaces[index].parent.is_some() => {
+                closed.error = Some(
+                    "only a report of the lead in the user's tree can open a pull request; a sub-lead's work reaches it through its manager's merge".into(),
+                );
+                keep(&mut closed, self);
+            }
             Finish::Pr => {
                 if let Err(error) =
                     self.pull_request(&worktree, &base, &head, name, &title, tools, &mut closed)
@@ -504,7 +581,10 @@ impl Workspaces {
     /// is merged unasked, and nothing is lost.
     pub fn close_all(&mut self, tools: &Tools) -> Result<Vec<Closed>> {
         let mut closed = vec![];
-        for name in self.names() {
+        // A report is closed before the lead whose worktree it was cut from.
+        let mut names = self.names();
+        names.sort_by_key(|name| std::cmp::Reverse(self.depth(name)));
+        for name in names {
             match self.close(&name, Finish::Discard, tools, "") {
                 Ok(mut result) => {
                     result.how = "closed".into();
@@ -545,9 +625,9 @@ impl Workspaces {
         base: &str,
         head: &str,
         name: &str,
+        top: &Path,
     ) -> Result<(Vec<String>, Vec<String>)> {
         use crate::collaboration::{Change, Content, Entry, commit, entry, merge_text};
-        let top = PathBuf::from(git(&self.source, &["rev-parse", "--show-toplevel"])?);
         let mut changes = vec![];
         let mut conflicts = vec![];
         for (status, path) in changed(worktree, base, head)? {
@@ -620,7 +700,7 @@ impl Workspaces {
         if !conflicts.is_empty() {
             return Ok((vec![], conflicts));
         }
-        let written = commit(&top, &changes.iter().collect::<Vec<_>>())?;
+        let written = commit(top, &changes.iter().collect::<Vec<_>>())?;
         Ok((
             written.iter().map(|p| p.display().to_string()).collect(),
             vec![],

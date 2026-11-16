@@ -3768,6 +3768,11 @@ impl Session<'_> {
 
     /// Splits complex work regardless of its deliverable: plan, do the work, then check it.
     fn steps(&mut self, message: &Message, task: &TaskDescriptor) -> Vec<usize> {
+        // With `manager.drive = "lead"` the lead divides the work; only an explicit team
+        // request (`/team`) still runs Orochi's own phases.
+        if self.config.manager.drive == "lead" && message.steps == Steps::Auto {
+            return vec![];
+        }
         let steps = workflow::steps(message.steps, task);
         if !steps.is_empty() && message.steps == Steps::Auto {
             let names: Vec<_> = steps.iter().map(|i| Phase::new(*i, task).name).collect();
@@ -4167,6 +4172,10 @@ impl Session<'_> {
         if phase.is_some_and(|p| p.stage != IMPLEMENT) {
             seats[0].writes = false;
         }
+        // The seat that holds the whole request is the lead, whatever kind of work it is.
+        if self.config.manager.drive == "lead" && phase.is_none() && seats[0].writes {
+            seats[0].name = "lead";
+        }
         // A seat is a whole session and costs like one however small the work turns out to be.
         if seats.len() > 1
             && !crate::router::roles::worth_seating(self.config, self.store, &profile)
@@ -4324,6 +4333,28 @@ impl Session<'_> {
                 task = format!("{block}\n\n{task}");
             }
         }
+        if own_session {
+            // What other projects said before this console started is heard by the first turn.
+            if let Some(feed) = self.feed.as_ref()
+                && let Ok(mail) = feed.mailbox.take_project_mail(&feed.channel)
+            {
+                for (from, body) in mail {
+                    self.manager
+                        .project_mail(&from, crate::context::bounded(&body, 4_000), 0);
+                }
+            }
+            let held = self.manager.held();
+            if !held.is_empty() {
+                task = format!("{}\n\n{task}", held.join("\n\n"));
+            }
+        }
+        // The whole request is the lead's to divide; it is told so once, with its session.
+        if resume.is_none() && own_session && self.config.manager.drive == "lead" {
+            task = format!(
+                "{}\n\nThe user's request:\n{task}",
+                crate::org::lead_brief(&self.config.org)
+            );
+        }
         // First, not last. Appending it changes what a prompt ends with, which several tests
         // pin for their own reasons; and a small model told at the end to match the user's
         // language, after pages of English instructions, answered in English anyway.
@@ -4385,9 +4416,13 @@ impl Session<'_> {
         // beside it, a guest turn and a discussion may not.
         let _delegation = (seats[0].writes && !guest)
             .then(|| {
-                crate::mailbox::delegate(
+                crate::mailbox::delegate_tier(
                     named.then_some(lead),
-                    self.config.manager.enabled && own_session,
+                    crate::mailbox::Tier {
+                        manager: self.config.manager.enabled && own_session,
+                        team: false,
+                        link: own_session && !self.config.org.links.is_empty(),
+                    },
                 )
             })
             .flatten();
@@ -5347,6 +5382,7 @@ fn helper_seat(
     title: &str,
     write: bool,
     continues: Option<&str>,
+    org: (Option<&str>, Option<&str>),
 ) -> Option<crate::activity::SeatRef> {
     recorded.and_then(|recorded| {
         let store = recorded.store();
@@ -5363,6 +5399,7 @@ fn helper_seat(
         let _ = store.seat_details(&seat, Some(title), true, "lead");
         // The name is the member, and a seat under a name that has had one is its next.
         let _ = store.seat_member(&seat, name, continues);
+        let _ = store.seat_org(&seat, org.0, org.1);
         Some(crate::activity::SeatRef {
             thread,
             turn,
@@ -5383,6 +5420,7 @@ fn grant<'a>(
     read_only: bool,
     decide: Decide<'_, 'a>,
 ) -> Vec<(String, String)> {
+    deliver_reports(feed, background, recorded);
     let ours: Vec<String> = crate::mailbox::ours()
         .into_iter()
         .map(|(id, _)| id)
@@ -5398,6 +5436,16 @@ fn grant<'a>(
         lead,
     } = decide;
     let lead = lead.as_str();
+    // What other projects' leads said to this one is heard like a helper's message.
+    if let Ok(mail) = feed.mailbox.take_project_mail(&feed.channel) {
+        for (from, body) in mail {
+            manager.project_mail(
+                &from,
+                crate::context::bounded(&body, 4_000),
+                env.config.org.link_wakes,
+            );
+        }
+    }
     let mut started = vec![];
     for request in requests {
         let refuse = |reason: &str| {
@@ -5426,26 +5474,54 @@ fn grant<'a>(
             );
             continue;
         }
+        // A lead of the organization asks as itself: its own turn's descriptor, its own
+        // worktree, and no lead's turn needs to be running.
+        let sub = background
+            .helpers
+            .iter()
+            .find(|h| h.name == request.requester_name && h.post.lead)
+            .map(|h| (h.name.clone(), h.descriptor.clone(), h.workspace.clone()));
+        let descriptor = match &sub {
+            Some((_, own, _)) => Some(own),
+            None => descriptor,
+        };
         let Some(descriptor) = descriptor else {
             refuse("only the agent leading a conversation can start helpers");
             continue;
         };
-        if read_only {
+        if read_only && sub.is_none() {
             refuse("this conversation changes nothing, so it has no helpers");
             continue;
         }
         let live = 1 + beside + background.len();
-        if live >= crate::router::roles::MAX_SEATS {
+        if !env.config.org.enabled && live >= crate::router::roles::MAX_SEATS {
             refuse(&format!("already {live} agents on this conversation"));
             continue;
         }
+        let hired = match background.org.hire(
+            &env.config.org,
+            sub.as_ref().map(|(name, ..)| name.as_str()),
+            request.payload["role"].as_str(),
+        ) {
+            Ok(role) => role,
+            Err(why) => {
+                refuse(&why);
+                continue;
+            }
+        };
+        let named = !hired.name.is_empty();
+        // A role says whether its holder writes; without one the lead says.
+        let write = if named { hired.writes } else { request.write };
         // What the person asked for outright is never held back for being small.
         let by_user = request.payload["user"].as_bool().unwrap_or(false);
-        if !by_user && !crate::router::roles::worth_seating(env.config, env.store, descriptor) {
+        if !by_user
+            && env.config.org.cost_gate
+            && !crate::router::roles::worth_seating(env.config, env.store, descriptor)
+        {
             refuse("work like this has cost less than a helper session costs here; do it yourself");
             continue;
         }
-        if request.write && !env.worktrees {
+        if write && !env.worktrees {
             refuse(
                 "worktrees are off for this conversation (/worktrees on), so do the work yourself",
             );
@@ -5492,11 +5568,12 @@ fn grant<'a>(
             }
         };
         let mut opened = None;
-        let workspace = if request.write {
+        let workspace = if write {
             if let Err(error) = hold_live(&env) {
                 refuse(&format!("cannot hold the session directory: {error:#}"));
                 continue;
             }
+            let from = sub.as_ref().and_then(|(_, _, root)| root.clone());
             match crate::workspaces::Workspaces::open(env.root, &env.workspace).and_then(
                 |mut work| {
                     // A worktree the member still has open is where it goes on.
@@ -5505,7 +5582,21 @@ fn grant<'a>(
                     {
                         return Ok((open.root.clone(), None));
                     }
-                    let root = work.create_titled(&name, &request.title)?;
+                    // A lead's report is cut from that lead's worktree, not the user's tree.
+                    let parent = match (&sub, &from) {
+                        (Some(_), Some(root)) => Some(
+                            work.workspaces
+                                .iter()
+                                .find(|w| &w.root == root)
+                                .map(|w| w.name.clone())
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("the lead's own worktree is gone")
+                                })?,
+                        ),
+                        (Some(_), None) => anyhow::bail!("the lead has no worktree of its own"),
+                        _ => None,
+                    };
+                    let root = work.create_under(&name, &request.title, parent.as_deref())?;
                     Ok((root, work.workspaces.last().cloned()))
                 },
             ) {
@@ -5533,8 +5624,12 @@ fn grant<'a>(
             ordinal,
             &name,
             &request.title,
-            request.write,
+            write,
             previous.as_ref().map(|(seat, _)| seat.as_str()),
+            (
+                sub.as_ref().map(|(name, ..)| name.as_str()),
+                named.then_some(hired.name.as_str()),
+            ),
         );
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
         // The worktree is a row from the moment it exists: a helper that never starts leaves
@@ -5583,20 +5678,77 @@ fn grant<'a>(
                 ),
             );
         }
+        let manager_name = sub.as_ref().map(|(name, ..)| name.clone());
+        let role = named.then_some(hired);
+        background.org.add(crate::org::Member {
+            name: name.clone(),
+            role: role.as_ref().map(|r| r.name.clone()),
+            parent: manager_name.clone(),
+            lead: role.as_ref().is_some_and(|r| r.lead),
+            writes: write,
+        });
+        let brief = role
+            .as_ref()
+            .map(|r| {
+                background.org.brief(
+                    &env.config.org,
+                    &name,
+                    r,
+                    manager_name.as_deref().unwrap_or(lead),
+                )
+            })
+            .unwrap_or_default();
+        let post = background::Post {
+            lead: role.as_ref().is_some_and(|r| r.lead),
+            // The merge tools are the lead in the user's tree's: a lead below it integrates
+            // with `finish_workspace`, and lists and stops only its own team.
+            manager: false,
+            team: role.as_ref().is_some_and(|r| r.lead),
+            link: role.as_ref().is_some_and(|r| r.lead) && !env.config.org.links.is_empty(),
+            parent: manager_name,
+            role,
+            brief,
+        };
+        let descriptor = descriptor.clone();
         background.start(
             env.clone(),
             lead,
             name.clone(),
             request.title.clone(),
             &task,
-            descriptor.clone(),
+            descriptor,
             seat,
             workspace,
             resume,
+            post,
         );
         started.push((name, request.title));
     }
     started
+}
+
+/// Posts the results of members whose manager is another member to that manager's inbox. A
+/// manager that has left the room hears nothing, and its report is dropped: whatever the
+/// member wrote is in its worktree, which the conversation's sweep keeps as a patch.
+fn deliver_reports(
+    feed: &Feed,
+    background: &mut background::Background<'_>,
+    recorded: Option<&Recorded>,
+) {
+    let thread = recorded.and_then(|r| r.thread.clone());
+    for finished in std::mem::take(&mut background.reports) {
+        let Some(manager) = finished.post.parent.clone() else {
+            continue;
+        };
+        let body = background::completion(std::slice::from_ref(&finished));
+        let _ = feed.mailbox.report(
+            &feed.channel,
+            thread.as_deref(),
+            &finished.name,
+            &manager,
+            &body,
+        );
+    }
 }
 
 /// Decides one of the manager's requests: a plan, a listing, a stop, a merge trial or an
@@ -5616,6 +5768,12 @@ fn decide_request<'a>(
     headless: bool,
 ) {
     let thread = recorded.and_then(|r| r.thread.clone());
+    // A lead below the top asks about, and stops, only its own team.
+    let sub: Option<String> = background
+        .helpers
+        .iter()
+        .find(|h| h.name == request.requester_name && h.post.lead)
+        .map(|h| h.name.clone());
     let text = |key: &str| {
         request.payload[key]
             .as_str()
@@ -5635,6 +5793,80 @@ fn decide_request<'a>(
             }
             Err(error) => refuse(&format!("{error:#}")),
         },
+        "projects" | "link" => {
+            let Some(recorded) = recorded else {
+                refuse("conversations are not recorded here, so no other project is known");
+                return;
+            };
+            let known = recorded.store().projects().unwrap_or_default();
+            let as_project = |(_, root, name): &(String, String, String)| crate::org::Project {
+                name: name.clone(),
+                root: root.clone(),
+            };
+            let Some(mine) = known
+                .iter()
+                .find(|(id, ..)| *id == feed.channel)
+                .map(as_project)
+            else {
+                refuse("this project is not recorded yet");
+                return;
+            };
+            let reachable: Vec<&(String, String, String)> = known
+                .iter()
+                .filter(|p| crate::org::linked(&env.config.org, &mine, &as_project(p)))
+                .collect();
+            if request.kind == "projects" {
+                answer(json!({
+                    "you": mine.name,
+                    "projects": reachable.iter().map(|(_, root, name)| json!({"project": name, "folder": root})).collect::<Vec<_>>(),
+                }));
+                return;
+            }
+            let wanted = text("project");
+            let Some((channel, _, name)) = reachable.iter().find(|(_, root, name)| {
+                wanted.eq_ignore_ascii_case(name)
+                    || wanted.trim_end_matches('/') == root.trim_end_matches('/')
+            }) else {
+                // An unlinked project and an unknown one read the same.
+                refuse(&format!(
+                    "`{wanted}` is not a project linked to this one (org.links); list_projects shows which are"
+                ));
+                return;
+            };
+            match feed
+                .mailbox
+                .send_project(channel, &mine.name, &text("body"))
+            {
+                Ok(()) => answer(json!({"sent": true, "to": name,
+                    "note": "its lead reads it between its turns; any answer reaches you as a message of its own"})),
+                Err(error) => refuse(&format!("{error:#}")),
+            }
+        }
+        "work" if sub.is_some() => {
+            let me = sub.as_deref().unwrap_or_default();
+            let team: Vec<Value> = background
+                .helpers
+                .iter()
+                .filter(|h| h.name != me && background.org.within(&h.name, Some(me)))
+                .map(|h| {
+                    json!({
+                        "name": h.name, "title": h.title, "role": h.post.role.as_ref().map(|r| r.name.as_str()),
+                        "reports_to": h.post.parent, "state": "working",
+                        "elapsed": span(h.started.elapsed()), "doing": h.doing, "worktree": h.workspace,
+                    })
+                })
+                .collect();
+            answer(json!({"team": team}));
+        }
+        "stop" if sub.is_some() => {
+            let name = text("name");
+            let me = sub.as_deref().unwrap_or_default();
+            if name != me && background.org.within(&name, Some(me)) && background.stop(&name) {
+                answer(json!({"stopped": name}));
+            } else {
+                refuse(&format!("no one named `{name}` is running in your team"));
+            }
+        }
         "work" => {
             let helpers: Vec<Value> = background
                 .helpers
@@ -5786,7 +6018,15 @@ fn settle<'a>(
                     taken.contains(n)
                 });
                 let title = format!("Resolve merge conflicts of {}", trial.workspace);
-                let seat = helper_seat(recorded, 100 + background.len(), &name, &title, true, None);
+                let seat = helper_seat(
+                    recorded,
+                    100 + background.len(),
+                    &name,
+                    &title,
+                    true,
+                    None,
+                    (None, None),
+                );
                 let descriptor = descriptor.unwrap_or_else(|| {
                     crate::router::profiler::profile("resolve merge conflicts", env.root)
                 });
@@ -5800,6 +6040,7 @@ fn settle<'a>(
                     seat,
                     Some(trial.root.clone()),
                     None,
+                    background::Post::default(),
                 );
                 manager.resolving(&name, &trial.id);
                 if let Some(t) = manager.trials.iter().find(|t| t.id == trial.id) {
@@ -5916,8 +6157,30 @@ fn finish(
         word => crate::workspaces::Finish::parse(word),
     }
     .unwrap_or(crate::workspaces::Finish::Merge);
-    let closed = crate::workspaces::Workspaces::open(env.root, &env.workspace)
-        .and_then(|mut work| work.close(&request.name, how, &tools(env.config, env.data), ""));
+    // A lead closes its own reports' worktrees; the lead in the user's tree closes those cut
+    // from its tree, and those of a lead that is gone.
+    let owner = background
+        .helpers
+        .iter()
+        .find(|h| h.name == request.requester_name && h.post.lead)
+        .and_then(|h| h.workspace.clone());
+    let closed =
+        crate::workspaces::Workspaces::open(env.root, &env.workspace).and_then(|mut work| {
+            if let Some(target) = work.find(&request.name) {
+                let mine = owner
+                    .as_ref()
+                    .and_then(|root| work.workspaces.iter().find(|w| &w.root == root))
+                    .map(|w| w.name.as_str());
+                let orphaned = target
+                    .parent
+                    .as_deref()
+                    .is_some_and(|p| !background.helpers.iter().any(|h| h.name == p));
+                if target.parent.as_deref() != mine && !(owner.is_none() && orphaned) {
+                    anyhow::bail!("`{}` is not one of your reports' worktrees", request.name);
+                }
+            }
+            work.close(&request.name, how, &tools(env.config, env.data), "")
+        });
     match closed {
         Ok(closed) => {
             if let Some(recorded) = recorded
@@ -6002,7 +6265,24 @@ fn on_helper(
                         &format!("  Background agent \"{name}\" was stopped by the user."),
                     ));
                 }
-                results.push(finished);
+                background.org.remove(&name);
+                // A lead that ends first leaves no report of its own running.
+                let orphans: Vec<String> = background
+                    .org
+                    .below(Some(&name))
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect();
+                for orphan in orphans {
+                    background.stop(&orphan);
+                }
+                // A report goes to the lead above it as a message; only the lead in the
+                // user's tree is woken by a turn of its own.
+                if finished.post.parent.is_some() {
+                    background.reports.push(finished);
+                } else {
+                    results.push(finished);
+                }
                 if background.is_empty() {
                     lines.push(format!(
                         "{} {}",

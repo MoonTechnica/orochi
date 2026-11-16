@@ -20,6 +20,7 @@ pub mod mcp;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod org;
 pub mod pane;
 pub mod places;
 pub mod policy;

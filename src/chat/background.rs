@@ -47,8 +47,27 @@ pub struct Env<'a> {
     pub live: std::sync::Arc<std::sync::Mutex<Option<crate::workspaces::Live>>>,
 }
 
+/// Where a helper sits in the organization (`docs/org-design.md`).
+#[derive(Clone, Default)]
+pub struct Post {
+    pub role: Option<crate::org::Role>,
+    /// The lead that hired it; none when the lead in the user's tree did.
+    pub parent: Option<String>,
+    /// The organization as this member must know it, written by Orochi.
+    pub brief: String,
+    /// It may start reports of its own, and with `manager` also plan, list, stop and merge
+    /// them, all within its own team.
+    pub lead: bool,
+    pub manager: bool,
+    /// A lead below the top: the listing and the stop of its own team.
+    pub team: bool,
+    /// May message the leads of linked projects.
+    pub link: bool,
+}
+
 pub struct Helper {
     pub name: String,
+    pub post: Post,
     pub title: String,
     pub started: Instant,
     /// The same moment on the wall clock, for the host's pane report.
@@ -94,6 +113,7 @@ pub enum Ending {
 /// A helper that has ended, with what it said.
 pub struct Finished {
     pub name: String,
+    pub post: Post,
     pub title: String,
     pub elapsed: Duration,
     /// When it started, on the wall clock, for the host's pane while its report waits.
@@ -133,6 +153,10 @@ pub struct Background<'a> {
     announced_at: Option<Instant>,
     /// How many have started since none were running: what "N agents finished" counts.
     pub group: usize,
+    /// Who works for whom (`docs/org-design.md`); the live members, as `helpers` are.
+    pub org: crate::org::Org,
+    /// Results of members whose manager is another member, waiting to be posted to it.
+    pub reports: Vec<Finished>,
 }
 
 impl<'a> Background<'a> {
@@ -171,12 +195,20 @@ impl<'a> Background<'a> {
         seat: Option<crate::activity::SeatRef>,
         workspace: Option<std::path::PathBuf>,
         resume: Option<String>,
+        post: Post,
     ) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let options = RunOptions {
             task: format!(
                 "{LANGUAGE}\n\n{}",
-                prompt(lead, &name, &title, task, workspace.as_deref())
+                prompt(
+                    post.parent.as_deref().unwrap_or(lead),
+                    &name,
+                    &title,
+                    task,
+                    workspace.as_deref(),
+                    &post
+                )
             ),
             descriptor: Some(descriptor.clone()),
             // A helper is asked for a part of the task, not the whole of it.
@@ -199,7 +231,23 @@ impl<'a> Background<'a> {
         };
         let run_root = workspace.clone().unwrap_or_else(|| env.root.to_path_buf());
         let left = seat.clone();
+        let offered = post.clone();
+        let hint = name.clone();
         let (run, abort) = abortable(async move {
+            // A lead of its own may ask for reports for as long as it runs.
+            let _delegation = offered
+                .lead
+                .then(|| {
+                    crate::mailbox::delegate_tier(
+                        Some(&hint),
+                        crate::mailbox::Tier {
+                            manager: offered.manager,
+                            team: offered.team,
+                            link: offered.link,
+                        },
+                    )
+                })
+                .flatten();
             let mut config = env.config.clone();
             if crate::sandbox::placement(env.data, env.root, config.sandbox.force)?.is_some() {
                 config.sandbox.session_root = Some(env.workspace.clone());
@@ -246,6 +294,7 @@ impl<'a> Background<'a> {
         self.group += 1;
         self.helpers.push(Helper {
             name,
+            post,
             title,
             started: Instant::now(),
             started_at: crate::pane::now_millis(),
@@ -408,6 +457,7 @@ impl<'a> Background<'a> {
             }
         }
         Some(Finished {
+            post: helper.post,
             workspace: helper.workspace,
             result: bounded_result(&helper.reply),
             name: helper.name,
@@ -455,6 +505,8 @@ impl<'a> Background<'a> {
         self.runs = FuturesUnordered::new();
         self.announce.clear();
         self.group = 0;
+        self.org.clear();
+        self.reports.clear();
         count
     }
 
@@ -523,23 +575,46 @@ fn first_line(text: &str) -> String {
         .collect()
 }
 
-/// A helper's own instructions: one part of the task, read only, and a report at the end.
-fn prompt(lead: &str, name: &str, title: &str, task: &str, workspace: Option<&Path>) -> String {
+/// A helper's own instructions: one part of the task, a report at the end, and, for a member
+/// of an organization, its role and where it sits.
+fn prompt(
+    lead: &str,
+    name: &str,
+    title: &str,
+    task: &str,
+    workspace: Option<&Path>,
+    post: &Post,
+) -> String {
+    let role = post
+        .role
+        .as_ref()
+        .map(|r| format!("Your role is `{}`. {}\n\n", r.name, r.instruction))
+        .unwrap_or_default();
+    let brief = if post.brief.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n\n", post.brief)
+    };
+    let others = if post.lead {
+        "You lead a team: start reports only with start_agent, wait for them with read_messages (their results arrive there as messages from `orochi`), integrate what you accept in your own worktree, and do not finish while any report is still working. Never start another Orochi."
+    } else {
+        "Never start another agent or another Orochi."
+    };
     if let Some(root) = workspace {
         return format!(
-            "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\nImplement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree; do not commit, merge or push — `{lead}` closes the worktree when your report is in, merging your changes or opening a pull request from them. Report changed files, checks and remaining issues. Never start another agent or another Orochi.\n\nYour task:\n{task}",
+            "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\n{role}{brief}Implement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree; do not commit, merge or push — `{lead}` closes the worktree when your report is in, merging your changes. Report changed files, checks and remaining issues. {others}\n\nYour task:\n{task}",
             root.display()
         );
     }
     format!(
         "You are `{name}`, working in the background for `{lead}` on one part of what the user \
-         asked: {title}.\n\nYou can read everything and change nothing: write tools are refused \
+         asked: {title}.\n\n{role}{brief}You can read everything and change nothing: write tools are refused \
          for this session. `{lead}` is not waiting on you turn by turn; your final reply is what \
          it receives, so end with the result — what you found, where, and what it means — in a \
          few short paragraphs. Use post (it is a reply in your thread) only for something `{lead}` \
          needs before you finish. When you need an answer from the user, post with @you in the \
          text and say plainly what you need from them: they are notified, and their reply \
-         reaches you through read_messages. Never start another agent or another Orochi.\n\n\
+         reaches you through read_messages. {others}\n\n\
          Your task:\n{task}"
     )
 }

@@ -1620,6 +1620,16 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                                 println!("next · {next}");
                             }
                         }
+                        let chart = team.chart();
+                        if team
+                            .members
+                            .iter()
+                            .any(|m| m.manager.is_some() || m.org_role.is_some())
+                        {
+                            for line in &chart {
+                                println!("{line}");
+                            }
+                        }
                         for workspace in &team.workspaces {
                             println!(
                                 "{}  {}  {}  {}{}",

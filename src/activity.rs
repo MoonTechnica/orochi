@@ -475,6 +475,9 @@ pub struct WorkspaceRow {
     pub trial: Option<String>,
     pub trial_state: Option<String>,
     pub trials: i64,
+    /// The lead that hired the member working here, and the role it was hired in.
+    pub manager: Option<String>,
+    pub org_role: Option<String>,
 }
 
 /// A merge trial as `v_merges` shows it.
@@ -500,6 +503,44 @@ pub struct Team {
     pub plan: Option<serde_json::Value>,
     pub workspaces: Vec<WorkspaceRow>,
     pub merges: Vec<MergeRow>,
+    /// Who is working, each with the lead above it: the organization as a tree to draw.
+    pub members: Vec<Member>,
+}
+
+impl Team {
+    /// The members as indented lines, each under the lead that hired it (`docs/org-design.md`).
+    pub fn chart(&self) -> Vec<String> {
+        fn walk(members: &[Member], manager: Option<&str>, depth: usize, lines: &mut Vec<String>) {
+            for member in members.iter().filter(|m| m.manager.as_deref() == manager) {
+                let role = member
+                    .org_role
+                    .as_deref()
+                    .map(|r| format!(" ({r})"))
+                    .unwrap_or_default();
+                let state = if member.live {
+                    "working"
+                } else {
+                    &member.state
+                };
+                lines.push(format!(
+                    "{}{}{role}  {state}{}",
+                    "  ".repeat(depth),
+                    member.name,
+                    member
+                        .title
+                        .as_deref()
+                        .map(|t| format!("  {t}"))
+                        .unwrap_or_default()
+                ));
+                if depth < 16 {
+                    walk(members, Some(&member.name), depth + 1, lines);
+                }
+            }
+        }
+        let mut lines = vec![];
+        walk(&self.members, None, 0, &mut lines);
+        lines
+    }
 }
 
 /// A thread a search found, with the words around the match when it was found by content.
@@ -539,6 +580,10 @@ pub struct Member {
     pub trial_state: Option<String>,
     /// What waits on the user: `asking`, `mention`, `worktree` or `trial`.
     pub needs: Option<String>,
+    /// The lead above it (none: a report of the lead in the user's tree) and the role it was
+    /// hired in (`docs/org-design.md`).
+    pub manager: Option<String>,
+    pub org_role: Option<String>,
 }
 
 /// One line of a member's thread.
@@ -1392,6 +1437,18 @@ impl Activity {
     /// started from a terminal and a thread started in the app land in one section of the
     /// sidebar and one room, and `root` is the main worktree rather than whichever worktree
     /// happened to be first.
+    /// Every project the user has not hidden, as `(id, root, name)`: the id is the mailbox
+    /// channel, so a project is addressed as its room is.
+    pub fn projects(&self) -> Result<Vec<(String, String, String)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, root, name FROM projects WHERE hidden_at IS NULL ORDER BY created_at",
+        )?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
     pub fn project_for(&self, root: &Path, salt: &str) -> Result<String> {
         let id = crate::mailbox::channel(root, salt);
         let main = crate::context::git(
@@ -1682,7 +1739,8 @@ impl Activity {
             .prepare(
                 "SELECT workspace_id, name, title, root, base, state, closed, created_at,
                         closed_at, seat_id, seat_state, agent, model, reasoning, started_at,
-                        ended_at, usage, reported, doing, trial_id, trial_state, trials
+                        ended_at, usage, reported, doing, trial_id, trial_state, trials,
+                        manager, org_role
                  FROM v_team WHERE thread_id=?1 ORDER BY created_at",
             )?
             .query_map([thread], |r| {
@@ -1709,6 +1767,8 @@ impl Activity {
                     trial: r.get(19)?,
                     trial_state: r.get(20)?,
                     trials: r.get(21)?,
+                    manager: r.get(22)?,
+                    org_role: r.get(23)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1741,6 +1801,7 @@ impl Activity {
             plan,
             workspaces,
             merges,
+            members: self.members(thread)?,
         })
     }
 
@@ -2034,7 +2095,7 @@ impl Activity {
         let mut statement = self.connection.prepare(
             "SELECT thread_id, name, seat_id, role, read_only, state, live, agent, provider, model,
                     reasoning, doing, reported, title, started_at, ended_at, seats, replies,
-                    last_reply_at, workspace_state, trial_state, needs
+                    last_reply_at, workspace_state, trial_state, needs, manager, org_role
              FROM v_members WHERE thread_id=?1 ORDER BY live DESC, started_at",
         )?;
         let rows = statement.query_map([thread], |r| {
@@ -2061,6 +2122,8 @@ impl Activity {
                 workspace_state: r.get(19)?,
                 trial_state: r.get(20)?,
                 needs: r.get(21)?,
+                manager: r.get(22)?,
+                org_role: r.get(23)?,
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
@@ -2107,6 +2170,15 @@ impl Activity {
         self.connection.execute(
             "UPDATE seats SET member=?2, continues=?3 WHERE id=?1",
             params![seat, member, continues],
+        )?;
+        Ok(())
+    }
+
+    /// Where a member sits in the organization: the lead that hired it and the role.
+    pub fn seat_org(&self, seat: &str, manager: Option<&str>, role: Option<&str>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE seats SET manager=?2, org_role=?3 WHERE id=?1",
+            params![seat, manager, role],
         )?;
         Ok(())
     }
@@ -2940,6 +3012,10 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("messages", "mentions", "TEXT"),
     ("messages", "broadcast", "INTEGER NOT NULL DEFAULT 0"),
     ("ui_state", "seen_mention", "INTEGER NOT NULL DEFAULT 0"),
+    // Where a member sits in the agent organization (`docs/org-design.md`): the lead above it
+    // (NULL for a report of the lead in the user's tree) and the role it was hired in.
+    ("seats", "manager", "TEXT"),
+    ("seats", "org_role", "TEXT"),
 ];
 
 /// Tables added since `USER_VERSION` 2, each created (and filled from what is already there)
@@ -3594,7 +3670,7 @@ SELECT s.id AS seat_id, tn.thread_id, s.turn_id, s.ordinal, s.role, s.lead, s.re
        (SELECT i.data FROM items i WHERE i.attempt_id=a.id AND i.kind='context'
          ORDER BY i.id DESC LIMIT 1) AS context,
        s.title, s.background, s.origin AS seat_origin, s.result IS NOT NULL AS reported,
-       s.member, s.continues
+       s.member, s.continues, s.manager, s.org_role
 FROM seats s
 JOIN turns tn ON tn.id=s.turn_id
 LEFT JOIN attempts a ON a.seat_id=s.id
@@ -3686,7 +3762,8 @@ SELECT w.id AS workspace_id, w.thread_id, w.name, w.title, w.root, w.base, w.sta
        (SELECT m.state FROM merges m WHERE m.thread_id=w.thread_id AND m.workspace=w.name
           AND m.created_at>=w.created_at ORDER BY m.n DESC LIMIT 1) AS trial_state,
        (SELECT count(*) FROM merges m WHERE m.thread_id=w.thread_id AND m.workspace=w.name
-          AND m.created_at>=w.created_at) AS trials
+          AND m.created_at>=w.created_at) AS trials,
+       r.manager, r.org_role
 FROM workspaces w
 LEFT JOIN v_roster r ON r.seat_id=w.seat_id;
 
@@ -3734,7 +3811,8 @@ SELECT l.thread_id, l.member AS name, l.seat_id, l.turn_id, l.role, l.read_only,
          WHEN (SELECT mg.state FROM merges mg WHERE mg.thread_id=l.thread_id
                 AND lower(mg.workspace)=lower(l.member)
                 ORDER BY mg.created_at DESC LIMIT 1)='clean' THEN 'trial'
-       END AS needs
+       END AS needs,
+       l.manager, l.org_role
 FROM v_roster l
 WHERE l.member IS NOT NULL
   AND l.seat_id=(SELECT f.seat_id FROM v_roster f WHERE f.thread_id=l.thread_id

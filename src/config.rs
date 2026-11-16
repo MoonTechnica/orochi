@@ -18,6 +18,7 @@ pub struct Config {
     pub decision: DecisionConfig,
     pub roles: RolesConfig,
     pub manager: ManagerConfig,
+    pub org: OrgConfig,
     pub workspaces: WorkspacesConfig,
     pub memory: MemoryConfig,
     pub learning: LearningConfig,
@@ -59,6 +60,7 @@ impl Default for Config {
             decision: DecisionConfig::default(),
             roles: RolesConfig::default(),
             manager: ManagerConfig::default(),
+            org: OrgConfig::default(),
             workspaces: WorkspacesConfig::default(),
             memory: MemoryConfig::default(),
             learning: LearningConfig::default(),
@@ -947,14 +949,83 @@ pub struct ManagerConfig {
     /// lets the lead's `apply_merge` apply a clean trial whose real checks passed, and asks
     /// about anything else.
     pub apply: String,
+    /// Who divides a complex request: `phases` is Orochi's own design → implement → review
+    /// split; `lead` hands the lead the whole request and lets it divide and delegate
+    /// (`docs/org-design.md`).
+    pub drive: String,
 }
 impl Default for ManagerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
             apply: "ask".into(),
+            drive: "phases".into(),
         }
     }
+}
+
+/// The shape of the agent organization a conversation may grow (`docs/org-design.md`). The
+/// defaults are today's flat team: only the lead in the user's tree starts helpers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OrgConfig {
+    /// Off: only the lead in the user's tree may start helpers, whatever a role says.
+    pub enabled: bool,
+    /// Levels below that lead: 1 is its own reports, 2 lets a report lead reports of its own.
+    pub max_depth: usize,
+    /// Live members of one conversation, at every level together.
+    pub max_members: usize,
+    /// Live direct reports of one lead, unless its role says fewer.
+    pub max_reports: usize,
+    /// How often one link wakes an idle lead in one conversation (`links`).
+    pub link_wakes: usize,
+    /// Whether a hire is also held to `roles.min_work_tokens` — refused where work like this
+    /// has measured cheaper than a helper's own session. Off leaves the limits above as the
+    /// only budget, which is what a lead running a real team wants.
+    pub cost_gate: bool,
+    /// Roles beyond the built-in ones, or replacing one of them by name.
+    pub roles: Vec<RoleConfig>,
+    /// Which projects may message which; without one nothing crosses a project.
+    pub links: Vec<LinkConfig>,
+}
+impl Default for OrgConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_depth: 1,
+            max_members: 5,
+            max_reports: 5,
+            link_wakes: 3,
+            cost_gate: true,
+            roles: vec![],
+            links: vec![],
+        }
+    }
+}
+
+/// One role of the organization: what a member is for, and whom it may hire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoleConfig {
+    pub name: String,
+    /// Joins the member's prompt after Orochi's own rules, never replacing them.
+    pub instruction: String,
+    /// Works in a worktree of its own and may change files.
+    pub writes: bool,
+    /// May start reports of its own.
+    pub lead: bool,
+    /// The roles it may hire; empty is any.
+    pub may_hire: Vec<String>,
+    /// Fewer direct reports than `org.max_reports`.
+    pub max_reports: Option<usize>,
+}
+
+/// A project that may send messages to another (`*` on one side means every project).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LinkConfig {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -982,6 +1053,57 @@ fn router_fraction() -> f64 {
 }
 fn router_output() -> u32 {
     512
+}
+
+impl OrgConfig {
+    fn validate(&self) -> Result<()> {
+        ensure!(self.max_depth >= 1, "org.max_depth must be at least 1");
+        ensure!(self.max_members >= 1, "org.max_members must be at least 1");
+        ensure!(self.max_reports >= 1, "org.max_reports must be at least 1");
+        let valid = |name: &str| {
+            !name.is_empty()
+                && name.len() <= 24
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        };
+        let known: Vec<&str> = crate::org::BUILTIN
+            .iter()
+            .map(|r| r.name)
+            .chain(self.roles.iter().map(|r| r.name.as_str()))
+            .collect();
+        for (index, role) in self.roles.iter().enumerate() {
+            ensure!(
+                valid(&role.name),
+                "org.roles name `{}` must be 1-24 characters of a-z, 0-9 and -",
+                role.name
+            );
+            ensure!(
+                !self.roles[..index].iter().any(|r| r.name == role.name),
+                "org.roles names `{}` twice",
+                role.name
+            );
+            ensure!(
+                role.max_reports.is_none_or(|n| n >= 1),
+                "org.roles `{}` max_reports must be at least 1",
+                role.name
+            );
+            for hired in &role.may_hire {
+                ensure!(
+                    known.contains(&hired.as_str()),
+                    "org.roles `{}` may_hire names `{hired}`, which is no role",
+                    role.name
+                );
+            }
+        }
+        for link in &self.links {
+            ensure!(
+                !link.from.trim().is_empty() && !link.to.trim().is_empty(),
+                "org.links needs both from and to"
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Config {
@@ -1139,6 +1261,11 @@ impl Config {
             matches!(self.manager.apply.as_str(), "ask" | "auto"),
             "manager.apply must be \"ask\" or \"auto\""
         );
+        ensure!(
+            matches!(self.manager.drive.as_str(), "phases" | "lead"),
+            "manager.drive must be \"phases\" or \"lead\""
+        );
+        self.org.validate()?;
         ensure!(
             matches!(self.workspaces.finish.as_str(), "merge" | "pr"),
             "workspaces.finish must be `merge` or `pr`"

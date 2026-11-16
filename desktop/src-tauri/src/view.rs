@@ -554,6 +554,9 @@ pub struct Talk {
     /// Milliseconds, as everything else the window reads.
     pub at: i64,
     pub mentions: Vec<String>,
+    /// Whether the peer it was sent to has read it (its read position is past it, or it has
+    /// left); none for a message addressed to no one in particular, which has no one to read it.
+    pub read: Option<bool>,
 }
 
 /// What one look at a thread found: whether the agent running it has gone, and whether there
@@ -1062,7 +1065,10 @@ impl Client {
         };
         let sql = format!(
             "SELECT m.id, m.project_id, m.via, m.sender_name, {ft}, {fr},
-                    m.recipient_name, {tt}, {tr}, m.body, m.sent_at, m.mentions
+                    m.recipient_name, {tt}, {tr}, m.body, m.sent_at, m.mentions,
+                    CASE WHEN m.recipient IN ('*', '') THEN NULL
+                         ELSE COALESCE((SELECT p.last_read >= m.id OR p.left_at IS NOT NULL
+                                          FROM peers p WHERE p.id = m.recipient), 1) END
              FROM messages m
              WHERE m.via <> 'user' AND m.sent_at >= ?1
              ORDER BY m.id DESC LIMIT ?2",
@@ -1089,6 +1095,7 @@ impl Client {
                     .get::<_, Option<String>>(11)?
                     .and_then(|json| serde_json::from_str(&json).ok())
                     .unwrap_or_default(),
+                read: r.get::<_, Option<i64>>(12)?.map(|v| v != 0),
             })
         })?;
         rows.map(|row| Ok(row?)).collect()

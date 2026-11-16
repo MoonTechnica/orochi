@@ -295,13 +295,22 @@ impl<'a> Manager<'a> {
             .count()
             + 1;
         let id_hint = format!("{workspace}-{n}");
+        // A lead's report merges into that lead's worktree, not the user's tree.
+        let target = match &found.parent {
+            Some(parent) => work
+                .find(parent)
+                .map(|w| w.root.clone())
+                .unwrap_or_else(|| env.root.to_path_buf()),
+            None => env.root.to_path_buf(),
+        };
         let (source, workspace_entry, directory) = (
-            env.root.to_path_buf(),
+            target,
             crate::workspaces::Workspace {
                 name: found.name.clone(),
                 root: found.root.clone(),
                 base: found.base.clone(),
                 title: found.title.clone(),
+                parent: found.parent.clone(),
             },
             env.workspace.clone(),
         );
@@ -665,6 +674,27 @@ impl<'a> Manager<'a> {
             via: "user".to_owned(),
         });
     }
+    /// What another project's lead said, heard between turns like a helper's message: past
+    /// `wakes` wakes from that project it waits for the lead's next turn instead.
+    pub fn project_mail(&mut self, from: &str, body: String, wakes: usize) {
+        let key = format!("project {from}");
+        let message = crate::mailbox::Message {
+            id: 0,
+            from: key.clone(),
+            to: "lead".to_owned(),
+            body,
+            sent_at: crate::types::now(),
+            thread: None,
+            mentions: vec![],
+            broadcast: false,
+            via: "mailbox".to_owned(),
+        };
+        if self.woke.get(&key).copied().unwrap_or(0) >= wakes {
+            self.later.push(message);
+        } else {
+            self.mail.push((message, Instant::now()));
+        }
+    }
     /// Gives the name back, for the lead's next session.
     pub fn release_inbox(&mut self) {
         if let Some(inbox) = self.inbox.take() {
@@ -705,6 +735,21 @@ impl<'a> Manager<'a> {
     }
     pub fn has_pending(&self) -> bool {
         !self.reports.is_empty() || !self.mail.is_empty()
+    }
+
+    /// What was held for the lead's next turn, whatever starts it: a message from another
+    /// project, or from a helper past its wake budget, reaches the lead on the person's next
+    /// message too, not only on a wake.
+    pub fn held(&mut self) -> Vec<String> {
+        self.later
+            .drain(..)
+            .map(|message| {
+                format!(
+                    "Message from `{}`, held for this turn:\n{}",
+                    message.from, message.body
+                )
+            })
+            .collect()
     }
 
     /// Takes everything waiting as the text of one turn, and which origin names it.

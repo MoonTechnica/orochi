@@ -1424,6 +1424,7 @@ fn a_worktree_is_a_row_from_open_to_closed_and_the_team_view_joins_its_seat_and_
         root: "/tmp/repo/.orochi/sessions/k/backend".into(),
         base: "abc123".into(),
         title: "Implement validation".into(),
+        parent: None,
     };
     activity
         .open_workspace(&thread, &workspace, Some(&seat))
@@ -1433,6 +1434,7 @@ fn a_worktree_is_a_row_from_open_to_closed_and_the_team_view_joins_its_seat_and_
         root: "/tmp/repo/.orochi/sessions/k/docs".into(),
         base: "abc123".into(),
         title: "Document the rules".into(),
+        parent: None,
     };
     activity.open_workspace(&thread, &docs, None).unwrap();
 
@@ -1519,6 +1521,7 @@ fn a_worktree_is_a_row_from_open_to_closed_and_the_team_view_joins_its_seat_and_
         root: "/tmp/repo/.orochi/sessions/k/cleanup/sub".into(),
         base: "abc123".into(),
         title: String::new(),
+        parent: None,
     };
     activity.open_workspace(&thread, &later, None).unwrap();
     let pruned = orochi::workspaces::Closed {

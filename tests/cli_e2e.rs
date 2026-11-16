@@ -731,6 +731,53 @@ fn team_runs_design_implement_and_review_as_separate_sessions() {
 }
 
 #[test]
+fn with_the_lead_driving_the_whole_request_goes_to_the_lead_instead_of_orochis_phases() {
+    let mut w = Workspace::new();
+    w.config.manager.drive = "lead".into();
+    success(&chat(&w, "rewrite the entire architecture from scratch\n"));
+    let prompts: Vec<_> = session_requests(&w)
+        .into_iter()
+        .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
+        .map(|r| r.2)
+        .collect();
+    // One turn, the lead's, carrying the request whole and the organization it may hire.
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(!prompts[0].contains("Plan the work first"));
+    assert!(
+        prompts[0].contains("how it divides is your decision"),
+        "{}",
+        prompts[0]
+    );
+    assert!(prompts[0].contains("`engineer` (writes"), "{}", prompts[0]);
+    let (brief, request) = (
+        prompts[0].find("how it divides").unwrap(),
+        prompts[0].find("The user's request:").unwrap(),
+    );
+    assert!(brief < request);
+    assert!(prompts[0][request..].contains("rewrite the entire architecture from scratch"));
+    // Only a configured organization offers leads to hire.
+    assert!(!prompts[0].contains("leads a team"), "{}", prompts[0]);
+
+    let mut w = Workspace::new();
+    w.config.manager.drive = "lead".into();
+    w.config.org.enabled = true;
+    w.config.org.max_depth = 3;
+    success(&chat(&w, "rewrite the entire architecture from scratch\n"));
+    let prompts: Vec<_> = session_requests(&w)
+        .into_iter()
+        .filter(|r| r.0 == "session/prompt" && !r.2.contains("you cannot, every write tool"))
+        .map(|r| r.2)
+        .collect();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("`lead` (writes, leads a team"),
+        "{}",
+        prompts[0]
+    );
+    assert!(prompts[0].contains("up to level 3"), "{}", prompts[0]);
+}
+
+#[test]
 fn chat_splits_only_the_work_that_needs_more_than_one_agent() {
     let w = Workspace::new();
     // A small request stays one turn; a whole-system rewrite is planned first.
@@ -3552,6 +3599,264 @@ fn thread_names_a_recorded_conversation_and_is_refused_anywhere_else() {
     assert!(
         !with_task.status.success(),
         "--thread continues a conversation; it is not a one-shot run"
+    );
+}
+
+#[test]
+fn a_lead_hires_a_lead_who_hires_an_engineer_and_the_work_merges_up_one_level_at_a_time() {
+    let mut w = Workspace::new();
+    let root = w.dir.path().join("repo");
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "user.email", "test@localhost"]);
+    std::fs::write(root.join("source.txt"), "baseline").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    w.config.mailbox.enabled = true;
+    w.config.org.enabled = true;
+    w.config.org.max_depth = 3;
+    w.config.org.max_members = 6;
+    w.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "org".into());
+    w.config.agents[0]
+        .env
+        .insert("MOCK_LEAD_DELAY".into(), "30".into());
+    w.config.agents[0]
+        .env
+        .insert("MOCK_OUT".into(), root.to_string_lossy().into_owned());
+    w.config.scheduler.prompt_timeout_secs = 90;
+    w.config.scheduler.discovery_timeout_secs = 20;
+    let output = chat(&w, "Build the API with a team\n");
+    success(&output);
+    let started: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("started.txt")).unwrap()).unwrap();
+    assert_eq!(started["started"], "api", "{started}");
+    // The lead's report was cut from the lead's tree and the lead's own from the user's.
+    let api = Path::new(started["workspace"].as_str().unwrap());
+    let hired: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("hired.txt")).unwrap_or_else(|_| {
+            let listing: Vec<_> = std::fs::read_dir(api)
+                .map(|d| d.flatten().map(|e| e.file_name()).collect())
+                .unwrap_or_default();
+            let errors =
+                std::fs::read_to_string(w.dir.path().join("agent.jsonl.err")).unwrap_or_default();
+            panic!(
+                "api never hired; files in {}: {listing:?}; fixture errors: {errors}",
+                api.display()
+            )
+        }))
+        .unwrap();
+    assert_eq!(hired["started"], "eng", "{hired}");
+    let heard = std::fs::read_to_string(root.join("heard.txt")).unwrap();
+    assert!(heard.contains("Background agent `eng`"), "{heard}");
+    let integrated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("integrated.txt")).unwrap()).unwrap();
+    assert!(
+        integrated["result"]["merged"]
+            .to_string()
+            .contains("endpoint.txt"),
+        "{integrated}"
+    );
+    // The engineer's file reached api's worktree, and only afterwards the user's tree.
+    let finished: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("finished.txt")).unwrap()).unwrap();
+    assert!(
+        finished["result"]["merged"]
+            .to_string()
+            .contains("endpoint.txt"),
+        "{finished}"
+    );
+    assert!(root.join("endpoint.txt").is_file(), "{finished}");
+    // The lead of a team is told where it sits and whom it may hire; its engineer is not
+    // told it may lead.
+    let prompt = std::fs::read_to_string(root.join("prompt-api.txt")).unwrap();
+    assert!(prompt.contains("You lead a team"), "{prompt}");
+    assert!(prompt.contains("Organization: you are `api`"), "{prompt}");
+    let engineer = std::fs::read_to_string(root.join("prompt-eng.txt")).unwrap();
+    assert!(!engineer.contains("You lead a team"), "{engineer}");
+    assert!(engineer.contains("reporting to `api`"), "{engineer}");
+    // A lead below the top lists and stops its own team and nothing more.
+    let offered = std::fs::read_to_string(root.join("offered-api.txt")).unwrap();
+    for tool in ["start_agent", "finish_workspace", "list_work", "stop_agent"] {
+        assert!(offered.contains(tool), "{offered}");
+    }
+    for tool in ["set_plan", "merge_trial", "apply_merge", "message_project"] {
+        assert!(!offered.contains(tool), "{offered}");
+    }
+    let stray = std::fs::read_to_string(root.join("stray-stop.txt")).unwrap();
+    assert!(
+        stray.contains("no one named `nobody` is running in your team"),
+        "{stray}"
+    );
+    // The organization is recorded, so a terminal and the window read the same tree.
+    let listed: serde_json::Value =
+        serde_json::from_slice(&w.run(&["threads", "--json"]).stdout).unwrap();
+    let thread = listed["projects"][0]["threads"][0]["id"].as_str().unwrap();
+    let team = String::from_utf8(w.run(&["threads", "team", thread]).stdout).unwrap();
+    let lines: Vec<&str> = team.lines().collect();
+    let api = lines
+        .iter()
+        .position(|l| l.starts_with("api (lead)"))
+        .expect(&team);
+    assert!(lines[api + 1].starts_with("  eng (engineer)"), "{team}");
+}
+
+#[test]
+fn a_lead_may_message_only_the_projects_linked_to_its_own_and_the_other_projects_lead_hears_it() {
+    let mut w = Workspace::new();
+    let root = w.dir.path().join("repo");
+    let other = w.dir.path().join("billing");
+    let secret = w.dir.path().join("secret");
+    for folder in [&root, &other, &secret] {
+        std::fs::create_dir_all(folder).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .current_dir(folder)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@localhost"]);
+        std::fs::write(folder.join("file"), "x").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "initial"]);
+    }
+    w.config.mailbox.enabled = true;
+    w.config.org.links = vec![orochi::config::LinkConfig {
+        from: "repo".into(),
+        to: "billing".into(),
+    }];
+    let env = &mut w.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "org".into());
+    env.insert("MOCK_LINK".into(), "1".into());
+    env.insert("MOCK_OUT".into(), root.to_string_lossy().into_owned());
+    // The same data directory and configuration, run from another folder.
+    let _ = w.command();
+    let at = |folder: &Path, args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_orochi"))
+            .args([
+                "--config",
+                w.dir.path().join("config.toml").to_str().unwrap(),
+                "--data-dir",
+                w.dir.path().join("data").to_str().unwrap(),
+                "--cwd",
+                folder.to_str().unwrap(),
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    // The other projects exist in the conversation store, as they do once they have been used.
+    for folder in [&other, &secret] {
+        success(&at(folder, &["threads", "new"]));
+    }
+    success(&chat(&w, "Ask billing for the invoice API shape\n"));
+    let link: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("link.txt")).unwrap()).unwrap();
+    let listed: Vec<_> = link["projects"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["project"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed, ["billing"], "{link}");
+    assert_eq!(link["sent"]["sent"], true, "{link}");
+    // An unlinked project is refused the way an unknown one would be.
+    assert!(
+        link["refused"]["refused"]
+            .as_str()
+            .unwrap()
+            .contains("not a project linked"),
+        "{link}"
+    );
+    let offered = std::fs::read_to_string(root.join("offered-lead.txt")).unwrap();
+    assert!(offered.contains("message_project"), "{offered}");
+    // The message waits in the other project's room, text only, from the project that sent it.
+    let data = w.dir.path().join("data");
+    let mailbox =
+        orochi::mailbox::Mailbox::open(&data, &orochi::config::MailboxConfig::default()).unwrap();
+    let projects = at(&other, &["threads", "--json"]);
+    let projects: serde_json::Value = serde_json::from_slice(&projects.stdout).unwrap();
+    let billing = projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "billing")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let heard = mailbox.take_project_mail(&billing).unwrap();
+    assert_eq!(
+        heard,
+        [("repo".to_owned(), "Need the invoice API shape".to_owned())]
+    );
+    assert!(
+        mailbox.take_project_mail(&billing).unwrap().is_empty(),
+        "read once"
+    );
+    let secret_id = projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "secret")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(mailbox.take_project_mail(&secret_id).unwrap().is_empty());
+    // Billing's lead hears it on its first turn, from the project that sent it.
+    orochi::mailbox::Mailbox::open(&data, &orochi::config::MailboxConfig::default())
+        .unwrap()
+        .send_project(&billing, "repo", "Need the invoice API shape")
+        .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .args([
+            "--config",
+            w.dir.path().join("config.toml").to_str().unwrap(),
+            "--data-dir",
+            data.to_str().unwrap(),
+            "--cwd",
+            other.to_str().unwrap(),
+            "chat",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut child.stdin.take().unwrap(),
+        b"What did the other project ask?\n",
+    )
+    .unwrap();
+    success(&child.wait_with_output().unwrap());
+    let log = w.log();
+    assert!(
+        log.contains(
+            "Message from `project repo`, held for this turn:\\nNeed the invoice API shape"
+        ),
+        "{log}"
     );
 }
 

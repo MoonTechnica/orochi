@@ -54,7 +54,10 @@ def mailbox_tools():
     manager = ["set_plan", "list_work", "stop_agent", "merge_trial", "apply_merge"]
     lead = ["start_agent", "finish_workspace"]
     assert names[4:8] == ["post", "read_channel", "read_thread", "share_file"], names
-    assert names[8:] in ([], lead, [*lead, *manager]), names
+    team = ["list_work", "stop_agent"]
+    link = ["list_projects", "message_project"]
+    ranks = [[], lead, [*lead, *manager], [*lead, *team]]
+    assert names[8:] in [*ranks, *[[*r, *link] for r in ranks]], names
     offered.extend(names)
 
     def tool(tool_name, **arguments):
@@ -277,6 +280,56 @@ def delegate(request):
             out.write(json.dumps(reply) + "\n")
     proc.terminate()
     # A lead that is still answering while its helpers finish.
+    time.sleep(float(os.environ.get("MOCK_LEAD_DELAY", "0")))
+
+
+def org_team(request):
+    """An organization two levels deep: the lead hires `api` as a lead of its own, `api` hires
+    an engineer, the engineer writes a file, `api` merges it into its own worktree and reports,
+    and the lead merges `api` into the user's tree."""
+    text = request["params"]["prompt"][0]["text"]
+    if "working in the background for" in text:
+        name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
+        (Path(os.environ["MOCK_OUT"]) / f"prompt-{name}.txt").write_text(text)
+        if "You lead a team" in text:
+            proc, tool = mailbox_tools()
+            out = Path(os.environ["MOCK_OUT"])
+            (out / "offered-api.txt").write_text(",".join(offered))
+            (out / "stray-stop.txt").write_text(json.dumps(tool("stop_agent", name="nobody")))
+            hired = tool("start_agent", name="eng", role="engineer", title="Write the endpoint", task="Write endpoint.txt")
+            (Path(os.environ["MOCK_OUT"]) / "hired.txt").write_text(json.dumps(hired))
+            got = []
+            deadline = time.time() + 40
+            while time.time() < deadline and not any("Background agent `eng`" in m["body"] for m in got):
+                got += tool("read_messages", wait_seconds=10)["messages"]
+            (Path(os.environ["MOCK_OUT"]) / "heard.txt").write_text(json.dumps(got))
+            (Path(os.environ["MOCK_OUT"]) / "integrated.txt").write_text(json.dumps(tool("finish_workspace", name="eng", how="merge")))
+            proc.terminate()
+        else:
+            (root / "endpoint.txt").write_text(f"written by {name}\n")
+        send({"method": "session/update", "params": {"sessionId": session, "update": {
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"REPORT {name}: done. "}}}})
+        return
+    proc, tool = mailbox_tools()
+    if "Background agent `api`" in text:
+        (root / "finished.txt").write_text(json.dumps(tool("finish_workspace", name="api", how="merge")))
+        proc.terminate()
+        return
+    if "start_agent" not in offered:
+        proc.terminate()
+        return
+    (Path(os.environ["MOCK_OUT"]) / "offered-lead.txt").write_text(",".join(offered))
+    if os.environ.get("MOCK_LINK") and "list_projects" in offered:
+        # A lead of a project writes to another, linked project; an unlinked one is refused.
+        link = {"projects": tool("list_projects"),
+                "sent": tool("message_project", project="billing", body="Need the invoice API shape"),
+                "refused": tool("message_project", project="secret", body="hello")}
+        (Path(os.environ["MOCK_OUT"]) / "link.txt").write_text(json.dumps(link))
+        proc.terminate()
+        return
+    reply = tool("start_agent", name="api", role="lead", title="The API team", task="Build the API with an engineer")
+    (root / "started.txt").write_text(json.dumps(reply))
+    proc.terminate()
     time.sleep(float(os.environ.get("MOCK_LEAD_DELAY", "0")))
 
 
@@ -619,6 +672,13 @@ for line in sys.stdin:
             result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 40, "inputTokens": 30, "outputTokens": 10}})
         elif behavior == "mailbox_chat":
             mailbox_chat(request)
+            finish(request)
+        elif behavior == "org":
+            try:
+                org_team(request)
+            except BaseException:
+                record_failure()
+                raise
             finish(request)
         elif behavior == "delegate":
             try:

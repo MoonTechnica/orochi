@@ -59,6 +59,11 @@ const state = {
   // already announced.
   view: null,
   members: [],
+  // Messages whose envelope has been sent (seq -> when, 0 for one that was already old), and
+  // whose receive icon the person has opened.
+  flown: new Map(),
+  mailSeen: new Set(),
+  wireTimer: null,
   said: [],
   member: null,
   before: null,
@@ -3741,6 +3746,30 @@ function drawTeam(thread) {
     else if (seat.doing) node.append(text("div", "what doing", seat.doing.split("\n")[0]));
     host.append(node);
   }
+  drawOrg(host);
+}
+
+// The organization below the lead: each member under the lead that hired it, to any depth. Drawn
+// only where someone was hired in a role or by another lead, so a flat team looks as it did.
+function drawOrg(host) {
+  const members = state.members || [];
+  if (!members.some((m) => m.manager || m.org_role)) return;
+  host.append(text("p", "org-title", t("Organization")));
+  const walk = (manager, depth) => {
+    for (const m of members.filter((x) => (x.manager || null) === manager)) {
+      const row = text("div", "orgmember");
+      row.dataset.live = String(Boolean(m.live));
+      row.dataset.depth = String(depth);
+      row.style.paddingLeft = `${depth * 14}px`;
+      row.append(text("span", "name", m.name));
+      if (m.org_role) row.append(text("span", "ro", m.org_role));
+      const what = [m.title, m.live ? "" : m.state].filter(Boolean).join(" · ");
+      if (what) row.append(text("span", "what", what));
+      host.append(row);
+      if (depth < 16) walk(m.name, depth + 1);
+    }
+  };
+  walk(null, 0);
 }
 
 async function drawChanges(thread) {
@@ -7524,6 +7553,12 @@ function enterOffice() {
 }
 
 const CHATTER_MS = 5 * 60 * 1000;
+/// A message is news for this long: its envelope travels once, the speaker's mouth moves, and an
+/// unopened envelope waits on the one it was for.
+const FRESH_MS = 8 * 1000;
+const UNREAD_MS = 60 * 1000;
+const FLIGHT_MS = 2600;
+const WIRE_MS = 4200;
 const sameRole = (a, b) => Boolean(a) && Boolean(b) && lowered(a) === lowered(b);
 
 /// What agents said to each other lately, across every conversation (`chatter`): each message
@@ -7658,6 +7693,9 @@ function desk(thread, m) {
   const finished = thread.wrap === "done";
   const talk = finished ? null : lines.find((line) => line.from_thread === thread.id && sameRole(line.from_role, m.role));
   const heard = finished ? null : lines.find((line) => addressees(line).some((o) => o.thread === thread.id && sameRole(o.role, m.role)) && line !== talk);
+  // The envelope stays only until what it carries has been looked at: the one it was sent to read
+  // it, or the person opened it by pointing at or choosing that seat. It never blinks.
+  const unopened = heard && heard.read !== true && Date.now() - heard.at < UNREAD_MS && !state.mailSeen.has(heard.seq);
   const said = asking ? t("Needs you") : talk ? talk.text : working ? what || t("working…") : "";
   const clip = (value, n) => (value.length > n ? `${value.slice(0, n - 1)}…` : value);
   const bubble = text("div", "bubble");
@@ -7690,14 +7728,21 @@ function desk(thread, m) {
   }
   node.dataset.thread = thread.id;
   node.dataset.role = m.role || "";
-  if (heard) {
+  if (unopened) {
     const mail = text("span", "mail");
     mail.setAttribute("title", `${heard.from}: ${heard.text}`);
     node.append(mail);
+    const open = () => {
+      state.mailSeen.add(heard.seq);
+      mail.remove?.();
+    };
+    node.addEventListener("mouseenter", open);
+    node.addEventListener("click", open);
   }
   const avatar = text("div", "avatar");
   const frame = text("span", "frame");
-  frame.append(character(m, leaving ? "bye" : asking ? "ask" : talk ? "talk" : working ? "work" : "idle"));
+  const speaking = talk && Date.now() - talk.at < FRESH_MS;
+  frame.append(character(m, leaving ? "bye" : asking ? "ask" : speaking ? "talk" : working ? "work" : "idle"));
   avatar.append(frame);
   const badge = face(m.agent, m.provider);
   badge.classList?.add?.("badge");
@@ -7775,7 +7820,15 @@ function drawWires() {
   svg.setAttribute("height", String(host.scrollHeight));
   svg.setAttribute("aria-hidden", "true");
   let drawn_ = 0;
+  const now = Date.now();
+  let pending = 0;
   for (const line of (state.talk || []).slice(0, 8)) {
+    // A line is drawn once, when the message is first seen, and goes when its envelope has
+    // arrived. A message already old on the first look is never sent again.
+    if (!state.flown.has(line.seq)) state.flown.set(line.seq, now - line.at > FRESH_MS ? 0 : now);
+    const since = now - state.flown.get(line.seq);
+    if (since > WIRE_MS) continue;
+    pending = Math.max(pending, WIRE_MS - since);
     const from = find(line.from_thread, line.from_role);
     if (!from) continue;
     for (const to of addressees(line)) {
@@ -7793,24 +7846,36 @@ function drawWires() {
       path.setAttribute("class", to.thread === line.from_thread ? "wire" : "wire across");
       path.setAttribute("id", `wire-${line.seq}-${drawn_}`);
       svg.append(path);
-      const mail = document.createElementNS(NS, "g");
-      mail.setAttribute("class", "letter");
-      const box = document.createElementNS(NS, "rect");
-      for (const [k, v] of Object.entries({ x: -6, y: -4, width: 12, height: 8, rx: 1.5 })) box.setAttribute(k, String(v));
-      const flap = document.createElementNS(NS, "path");
-      flap.setAttribute("d", "M-6,-4 L0,1 L6,-4");
-      const move = document.createElementNS(NS, "animateMotion");
-      move.setAttribute("dur", "2.6s");
-      move.setAttribute("repeatCount", "indefinite");
-      move.setAttribute("begin", `${(drawn_ % 4) * 0.5}s`);
-      const route = document.createElementNS(NS, "mpath");
-      route.setAttribute("href", `#wire-${line.seq}-${drawn_}`);
-      move.append(route);
-      mail.append(box, flap, move);
-      svg.append(mail);
+      if (since < FLIGHT_MS) {
+        const mail = document.createElementNS(NS, "g");
+        mail.setAttribute("class", "letter");
+        const box = document.createElementNS(NS, "rect");
+        for (const [k, v] of Object.entries({ x: -6, y: -4, width: 12, height: 8, rx: 1.5 })) box.setAttribute(k, String(v));
+        const flap = document.createElementNS(NS, "path");
+        flap.setAttribute("d", "M-6,-4 L0,1 L6,-4");
+        const move = document.createElementNS(NS, "animateMotion");
+        move.setAttribute("dur", `${FLIGHT_MS / 1000}s`);
+        move.setAttribute("repeatCount", "1");
+        // A redraw in mid-flight carries on from where the envelope is, rather than starting over.
+        move.setAttribute("begin", `${-since / 1000}s`);
+        move.setAttribute("fill", "freeze");
+        const route = document.createElementNS(NS, "mpath");
+        route.setAttribute("href", `#wire-${line.seq}-${drawn_}`);
+        move.append(route);
+        // Once it has arrived the envelope is gone, not left lying on the recipient.
+        const gone = document.createElementNS(NS, "set");
+        gone.setAttribute("attributeName", "visibility");
+        gone.setAttribute("to", "hidden");
+        gone.setAttribute("begin", `${(FLIGHT_MS - since) / 1000}s`);
+        mail.append(box, flap, move, gone);
+        svg.append(mail);
+      }
       drawn_ += 1;
     }
   }
+  // The lines go when their envelopes have arrived; draw once more to take them away.
+  clearTimeout(state.wireTimer);
+  if (pending > 0) state.wireTimer = setTimeout(() => drawWires(), pending + 50);
   host.append(svg);
 }
 

@@ -252,6 +252,26 @@ test("the team pane seats whoever is at the turn in hand, read-only marked", asy
   assert.match(drawn, /sol-test/, "each seat shows the route it took");
 });
 
+test("the team pane draws each member under the lead that hired it, to any depth, and only when someone was hired in a role", async () => {
+  const flat = await open(channel());
+  assert.doesNotMatch(flat.el("roster").render(), /Organization/, "a flat team looks as it did");
+
+  const members = channel().members;
+  const base = members[0];
+  const row = (name, manager, org_role, live) => ({
+    ...base, name, manager, org_role, live, title: `${name} work`, state: live ? "working" : "completed",
+  });
+  const drawn = await open({
+    ...channel(),
+    members: [row("api", null, "lead", 1), row("eng", "api", "engineer", 0), row("db", "api", "lead", 1), row("ddl", "db", "engineer", 1)],
+  });
+  const nodes = drawn.el("roster").querySelectorAll(".orgmember");
+  assert.deepEqual(nodes.map((n) => n.dataset.depth), ["0", "1", "1", "2"], "a lead's reports sit under it, and theirs under them");
+  assert.match(nodes[0].render(), /lead/);
+  assert.match(nodes[3].render(), /ddl/);
+  assert.deepEqual(nodes.map((n) => n.dataset.live), ["true", "false", "true", "true"]);
+});
+
 test("a question is a card with the agent's own options and no invented ones", async () => {
   const prompt = {
     id: "p1",
@@ -3592,6 +3612,36 @@ test("the office draws who speaks to whom, across rooms, and what is addressed t
   const marked = el("office-body").querySelectorAll(".mail");
   assert.equal(marked.length, 2, "whoever was spoken to carries the envelope: the writer and the designer");
   assert.match(el("office-stats").render(), /2.*messages/s);
+});
+
+test("an envelope is sent once, never loops, and the one it was for goes when it is read or opened", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const [first, second] = project.threads;
+  first.status = "working";
+  second.status = "working";
+  first.agents = [{ role: "designer", agent: "codex", provider: "openai", model: "gpt", seats: 1, live: 1, lead: true, background: false, last_at: 1 }];
+  second.agents = [{ role: "writer", agent: "claude", provider: "anthropic", model: "haiku", seats: 1, live: 1, lead: true, background: false, last_at: 1 }];
+  const now = Date.now();
+  const line = (seq, extra) => ({ seq, project_id: "p", via: "mailbox", from: "designer", from_thread: first.id, from_role: "designer", to: "writer", to_thread: second.id, to_role: "writer", text: `note ${seq}`, at: now, mentions: [], ...extra });
+
+  // Nothing in the stylesheet loops for ever on a message: the line does not crawl and the
+  // envelope on an avatar does not blink. (The window's test DOM has no geometry, so the one
+  // trip an envelope makes along its line is drawn only in the real window.)
+  assert.doesNotMatch(css, /\.wire\s*\{[^}]*infinite/, "the line does not animate for ever");
+  assert.doesNotMatch(css, /\.mail\s*\{[^}]*infinite/, "the envelope on an avatar does not blink for ever");
+  assert.doesNotMatch(source, /repeatCount",\s*"indefinite"/, "an envelope is not set to travel for ever");
+
+  // Already read by the one it was for: nothing waits on its avatar.
+  const read = await open({ sidebar: [project], chatter: [line(2, { read: true })] });
+  assert.equal(read.el("office-body").querySelectorAll(".mail").length, 0, "a message that has been read leaves no envelope");
+
+  // Unread, it waits; the person pointing at the seat opens it, and it stays gone.
+  const unread = await open({ sidebar: [project], chatter: [line(3, { read: false })] });
+  const desks = () => unread.el("office-body").querySelectorAll(".desk");
+  const writer = () => desks().find((d) => d.dataset.role === "writer");
+  assert.equal(unread.el("office-body").querySelectorAll(".mail").length, 1);
+  writer().dispatch("mouseenter");
+  assert.equal(unread.el("office-body").querySelectorAll(".mail").length, 0, "opened: the envelope is gone");
 });
 
 test("the office shows people leaving, a room wrapping up as done, and one closing when it is deleted", async () => {

@@ -1365,6 +1365,7 @@ fn the_work_pane_reads_worktrees_trials_and_the_apply_question_from_the_views_al
                 root: "/tmp/orochi/.orochi/sessions/k/backend".into(),
                 base: "abc".into(),
                 title: "Implement validation".into(),
+                parent: None,
             },
             Some(&seat),
         )

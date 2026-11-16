@@ -1617,7 +1617,8 @@ button:disabled { opacity: .5; cursor: default; }
 .desk:hover .bubble { z-index: 6; }
 .desk:hover .bubble .words { -webkit-line-clamp: unset; }
 /* An envelope on the avatar of whoever was just spoken to. */
-.mail { position: absolute; top: -4px; right: 14px; width: 16px; height: 11px; border: 1.5px solid var(--text); border-radius: 2px; background: var(--bg); z-index: 3; animation: blink 1.2s steps(2) infinite; }
+.mail { position: absolute; top: -4px; right: 14px; width: 16px; height: 11px; border: 1.5px solid var(--text); border-radius: 2px; background: var(--bg); z-index: 3; animation: pop .35s ease-out 1; }
+@keyframes pop { from { opacity: 0; transform: translateY(-6px) scale(.6); } }
 .mail::before { content: ""; position: absolute; left: 1px; top: -1px; width: 9px; height: 9px; border-right: 1.5px solid var(--text); border-bottom: 1.5px solid var(--text); transform: translate(0, -3px) rotate(45deg) scale(.7); transform-origin: center; }
 .interns { display: flex; flex-direction: column; gap: 2px; margin-top: 5px; align-items: flex-start; max-width: 100%; }
 .intern { display: flex; align-items: center; gap: 4px; max-width: 100%; font-size: 9px; color: var(--muted); }
@@ -1635,9 +1636,8 @@ button:disabled { opacity: .5; cursor: default; }
 
 /* Lines between avatars: one ink, drawn over the rooms. A line that leaves its room is dotted. */
 .wires { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 4; overflow: visible; }
-.wire { fill: none; stroke: var(--text); stroke-opacity: .55; stroke-width: 1.5; stroke-dasharray: 5 4; animation: flow 1.4s linear infinite; }
+.wire { fill: none; stroke: var(--text); stroke-opacity: .55; stroke-width: 1.5; stroke-dasharray: 5 4; }
 .wire.across { stroke-opacity: .8; stroke-width: 2; stroke-dasharray: 2 5; stroke-linecap: round; }
-@keyframes flow { to { stroke-dashoffset: -18; } }
 .letter rect { fill: var(--text); }
 .letter path { fill: none; stroke: var(--bg); stroke-width: 1.2; }
 @media (prefers-reduced-motion: reduce) { .wire { animation: none; } }
@@ -1757,3 +1757,10 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .watch-label { color: var(--muted); font-size: 12px; flex: none; }
 .watch-url { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: right; }
 .browser-bar select.browser-address { flex: 0 1 320px; }
+
+.org-title { color: var(--muted); font-size: 11px; margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+.orgmember { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; font-size: 12px; }
+.orgmember .name { font-weight: 600; }
+.orgmember .ro { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.orgmember .what { color: var(--muted); }
+.orgmember[data-live="false"] .name { color: var(--muted); }
