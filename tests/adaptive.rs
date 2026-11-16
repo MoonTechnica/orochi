@@ -462,6 +462,34 @@ async fn model_scoped_discovery_failure_keeps_other_models_available() {
     client.stop().await;
 }
 
+#[tokio::test]
+async fn a_limit_met_on_switching_to_one_model_fails_that_model_and_not_the_agent() {
+    use orochi::{
+        acp::Client,
+        config::{AgentConfig, PermissionMode},
+    };
+    let root = tempfile::tempdir().unwrap();
+    let fixture = format!("{}/tests/fixtures/mock_acp.py", env!("CARGO_MANIFEST_DIR"));
+    let start = |models: &str| {
+        let mut config = AgentConfig::preset("mock", Provider::OPENAI, "python3", &[&fixture]);
+        config
+            .env
+            .insert("MOCK_BEHAVIOR".into(), "blocked_unselected".into());
+        // The error carries no scope at all, as Claude's does when its Fable week runs out.
+        config.env.insert("MOCK_MODELS".into(), models.into());
+        Client::start(
+            config,
+            root.path(),
+            PermissionMode::Deny,
+            std::time::Duration::from_secs(5),
+        )
+    };
+    let mut client = start("sol-test,astra-test").await.unwrap();
+    assert_eq!(client.capabilities.models.len(), 1);
+    assert_eq!(client.capabilities.models[0].model, "sol-test");
+    client.stop().await;
+}
+
 #[test]
 fn pooling_carries_an_arms_token_overrun_into_new_task_contexts() {
     use orochi::benchmark::{Arm, Case, Dataset, replay};
@@ -1237,4 +1265,58 @@ fn an_empty_credit_balance_reads_zero_and_fable_is_its_own_part_of_the_account_l
         orochi::scheduler::quota::headroom(&RuntimeMap::new(), "claude", "fable", now).is_none(),
         "a Fable week is not a headroom"
     );
+}
+
+#[test]
+fn a_spent_pool_of_one_tier_stops_that_tiers_models_and_nothing_else_of_the_account() {
+    use orochi::{scheduler::quota::available, types::RuntimeMap};
+    let time = 1_000_000;
+    let snapshot = |fable: f64| Snapshot {
+        agent: "claude".into(),
+        source: "claude_usage".into(),
+        observed_at: time - 10,
+        valid_until: time + 300,
+        windows: vec![
+            Window {
+                bucket: "seven_day".into(),
+                remaining: 0.16,
+                reset_at: Some(time + 86_400),
+                model: None,
+                affects_routing: true,
+                balance: None,
+            },
+            // The Fable week is its own pool, and the page names no model for it.
+            Window {
+                bucket: "seven_day_fable".into(),
+                remaining: fable,
+                reset_at: Some(time + 86_400),
+                model: None,
+                affects_routing: false,
+                balance: None,
+            },
+        ],
+    };
+    let mut map = RuntimeMap::new();
+    quota_sources::apply(&mut map, &snapshot(0.0), time);
+    assert!(
+        !available(&map, "claude", "claude-fable-5-2", time),
+        "the tier whose pool is spent"
+    );
+    for model in ["claude-opus-5-5", "claude-sonnet-5-5", "haiku"] {
+        assert!(
+            available(&map, "claude", model, time),
+            "{model}: the account has 16% left, and the Fable week is not its allowance"
+        );
+    }
+    assert!(
+        available(&map, "codex", "claude-fable-5-2", time),
+        "another agent is not Claude's pool"
+    );
+    assert!(
+        available(&map, "claude", "claude-fable-5-2", time + 86_401),
+        "back after the reset"
+    );
+    // A reading that says the pool has room offers it again at once.
+    quota_sources::apply(&mut map, &snapshot(0.5), time + 1);
+    assert!(available(&map, "claude", "claude-fable-5-2", time + 1));
 }

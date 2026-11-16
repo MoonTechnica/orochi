@@ -52,6 +52,23 @@ pub fn available(map: &RuntimeMap, agent: &str, model: &str, time: i64) -> bool 
     ["*", model].iter().all(|m| {
         map.get(&(agent.into(), (*m).into()))
             .is_none_or(|s| s.available(time))
+    }) && !tier_limited(map, agent, model, time)
+}
+
+/// The key a tier's own allowance is kept under: Claude's Fable week is a pool of its own that
+/// the usage page names no model ID for (`tier:fable`), and that spends only the models whose ID
+/// carries the tier's name.
+pub const TIER: &str = "tier:";
+
+/// Whether the model belongs to a tier whose own allowance is spent. The agent's other models
+/// are not: a pool that one tier has used up says nothing of the account's.
+pub fn tier_limited(map: &RuntimeMap, agent: &str, model: &str, time: i64) -> bool {
+    let id = model.to_ascii_lowercase();
+    map.iter().any(|((a, m), state)| {
+        a == agent
+            && m.strip_prefix(TIER)
+                .is_some_and(|tier| !tier.is_empty() && id.contains(tier))
+            && !state.available(time)
     })
 }
 /// What an account has left for this model, the smaller of the agent-wide and the model's own

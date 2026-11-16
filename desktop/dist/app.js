@@ -353,6 +353,7 @@ const WORDS = {
     "Nobody has come or gone yet.": "まだ誰の出入りもありません。",
     "Nothing said yet.": "まだ何も話されていません。",
     "an attempt that failed, and what it said": "失敗した試行と、その内容",
+    "all models": "全体",
     Team: "チーム",
     Changes: "変更",
     Plan: "計画",
@@ -1322,9 +1323,22 @@ function aside(notes, what) {
   return node;
 }
 
+/// A conversation opens on its newest end: the bottom is the latest. Whoever was reading further
+/// up stays there while it redraws, but one that has just been opened, or switched to, was not
+/// being read at all, and the position left by the previous one means nothing.
+const toBottom = (host) => {
+  host.scrollTop = host.scrollHeight;
+  // Fonts, markdown and folded sections settle after the first layout; scroll again once they have.
+  (window.requestAnimationFrame || ((f) => setTimeout(f, 0)))(() => {
+    host.scrollTop = host.scrollHeight;
+  });
+};
+
 function drawTimeline(thread, said = []) {
   const host = el("timeline");
-  const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
+  const opened = state.timelineThread !== thread.thread.id;
+  state.timelineThread = thread.thread.id;
+  const stick = opened || host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
   host.replaceChildren();
   let turn = null;
   let pending = [];
@@ -1500,7 +1514,10 @@ function drawTimeline(thread, said = []) {
   // says can be written down. That is the longest a person waits with nothing to read, so the
   // window says what is happening rather than sitting still.
   if (thread.thread.status === "working") {
-    const seats = thread.seats.filter((s) => s.turn === thread.seats.at(-1)?.turn);
+    // The one doing the work is the line that says the turn is under way; everyone else in the
+    // room is in the team pane, and a team of a dozen is not a dozen lines above the composer.
+    const room = thread.seats.filter((s) => s.turn === thread.seats.at(-1)?.turn);
+    const seats = room.length ? [room.find((s) => !s.background) || room[0]] : [];
     const live = text("div", "live-turn");
     if (!seats.length) {
       live.append(drawn("loader", "state"));
@@ -1558,7 +1575,7 @@ function drawTimeline(thread, said = []) {
   for (const prompt of state.prompts.filter((p) => p.thread_id === thread.thread.id)) {
     host.append(askCard(prompt));
   }
-  if (stick) host.scrollTop = host.scrollHeight;
+  if (stick) toBottom(host);
 }
 
 /// Lucide, inlined: a window that runs offline fetches nothing, and a face would be a lie —
@@ -3518,14 +3535,18 @@ function drawStatus() {
   host.append(again);
   const byAgent = new Map();
   for (const row of state.agents) {
-    const known = byAgent.get(row.agent) || { agent: row.agent, cooling: 0, window: null, own: [] };
+    const known = byAgent.get(row.agent) || { agent: row.agent, cooling: 0, window: null, own: [], tiers: [] };
     if (row.model === "*" && row.cooling > known.cooling) known.cooling = row.cooling;
-    // The meter is the account's own allowance; a window that does not route (Claude's
-    // Fable week) is one model's, so it is named in the tooltip and never taken for the account's.
+    // The first meter is the account's own allowance. A window that does not route (Claude's Fable
+    // week) is one tier's pool: it has a meter of its own beside it, named for the tier, and is
+    // never taken for the account's.
     known.own = [];
+    known.tiers = [];
     for (const [bucket, remaining, reset, routes] of row.windows || []) {
       if (!routes) {
         known.own.push(`${bucket} ${Math.round((1 - remaining) * 100)}%`);
+        const tier = /^seven_day_([a-z]+)$/.exec(bucket)?.[1];
+        if (tier) known.tiers.push([tier, remaining, reset]);
         continue;
       }
       if (!known.window || remaining < known.window[0]) known.window = [remaining, reset];
@@ -3533,7 +3554,7 @@ function drawStatus() {
     byAgent.set(row.agent, known);
   }
   for (const known of byAgent.values()) {
-    if (!known.cooling && !known.window) continue;
+    if (!known.cooling && !known.window && !known.tiers.length) continue;
     const node = text("button", "account");
     node.type = "button";
     node.append(face(known.agent, accountProvider(known.agent)));
@@ -3542,16 +3563,26 @@ function drawStatus() {
       node.append(text("span", "used", `${t("cooling")} ${span(known.cooling * 1000)}`));
       node.dataset.tight = "true";
     } else {
-      const used = Math.round((1 - known.window[0]) * 100);
-      const meter = text("span", "meter");
-      const fill = text("span");
-      fill.style.width = `${Math.min(100, Math.max(0, used))}%`;
-      meter.append(fill);
-      node.append(meter);
-      node.append(text("span", "used", `${used}%`));
-      // A reset already past says nothing about when this one comes back.
-      if (known.window[1] && known.window[1] * 1000 > Date.now()) {
-        node.append(text("span", "reset", span(known.window[1] * 1000 - Date.now())));
+      // One reading of a pool: its bar and how much is used, and when it comes back.
+      const meterOf = (remaining, reset, label) => {
+        const used = Math.round((1 - remaining) * 100);
+        if (label) node.append(text("span", "sublabel", label));
+        const meter = text("span", "meter");
+        const fill = text("span");
+        fill.style.width = `${Math.min(100, Math.max(0, used))}%`;
+        meter.append(fill);
+        node.append(meter);
+        node.append(text("span", "used", `${used}%`));
+        // A reset already past says nothing about when this one comes back.
+        if (reset && reset * 1000 > Date.now()) node.append(text("span", "reset", span(reset * 1000 - Date.now())));
+        return used;
+      };
+      // Two pools are two readings, named, so neither is mistaken for the other.
+      const many = known.tiers.length > 0 && known.window;
+      let used = 0;
+      if (known.window) used = meterOf(known.window[0], known.window[1], many ? t("all models") : "");
+      for (const [tier, remaining, reset] of known.tiers) {
+        meterOf(remaining, reset, tier.charAt(0).toUpperCase() + tier.slice(1));
       }
       node.dataset.tight = String(used >= 90);
     }
@@ -4044,7 +4075,9 @@ async function drawMember(thread) {
   // Another thread may have been opened, or this one closed, while the team was read.
   if (state.member !== name) return;
   const host = el("member-body");
-  const stick = host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
+  const opened = state.memberThread !== `${thread.thread.id}:${name}`;
+  state.memberThread = `${thread.thread.id}:${name}`;
+  const stick = opened || host.scrollTop + host.clientHeight >= host.scrollHeight - 40;
   host.replaceChildren();
 
   // The parent: what the lead asked of the member.
@@ -4142,7 +4175,7 @@ async function drawMember(thread) {
     drawEvents(graph, thread, events.filter((e) => e.kind !== "turn"), null, worktrees);
     host.append(graph);
   }
-  if (stick) host.scrollTop = host.scrollHeight;
+  if (stick) toBottom(host);
 }
 
 el("member-form").addEventListener("submit", async (event) => {
@@ -4647,15 +4680,6 @@ async function drawWork(thread) {
   const team = (await call("team", { thread: thread.thread.id })) || {};
   const worktrees = team.workspaces || [];
   const trials = team.merges || [];
-  if (team.plan?.plan?.length) {
-    const plan = text("div", "work-plan");
-    plan.append(text("b", null, t("Plan")));
-    for (const [index, step] of team.plan.plan.entries()) {
-      plan.append(text("span", null, `${index + 1}. ${step}`));
-    }
-    if (team.plan.next_step) plan.append(text("span", "next", `${t("next")} · ${team.plan.next_step}`));
-    host.append(plan);
-  }
   // The conversation's own worktree is the root of the tree: its branch is the base the helpers'
   // work is merged into, so it is drawn even when no helper has been opened.
   const own = thread.thread;
@@ -4710,9 +4734,19 @@ async function drawWork(thread) {
 async function drawPlan(thread) {
   const host = el("pane-plan");
   host.replaceChildren();
+  // The lead's own plan, as it saved it: the steps it means to take and the one it is on. It is
+  // here, with the parts the work was divided into, and not in the pane of worktrees and merges.
+  const team = (await call("team", { thread: thread.thread.id })) || {};
+  const steps = team.plan?.plan || [];
+  if (steps.length) {
+    const plan = text("div", "work-plan");
+    for (const [index, step] of steps.entries()) plan.append(text("span", null, `${index + 1}. ${step}`));
+    if (team.plan.next_step) plan.append(text("span", "next", `${t("next")} · ${team.plan.next_step}`));
+    host.append(plan);
+  }
   const parts = await call("board", { thread: thread.thread.id });
   if (!parts || !parts.length) {
-    host.append(text("p", "empty", "This conversation was not divided into parts."));
+    if (!steps.length) host.append(text("p", "empty", "This conversation was not divided into parts."));
     return;
   }
   let wave = null;
@@ -7924,24 +7958,6 @@ function drawWires() {
   svg.setAttribute("width", String(host.scrollWidth));
   svg.setAttribute("height", String(host.scrollHeight));
   svg.setAttribute("aria-hidden", "true");
-  // The chart's lines: from under a lead to the top of each report, in elbows.
-  for (const branch of host.querySelectorAll(".branch")) {
-    const head = [...branch.children].find((c) => c.classList?.contains("desk"));
-    const row = [...branch.children].find((c) => c.classList?.contains("kids"));
-    if (!head || !row) continue;
-    const box = head.getBoundingClientRect();
-    const x1 = box.left - base.left + host.scrollLeft + box.width / 2;
-    const y1 = box.bottom - base.top + host.scrollTop + 4;
-    const ends = [...row.children].map((kid) => {
-      const top = (kid.querySelector(".desk") || kid).getBoundingClientRect();
-      return [top.left - base.left + host.scrollLeft + top.width / 2, top.top - base.top + host.scrollTop - 4];
-    });
-    const bend = Math.min(...ends.map((e) => e[1])) - 22;
-    const path = document.createElementNS(NS, "path");
-    path.setAttribute("d", ends.map(([x2, y2]) => `M${x1},${y1} V${bend} H${x2} V${y2}`).join(" "));
-    path.setAttribute("class", "org-line");
-    svg.append(path);
-  }
   let drawn_ = 0;
   const now = Date.now();
   let pending = 0;

@@ -221,7 +221,14 @@ pub(crate) fn update_failure(
     model: &str,
     error: &AgentError,
 ) -> Result<()> {
+    // A limit met on a model whose own pool is spent (Claude's Fable week) is that model's: the
+    // account's other models have not been shown to be out of anything.
+    let tier_spent = error.kind == ErrorKind::RateLimit
+        && store
+            .runtime()
+            .is_ok_and(|map| quota::tier_limited(&map, agent, model, now()));
     let scope = if error.model_scoped
+        || tier_spent
         || !matches!(
             error.kind,
             ErrorKind::RateLimit | ErrorKind::Authentication | ErrorKind::Unavailable

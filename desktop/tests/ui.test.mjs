@@ -859,6 +859,19 @@ test("a message that has been sent says so, from the moment it is sent", async (
   assert.match(live, /implementer/, "who is at work");
   assert.match(live, /reading tests\/mailbox\.rs/, "and what they are doing");
 
+  // A team at work is one line above the composer, the lead's; the rest are in the team pane.
+  thread.seats = [
+    { ...recorded.thread.seats[0], seat_id: "s1", turn: "t1", ordinal: 0, role: "lead", state: "working", doing: "planning", read_only: false },
+    ...["backend-lead", "frontend-lead", "api-engineer"].map((role, index) => (
+      { ...recorded.thread.seats[0], seat_id: `h${index}`, turn: "t1", ordinal: 100 + index, role, state: "working", doing: `${role} at work`, read_only: false, background: true }
+    )),
+  ];
+  const team = await open({ thread, room: [] });
+  const rows = team.el("timeline").querySelectorAll(".at-work");
+  assert.equal(rows.length, 1, "one line, however many are at work");
+  assert.match(rows[0].render(), /lead/);
+  assert.doesNotMatch(team.el("timeline").render(), /api-engineer/, "the others are in the team pane");
+
   // A thread that is not working says nothing of the sort.
   thread.thread.status = "idle";
   const quiet = await open({ thread, room: [] });
@@ -1096,7 +1109,12 @@ test("the work pane is one graph read downwards: a row per event, its words besi
   // The legend at the foot repeats every mark once; the graph is the rows above it.
   const graph = work.querySelectorAll(".work-graph")[0];
   const drawn = work.render();
-  assert.match(drawn, /Plan/, "the lead's plan heads the pane");
+  assert.doesNotMatch(drawn, /1\. validate/, "the lead's plan is in the plan tab, not above the graph of worktrees");
+  // It is there, with the parts the work was divided into: the steps and the one it is on.
+  const plan = el("pane-plan").render();
+  assert.match(plan, /1\. validate/);
+  assert.match(plan, /2\. document/);
+  assert.match(plan, /merge both/, "and the step it is on");
   assert.match(work.querySelectorAll(".work-legend")[0].render(), /working now/, "and a legend says what the marks mean");
   const rows = work.querySelectorAll(".work-row");
   const said = rows.map((row) => row.querySelectorAll(".words")[0].textContent);
@@ -1265,6 +1283,32 @@ async function select_(el) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
+test("a conversation opens at its newest end, and one being read further up is left where it is", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  const answers = { sidebar: [project], thread: recorded.thread, changed: [] };
+  const { el, tick } = await open(answers);
+  const timeline = el("timeline");
+  // Geometry the test DOM does not have: a long conversation, with the view at its top, as the
+  // position of whatever was open before leaves it.
+  timeline.scrollHeight = 5000;
+  timeline.clientHeight = 500;
+  timeline.scrollTop = 0;
+  // Another conversation answers: the test core returns whatever it is given, whichever is asked for.
+  const another = structuredClone(recorded.thread);
+  another.thread.id = "another-conversation";
+  answers.thread = another;
+  const other = el("projects").querySelectorAll(".thread")[1] || el("projects").querySelectorAll(".thread")[0];
+  other.dispatch("click");
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(timeline.scrollTop, 5000, "opened on the bottom, which is the latest");
+
+  // Reading further up, and the same conversation redrawing under the reader: not pulled down.
+  timeline.scrollTop = 1000;
+  answers.changed = ["another-conversation"];
+  await tick();
+  assert.equal(timeline.scrollTop, 1000, "a reader is not taken from the place they are at");
+});
+
 test("the office shows who is at work, and leaves the conversations that are not to the list at the side", async () => {
   const project = structuredClone(recorded.sidebar[0]);
   for (const th of project.threads) th.status = "idle";
@@ -1394,6 +1438,13 @@ test("the status bar says what each account has left and how many conversations 
   const { el } = await open({ agents, sidebar: projects });
   const accounts = el("accounts").render();
   assert.match(accounts, /claude[\s\S]*13%[\s\S]*1h 1[01]m/, "the most spent window, and when it resets");
+  // Claude's Fable week is a pool of its own: its meter is beside the account's, each named.
+  assert.match(
+    accounts,
+    /claude[\s\S]*all models[\s\S]*13%[\s\S]*Fable[\s\S]*100%/,
+    "the whole account and the Fable week, both, in that order",
+  );
+  assert.equal(el("accounts").querySelectorAll(".meter").length, 2, "one meter each");
   assert.match(accounts, /codex[\s\S]*cooling 4m/, "an account cooling down says for how long");
   assert.doesNotMatch(accounts, /gemini/, "an account nothing is known about is left out");
   const counts = el("counts").render();

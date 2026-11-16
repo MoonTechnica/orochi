@@ -1148,6 +1148,7 @@ impl Client {
             ));
         }
         let mut discovered = Vec::new();
+        let mut limited: Option<AgentError> = None;
         for model in models
             .into_iter()
             .filter(|m| {
@@ -1159,11 +1160,14 @@ impl Client {
         {
             // ACP configuration is model-dependent: inspect every model's returned selectors.
             if let Err(error) = self.set_model(&model).await {
-                if error.kind == ErrorKind::Configuration
-                    || (self.discovery_model.is_none()
-                        && error.model_scoped
-                        && error.kind == ErrorKind::RateLimit)
-                {
+                if error.kind == ErrorKind::Configuration {
+                    continue;
+                }
+                // A limit met on switching to one model is that model's, until every model
+                // says it: Claude's Fable week runs out while its other models have plenty, and
+                // enumerating must not fail the whole agent for it.
+                if self.discovery_model.is_none() && error.kind == ErrorKind::RateLimit {
+                    limited = Some(error);
                     continue;
                 }
                 return Err(error);
@@ -1173,6 +1177,12 @@ impl Client {
                 reasoning: selector(&self.state(), "thought_level"),
                 modes: self.mode_selector(),
             });
+        }
+        // Every model said it: that is the account's limit, not one model's.
+        if discovered.is_empty()
+            && let Some(error) = limited
+        {
+            return Err(error);
         }
         if let Some(original) = original
             .filter(|m| self.discovery_model.is_none() && discovered.iter().any(|d| &d.model == m))

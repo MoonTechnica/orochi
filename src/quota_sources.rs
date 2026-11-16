@@ -139,6 +139,37 @@ pub fn apply(map: &mut RuntimeMap, snapshot: &Snapshot, time: i64) {
     if snapshot.valid_until <= time || snapshot.observed_at > time {
         return;
     }
+    // A weekly pool of one tier (`seven_day_fable`) does not route the agent, but it does spend
+    // its own models: while it is out, those are not offered, and the rest of the account is.
+    for window in snapshot
+        .windows
+        .iter()
+        .filter(|w| !w.affects_routing && w.model.is_none())
+    {
+        let Some(tier) = window
+            .bucket
+            .strip_prefix("seven_day_")
+            .filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_lowercase()))
+        else {
+            continue;
+        };
+        let key = format!("{}{tier}", crate::scheduler::quota::TIER);
+        let state = map
+            .entry((snapshot.agent.clone(), key.clone()))
+            .or_insert_with(|| RuntimeState::new(&snapshot.agent, &key));
+        if window.remaining <= 0.0 && window.reset_at.is_some_and(|t| t > time) {
+            state.status = RuntimeStatus::Cooldown;
+            state.cooldown_until = window.reset_at;
+            state.quota_estimate = Some(0.0);
+            state.reset_at = window.reset_at;
+        } else {
+            // Spent no longer, or never: the pool is not holding anything back.
+            state.status = RuntimeStatus::Available;
+            state.cooldown_until = None;
+            state.quota_estimate = Some(window.remaining);
+            state.reset_at = window.reset_at;
+        }
+    }
     let mut groups: BTreeMap<String, Vec<&Window>> = BTreeMap::new();
     for window in snapshot
         .windows
