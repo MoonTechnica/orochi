@@ -570,6 +570,9 @@ pub struct Watch {
     pub queued: bool,
 }
 
+/// (bucket, remaining, reset, whether it is the account's allowance and so routes).
+pub type QuotaWindow = (String, f64, Option<i64>, bool);
+
 /// An agent's readiness, as `orochi status` reports it.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentRow {
@@ -580,7 +583,7 @@ pub struct AgentRow {
     pub reset_at: Option<i64>,
     pub quota_estimate: Option<f64>,
     pub failures: i64,
-    pub windows: Vec<(String, f64, Option<i64>)>,
+    pub windows: Vec<QuotaWindow>,
 }
 
 /// What a route has actually done. Verified evidence and weak signals are separate columns
@@ -1151,12 +1154,13 @@ impl Client {
     /// Each agent's readiness and what is left of its quota.
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let connection = self.store.connection();
-        let mut windows: std::collections::BTreeMap<String, Vec<(String, f64, Option<i64>)>> =
-            Default::default();
+        let mut windows: std::collections::BTreeMap<String, Vec<QuotaWindow>> = Default::default();
         // A snapshot past its validity says what an account had, not what it has: the core
-        // stops routing by it, and the window stops showing it.
+        // stops routing by it, and the window stops showing it. The last column says whether
+        // the bucket is the account's (routing) or one model's allowance (Claude's Fable week).
         let mut statement = connection.prepare(
-            "SELECT agent, bucket, remaining, reset_at FROM v_quota WHERE valid_until > unixepoch()",
+            "SELECT agent, bucket, remaining, reset_at, COALESCE(affects_routing, 0)
+             FROM v_quota WHERE valid_until > unixepoch()",
         )?;
         for row in statement.query_map([], |r| {
             Ok((
@@ -1164,13 +1168,14 @@ impl Client {
                 r.get::<_, String>(1)?,
                 r.get::<_, f64>(2)?,
                 r.get::<_, Option<i64>>(3)?,
+                r.get::<_, bool>(4)?,
             ))
         })? {
-            let (agent, bucket, remaining, reset) = row?;
+            let (agent, bucket, remaining, reset, routes) = row?;
             windows
                 .entry(agent)
                 .or_default()
-                .push((bucket, remaining, reset));
+                .push((bucket, remaining, reset, routes));
         }
         let mut statement = connection.prepare(
             "SELECT agent, model, status, cooling, reset_at, quota_estimate,

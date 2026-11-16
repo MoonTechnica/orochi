@@ -1024,7 +1024,7 @@ test("agents shows readiness and what is left of a quota", async () => {
   const agents = [
     {
       agent: "codex", model: "*", status: "cooldown", cooling: 300, reset_at: null,
-      quota_estimate: 0.1, failures: 2, windows: [["5h", 0.12, null]],
+      quota_estimate: 0.1, failures: 2, windows: [["5h", 0.12, null, true]],
     },
   ];
   const { el } = await open({ agents });
@@ -1368,7 +1368,7 @@ test("the status bar says what each account has left and how many conversations 
   const now = Math.floor(Date.now() / 1000);
   const agents = [
     { agent: "claude", model: "*", status: "available", cooling: 0, reset_at: null, quota_estimate: null, failures: 0,
-      windows: [["five_hour", 0.87, now + 71 * 60], ["seven_day", 0.95, now + 86400]] },
+      windows: [["five_hour", 0.87, now + 71 * 60, true], ["seven_day", 0.95, now + 86400, true], ["seven_day_fable", 0, now + 86400, false]] },
     { agent: "codex", model: "*", status: "cooldown", cooling: 240, reset_at: null, quota_estimate: null, failures: 1, windows: [] },
     { agent: "gemini", model: "*", status: "available", cooling: 0, reset_at: null, quota_estimate: null, failures: 0, windows: [] },
   ];
