@@ -40,7 +40,7 @@ pub struct Request {
 pub fn text(text: impl Into<String>) -> Value {
     json!({"content": [{"type": "text", "text": text.into()}], "isError": false})
 }
-fn failure(text: impl Into<String>) -> Value {
+pub fn failure(text: impl Into<String>) -> Value {
     json!({"content": [{"type": "text", "text": text.into()}], "isError": true})
 }
 
@@ -262,6 +262,28 @@ impl Browser {
 
     pub fn is_closed(&self) -> bool {
         self.cdp.is_closed()
+    }
+
+    /// Whether the person's tab of this scope is one Chrome draws.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.state.lock().unwrap().scopes.contains_key(scope)
+    }
+
+    /// The person's tabs Chrome draws, for the list a phone is offered.
+    pub fn user_tabs(&self) -> Vec<Value> {
+        let state = self.state.lock().unwrap();
+        let mut tabs: Vec<Value> = state
+            .scopes
+            .iter()
+            .filter(|(name, _)| name.starts_with("user:"))
+            .filter_map(|(name, scope)| {
+                let tab = state.tabs.get(scope.tabs.get(scope.active)?)?;
+                Some(json!({"scope": name, "title": tab.title, "url": tab.url,
+                            "engine": "chromium"}))
+            })
+            .collect();
+        tabs.sort_by(|a, b| a["scope"].as_str().cmp(&b["scope"].as_str()));
+        tabs
     }
 
     /// Ends one session's contexts, as when its agent has gone.

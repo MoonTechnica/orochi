@@ -22,6 +22,7 @@ description = "Check formatting of the CLI and the desktop crate"
 run = [
   "cargo fmt --all -- --check",
   "cargo fmt --all --manifest-path desktop/src-tauri/Cargo.toml -- --check",
+  "cargo fmt --all --manifest-path browser-servo/Cargo.toml -- --check",
 ]
 
 [tasks.lint]
@@ -79,3 +80,19 @@ depends = ["fmt", "lint", "test", "desktop:lint", "desktop:test"]
 description = "End-to-end smoke without any account"
 depends = ["build"]
 run = "python3 examples/demo.py"
+
+# Servo is built in its own workspace (browser-servo/) so SpiderMonkey never enters the CLI's
+# build or CI. The result goes where `browser.engine` looks first
+# (src/browser/engine.rs `find_servo`): <data>/toolchain/servo/current/orochi-servo.
+[tasks.servo]
+description = "Build orochi-servo (the browser tab's engine) and install it into the data directory"
+run = '''
+set -e
+cargo build --release --manifest-path browser-servo/Cargo.toml
+data="${OROCHI_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/orochi}"
+dest="$data/toolchain/servo/current"
+mkdir -p "$dest"
+cp browser-servo/target/release/orochi-servo "$dest/orochi-servo.new"
+mv "$dest/orochi-servo.new" "$dest/orochi-servo"
+echo "installed $dest/orochi-servo"
+'''

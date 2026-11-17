@@ -41,7 +41,7 @@ Today a conversation's screen is one column (the chat) plus a fixed side pane
 | D1 | Where do the tabs go | **A new tab strip over the centre column.** `Chat` is the first tab and cannot be closed; terminal, browser, file and media tabs sit beside it. The right-hand side pane stays as it is |
 | D2 | What is a terminal tab | **A real shell inside the app**: a PTY in the desktop crate, drawn by a vendored xterm.js, started in the thread's `cwd` |
 | D3 | What is a browser tab | ~~A Tauri child webview~~ (superseded the same day by D4) |
-| D4 | Can agents use the browser tab, and on what engine | **Yes, and the engine is Chromium**, driven over the Chrome DevTools Protocol, so the user and the agents work in one browser and the agent gets trusted input, console, network and file upload. Chosen over a WKWebView driven by injected script after the survey in §3.5.1 |
+| D4 | Can agents use the browser tab, and on what engine | **Yes, and the engine is Chromium** (2026-11-17: for the *person's own* tab this is superseded by D5 of `servo-browser-design.md`, which makes Servo the default engine of that tab while Chromium stays the agents' and the fallback), driven over the Chrome DevTools Protocol, so the user and the agents work in one browser and the agent gets trusted input, console, network and file upload. Chosen over a WKWebView driven by injected script after the survey in §3.5.1 |
 
 ## 1. Sources and what is already there
 

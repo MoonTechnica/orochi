@@ -1390,7 +1390,7 @@ test("everything that is not a conversation lives behind the row at the foot", a
   const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
   assert.deepEqual(
     pages,
-    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "conversations", "notifications", "setup"],
+    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "phone", "conversations", "notifications", "setup"],
     "every former panel is a page of it",
   );
   el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === "insights").dispatch("click");
@@ -4722,4 +4722,53 @@ test("the agents' browser lists the agents that have a page, shows the chosen on
   const last = viewTools(calls).map((c) => c.tool);
   assert.ok(last.includes("view_unwatch"), "closing the tab stops the stream");
   assert.equal(last.at(-1), "view_close");
+});
+
+test("the phone page switches the listener, pairs a phone with a code that counts down, and revokes one", async () => {
+  const config = {
+    activity: {},
+    browser: { enabled: true, remote: { enabled: true, bind: "127.0.0.1", port: 0, insecure_lan: false, device_days: 30 } },
+  };
+  const admin = [];
+  const saved = [];
+  const { el } = await open({
+    settings: () => config,
+    save_settings: ({ settings }) => { saved.push(JSON.parse(JSON.stringify(settings))); return true; },
+    browser_admin: ({ tool, args }) => {
+      admin.push([tool, args]);
+      if (tool === "remote_status") {
+        return {
+          running: true, address: "127.0.0.1:5001", connected: ["d1"],
+          devices: [{ id: "d1", name: "iPhone (d1)", created: 1, last_seen: Math.floor(Date.now() / 1000) - 120 }],
+        };
+      }
+      if (tool === "remote_pair") return { url: "http://127.0.0.1:5001/pair#abc123", code: "abc123", expires_secs: 300 };
+      return {};
+    },
+  });
+  await openSettingsPage(el, "phone");
+  const drawn = el("settings-body").render();
+  assert.match(drawn, /Show my browser tabs to a paired phone/);
+  assert.match(drawn, /Listening on 127\.0\.0\.1:5001/);
+  assert.match(drawn, /iPhone \(d1\) · connected/, "a phone with a socket open says so");
+  assert.match(drawn, /last used 2m/);
+  assert.doesNotMatch(drawn, /abc123/, "no code until one is asked for");
+
+  el("settings-body").querySelectorAll("button").find((b) => b.textContent === "Pair a phone").dispatch("click");
+  await settle();
+  const paired = el("settings-body").render();
+  assert.match(paired, /http:\/\/127\.0\.0\.1:5001\/pair#abc123/, "the address carries the code in its fragment");
+  assert.match(paired, /Expires in \d+ s/);
+  assert.ok(admin.some(([tool]) => tool === "remote_pair"));
+
+  el("settings-body").querySelectorAll("button").find((b) => b.textContent === "Revoke").dispatch("click");
+  await settle();
+  assert.deepEqual(admin.find(([tool]) => tool === "remote_revoke"), ["remote_revoke", { id: "d1" }]);
+
+  const toggle = el("settings-body").querySelectorAll("input").find((i) => i.type === "checkbox");
+  toggle.checked = false;
+  toggle.dispatch("change");
+  await settle();
+  assert.equal(saved.at(-1).browser.remote.enabled, false, "turning it off is saved with the settings");
+  assert.ok(admin.some(([tool]) => tool === "remote_stop"), "and the listener is closed now, not at the next start");
 });

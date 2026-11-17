@@ -1822,3 +1822,8 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .git-ref[data-kind="head"] { border-color: var(--ok); color: var(--ok); }
 .git-ref[data-kind="remote"], .git-ref[data-kind="tag"] { color: var(--muted); }
 .git-detail { margin: 2px 0 6px; padding: 8px; font: 11px/1.45 ui-monospace, "SF Mono", Menlo, monospace; background: var(--raised); border-radius: 6px; overflow: auto; max-height: 340px; white-space: pre; }
+
+/* Settings, Use from a phone */
+#settings-body .pair-url { display: block; margin: 8px 0 6px; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); word-break: break-all; user-select: all; }
+#settings-body .device .note { margin-bottom: 4px; }

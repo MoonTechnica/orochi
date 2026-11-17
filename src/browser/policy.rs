@@ -114,5 +114,41 @@ pub fn check(config: &BrowserConfig) -> Result<()> {
         config.idle_secs >= 30,
         "browser.idle_secs must be at least 30"
     );
+    if let Some(servo) = &config.servo {
+        ensure!(
+            servo.is_absolute(),
+            "browser.servo must be an absolute path"
+        );
+    }
+    remote_bind(&config.remote)?;
+    ensure!(
+        (1..=365).contains(&config.remote.device_days),
+        "browser.remote.device_days must be between 1 and 365"
+    );
     Ok(())
+}
+
+/// Where the phone listener may be. Loopback, or Tailscale's range (WireGuard encrypts that
+/// link); any other address sends the page and every typed character in the clear, which
+/// only `insecure_lan` allows.
+pub fn remote_bind(remote: &crate::config::RemoteConfig) -> Result<std::net::IpAddr> {
+    let address: std::net::IpAddr = remote.bind.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "browser.remote.bind must be an IP address, not {:?}",
+            remote.bind
+        )
+    })?;
+    let tailnet = match address {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            a == 100 && (64..=127).contains(&b)
+        }
+        std::net::IpAddr::V6(_) => false,
+    };
+    ensure!(
+        address.is_loopback() || tailnet || remote.insecure_lan,
+        "browser.remote.bind {address} is neither loopback nor a Tailscale address, so the link \
+         would not be encrypted; set browser.remote.insecure_lan = true to allow it anyway"
+    );
+    Ok(address)
 }

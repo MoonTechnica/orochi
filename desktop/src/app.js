@@ -488,6 +488,23 @@ const WORDS = {
     Browser: "ブラウザ",
     "Only this many browser tabs per conversation": "ブラウザタブは会話ごとにこの数までです",
     "The browser is off. Set `enabled = true` under [browser] in the configuration.": "ブラウザはオフです。設定の [browser] で `enabled = true` にしてください。",
+    "Use from a phone": "スマホから使う",
+    "Show my browser tabs to a paired phone": "ペアリングしたスマホにブラウザのタブを表示する",
+    "Off until you turn it on. A phone is paired with a code shown here, and only the browser tabs are shown, never the conversation. Orochi never changes your network: reach it through Tailscale or an SSH tunnel to this computer.": "オンにするまでは無効です。ここに表示するコードでスマホをペアリングします。表示されるのはブラウザのタブだけで、会話は見えません。Orochi はネットワーク設定を変更しません。Tailscale か SSH トンネルでこのコンピュータに接続してください。",
+    "Listen on (loopback, or a Tailscale address)": "待ち受けアドレス（ループバック、または Tailscale のアドレス）",
+    "Allow a LAN address, unencrypted: anyone on that network can see what is typed": "LAN のアドレスを暗号化なしで許可する（同じネットワークの誰でも入力内容を見られます）",
+    "Listening on": "待ち受け中",
+    "Not listening": "待ち受けていません",
+    "Pair a phone": "スマホをペアリング",
+    "Pair": "ペアリング",
+    "Copy": "コピー",
+    "Expires in": "有効期限まで",
+    "Open this address on the phone, through your Tailscale or tunnel address for this computer if it is not on loopback. It works once.": "このアドレスをスマホで開いてください。ループバックでない場合は、このコンピュータの Tailscale かトンネルのアドレスで開きます。1 回だけ使えます。",
+    "No phone is paired.": "ペアリングしたスマホはありません。",
+    "connected": "接続中",
+    "last used": "最終使用",
+    "Revoke": "取り消す",
+    "Paired phones": "ペアリング済みのスマホ",
     "No Chrome or Chromium was found. Install one, or name it as `chrome` under [browser].": "Chrome か Chromium が見つかりません。インストールするか、[browser] の `chrome` で指定してください。",
     Forward: "進む",
     Reload: "再読み込み",
@@ -5059,6 +5076,7 @@ const SETTINGS_PAGES = [
   ["decision", "Decision model"],
   ["sandboxes", "Sandboxes"],
   ["storage", "Storage"],
+  ["phone", "Use from a phone"],
   ["sep"],
   ["conversations", "Conversations"],
   ["notifications", "Notifications"],
@@ -5228,6 +5246,122 @@ async function setPlace(place, path) {
   await drawScreen();
 }
 
+/// Settings, Use from a phone: the person's browser tabs in a phone's own browser
+/// (docs/servo-browser-design.md §6). The listener lives in the broker; this page switches it,
+/// pairs a phone and revokes one, and holds nothing but the code it was just given.
+async function drawPhone(host) {
+  state.phone = state.phone || { pairing: null };
+  const config = await call("settings", {});
+  if (!config) return;
+  config.browser = config.browser || {};
+  config.browser.remote = config.browser.remote || {};
+  const remote = config.browser.remote;
+  const row = (label, node) => {
+    const card = text("div", "card");
+    card.append(text("div", "where", label));
+    card.append(node);
+    return card;
+  };
+  const admin = (tool, args) => call("browser_admin", { tool, args: args || {} });
+  const save = async (change, restart) => {
+    change();
+    const saved = await call("save_settings", { settings: config });
+    if (saved === null) return;
+    if (restart) {
+      state.phone.pairing = null;
+      await admin("remote_stop");
+      if (remote.enabled) await admin("remote_start");
+    }
+    await drawScreen();
+  };
+
+  const on = document.createElement("input");
+  on.type = "checkbox";
+  on.checked = Boolean(remote.enabled);
+  on.addEventListener("change", () => save(() => { remote.enabled = on.checked; }, true));
+  host.append(row(t("Show my browser tabs to a paired phone"), on));
+  host.append(text("p", "caveat", t("Off until you turn it on. A phone is paired with a code shown here, and only the browser tabs are shown, never the conversation. Orochi never changes your network: reach it through Tailscale or an SSH tunnel to this computer.")));
+  if (!remote.enabled) return;
+
+  const bind = document.createElement("input");
+  bind.type = "text";
+  bind.spellcheck = false;
+  bind.value = remote.bind || "127.0.0.1";
+  bind.placeholder = "127.0.0.1";
+  bind.addEventListener("change", () => save(() => { remote.bind = bind.value.trim() || "127.0.0.1"; }, true));
+  host.append(row(t("Listen on (loopback, or a Tailscale address)"), bind));
+  const lan = document.createElement("input");
+  lan.type = "checkbox";
+  lan.checked = Boolean(remote.insecure_lan);
+  lan.addEventListener("change", () => save(() => { remote.insecure_lan = lan.checked; }, true));
+  host.append(row(t("Allow a LAN address, unencrypted: anyone on that network can see what is typed"), lan));
+
+  const status = (await admin("remote_status")) || {};
+  const where = text("div", "path");
+  where.append(text("span", null, status.running ? `${t("Listening on")} ${status.address}` : t("Not listening")));
+  host.append(row(t("Status"), where));
+
+  const pairing = state.phone.pairing;
+  const pair = document.createElement("button");
+  pair.type = "button";
+  pair.textContent = t("Pair a phone");
+  pair.addEventListener("click", async () => {
+    const made = await admin("remote_pair");
+    if (!made) return;
+    state.phone.pairing = { url: made.url, code: made.code, until: Date.now() + (Number(made.expires_secs) || 300) * 1000 };
+    await drawScreen();
+  });
+  const pairCard = row(t("Pair"), pair);
+  if (pairing) {
+    const url = text("code", "pair-url", pairing.url);
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.textContent = t("Copy");
+    copy.addEventListener("click", () => copyText(pairing.url));
+    const left = text("span", "note");
+    left.dataset.pairUntil = String(pairing.until);
+    left.textContent = `${t("Expires in")} ${Math.max(0, Math.round((pairing.until - Date.now()) / 1000))} s`;
+    pairCard.append(url, copy, left);
+    pairCard.append(text("div", "note", t("Open this address on the phone, through your Tailscale or tunnel address for this computer if it is not on loopback. It works once.")));
+  }
+  host.append(pairCard);
+
+  const list = text("div", "devices");
+  const devices = status.devices || [];
+  if (!devices.length) list.append(text("p", "empty", t("No phone is paired.")));
+  for (const device of devices) {
+    const item = text("div", "card device");
+    item.dataset.device = device.id;
+    const connected = device.connected || (status.connected || []).includes(device.id);
+    item.append(text("div", "where", `${device.name}${connected ? ` · ${t("connected")}` : ""}`));
+    item.append(text("div", "note", `${t("last used")} ${span(Date.now() - Number(device.last_seen) * 1000)}`));
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.textContent = t("Revoke");
+    revoke.addEventListener("click", async () => {
+      await admin("remote_revoke", { id: device.id });
+      await drawScreen();
+    });
+    item.append(revoke);
+    list.append(item);
+  }
+  host.append(row(t("Paired phones"), list));
+}
+
+// A pairing code is shown for as long as it works, counted down in place.
+setInterval(() => {
+  const phone = state.phone;
+  if (!phone?.pairing) return;
+  const left = Math.round((phone.pairing.until - Date.now()) / 1000);
+  for (const node of document.querySelectorAll?.("[data-pair-until]") || []) {
+    node.textContent = `${t("Expires in")} ${Math.max(0, left)} s`;
+  }
+  if (left <= 0) {
+    phone.pairing = null;
+    if (state.settings === "phone") drawScreen();
+  }
+}, 1000);
+
 async function drawSettingsPage(page, host) {
   const field = (label, node) => {
     const row = text("div", "card");
@@ -5325,6 +5459,10 @@ async function drawSettingsPage(page, host) {
   }
   if (page === "storage") {
     await drawStorage(host);
+    return;
+  }
+  if (page === "phone") {
+    await drawPhone(host);
     return;
   }
   if (page === "decision") {
@@ -6706,7 +6844,7 @@ async function startBrowser(id, panel) {
     panel.append(text("p", "empty", t("The browser is off. Set `enabled = true` under [browser] in the configuration.")));
     return;
   }
-  if (!status.chrome) {
+  if (!status.chrome && !status.servo) {
     panel.append(text("p", "empty", t("No Chrome or Chromium was found. Install one, or name it as `chrome` under [browser].")));
     return;
   }

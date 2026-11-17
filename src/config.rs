@@ -394,6 +394,52 @@ pub struct BrowserConfig {
     /// Lets an agent run its own script in a page. Off: a script can reach any address, which
     /// the host lists above then no longer bound.
     pub agent_evaluate: bool,
+    /// What draws the person's own tab (`docs/servo-browser-design.md`): Chrome, Servo, or
+    /// Servo where an `orochi-servo` is found and Chrome otherwise. Agents' tools use Chrome
+    /// whatever this says.
+    pub engine: BrowserEngine,
+    /// The `orochi-servo` to run, when not the one in `<data>/toolchain/servo/current/` or
+    /// beside this executable.
+    pub servo: Option<std::path::PathBuf>,
+    /// Showing the person's tabs to a phone's browser.
+    pub remote: RemoteConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrowserEngine {
+    #[default]
+    Auto,
+    Chromium,
+    Servo,
+}
+
+/// The listener that lets a paired phone see and drive the person's browser tabs
+/// (`docs/servo-browser-design.md` §6). Off, and loopback-only, unless the person says
+/// otherwise.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RemoteConfig {
+    pub enabled: bool,
+    /// The address to listen on. Loopback, or an address in Tailscale's `100.64.0.0/10`;
+    /// anything else needs `insecure_lan`, since the link is then not encrypted.
+    pub bind: String,
+    /// `0` picks a free port, which is then written to `<data>/browser/remote.json`.
+    pub port: u16,
+    pub insecure_lan: bool,
+    /// A paired phone is forgotten after this many days without use.
+    pub device_days: u32,
+}
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "127.0.0.1".into(),
+            port: 0,
+            insecure_lan: false,
+            device_days: 30,
+        }
+    }
 }
 impl Default for BrowserConfig {
     fn default() -> Self {
@@ -406,6 +452,9 @@ impl Default for BrowserConfig {
             idle_secs: 600,
             chrome: None,
             agent_evaluate: false,
+            engine: BrowserEngine::Auto,
+            servo: None,
+            remote: RemoteConfig::default(),
         }
     }
 }
