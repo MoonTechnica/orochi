@@ -102,8 +102,8 @@ Decisions the design left open:
   share the window's `Mutex<Client>`. Sharing the window's cursor would take the changes the window
   is waiting for.
 - `new_thread` over `/rpc` is refused for a folder that is not already one of the desktop's
-  projects. `add_project`, `delete_thread`, `open_*` and everything else on the never-list are
-  not whitelisted.
+  projects (a phone adds one with `add_project` / `clone_project`, below). `delete_thread`,
+  `open_*` and everything else on the never-list are not whitelisted.
 - The on/off flag is the file `<data>/remote/enabled`; the port is 47821, or any free port on the
   same address when that one is taken (the QR carries whatever was bound).
 - `/file` serves what `files::within` allows (no `..`, no absolute path, no `.git`, no symlink out),
@@ -268,3 +268,35 @@ composer with an "Also send to the channel" checkbox, a Threads list (pill, draw
 "Replied to a thread" caption for `broadcast` rows. Unread is local to the phone (per machine, conversation and member). No server or
 whitelist change: `say` (with `member`), `send`, `see_mentions` as before. Starting a thread on an arbitrary message is deliberately not
 offered, the server having no such operation. Details and what was verified: `mobile/README.md`, "Threads like Slack's".
+
+## New projects from the phone (2026-11-18)
+
+The phone's "New conversation" sheet can add a project the desktop does not have yet, by two
+whitelisted writes and one read, and then starts the first thread in it:
+
+- `browse {path?}` lists the visible sub-folders of `path` (the clone folder, else home, when
+  none is given; marks git checkouts; names the parent only while it is still allowed).
+- `add_project {root}` registers an existing folder (`view::Client::add_project`).
+- `clone_project {url, name?}` runs `git clone` into the **clone folder** and registers it.
+
+Where a phone may reach is fixed by the desktop, never by the phone: `browse` and `add_project`
+accept only a folder inside the user's home or the clone folder (symlinks resolved first), and
+`clone_project` writes only a new folder directly in the clone folder. Settings → Orochi mobile
+app has the **clone folder** row (system folder picker, Clear); it lives in
+`<data>/remote/projects.json`, and until it is chosen a phone cannot clone at all
+(`remote_set_clone_dir` is a window command, not on the whitelist).
+
+A clone address is checked before git sees it: `https://`, `ssh://` or `user@host:path` only, no
+whitespace or control characters, nothing that begins with `-`, a host that begins alphanumerically
+(no `file://`, local path or `ext::` transport; `protocol.ext.allow=never` as well). The folder
+name is the address's last segment (or `name`), letters, digits, `.`, `_`, `-` only, and a name
+already taken is refused. Git runs with `GIT_TERMINAL_PROMPT=0`, no stdin and (unless the user set
+`GIT_SSH_COMMAND`) `ssh -o BatchMode=yes`, so a repository that needs a password fails with git's
+message rather than hanging; it is stopped after 15 minutes and a failed clone removes what it made.
+The clone does not hold the window's connection (other phone calls go on), and the phone waits up
+to 16 minutes for it. Credentials come from what the desktop's git already has (SSH keys, a
+credential helper); the phone never sends any.
+
+Tests: `desktop/src-tauri/tests/remote.rs` (browse and add inside and outside the allowed places;
+a clone through a local repository standing in for a host, and every refused address) and
+`desktop/tests/ui.test.mjs` (the Settings row). Not run: a real phone, a clone from a real host.

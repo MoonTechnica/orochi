@@ -1,6 +1,8 @@
 import type {
   AgentRow,
+  Browse,
   Folder,
+  ProjectAdded,
   LiveSeat,
   LiveTask,
   Member,
@@ -66,6 +68,11 @@ export const api = (c: RemoteClient) => ({
   seeMentions: (thread: string) => c.rpc<null>('see_mentions', { thread }),
   newThread: (root: string, worktree = false) =>
     c.rpc<string>('new_thread', { root, worktree, sandbox: null }),
+  browse: (path: string | null = null) => c.rpc<Browse>('browse', { path }),
+  addProject: (root: string) => c.rpc<ProjectAdded>('add_project', { root }),
+  /** A clone can take minutes: the desktop stops it after 15, so the wait is a little longer. */
+  cloneProject: (url: string, name: string | null = null) =>
+    c.rpc<ProjectAdded>('clone_project', { url, name }, 16 * 60 * 1000),
   ensureHost: (thread: string) => c.rpc<boolean>('ensure_host', { thread }),
   renameThread: (thread: string, title: string) => c.rpc<null>('rename_thread', { thread, title }),
   pinThread: (thread: string, pinned: boolean) => c.rpc<null>('pin_thread', { thread, pinned }),

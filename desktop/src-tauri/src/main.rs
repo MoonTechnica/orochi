@@ -815,6 +815,14 @@ fn remote_set_name(
 }
 
 #[tauri::command]
+fn remote_set_clone_dir(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+    path: String,
+) -> Result<orochi_desktop::remote::Status, String> {
+    remote.set_clone_dir(&path).map_err(fail)
+}
+
+#[tauri::command]
 fn remote_devices(
     remote: State<'_, orochi_desktop::remote::Remote>,
 ) -> Vec<orochi_desktop::remote::DeviceView> {
@@ -1157,6 +1165,7 @@ fn main() {
             remote_disable,
             remote_pair,
             remote_set_name,
+            remote_set_clone_dir,
             remote_devices,
             remote_revoke,
             browser_admin

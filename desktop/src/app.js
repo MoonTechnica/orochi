@@ -195,6 +195,10 @@ const WORDS = {
     "Set up Orochi": "Orochi の初期設定",
     Storage: "保存場所",
     "Orochi mobile app": "Orochi モバイルアプリ",
+    "Clone folder for the phone": "スマートフォンからのクローン先フォルダ",
+    "Choose…": "選択…",
+    "Clear": "解除",
+    "Not chosen: a phone cannot clone a repository.": "未選択です。スマートフォンからはリポジトリをクローンできません。",
     "Allow a phone to connect over Tailscale": "Tailscale 経由でスマートフォンからの接続を許可する",
     "Listening on": "待ち受け中",
     "Not running.": "起動していません。",
@@ -5335,6 +5339,34 @@ async function drawMobile(host) {
   });
   nameRow.append(nameLabel, nameSave);
   card.append(nameRow);
+  // Where a phone's "clone a repository" puts it; unset, it cannot, and nothing else is written.
+  const cloneRow = text("div", "row mobile-clone");
+  cloneRow.dataset.name = "mobile-clone";
+  cloneRow.append(text("span", null, `${t("Clone folder for the phone")} `));
+  cloneRow.append(
+    text("span", "path", status.clone_dir || t("Not chosen: a phone cannot clone a repository.")),
+  );
+  const cloneChoose = document.createElement("button");
+  cloneChoose.type = "button";
+  cloneChoose.textContent = t("Choose…");
+  cloneChoose.addEventListener("click", async () => {
+    const chosen = await pickFolder();
+    if (!chosen) return;
+    const done = await call("remote_set_clone_dir", { path: chosen });
+    if (done) await drawScreen();
+  });
+  cloneRow.append(cloneChoose);
+  if (status.clone_dir) {
+    const cloneClear = document.createElement("button");
+    cloneClear.type = "button";
+    cloneClear.textContent = t("Clear");
+    cloneClear.addEventListener("click", async () => {
+      const done = await call("remote_set_clone_dir", { path: "" });
+      if (done) await drawScreen();
+    });
+    cloneRow.append(cloneClear);
+  }
+  card.append(cloneRow);
   if (status.id) card.append(text("div", "note machine-id", `${t("Machine id")} ${status.id}`));
   if (status.error) card.append(text("div", "note error", status.error));
   card.append(

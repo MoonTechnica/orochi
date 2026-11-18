@@ -51,12 +51,17 @@ export class RemoteClient {
     return new RemoteClient({ base: baseUrl(host, port), token, ...extra });
   }
 
-  private async request<T>(path: string, init: RequestInit = {}, auth = true): Promise<T> {
+  private async request<T>(
+    path: string,
+    init: RequestInit = {},
+    auth = true,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (init.body) headers['Content-Type'] = 'application/json';
     if (auth && this.token) headers.Authorization = `Bearer ${this.token}`;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
       response = await this.fetchImpl(`${this.base}${path}`, {
@@ -112,11 +117,17 @@ export class RemoteClient {
   }
 
   /** `/rpc/<command>`: a whitelisted view command, arguments as the window passes them. */
-  rpc<T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-    return this.request<T>(`/rpc/${encodeURIComponent(command)}`, {
-      method: 'POST',
-      body: JSON.stringify(args),
-    });
+  rpc<T = unknown>(
+    command: string,
+    args: Record<string, unknown> = {},
+    timeoutMs?: number,
+  ): Promise<T> {
+    return this.request<T>(
+      `/rpc/${encodeURIComponent(command)}`,
+      { method: 'POST', body: JSON.stringify(args) },
+      true,
+      timeoutMs,
+    );
   }
 
   private withToken(url: string) {

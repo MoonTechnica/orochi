@@ -279,6 +279,8 @@ async fn a_command_off_the_whitelist_is_refused_even_with_a_token() {
         "set_roster",
         "save_memory",
         "delete_project",
+        "set_clone_dir",
+        "remote_set_clone_dir",
         "delete_thread",
         "notify",
         "badge",
@@ -888,4 +890,158 @@ async fn the_name_a_phone_sees_is_chosen_in_settings_and_defaults_to_the_host_wi
 
 async fn door_with_new_data() -> Door {
     door().await
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.test", "-C"])
+        .arg(dir)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+#[tokio::test]
+async fn a_phone_browses_and_adds_folders_only_inside_the_clone_folder_or_home() {
+    let door = door().await;
+    let token = paired(&door).await;
+    let clones = door._dir.path().join("clones");
+    std::fs::create_dir_all(clones.join("mine/.git")).unwrap();
+    std::fs::create_dir_all(clones.join("plain")).unwrap();
+    std::fs::create_dir_all(clones.join(".hidden")).unwrap();
+    std::fs::write(clones.join("file.txt"), "x").unwrap();
+
+    // Until a clone folder is chosen the tempdir is outside everything a phone may open.
+    let outside = clones.to_string_lossy().into_owned();
+    let refused = rpc(&door, &token, "browse", json!({"path": outside})).await;
+    assert_eq!(refused.status, 400);
+
+    let status = door.remote.set_clone_dir(&outside).unwrap();
+    assert_eq!(
+        status.clone_dir.as_deref(),
+        Some(clones.canonicalize().unwrap().to_str().unwrap())
+    );
+    let listing = rpc(&door, &token, "browse", json!({})).await;
+    assert_eq!(listing.status, 200);
+    let listing = listing.json();
+    let names: Vec<&str> = listing["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["mine", "plain"]);
+    assert_eq!(listing["entries"][0]["git"], true);
+    assert_eq!(listing["entries"][1]["git"], false);
+
+    let escape = rpc(&door, &token, "browse", json!({"path": "/"})).await;
+    assert_eq!(escape.status, 400);
+    let up = format!("{outside}/../..");
+    assert_eq!(
+        rpc(&door, &token, "add_project", json!({"root": up}))
+            .await
+            .status,
+        400
+    );
+
+    let mine = clones.join("mine").to_string_lossy().into_owned();
+    let added = rpc(&door, &token, "add_project", json!({"root": mine})).await;
+    assert_eq!(
+        added.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&added.body)
+    );
+    let started = rpc(&door, &token, "new_thread", json!({"root": mine})).await;
+    assert_eq!(started.status, 200);
+
+    // Choosing nothing turns it off again.
+    assert!(door.remote.set_clone_dir("").unwrap().clone_dir.is_none());
+    assert_eq!(
+        rpc(&door, &token, "browse", json!({"path": outside}))
+            .await
+            .status,
+        400
+    );
+    assert!(door.remote.set_clone_dir("relative/path").is_err());
+}
+
+#[tokio::test]
+async fn a_phone_clones_a_repository_into_the_chosen_folder_and_nothing_else() {
+    let door = door().await;
+    let token = paired(&door).await;
+    let clones = door._dir.path().join("clones");
+    std::fs::create_dir_all(&clones).unwrap();
+
+    // Standing in for a hosting site: an address under example.test is a local repository.
+    let origin = door._dir.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "--quiet"]);
+    git(
+        &origin,
+        &["commit", "--quiet", "--allow-empty", "-m", "first"],
+    );
+    unsafe {
+        std::env::set_var("GIT_CONFIG_COUNT", "1");
+        std::env::set_var(
+            "GIT_CONFIG_KEY_0",
+            format!("url.{}/.insteadOf", origin.display()),
+        );
+        std::env::set_var("GIT_CONFIG_VALUE_0", "https://example.test/origin");
+    }
+
+    let url = "https://example.test/origin";
+    let none = rpc(&door, &token, "clone_project", json!({"url": url})).await;
+    assert_eq!(none.status, 400, "no clone folder chosen yet");
+    door.remote.set_clone_dir(clones.to_str().unwrap()).unwrap();
+
+    for bad in [
+        "",
+        "--upload-pack=touch /tmp/x",
+        "-oProxyCommand=x",
+        "/etc/passwd",
+        "file:///etc",
+        "ext::sh -c id",
+        "ssh://-oProxyCommand=x/repo",
+        "https://host with space/x",
+        "git@host",
+        "https://example.test",
+    ] {
+        let answer = rpc(&door, &token, "clone_project", json!({"url": bad})).await;
+        assert_eq!(answer.status, 400, "{bad:?}");
+    }
+    let wrong_name = rpc(
+        &door,
+        &token,
+        "clone_project",
+        json!({"url": url, "name": "../escape"}),
+    )
+    .await;
+    assert_eq!(wrong_name.status, 400);
+    assert!(!door._dir.path().join("escape").exists());
+
+    let made = rpc(&door, &token, "clone_project", json!({"url": url})).await;
+    assert_eq!(made.status, 200, "{}", String::from_utf8_lossy(&made.body));
+    let made = made.json();
+    assert_eq!(made["name"], "origin");
+    assert!(clones.join("origin/.git").exists());
+    let root = made["root"].as_str().unwrap().to_owned();
+    let started = rpc(&door, &token, "new_thread", json!({"root": root})).await;
+    assert_eq!(started.status, 200);
+
+    let again = rpc(&door, &token, "clone_project", json!({"url": url})).await;
+    assert_eq!(again.status, 400, "the folder is taken");
+    let failed = rpc(
+        &door,
+        &token,
+        "clone_project",
+        json!({"url": "https://example.test/missing", "name": "gone"}),
+    )
+    .await;
+    assert_eq!(failed.status, 400);
+    assert!(
+        !clones.join("gone").exists(),
+        "a failed clone leaves nothing"
+    );
 }

@@ -4850,6 +4850,29 @@ test("the name a phone shows for this desktop is editable and defaults to the ho
   assert.match(body().render(), /Work Mac/);
 });
 
+test("the folder a phone clones into is chosen with the system picker and can be cleared", async () => {
+  let status = { ...REMOTE_ON, clone_dir: null };
+  const { el, calls } = await open(
+    {
+      remote_status: () => status,
+      remote_devices: [],
+      remote_set_clone_dir: ({ path }) => (status = { ...status, clone_dir: path || null }),
+    },
+    { pick: () => "/Users/me/Clones" },
+  );
+  await openSettingsPage(el, "mobile");
+  const body = () => el("settings-body");
+  assert.match(body().render(), /a phone cannot clone a repository/);
+  body().querySelectorAll("button").find((b) => b.textContent === "Choose…").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "remote_set_clone_dir").map(([, a]) => a), [{ path: "/Users/me/Clones" }]);
+  assert.match(body().render(), /\/Users\/me\/Clones/);
+  body().querySelectorAll("button").find((b) => b.textContent === "Clear").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "remote_set_clone_dir").map(([, a]) => a).at(-1), { path: "" });
+  assert.match(body().render(), /a phone cannot clone a repository/);
+});
+
 test("the mobile page speaks Japanese on a Japanese machine", async () => {
   const { el } = await open({ remote_status: REMOTE_OFF, remote_devices: [] }, { language: "ja-JP" });
   await openSettingsPage(el, "mobile");

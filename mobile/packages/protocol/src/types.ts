@@ -342,6 +342,23 @@ export interface Folder {
   updated_at?: number | null;
 }
 
+/** A folder the phone may open: `browse` lists the visible folders under `path`. */
+export interface Browse {
+  path: string;
+  parent: string | null;
+  /** The folder itself is a git checkout. */
+  git: boolean;
+  /** Where "clone" puts a repository; null until it is chosen in the desktop's Settings. */
+  clone_dir: string | null;
+  entries: { name: string; path: string; git: boolean }[];
+}
+
+export interface ProjectAdded {
+  id: string;
+  root: string;
+  name?: string;
+}
+
 export type FileState =
   'conflict' | 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'ignored';
 

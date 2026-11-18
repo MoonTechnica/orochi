@@ -67,6 +67,7 @@ const READS: &[&str] = &[
     "tree_find",
     "watch",
     "agent_icons",
+    "browse",
 ];
 const WRITES: &[&str] = &[
     "send",
@@ -83,6 +84,8 @@ const WRITES: &[&str] = &[
     "archive_thread",
     "set_route",
     "comment",
+    "add_project",
+    "clone_project",
 ];
 
 pub fn whitelisted(command: &str) -> bool {
@@ -437,6 +440,8 @@ pub struct Status {
     pub id: String,
     pub error: Option<String>,
     pub devices: usize,
+    /// Where a phone's "clone a repository" puts it; none until chosen, and then it cannot.
+    pub clone_dir: Option<String>,
 }
 
 // ---- the server --------------------------------------------------------------------------
@@ -650,7 +655,36 @@ impl Remote {
                 devices.refresh();
                 devices.list.len()
             },
+            clone_dir: clone_dir(&self.shared.data).map(|p| p.display().to_string()),
         }
+    }
+
+    /// Chooses (or, empty, forgets) the folder phones clone into. It must already exist.
+    pub fn set_clone_dir(&self, path: &str) -> Result<Status> {
+        let file = projects_file(&self.shared.data);
+        let path = path.trim();
+        if path.is_empty() {
+            match std::fs::remove_file(&file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+                _ => return Ok(self.status()),
+            }
+        }
+        if !Path::new(path).is_absolute() {
+            bail!("The clone folder must be an absolute path");
+        }
+        let dir = Path::new(path)
+            .canonicalize()
+            .with_context(|| format!("{path} does not exist"))?;
+        if !dir.is_dir() {
+            bail!("{} is not a folder", dir.display());
+        }
+        write_private(
+            &file,
+            json!({ "clone_dir": dir.display().to_string() })
+                .to_string()
+                .as_bytes(),
+        )?;
+        Ok(self.status())
     }
 
     /// A new single-use code, valid five minutes, and the QR that carries it. Any earlier
@@ -1030,6 +1064,12 @@ fn call(
                 maybe(args, "sandbox").as_deref(),
             ))
         }
+        "browse" => browse(shared, maybe(args, "path")),
+        "add_project" => {
+            let root = reachable(&shared.data, Path::new(&text(args, "root")?))?;
+            let id = client.add_project(&root)?;
+            Ok(json!({ "id": id, "root": root.display().to_string() }))
+        }
         "ensure_host" => {
             let thread = thread()?;
             if !client.needs_host(&thread)? {
@@ -1075,6 +1115,10 @@ async fn rpc(
     let shared = app.shared.clone();
     let name = command.clone();
     let result = tokio::task::spawn_blocking(move || {
+        // A clone takes minutes and must not hold the window's connection while it runs.
+        if name == "clone_project" {
+            return clone_project(&shared, &args);
+        }
         let mut client = locked(&shared.client);
         call(&mut client, &shared, &name, &args)
     })
@@ -1092,6 +1136,228 @@ async fn rpc(
         Ok(Err(Failure(status, message))) => failure(status, &message),
         Err(_) => failure(StatusCode::INTERNAL_SERVER_ERROR, "the command failed"),
     }
+}
+
+// ---- projects started from the phone -------------------------------------------------------
+// A phone may add a folder it can see from the places below, or clone into the folder chosen in
+// Settings; it can never name another place for a project to live.
+
+fn projects_file(data: &Path) -> PathBuf {
+    folder(data).join("projects.json")
+}
+
+/// The folder chosen in Settings for clones; none when unset or no longer a folder.
+fn clone_dir(data: &Path) -> Option<PathBuf> {
+    let saved: Value = serde_json::from_slice(&std::fs::read(projects_file(data)).ok()?).ok()?;
+    PathBuf::from(saved["clone_dir"].as_str()?)
+        .canonicalize()
+        .ok()
+        .filter(|p| p.is_dir())
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .and_then(|h| PathBuf::from(h).canonicalize().ok())
+}
+
+/// A folder inside the user's home or the clone folder, symlinks resolved first.
+fn reachable(data: &Path, path: &Path) -> Result<PathBuf, Failure> {
+    let path = path
+        .canonicalize()
+        .map_err(|_| Failure::bad("that folder does not exist"))?;
+    let inside = [clone_dir(data), home_dir()]
+        .iter()
+        .flatten()
+        .any(|root| path.starts_with(root));
+    if !path.is_dir() || !inside {
+        return Err(Failure::bad(
+            "that folder is not a place a phone may use (the home folder or the clone folder)",
+        ));
+    }
+    Ok(path)
+}
+
+/// The folders under `path` (visible ones only), to pick a project from the phone.
+fn browse(shared: &Shared, path: Option<String>) -> Result<Value, Failure> {
+    let start = path
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| clone_dir(&shared.data))
+        .or_else(home_dir)
+        .ok_or_else(|| Failure::bad("this desktop has no home folder to start from"))?;
+    let path = reachable(&shared.data, &start)?;
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&path).map_err(|e| anyhow!(e))?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        // A symlink is followed only if it ends in a folder the phone may use anyway.
+        let full = entry.path();
+        if name.starts_with('.') || !(kind.is_dir() || kind.is_symlink() && full.is_dir()) {
+            continue;
+        }
+        if reachable(&shared.data, &full).is_err() {
+            continue;
+        }
+        entries.push(json!({ "name": name, "path": full.display().to_string(), "git": full.join(".git").exists() }));
+    }
+    entries.sort_by_key(|e| e["name"].as_str().unwrap_or("").to_lowercase());
+    entries.truncate(500);
+    let parent = path
+        .parent()
+        .filter(|p| reachable(&shared.data, p).is_ok())
+        .map(|p| p.display().to_string());
+    Ok(json!({
+        "path": path.display().to_string(),
+        "parent": parent,
+        "git": path.join(".git").exists(),
+        "clone_dir": clone_dir(&shared.data).map(|p| p.display().to_string()),
+        "entries": entries,
+    }))
+}
+
+/// Only addresses a person would paste from a hosting site: https, ssh, or `user@host:path`.
+/// No local path, no `file://`, no helper-program transport, nothing that reads as an option.
+fn check_clone_url(url: &str) -> Result<(), Failure> {
+    let bad =
+        || Failure::bad("that is not a repository address (https://…, ssh://… or git@host:path)");
+    if url.is_empty() || url.len() > 2048 || url.starts_with('-') {
+        return Err(bad());
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(bad());
+    }
+    let host_ok = |authority: &str| {
+        let host = authority.rsplit('@').next().unwrap_or("");
+        host.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+            && host
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c))
+    };
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("ssh://"))
+    {
+        let authority = rest.split('/').next().unwrap_or("");
+        return if host_ok(authority) && rest.len() > authority.len() + 1 {
+            Ok(())
+        } else {
+            Err(bad())
+        };
+    }
+    if url.contains("://") {
+        return Err(bad());
+    }
+    match url.split_once(':') {
+        Some((user_host, path))
+            if user_host.contains('@') && host_ok(user_host) && !path.is_empty() =>
+        {
+            Ok(())
+        }
+        _ => Err(bad()),
+    }
+}
+
+fn clone_name(url: &str) -> String {
+    let last = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("");
+    last.strip_suffix(".git").unwrap_or(last).to_owned()
+}
+
+const CLONE_SECONDS: u64 = 15 * 60;
+
+/// `git clone` into a new folder of the clone folder, then the folder becomes a project.
+fn clone_project(shared: &Shared, args: &Value) -> Result<Value, Failure> {
+    let url = text(args, "url")?;
+    let url = url.trim();
+    check_clone_url(url)?;
+    let Some(dir) = clone_dir(&shared.data) else {
+        return Err(Failure::bad(
+            "choose the clone folder in Settings → Orochi mobile app on the desktop first",
+        ));
+    };
+    let name = maybe(args, "name")
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| clone_name(url));
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._-".contains(c);
+    if name.is_empty() || name.len() > 100 || name.starts_with('.') || !name.chars().all(plain) {
+        return Err(Failure::bad(
+            "the folder name may use letters, digits, `.`, `_` and `-` only",
+        ));
+    }
+    let dest = dir.join(&name);
+    if dest.symlink_metadata().is_ok() {
+        return Err(Failure::bad(format!(
+            "a folder named {name} already exists in the clone folder"
+        )));
+    }
+    let mut command = std::process::Command::new("git");
+    command
+        .args([
+            "-c",
+            "protocol.ext.allow=never",
+            "clone",
+            "--quiet",
+            "--",
+            url,
+        ])
+        .arg(&dest)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    if std::env::var_os("GIT_SSH_COMMAND").is_none() {
+        command.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| Failure::bad(format!("git could not start: {e}")))?;
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(|e| anyhow!(e))? {
+            Some(status) => break Some(status),
+            None if started.elapsed().as_secs() > CLONE_SECONDS => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    };
+    let mut reason = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        use std::io::Read;
+        let mut text = String::new();
+        let _ = stderr.read_to_string(&mut text);
+        reason = text
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .chars()
+            .take(300)
+            .collect();
+    }
+    if !status.is_some_and(|s| s.success()) {
+        // The folder did not exist before, so whatever is there is this attempt's leftovers.
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(Failure::bad(match status {
+            None => "the clone took too long and was stopped".to_owned(),
+            Some(_) if reason.is_empty() => "git could not clone that repository".to_owned(),
+            Some(_) => reason,
+        }));
+    }
+    let root = dest.canonicalize().map_err(|e| anyhow!(e))?;
+    let id = locked(&shared.client).add_project(&root)?;
+    Ok(json!({ "id": id, "root": root.display().to_string(), "name": name }))
 }
 
 fn reply(reply: crate::media::Reply) -> Response {
