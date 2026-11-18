@@ -373,7 +373,7 @@ allow = ["localhost", "127.0.0.1", "[::1]", "*.localhost"]   # where an agent ma
 deny = []             # always refused, whatever `allow` says
 # chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # default: a Chrome or Chromium found on this machine
 agent_evaluate = false  # true lets an agent run its own script in a page, which no host list then bounds
-engine = "auto"       # what draws the person's own tab (docs/servo-browser-design.md): "servo", "chromium", or "auto" (Servo where an orochi-servo is found, Chrome otherwise). The agents' tools use the same engine, each session in an engine of its own with no profile; Servo has no file chooser, request log or second tab, and `engine = "chromium"` gives them back. Servo is built by `mise run servo`; not yet run against the sites a person signs in to
+engine = "servo"      # default (2026-11-18): Servo draws the person's tab and runs the agents' tools, and Orochi starts no Chrome (build orochi-servo with `mise run servo`). "chromium": Chrome for everything (several tabs, file uploads, the network log, folder previews); "auto": Servo where an orochi-servo is found and Chrome otherwise, which starts a Chrome. Each agent session has an engine of its own; its sign-ins are shared (`share_logins`)
 share_logins = true   # default: Servo's tabs and agents' sessions keep and share their sign-ins (cookies) in <data>/browser/servo/logins.json (0600), so a login made once is not asked for again; false: an agent's session starts signed out. An agent can still reach only the hosts in `allow`
 # servo = "/path/to/orochi-servo"   # default: <data>/toolchain/servo/current/orochi-servo, then beside this executable
 

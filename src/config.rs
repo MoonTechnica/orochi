@@ -413,9 +413,12 @@ pub struct BrowserConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BrowserEngine {
-    #[default]
+    /// Servo where an `orochi-servo` is found, and Chrome where Servo cannot start or does
+    /// not do the thing asked (a folder preview). Starts Chrome, so it is chosen, not default.
     Auto,
     Chromium,
+    /// Servo only; Chrome is never started. The default (the user's rule, 2026-11-18).
+    #[default]
     Servo,
 }
 
@@ -457,7 +460,7 @@ impl Default for BrowserConfig {
             idle_secs: 600,
             chrome: None,
             agent_evaluate: false,
-            engine: BrowserEngine::Auto,
+            engine: BrowserEngine::Servo,
             servo: None,
             share_logins: true,
             remote: RemoteConfig::default(),

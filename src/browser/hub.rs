@@ -230,9 +230,9 @@ impl Hub {
             Some(browser) => browser.call(request).await,
             None => failure(
                 if chrome_only(&request) || !request.args["watch"].is_null() {
-                    "previewing a folder, and watching a page of Chrome's, need Chrome or Chromium, \
-                 which was not found"
-                    .to_owned()
+                    "previewing a folder needs Chrome, which Orochi does not run by default: set \
+                 browser.engine to \"auto\" (or \"chromium\") and have a Chrome or Chromium"
+                        .to_owned()
                 } else if self.engines.required() {
                     self.engines.why_missing()
                 } else {

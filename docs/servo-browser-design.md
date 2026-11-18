@@ -11,8 +11,8 @@ Status: **built 2026-11-17, not run against a real phone or the user's own login
 |---|---|---|
 | D5 | What engine draws the window's centre-column browser tab | **Servo** (`servo` crate, MPL-2.0), embedded as a library. This supersedes D4 of `conversation-tabs-design.md` **for the person's own tab**; D4's reasons (trusted input, console, network, file upload for agents) are about the agents' tools, which this document does not move (§3.4) |
 | D6 | Can the tab be seen from a phone | **Yes.** The same tab, over the network, in the phone's own browser (§6) |
-| D7 | Is Chromium dropped | **No.** Chromium stays as the fallback (`browser.engine`, §3.4). Servo is the standard for the person's tab and, since 2026-11-18, for the agents' tools too (D8), until it has been run on the sites the user logs into (§9) |
-| D8 | Which engine the agents' `browser_*` tools use | **Servo where an `orochi-servo` is found** (`browser.engine = "auto"`), on the user's instruction 2026-11-18 ("the embedded browser should be the standard"); Chrome where there is none, and for what Servo cannot do (§3.4) |
+| D7 | Is Chromium dropped | **Not removed, but never run unless asked (2026-11-18, the user: "basically do not use Chrome").** The default is `engine = "servo"`: no Chrome is started, and a thing only Chrome does answers with how to turn it on. Chromium stays as the choice (`browser.engine`, §3.4). Servo is the standard for the person's tab and, since 2026-11-18, for the agents' tools too (D8), until it has been run on the sites the user logs into (§9) |
+| D8 | Which engine the agents' `browser_*` tools use | **Servo, and only Servo by default** (`browser.engine = "servo"`), on the user's instructions 2026-11-18 ("the embedded browser should be the standard", then "basically do not use Chrome"); Chrome only where `engine` is `chromium` or `auto` (§3.4) |
 
 D7 was mine, not the user's: it is the cheapest way to keep the browser usable if Servo
 cannot render a site the user needs, and it is easy to remove once §9's questions are
@@ -187,7 +187,7 @@ phone ask what changed since the last `seq` they drew.
   is told never to type a password, a code or a card number itself. A login lasts as long as
   the session, since an agent's engine has no profile. Chrome sessions answer both tools
   with that said; Chrome pages are still watched read-only.
-* **Still Chrome's:** `view_preview`.
+* **Still Chrome's, and so off by default:** `view_preview` (a folder served to a tab whose requests outside it are refused by Chrome's own interception; Servo has no such confinement built here yet — it has `load_web_resource` to build it on), `browser_upload`, the network log and several tabs. Each answers that `browser.engine` must be `chromium` (or `auto`) for it.
 * **Sign-ins are shared and kept (2026-11-18, the user's request: "do not make me sign in
   every time").** Servo writes its cookie jar only when an engine exits, and two engines on
   one profile each write the whole of theirs: measured with the real engine, the one that
@@ -205,7 +205,7 @@ phone ask what changed since the last `seq` they drew.
   keeps its sign-in in `localStorage` asks again; a cookie the site removes (a sign-out) is
   not removed from the file, so the next engine is given a dead cookie the site refuses;
   nothing is shared with a Chrome session.
-* `browser.engine = "chromium" | "servo" | "auto"` (default `auto`). The window shows the
+* `browser.engine = "chromium" | "servo" | "auto"` (default `servo`). The window shows the
   engine in the tab's corner.
 
 ## 4. The tab, behaviour by behaviour
@@ -434,7 +434,7 @@ the engine: it is built first for that reason (§10).
 | `src/browser/engine.rs`, `hub.rs`, `server.rs` (the broker without Chrome, engines, `remote_*` admin tools), `config.rs`, `policy.rs` | **Built**, tested by `tests/browser_engine.rs` (12) over `tests/fixtures/fake_servo.py`, including that nothing is sent before `ready`, that an engine is asked to exit and waited for, and that a restarted tab goes on counting frames; and by `tests/browser_servo_real.rs` (`#[ignore]`, run by hand) against the **real** engine: a page, typing and a click through the hub |
 | `src/browser/remote.rs`, `viewer.html`, the window's Settings → *Use from a phone* | **Built**; `tests/browser_remote.rs` (20) covers pairing, cookie and `Origin` checks, tool and scope whitelists, one driver per tab, one frame in flight, revocation, hashed tokens, restart, and the whole chain phone → listener → hub → engine process. **Never run on a real phone**: touch, soft keyboard, IME, safe areas, `visualViewport` and iOS Safari are unverified. Tailscale and `tailscale serve` are unverified. The settings page was tested only against a faked admin answer |
 | Agents' tools on Servo (`engine/tools.rs`, `snapshot.js`, the engine's `eval` and `screenshot`) | **Built.** `tests/browser_engine.rs` (3 more, over `fake_servo.py`: refs and actions, no profile and no frames, policy, read-only sessions) and `tests/browser_servo_real.rs` (`#[ignore]`, **run 2026-11-18**: snapshot, type into an `<input>` and a `contenteditable`, a click on a button 1500 px down, Enter, screenshot, a link, wait, back, evaluate). **Not run:** a real site, an agent (a model) driving it, the other tools on a long session |
-| `engine = "auto"` as default | Chosen by the user's instruction, **before** item 4 of §9 was answered (their own login site); `engine = "chromium"` is the way back |
+| `engine = "servo"` as default (was `auto` until 2026-11-18) | Chosen by the user's instruction, **before** item 4 of §9 was answered (their own login site); `engine = "chromium"` is the way back |
 
 Known costs and limits, as the user should hear them:
 

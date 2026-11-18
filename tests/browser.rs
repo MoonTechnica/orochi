@@ -26,6 +26,7 @@ fn config() -> BrowserConfig {
     BrowserConfig {
         enabled: true,
         chrome: Some(fake()),
+        engine: orochi::config::BrowserEngine::Chromium,
         ..BrowserConfig::default()
     }
 }
@@ -1030,4 +1031,65 @@ async fn the_person_can_watch_an_agents_page_but_not_drive_it_and_watching_opens
             .await,
     );
     assert_eq!(of(&asked(dir.path()), "Page.stopScreencast").len(), 1);
+}
+
+/// Chrome is not part of the default: with nothing asked for it, the broker does not start one
+/// even where one is named, and a tool says what is missing instead of falling back to it.
+#[test]
+fn the_default_broker_starts_no_chrome_and_says_what_servo_lacks() {
+    let data = tempfile::tempdir().unwrap();
+    let data_path = std::fs::canonicalize(data.path()).unwrap();
+    std::fs::create_dir_all(data_path.join("browser")).unwrap();
+    let defaults = BrowserConfig {
+        enabled: true,
+        chrome: Some(fake()),
+        ..BrowserConfig::default()
+    };
+    assert_eq!(defaults.engine, orochi::config::BrowserEngine::Servo);
+    std::fs::write(
+        data_path.join("browser/config.json"),
+        serde_json::to_vec(&defaults).unwrap(),
+    )
+    .unwrap();
+    let mut mcp = std::process::Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .args(["--internal-browser-mcp"])
+        .arg(&data_path)
+        .args(["scope-1", "0"])
+        .arg(&data_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = mcp.stdin.take().unwrap();
+    let mut output = BufReader::new(mcp.stdout.take().unwrap());
+    let mut ask = |id: u64, method: &str, params: Value| -> Value {
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+        )
+        .unwrap();
+        input.flush().unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    ask(1, "initialize", json!({"protocolVersion": "2025-06-18"}));
+    let opened = ask(
+        2,
+        "tools/call",
+        json!({"name": "browser_navigate", "arguments": {"url": "http://localhost:3000/"}}),
+    );
+    let said = opened["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(opened["result"]["isError"], true, "{opened}");
+    assert!(said.contains("orochi-servo"), "{said}");
+    assert!(
+        !data_path.join("browser/fake-chrome.log").exists(),
+        "no Chrome was started"
+    );
+    drop(input);
+    let _ = mcp.wait();
 }

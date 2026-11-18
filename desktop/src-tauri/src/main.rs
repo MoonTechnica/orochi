@@ -846,8 +846,10 @@ fn browser_status(open: State<'_, Open>) -> serde_json::Value {
     let config = orochi::config::Config::load(&config).unwrap_or_default();
     #[cfg(unix)]
     let (chrome, servo) = (
-        orochi::browser::find_chrome(&config.browser)
-            .ok()
+        // Chrome is not run unless the settings ask for it, so it is not offered either.
+        (config.browser.engine != orochi::config::BrowserEngine::Servo)
+            .then(|| orochi::browser::find_chrome(&config.browser).ok())
+            .flatten()
             .map(|p| p.display().to_string()),
         orochi::browser::engine::find_servo(&config.browser, &data)
             .map(|p| p.display().to_string()),

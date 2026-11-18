@@ -896,18 +896,19 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     // The browser's tools are offered to the sessions this process starts.
     #[cfg(unix)]
     if joins && config.browser.enabled {
-        // No tools for a browser that is not there: a Chrome or Chromium on this machine, or
-        // the one `browser.chrome` names, or an orochi-servo.
-        let servo = config.browser.engine != crate::config::BrowserEngine::Chromium
+        // No tools for a browser that is not there: an orochi-servo, or, where the settings
+        // ask for Chrome (`chromium`, `auto`), a Chrome or Chromium on this machine or the one
+        // `browser.chrome` names.
+        use crate::config::BrowserEngine;
+        let engine = config.browser.engine;
+        let servo = engine != BrowserEngine::Chromium
             && crate::browser::engine::find_servo(&config.browser, &paths.data).is_some();
-        match crate::browser::find_chrome(&config.browser) {
-            Ok(_) => {
-                crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
-            }
-            Err(_) if servo => {
-                crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
-            }
-            Err(error) => tracing::debug!(%error, "no browser for the agents"),
+        let chrome =
+            engine != BrowserEngine::Servo && crate::browser::find_chrome(&config.browser).is_ok();
+        if servo || chrome {
+            crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
+        } else {
+            tracing::debug!("no browser for the agents (build orochi-servo with `mise run servo`)");
         }
     }
     let _membership = if joins && config.mailbox.enabled {

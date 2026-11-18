@@ -220,9 +220,10 @@ async fn broker_main(data: &Path) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let config = load(data)?;
     let engines = super::engine::Engines::new(&config, data);
-    // Chrome is the agents' browser and the person's when Servo is not: with Servo drawing
-    // the tab, a machine without Chrome still has a browser.
+    // Chrome is started only where the settings ask for it (`chromium`, or `auto`): by default
+    // Servo draws everything and no Chrome is run, or needed.
     let browser = match find_chrome(&config) {
+        _ if config.engine == crate::config::BrowserEngine::Servo => None,
         Ok(chrome) => {
             let profile = dir(data).join("profile");
             std::fs::create_dir_all(&profile)?;
