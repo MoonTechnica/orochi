@@ -1,0 +1,7 @@
+# Back to a fresh install, so the next link pairs from nothing.
+appId: dev.orochi.mobile
+---
+- launchApp:
+    clearState: true
+    clearKeychain: true
+    stopApp: true

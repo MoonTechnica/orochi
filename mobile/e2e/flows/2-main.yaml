@@ -1,0 +1,241 @@
+# Paired by deep link (run-ios.sh opened the link). Home, conversations, media, drawer, files,
+# git, team channel, approval, composer, activity, row actions.
+appId: dev.orochi.mobile
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      -AppleLanguages: '(en)'
+      -AppleLocale: 'en_US'
+- extendedWaitUntil:
+    visible:
+      id: headline
+    timeout: 20000
+- assertVisible: 'NESTS'
+- assertVisible: 'Allow once'
+- takeScreenshot: ios-03-paired-by-deeplink-home
+- takeScreenshot: ios-home3-01-serpent-and-needs
+# The first needs-you card's buttons are on the first screen, above the tab bar, without
+# scrolling (the tab bar's own tabs are on screen at the same time).
+- assertVisible: 'Home, tab.*'
+- assertVisible:
+    id: need-option-0
+- assertVisible: 'Reject'
+- takeScreenshot: ios-home4-01-first-card-buttons
+- takeScreenshot: ios-home6-01-home-light
+# Reply on the mention card opens the conversation with the composer focused and the sender
+# addressed: typing goes straight into the field after "@bob ".
+- scrollUntilVisible:
+    element:
+      id: need-reply
+- takeScreenshot: ios-home4-02-mention-card
+- takeScreenshot: ios-chat-avatars-01-home-mention-card
+- tapOn:
+    id: need-reply
+- extendedWaitUntil:
+    visible:
+      id: composer-input
+    timeout: 15000
+- extendedWaitUntil:
+    visible: '@bob.*'
+    timeout: 5000
+- inputText: 'sounds good'
+- assertVisible: '@bob sounds good'
+- takeScreenshot: ios-home4-03-reply-focused
+- tapOn: 'Back'
+- waitForAnimationToEnd
+# Scrolled to the end, the last row sits fully above the tab bar.
+- repeat:
+    times: 4
+    commands:
+      - swipe:
+          start: 50%,75%
+          end: 50%,15%
+- assertVisible: 'All conversations.*'
+- assertVisible: 'Home, tab.*'
+- takeScreenshot: ios-home4-04-scrolled-to-end
+- tapOn: 'Conversations, tab.*'
+- extendedWaitUntil:
+    visible: 'Show me what you made, .*'
+- takeScreenshot: ios-04-conversations
+- tapOn: 'Show me what you made, .*'
+- extendedWaitUntil:
+    visible: 'Message.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-05-chat-inline-media
+- takeScreenshot: ios-chat-avatars-02-conversation-media
+- tapOn: 'Play'
+- takeScreenshot: ios-06-audio-playing
+- extendedWaitUntil:
+    visible: '0:0[2-9] / 0:0.*'
+    timeout: 8000
+- takeScreenshot: ios-07-audio-progressed
+- tapOn: 'chart.png'
+- waitForAnimationToEnd
+- takeScreenshot: ios-08-viewer-image
+# Double tap zooms in on the tapped point, again zooms out; the label says which.
+- assertVisible: 'Image, fit to screen'
+- doubleTapOn:
+    point: 50%,50%
+- extendedWaitUntil:
+    visible: 'Image, zoomed'
+    timeout: 5000
+- takeScreenshot: ios-08b-viewer-double-tap-zoomed
+- doubleTapOn:
+    point: 50%,50%
+- extendedWaitUntil:
+    visible: 'Image, fit to screen'
+    timeout: 5000
+- takeScreenshot: ios-08c-viewer-double-tap-fit
+- swipe:
+    start: 85%,50%
+    end: 15%,50%
+- swipe:
+    start: 85%,50%
+    end: 15%,50%
+- waitForAnimationToEnd
+- assertVisible: 'clip.mp4'
+- takeScreenshot: ios-09-viewer-video-paused
+- tapOn:
+    point: 50%,50%
+- waitForAnimationToEnd
+- takeScreenshot: ios-10-viewer-video-playing-a
+- takeScreenshot: ios-10-viewer-video-playing-b
+- tapOn: 'Close.*'
+- waitForAnimationToEnd
+- tapOn: 'More'
+- extendedWaitUntil:
+    visible: 'Rename'
+- takeScreenshot: ios-11-drawer
+- takeScreenshot: ios-chat-avatars-03-drawer
+- takeScreenshot: ios-home6-03-drawer-light
+- tapOn: 'Close panel'
+- waitForAnimationToEnd
+- swipe:
+    start: 98%,50%
+    end: 40%,50%
+- waitForAnimationToEnd
+- assertVisible: 'Rename'
+- takeScreenshot: ios-12-drawer-edge-swipe-open
+- swipe:
+    start: 40%,12%
+    end: 99%,12%
+    duration: 300
+- waitForAnimationToEnd
+- assertNotVisible: 'Rename'
+- takeScreenshot: ios-13-drawer-swipe-closed
+- tapOn: 'Back'
+- extendedWaitUntil:
+    visible: 'Write up with files, .*'
+- tapOn: 'Write up with files, .*'
+- extendedWaitUntil:
+    visible: 'Message.*'
+- takeScreenshot: ios-14-markdown-links
+- tapOn: 'More'
+- tapOn: 'Files'
+- waitForAnimationToEnd
+- tapOn: 'README.md'
+- waitForAnimationToEnd
+- takeScreenshot: ios-15-file-text
+- tapOn: 'Back'
+- tapOn: 'assets'
+- waitForAnimationToEnd
+- takeScreenshot: ios-16-files-assets
+- tapOn: 'chart.png'
+- waitForAnimationToEnd
+- takeScreenshot: ios-17-file-image
+- tapOn: 'Back'
+- tapOn: 'Changed'
+- waitForAnimationToEnd
+- takeScreenshot: ios-18-files-changed
+- tapOn: 'Back'
+- waitForAnimationToEnd
+- tapOn: 'More'
+- tapOn: 'Git'
+- waitForAnimationToEnd
+- takeScreenshot: ios-19-git
+- tapOn:
+    point: 50%,38%
+- waitForAnimationToEnd
+- takeScreenshot: ios-20-commit-diff
+- tapOn: 'Back'
+- tapOn: 'Back'
+- tapOn: 'Back'
+- extendedWaitUntil:
+    visible: 'Split the work, .*'
+- tapOn: 'Split the work, .*'
+- extendedWaitUntil:
+    visible: 'Thread alice.*'
+- takeScreenshot: ios-21-team-channel
+- takeScreenshot: ios-chat-avatars-04-team-channel
+- takeScreenshot: ios-home6-02-conversation-light
+- tapOn: 'Thread alice.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-22-thread-panel
+- takeScreenshot: ios-chat-avatars-05-thread-panel
+- tapOn: 'Reply…'
+- waitForAnimationToEnd
+- takeScreenshot: ios-23-thread-reply-keyboard
+- tapOn: 'Back'
+- tapOn: 'Back'
+- extendedWaitUntil:
+    visible: 'Run the tests, .*'
+- tapOn: 'Run the tests, .*'
+- extendedWaitUntil:
+    visible: 'Allow once'
+- takeScreenshot: ios-24-approval
+- tapOn: 'Allow once'
+- waitForAnimationToEnd
+- assertNotVisible: 'Allow once'
+- takeScreenshot: ios-25-approval-answered
+- tapOn: 'Message…'
+- inputText: '@'
+- waitForAnimationToEnd
+- takeScreenshot: ios-chat-avatars-06-at-completion
+- eraseText: 1
+- inputText: 'Please also run clippy'
+- takeScreenshot: ios-26-composer-typed
+- tapOn: 'Queue'
+- waitForAnimationToEnd
+- assertVisible: 'Please also run clippy'
+- takeScreenshot: ios-27-message-queued
+- tapOn: 'Back'
+- tapOn: 'Activity, tab.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-28-activity
+- takeScreenshot: ios-chat-avatars-07-activity
+- takeScreenshot: ios-home6-04-activity-light
+- tapOn: 'Usage'
+- waitForAnimationToEnd
+- takeScreenshot: ios-29-activity-usage
+- tapOn: 'Conversations, tab.*'
+- waitForAnimationToEnd
+- tapOn: 'More: Write up with files'
+- extendedWaitUntil:
+    visible: 'Rename'
+- takeScreenshot: ios-30-row-menu
+- tapOn: 'Rename'
+- extendedWaitUntil:
+    visible: 'Save'
+- eraseText: 40
+- inputText: 'Write-up (renamed)'
+- takeScreenshot: ios-31-rename-prompt
+- tapOn: 'Save'
+- waitForAnimationToEnd
+- assertVisible: 'Write-up \(renamed\), .*'
+- takeScreenshot: ios-32-renamed
+- tapOn: 'More: Show me what you made'
+- extendedWaitUntil:
+    visible: 'Pin'
+- tapOn: 'Pin'
+- waitForAnimationToEnd
+- takeScreenshot: ios-33-pinned
+- tapOn: 'More: Write-up .*'
+- extendedWaitUntil:
+    visible: 'Archive'
+- tapOn: 'Archive'
+- waitForAnimationToEnd
+- tapOn: 'Archived'
+- waitForAnimationToEnd
+- takeScreenshot: ios-34-archived
+- tapOn: 'Conversations'
