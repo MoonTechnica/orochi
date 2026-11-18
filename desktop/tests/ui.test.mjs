@@ -4724,6 +4724,38 @@ test("the agents' browser lists the agents that have a page, shows the chosen on
   assert.equal(last.at(-1), "view_close");
 });
 
+test("an agent's page takes the person's input only while the agent has handed it over, and Done gives it back", async () => {
+  const agent = { scope: "implementer-1a2b3c4d", label: "implementer", title: "Sign in", url: "http://localhost:3000/login", tabs: 1 };
+  let handoff = null;
+  const { el, calls } = await open({
+    browser_status: { enabled: true, servo: "orochi-servo" },
+    browser_call: ({ tool }) => {
+      if (tool === "view_agents") return { agents: [{ ...agent, handoff }] };
+      if (tool === "view_frame") return { url: agent.url, handoff, frame: { seq: 3, jpeg: "QQ==", width: 200, height: 100 } };
+      return {};
+    },
+  }, { setup: () => { globalThis.Image = class { set src(value) { void value; } }; } });
+  await newIn(el, 0, "agents");
+  await settle(1800);
+  const canvas = el("doc-body").querySelectorAll(".browser-canvas")[0];
+  canvas.dispatch("mousedown", { clientX: 5, clientY: 5, button: 0, buttons: 1, detail: 1 });
+  await settle(30);
+  assert.equal(viewTools(calls).some((c) => c.tool === "view_input"), false, "watched, not driven");
+
+  handoff = "sign in to the shop";
+  await settle(1800);
+  assert.match(el("doc-body").render(), /sign in to the shop/, "the person is told what to do");
+  canvas.dispatch("mousedown", { clientX: 5, clientY: 5, button: 0, buttons: 1, detail: 1 });
+  await settle(30);
+  const input = viewTools(calls).filter((c) => c.tool === "view_input");
+  assert.ok(input.length > 0 && input.every((c) => c.args.watch === agent.scope), "input goes to that page");
+
+  el("doc-body").querySelectorAll("button").find((b) => b.textContent === "Done").dispatch("click");
+  await settle(30);
+  assert.ok(viewTools(calls).some((c) => c.tool === "view_handoff_done" && c.args.watch === agent.scope));
+  await closeBrowsers(el, "w");
+});
+
 test("the phone page switches the listener, pairs a phone with a code that counts down, and revokes one", async () => {
   const config = {
     activity: {},

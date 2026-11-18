@@ -80,13 +80,29 @@ struct State {
     next_id: u64,
     evals: HashMap<u64, tokio::sync::oneshot::Sender<std::result::Result<Value, String>>>,
     shots: HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>,
+    /// Whether the engine has been told to draw frames: an agent's engine draws none until
+    /// the window looks.
+    frames_on: bool,
+    /// The last time the window asked for a frame of this agent's page.
+    watched: Option<Instant>,
+    /// The agent asked for the window to show its page.
+    shown: bool,
+    /// The agent has handed the page to the person: why, and since when.
+    handoff: Option<(String, Instant)>,
 }
 
 struct Tab {
     stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
     state: Arc<Mutex<State>>,
     child: tokio::sync::Mutex<tokio::process::Child>,
+    /// Woken when the person gives a handed-over page back.
+    returned: tokio::sync::Notify,
 }
+
+/// How long a page may stay with the person before the agent is told nobody came.
+const HANDOFF_LIMIT: Duration = Duration::from_secs(30 * 60);
+/// A window that has not asked for a frame this long is no longer looking.
+const WATCH_IDLE: Duration = Duration::from_secs(5);
 
 pub struct Engines {
     data: PathBuf,
@@ -263,6 +279,7 @@ impl Engines {
             stdin: tokio::sync::Mutex::new(stdin),
             state,
             child: tokio::sync::Mutex::new(child),
+            returned: tokio::sync::Notify::new(),
         });
         self.tabs
             .lock()
@@ -306,29 +323,7 @@ impl Engines {
                 let tab = self.ensure(scope).await?;
                 let since = args["since"].as_u64().unwrap_or(0);
                 let state = tab.state.lock().unwrap();
-                let mut reply = json!({"url": state.url, "title": state.title,
-                                       "engine": "servo", "loading": state.loading,
-                                       "back": state.back, "forward": state.forward});
-                if !state.cursor.is_empty() {
-                    reply["cursor"] = json!(state.cursor);
-                }
-                if state.crashed || state.ended {
-                    reply["crashed"] = json!(true);
-                }
-                if let Some(url) = &state.refused {
-                    reply["refused"] = json!(url);
-                }
-                if let Some(url) = &state.popup {
-                    reply["popup"] = json!(url);
-                }
-                if let Some((kind, message)) = &state.dialog {
-                    reply["dialog"] = json!({"type": kind, "message": message});
-                }
-                if let Some(frame) = state.frame.as_ref().filter(|f| f.seq > since) {
-                    reply["frame"] = json!({"seq": frame.seq, "jpeg": frame.jpeg,
-                                            "width": frame.width, "height": frame.height});
-                }
-                return Ok(reply);
+                return Ok(frame_reply(&state, since));
             }
             "view_input" => {
                 let tab = self.ensure(scope).await?;
@@ -364,6 +359,96 @@ impl Engines {
         Ok(json!({"url": state.url, "title": state.title, "engine": "servo"}))
     }
 
+    /// The agents that have a page here, for the window to offer: what a tab strip shows, and
+    /// whether the agent asked to be seen or to hand the page over.
+    pub async fn agents(&self) -> Vec<Value> {
+        let tabs: Vec<(String, Arc<Tab>)> = self
+            .tabs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(scope, _)| !scope.starts_with("user:"))
+            .map(|(scope, tab)| (scope.clone(), tab.clone()))
+            .collect();
+        let mut agents = vec![];
+        for (scope, tab) in tabs {
+            tab.stop_unwatched().await;
+            let state = tab.state.lock().unwrap();
+            if state.ended || !state.ready {
+                continue;
+            }
+            agents.push(json!({
+                "scope": scope,
+                "label": scope.rsplit_once('-').map_or(scope.as_str(), |(label, _)| label),
+                "title": state.title, "url": state.url, "tabs": 1, "engine": "servo",
+                "shown": state.shown,
+                "handoff": state.handoff.as_ref().map(|(reason, _)| reason),
+            }));
+        }
+        agents.sort_by(|a, b| a["scope"].as_str().cmp(&b["scope"].as_str()));
+        agents
+    }
+
+    /// A `view_*` call about an agent's page. The window may look at it and, only while the
+    /// agent has handed it over, drive it.
+    pub async fn watch(&self, agent: &str, tool: &str, args: &Value) -> Result<Value> {
+        let tab = self
+            .tabs
+            .lock()
+            .unwrap()
+            .get(agent)
+            .cloned()
+            .context("that agent has no page open")?;
+        match tool {
+            "view_frame" => {
+                tab.state.lock().unwrap().watched = Some(Instant::now());
+                tab.frames(true).await?;
+                let since = args["since"].as_u64().unwrap_or(0);
+                let state = tab.state.lock().unwrap();
+                let mut reply = frame_reply(&state, since);
+                reply["handoff"] = json!(state.handoff.as_ref().map(|(reason, _)| reason));
+                Ok(reply)
+            }
+            "view_unwatch" => {
+                tab.state.lock().unwrap().watched = None;
+                tab.frames(false).await?;
+                Ok(json!({"unwatched": true}))
+            }
+            "view_input" | "view_dialog" => {
+                anyhow::ensure!(
+                    tab.state.lock().unwrap().handoff.is_some(),
+                    "that is the agent's page: it is watched, not driven, until it hands it over"
+                );
+                if tool == "view_input" {
+                    let kind = args["type"].as_str().unwrap_or("");
+                    anyhow::ensure!(
+                        ["mouse", "key", "text", "ime"].contains(&kind),
+                        "not an input: {kind}"
+                    );
+                    let mut command = args.clone();
+                    if let Some(text) = command["text"].as_str() {
+                        command["text"] = json!(text.chars().take(TEXT_LIMIT).collect::<String>());
+                    }
+                    command["cmd"] = json!("input");
+                    tab.send(&command).await?;
+                } else {
+                    tab.send(&json!({"cmd": "dialog",
+                                     "accept": args["accept"].as_bool().unwrap_or(false),
+                                     "text": text_of(&args["text"])}))
+                        .await?;
+                    tab.state.lock().unwrap().dialog = None;
+                }
+                Ok(json!({"ok": true}))
+            }
+            "view_handoff_done" => {
+                let had = tab.state.lock().unwrap().handoff.take().is_some();
+                tab.returned.notify_waiters();
+                Ok(json!({"returned": had}))
+            }
+            other => bail!("{other} is not something the window does to an agent's page"),
+        }
+    }
+
     /// What the engine has written to its page's console since `since`, newest last.
     pub fn console(&self, scope: &str) -> Vec<String> {
         self.tabs
@@ -395,7 +480,57 @@ impl Engines {
     }
 }
 
+fn frame_reply(state: &State, since: u64) -> Value {
+    let mut reply = json!({"url": state.url, "title": state.title,
+                           "engine": "servo", "loading": state.loading,
+                           "back": state.back, "forward": state.forward});
+    if !state.cursor.is_empty() {
+        reply["cursor"] = json!(state.cursor);
+    }
+    if state.crashed || state.ended {
+        reply["crashed"] = json!(true);
+    }
+    if let Some(url) = &state.refused {
+        reply["refused"] = json!(url);
+    }
+    if let Some(url) = &state.popup {
+        reply["popup"] = json!(url);
+    }
+    if let Some((kind, message)) = &state.dialog {
+        reply["dialog"] = json!({"type": kind, "message": message});
+    }
+    if let Some(frame) = state.frame.as_ref().filter(|f| f.seq > since) {
+        reply["frame"] = json!({"seq": frame.seq, "jpeg": frame.jpeg,
+                                "width": frame.width, "height": frame.height});
+    }
+    reply
+}
+
 impl Tab {
+    /// Starts or stops the engine's frames, once per change.
+    async fn frames(&self, on: bool) -> Result<()> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.frames_on == on {
+                return Ok(());
+            }
+            state.frames_on = on;
+        }
+        self.send(&json!({"cmd": "frames", "on": on})).await
+    }
+
+    /// Frames cost an agent's engine encoding it would not otherwise do, so a window that
+    /// stopped asking (closed, crashed) does not leave them running.
+    async fn stop_unwatched(&self) {
+        let idle = {
+            let state = self.state.lock().unwrap();
+            state.frames_on && state.watched.is_none_or(|at| at.elapsed() > WATCH_IDLE)
+        };
+        if idle {
+            let _ = self.frames(false).await;
+        }
+    }
+
     /// Asks the engine to exit and waits for it, killing it only if it will not.
     async fn end(&self) {
         let mut line = br#"{"cmd":"shutdown"}"#.to_vec();

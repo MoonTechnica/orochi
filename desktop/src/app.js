@@ -6834,6 +6834,86 @@ function openBrowserTab(url = "", preview = null) {
   showTab(id);
 }
 
+/// The person's mouse and keys on a canvas, sent as input one event at a time through `typed`.
+/// `view()` is the size of the page in its own pixels; `allowed()` says whether input goes
+/// anywhere now (an agent's page takes it only while the agent has handed the page over).
+function wireInput(canvas, typing, typed, view, allowed = () => true) {
+  const BUTTONS = ["left", "middle", "right"];
+  const place = (event) => {
+    const box = canvas.getBoundingClientRect?.() || {};
+    const w = box.width || view().w;
+    const h = box.height || view().h;
+    return {
+      x: ((event.clientX - (box.left || 0)) * view().w) / w,
+      y: ((event.clientY - (box.top || 0)) * view().h) / h,
+    };
+  };
+  let moved = 0;
+  const mouse = (kind, event, extra = {}) => typed({
+    type: "mouse", kind, ...place(event), button: BUTTONS[event.button] || "left",
+    buttons: event.buttons || 0, modifiers: modifiersOf(event), ...extra,
+  });
+  canvas.addEventListener("mousedown", (event) => {
+    if (!allowed()) return;
+    event.preventDefault();
+    typing.focus?.();
+    mouse("mousePressed", event, { clickCount: event.detail || 1, buttons: event.buttons || 1 });
+  });
+  canvas.addEventListener("mouseup", (event) => allowed() && mouse("mouseReleased", event, { clickCount: event.detail || 1, buttons: 0 }));
+  canvas.addEventListener("mousemove", (event) => {
+    if (!allowed()) return;
+    // Chrome needs hover (menus, tooltips) but not every pixel of it.
+    const now = Date.now();
+    if (now - moved < 40) return;
+    moved = now;
+    mouse("mouseMoved", event, { button: event.buttons ? "left" : "none" });
+  });
+  canvas.addEventListener("wheel", (event) => {
+    if (!allowed()) return;
+    event.preventDefault();
+    mouse("mouseWheel", event, { deltaX: event.deltaX, deltaY: event.deltaY, button: "none" });
+  });
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+  // A key is the page's unless it is a ⌘ shortcut, which is the window's (§3.2).
+  typing.addEventListener("keydown", (event) => {
+    if (!allowed()) return;
+    if (event.metaKey || (event.ctrlKey && event.key === "Tab")) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const printable = event.key.length === 1 && !event.ctrlKey && !event.altKey;
+    typed({
+      type: "key", kind: printable ? "keyDown" : "rawKeyDown", key: event.key, code: event.code,
+      vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event), text: printable ? event.key : "",
+    });
+  });
+  typing.addEventListener("keyup", (event) => {
+    if (!allowed()) return;
+    if (event.metaKey || event.isComposing || event.keyCode === 229) return;
+    event.stopPropagation();
+    typed({
+      type: "key", kind: "keyUp", key: event.key, code: event.code,
+      vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event),
+    });
+  });
+  typing.addEventListener("compositionupdate", (event) => {
+    if (!allowed()) return;
+    typed({ type: "ime", text: event.data || "", commit: false });
+  });
+  typing.addEventListener("compositionend", (event) => {
+    if (!allowed()) return;
+    typed({ type: "ime", text: event.data || "", commit: true });
+    typing.value = "";
+  });
+  typing.addEventListener("paste", (event) => {
+    if (!allowed()) return;
+    const pasted = event.clipboardData?.getData?.("text/plain");
+    if (!pasted) return;
+    event.preventDefault();
+    typed({ type: "text", text: pasted });
+  });
+}
+
 async function startBrowser(id, panel) {
   const thread = tabs.thread;
   const tab = tabs.tabs[id];
@@ -6927,73 +7007,7 @@ async function startBrowser(id, panel) {
     if (r.error) report(r.error);
   }
 
-  // Input ---------------------------------------------------------------------------
-  const place = (event) => {
-    const box = canvas.getBoundingClientRect?.() || {};
-    const w = box.width || entry.view.w;
-    const h = box.height || entry.view.h;
-    return {
-      x: ((event.clientX - (box.left || 0)) * entry.view.w) / w,
-      y: ((event.clientY - (box.top || 0)) * entry.view.h) / h,
-    };
-  };
-  const BUTTONS = ["left", "middle", "right"];
-  let moved = 0;
-  const mouse = (kind, event, extra = {}) => typed({
-    type: "mouse", kind, ...place(event), button: BUTTONS[event.button] || "left",
-    buttons: event.buttons || 0, modifiers: modifiersOf(event), ...extra,
-  });
-  canvas.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-    typing.focus?.();
-    mouse("mousePressed", event, { clickCount: event.detail || 1, buttons: event.buttons || 1 });
-  });
-  canvas.addEventListener("mouseup", (event) => mouse("mouseReleased", event, { clickCount: event.detail || 1, buttons: 0 }));
-  canvas.addEventListener("mousemove", (event) => {
-    // Chrome needs hover (menus, tooltips) but not every pixel of it.
-    const now = Date.now();
-    if (now - moved < 40) return;
-    moved = now;
-    mouse("mouseMoved", event, { button: event.buttons ? "left" : "none" });
-  });
-  canvas.addEventListener("wheel", (event) => {
-    event.preventDefault();
-    mouse("mouseWheel", event, { deltaX: event.deltaX, deltaY: event.deltaY, button: "none" });
-  });
-  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-  // A key is the page's unless it is a ⌘ shortcut, which is the window's (§3.2).
-  typing.addEventListener("keydown", (event) => {
-    if (event.metaKey || (event.ctrlKey && event.key === "Tab")) return;
-    if (event.isComposing || event.keyCode === 229) return;
-    event.stopPropagation();
-    event.preventDefault();
-    const printable = event.key.length === 1 && !event.ctrlKey && !event.altKey;
-    typed({
-      type: "key", kind: printable ? "keyDown" : "rawKeyDown", key: event.key, code: event.code,
-      vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event), text: printable ? event.key : "",
-    });
-  });
-  typing.addEventListener("keyup", (event) => {
-    if (event.metaKey || event.isComposing || event.keyCode === 229) return;
-    event.stopPropagation();
-    typed({
-      type: "key", kind: "keyUp", key: event.key, code: event.code,
-      vk: VK[event.key] || event.keyCode || 0, modifiers: modifiersOf(event),
-    });
-  });
-  typing.addEventListener("compositionupdate", (event) => {
-    typed({ type: "ime", text: event.data || "", commit: false });
-  });
-  typing.addEventListener("compositionend", (event) => {
-    typed({ type: "ime", text: event.data || "", commit: true });
-    typing.value = "";
-  });
-  typing.addEventListener("paste", (event) => {
-    const pasted = event.clipboardData?.getData?.("text/plain");
-    if (!pasted) return;
-    event.preventDefault();
-    typed({ type: "text", text: pasted });
-  });
+  wireInput(canvas, typing, typed, () => entry.view);
 
   // Frames --------------------------------------------------------------------------
   const paint = (frame) => {
@@ -7056,10 +7070,11 @@ async function startBrowser(id, panel) {
 
 /// The agents' own pages, watched from here: a list of the agents that have a page open and
 /// the newest frame of the one chosen. Nothing in it sends input — the page is the agent's.
-function openAgentBrowserTab() {
+function openAgentBrowserTab(agent = null) {
   if (!tabs.thread) return;
   const existing = tabs.order.find((id) => tabs.tabs[id]?.watch);
   if (existing) {
+    if (agent) tabs.tabs[existing].agent = agent;
     showTab(existing);
     return;
   }
@@ -7069,16 +7084,44 @@ function openAgentBrowserTab() {
   }
   const id = `w${++tabs.seq}`;
   tabs.order.push(id);
-  tabs.tabs[id] = { kind: "browser", watch: true, title: t("Agents' browser"), url: "" };
+  tabs.tabs[id] = { kind: "browser", watch: true, title: t("Agents' browser"), url: "", agent };
   showTab(id);
 }
+
+/// While a conversation works, ask now and then whether an agent wants to be seen or has
+/// handed its page over, and bring that page up. Asking costs a call only while something is
+/// working, so a window with no agent at work never starts the browser.
+const announced = new Set();
+let watchingAgents = false;
+setInterval(async () => {
+  if (watchingAgents || !state.thread || tabs.thread !== state.thread) return;
+  const mine = state.projects.flatMap((p) => p.threads).find((th) => th.id === state.thread);
+  if (!mine || (mine.status !== "working" && mine.status !== "background")) return;
+  watchingAgents = true;
+  try {
+    const status = await call("browser_status");
+    if (!status?.enabled || (!status.chrome && !status.servo)) return;
+    const listed = await viewCall(state.thread, "agents", "view_agents");
+    for (const agent of listed.ok?.agents || []) {
+      const key = agent.handoff ? `${agent.scope}:handoff:${agent.handoff}` : agent.shown ? `${agent.scope}:shown` : null;
+      if (!key || announced.has(key)) continue;
+      announced.add(key);
+      openAgentBrowserTab(agent.scope);
+      if (agent.handoff && !(typeof document.hasFocus === "function" ? document.hasFocus() : true)) {
+        await call("notify", { title: t("Needs you"), body: `${agent.label}: ${agent.handoff}`, sound: state.sound });
+      }
+    }
+  } finally {
+    watchingAgents = false;
+  }
+}, 2000);
 
 async function startWatch(id, panel) {
   const thread = tabs.thread;
   const tab = tabs.tabs[id];
   const status = await call("browser_status");
   if (!tabs.panels.has(id) || tabs.panels.get(id) !== panel) return;
-  if (!status?.enabled || !status.chrome) {
+  if (!status?.enabled || (!status.chrome && !status.servo)) {
     panel.append(text("p", "empty", t(status?.enabled
       ? "No Chrome or Chromium was found. Install one, or name it as `chrome` under [browser]."
       : "The browser is off. Set `enabled = true` under [browser] in the configuration.")));
@@ -7096,15 +7139,39 @@ async function startWatch(id, panel) {
   const view = text("div", "browser-view");
   const canvas = document.createElement("canvas");
   canvas.className = "browser-canvas";
+  const typing = document.createElement("textarea");
+  typing.className = "browser-typing";
+  typing.setAttribute("aria-label", "Page input");
   const note = text("p", "empty", t("No agent has a page open yet."));
-  view.append(canvas, note);
+  const banner = text("div", "browser-dialog");
+  banner.hidden = true;
+  view.append(canvas, typing, note, banner);
   panel.append(bar, view);
-  const entry = { id, thread, alive: true, since: 0, watching: null };
+  const entry = { id, thread, alive: true, since: 0, watching: null, handoff: null, page: { w: 1024, h: 768 } };
+  let tail = Promise.resolve();
+  const typed = (args) => (tail = tail.then(() => send("view_input", { ...args, watch: entry.watching })));
+  wireInput(canvas, typing, typed, () => entry.page, () => Boolean(entry.handoff && entry.watching));
+  const handBack = () => send("view_handoff_done", { watch: entry.watching });
+  const showHandoff = (reason) => {
+    if (reason === entry.handoff) return;
+    entry.handoff = reason;
+    banner.replaceChildren();
+    banner.hidden = !reason;
+    canvas.className = reason ? "browser-canvas handoff" : "browser-canvas";
+    if (!reason) return;
+    banner.append(text("span", null, reason));
+    const done = text("button", "link", t("Done"));
+    done.type = "button";
+    done.addEventListener("click", handBack);
+    banner.append(done);
+    typing.focus?.();
+  };
   browsers.set(`${thread}:${id}`, entry);
   const stopWatching = () => {
     if (entry.watching) send("view_unwatch", { watch: entry.watching });
     entry.watching = null;
     entry.since = 0;
+    showHandoff(null);
   };
   entry.stop = stopWatching;
   choose.addEventListener("change", () => {
@@ -7159,6 +7226,7 @@ async function startWatch(id, panel) {
       await pause(500);
       continue;
     }
+    if (entry.watching && entry.watching !== tab.agent) stopWatching();
     entry.watching = tab.agent;
     const r = await send("view_frame", {
       watch: tab.agent, since: entry.since,
@@ -7173,8 +7241,10 @@ async function startWatch(id, panel) {
     }
     if (r.ok?.frame) {
       entry.since = r.ok.frame.seq;
+      entry.page = { w: r.ok.frame.width || entry.page.w, h: r.ok.frame.height || entry.page.h };
       paint(r.ok.frame);
     }
+    showHandoff(r.ok?.handoff || null);
     await pause(100);
   }
 }

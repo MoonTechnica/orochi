@@ -324,6 +324,7 @@ fn main() {
     };
     let mut composition = input::Composition::default();
     let mut shown = true;
+    let mut frames_on = args.frames;
 
     'main: loop {
         let busy = delegate.dirty.get() || delegate.animating.get();
@@ -462,13 +463,17 @@ fn main() {
                         None => out::event(json!({"event": "screenshot", "id": id, "len": 0})),
                     }
                 }
+                "frames" => {
+                    frames_on = command["on"].as_bool().unwrap_or(false);
+                    delegate.dirty.set(frames_on);
+                }
                 "shutdown" => break 'main,
                 _ => {}
             }
         }
         servo.spin_event_loop();
 
-        if shown && args.frames && delegate.dirty.get() && frames.last.elapsed() >= FRAME_INTERVAL {
+        if shown && frames_on && delegate.dirty.get() && frames.last.elapsed() >= FRAME_INTERVAL {
             let size = context.size();
             let rect = servo::DeviceIntRect::from_size(servo::DeviceIntSize::new(
                 size.width as i32,

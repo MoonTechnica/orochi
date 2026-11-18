@@ -5,7 +5,7 @@
 //! kept in the page under a property that is not enumerable (the page could still read it,
 //! as it can read anything in its own window). What Chrome gives and this engine does not —
 //! file choosers, the network log, several tabs, an awaited promise — answers with that said.
-use super::{Engines, Tab};
+use super::{Engines, HANDOFF_LIMIT, Tab};
 use crate::browser::broker::{
     NOTICE, Request, SNAPSHOT_CHARS, definitions, failure, save_picture, text,
 };
@@ -146,12 +146,70 @@ impl Engines {
         Ok(())
     }
 
+    /// Gives the page to the person and waits, a minute at a time, for them to give it back:
+    /// a tool call held open for longer would meet its client's own timeout.
+    async fn handoff(&self, tab: &Tab, reason: Option<String>) -> Result<Value> {
+        {
+            let mut state = tab.state.lock().unwrap();
+            match &state.handoff {
+                Some((_, since)) if since.elapsed() > HANDOFF_LIMIT => {
+                    state.handoff = None;
+                    bail!("the person did not come back to the page within 30 minutes");
+                }
+                Some(_) => {}
+                None => {
+                    let reason =
+                        reason.context("reason is needed: say what the person is to do")?;
+                    state.handoff = Some((
+                        reason.chars().take(300).collect(),
+                        std::time::Instant::now(),
+                    ));
+                    state.shown = true;
+                }
+            }
+        }
+        let returned = tab.returned.notified();
+        tokio::pin!(returned);
+        returned.as_mut().enable();
+        if tab.state.lock().unwrap().handoff.is_some() {
+            let _ = tokio::time::timeout(Duration::from_secs(55), returned).await;
+        }
+        let state = tab.state.lock().unwrap();
+        if state.handoff.is_some() {
+            return Ok(text(
+                "the person has not given the page back yet; call browser_handoff again to \
+                 keep waiting",
+            ));
+        }
+        Ok(text(format!(
+            "the person gave the page back; it is at {}. Take a browser_snapshot to see it.",
+            state.url
+        )))
+    }
+
     async fn run(&self, request: &Request) -> Result<Value> {
         let args = &request.args;
         let tool = request.tool.as_str();
         let string = |key: &str| args[key].as_str().map(str::to_owned);
         let need = |key: &str| string(key).with_context(|| format!("{key} is needed"));
         let tab: Arc<Tab> = self.ensure(&request.scope).await?;
+        tab.stop_unwatched().await;
+        if tool == "browser_handoff" {
+            return self.handoff(&tab, need("reason").ok()).await;
+        }
+        if let Some((reason, _)) = &tab.state.lock().unwrap().handoff {
+            bail!(
+                "the person has this page ({reason}); call browser_handoff to wait for them \
+                 to give it back"
+            );
+        }
+        if tool == "browser_show" {
+            tab.state.lock().unwrap().shown = true;
+            return Ok(text(
+                "the person can now see this page in the window (the Agents' browser tab); \
+                 they cannot act on it unless you hand it over with browser_handoff",
+            ));
+        }
         if tool != "browser_navigate" && tool != "browser_tabs" {
             self.guard(&tab).await?;
         }

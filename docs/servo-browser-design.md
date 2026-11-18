@@ -171,9 +171,23 @@ phone ask what changed since the last `seq` they drew.
 * **What Servo cannot do answers with that said**, and the way out is `engine = "chromium"`:
   `browser_upload` (no file chooser), `browser_network` (no request log), more than one tab
   per session, and a promise returned by `browser_evaluate` is not awaited.
-* **Still Chrome's:** `view_preview`, `view_agents` and `view_unwatch` (watching an
-  agent's page), which read what an agent's Chrome context holds. An agent on Servo cannot
-  be watched yet.
+* **Seen, and handed over (2026-11-18).** An agent's engine draws nothing until the window
+  looks: `view_frame` with `watch` tells the engine to draw (`frames` command), `view_unwatch`
+  or five idle seconds (`stop_unwatched`) stop it, so a closed window costs nothing. The
+  window lists agents from both engines (`view_agents`). Two tools are the agent's to call:
+  **`browser_show`** only makes the page offered (`shown`), and the window, which asks while a
+  conversation works, opens its Agents' browser tab on it; **`browser_handoff {reason}`**
+  gives the page to the person — the window shows the reason and a Done button, input is
+  accepted only while it is handed over (`view_input` with `watch` is refused otherwise), and
+  the agent's other tools answer that the person has the page. The call waits 55 s at a time
+  (a tool call held open longer meets its client's own timeout), says to call again if the
+  person has not finished, and gives up after 30 minutes. It is not an approval: nothing the
+  person does there is asked about, and the policy is checked again on the agent's next call,
+  so a page left on a host `browser.allow` does not name is sent to `about:blank`. The agent
+  is told never to type a password, a code or a card number itself. A login lasts as long as
+  the session, since an agent's engine has no profile. Chrome sessions answer both tools
+  with that said; Chrome pages are still watched read-only.
+* **Still Chrome's:** `view_preview`.
 * **Consequence the user should know:** the person's tab and an agent's page are in
   **different engines and different profiles**. An agent cannot use the person's logged-in
   session, and sharing one (`conversation-tabs-design.md` §3.5.6, "share with agent") is

@@ -93,6 +93,9 @@ for line in sys.stdin:
     elif cmd == "resize":
         width, height, ratio = int(command["width"]), int(command["height"]), float(command["ratio"])
         frame()
+    elif cmd == "frames":
+        if command.get("on"):
+            frame()
     elif cmd == "dialog":
         send({"event": "dialog_closed"})
     elif cmd == "input" and command.get("type") == "text":

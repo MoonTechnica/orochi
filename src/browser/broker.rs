@@ -106,6 +106,8 @@ const READ_TOOLS: &[&str] = &[
     "browser_console",
     "browser_network",
     "browser_wait",
+    "browser_show",
+    "browser_handoff",
 ];
 
 pub fn definitions(config: &BrowserConfig, read_only: bool) -> Value {
@@ -170,6 +172,16 @@ pub fn definitions(config: &BrowserConfig, read_only: bool) -> Value {
                 json!({"ref": {"type": "string"}, "paths": {"type": "array", "items": {"type": "string"}}}),
                 &["ref", "paths"],
             ),
+        ),
+        (
+            "browser_show",
+            "Show this page to the person in their window, so they can watch you work. Do it when they asked to see the browser, or when seeing it would help them. They cannot act on it.",
+            object(json!({}), &[]),
+        ),
+        (
+            "browser_handoff",
+            "Give the page to the person for something only they can do: signing in, a CAPTCHA, a consent or payment screen, anything that needs their own hands. `reason` tells them what to do. It returns when they give the page back; if it says they have not yet, call it again to keep waiting. Never type a password, a code or a card number yourself.",
+            object(json!({"reason": {"type": "string"}}), &["reason"]),
         ),
         (
             "browser_console",
@@ -1276,6 +1288,10 @@ impl Browser {
                 self.settle(&session).await?;
                 Ok(text(format!("{NOTICE}\n{}", answer["result"]["value"])))
             }
+            "browser_show" | "browser_handoff" => bail!(
+                "showing the page and handing it over need the Servo engine; this session's \
+                 browser is headless Chrome"
+            ),
             other => bail!("{other} is not a browser tool"),
         }
     }

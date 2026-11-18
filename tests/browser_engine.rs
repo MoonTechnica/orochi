@@ -677,3 +677,110 @@ async fn a_session_that_may_only_look_is_not_offered_the_tools_that_act() {
     evaluate.read_only = true;
     assert!(error(&hub.call(evaluate).await).contains("not available"));
 }
+
+/// What the engine was asked is written by the engine, a moment after the broker's reply.
+async fn logged(data: &Path, wanted: impl Fn(&Value) -> bool) {
+    let end = Instant::now() + Duration::from_secs(5);
+    while !agent_asked(data).iter().any(&wanted) {
+        assert!(Instant::now() < end, "never asked: {:?}", agent_asked(data));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_window_sees_an_agents_page_and_drives_it_only_while_the_agent_has_handed_it_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), BrowserEngine::Servo, Some(fake()));
+    let agent = |tool: &str, args: Value| {
+        let hub = hub.clone();
+        let request = request(AGENT, tool, args);
+        async move { hub.call(request).await }
+    };
+    let window = |tool: &str, args: Value| {
+        let hub = hub.clone();
+        let request = request(TAB, tool, args);
+        async move { hub.call(request).await }
+    };
+    said(
+        &agent(
+            "browser_navigate",
+            json!({"url": "http://localhost:3000/login"}),
+        )
+        .await,
+    );
+
+    let listed = answer(&window("view_agents", json!({})).await);
+    assert_eq!(listed["agents"][0]["scope"], AGENT, "{listed}");
+    assert_eq!(listed["agents"][0]["shown"], false, "{listed}");
+    assert_eq!(listed["agents"][0]["handoff"], Value::Null, "{listed}");
+
+    // Nothing is drawn for a window that is not looking; looking starts the frames.
+    assert!(
+        !agent_asked(dir.path()).iter().any(|c| c["cmd"] == "frames"),
+        "{:?}",
+        agent_asked(dir.path())
+    );
+    let watched = answer(&window("view_frame", json!({"watch": AGENT, "since": 0})).await);
+    assert!(watched["frame"]["jpeg"].is_string(), "{watched}");
+    logged(dir.path(), |c| c["cmd"] == "frames" && c["on"] == true).await;
+
+    // Watching is not driving.
+    let refused = error(
+        &window(
+            "view_input",
+            json!({"watch": AGENT, "type": "text", "text": "x"}),
+        )
+        .await,
+    );
+    assert!(refused.contains("watched, not driven"), "{refused}");
+
+    said(&agent("browser_show", json!({})).await);
+    let listed = answer(&window("view_agents", json!({})).await);
+    assert_eq!(listed["agents"][0]["shown"], true, "{listed}");
+
+    // The agent hands the page over and waits; its other tools wait with it.
+    let waiting = tokio::spawn({
+        let hub = hub.clone();
+        async move {
+            hub.call(request(
+                AGENT,
+                "browser_handoff",
+                json!({"reason": "sign in to the shop"}),
+            ))
+            .await
+        }
+    });
+    let mut listed = Value::Null;
+    for _ in 0..100 {
+        listed = answer(&window("view_agents", json!({})).await);
+        if listed["agents"][0]["handoff"].is_string() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        listed["agents"][0]["handoff"], "sign in to the shop",
+        "{listed}"
+    );
+    let busy = error(&agent("browser_snapshot", json!({})).await);
+    assert!(busy.contains("the person has this page"), "{busy}");
+
+    answer(
+        &window(
+            "view_input",
+            json!({"watch": AGENT, "type": "text", "text": "secret"}),
+        )
+        .await,
+    );
+    logged(dir.path(), |c| c["cmd"] == "input" && c["text"] == "secret").await;
+
+    answer(&window("view_handoff_done", json!({"watch": AGENT})).await);
+    let back = said(&waiting.await.unwrap());
+    assert!(back.contains("gave the page back"), "{back}");
+    assert!(back.contains("http://localhost:3000/login"), "{back}");
+    said(&agent("browser_snapshot", json!({})).await);
+
+    answer(&window("view_unwatch", json!({"watch": AGENT})).await);
+    logged(dir.path(), |c| c["cmd"] == "frames" && c["on"] == false).await;
+    hub.forget(AGENT).await;
+}

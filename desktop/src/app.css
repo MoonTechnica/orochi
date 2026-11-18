@@ -1779,6 +1779,7 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .doc-split { margin-left: auto; font: inherit; color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 2px 6px; cursor: pointer; flex: none; }
 .doc-split[aria-pressed="true"] { color: var(--brand); border-color: var(--line); }
 
+.browser-canvas.handoff { outline: 2px solid var(--accent, #39f); outline-offset: -2px; cursor: pointer; }
 .watch-label { color: var(--muted); font-size: 12px; flex: none; }
 .watch-url { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; text-align: right; }
 .browser-bar select.browser-address { flex: 0 1 320px; }

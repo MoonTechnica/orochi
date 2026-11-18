@@ -35,14 +35,11 @@ impl Dispatch for Back {
     }
 }
 
-/// What a `view_*` call needs from the engine that holds the tab. Watching an agent's page and
-/// previewing a folder are Chrome's: both read what an agent's Chrome context holds, or confine
-/// requests with Chrome's own interception.
+/// What a `view_*` call needs from the engine that holds the tab. Previewing a folder is
+/// Chrome's: it confines requests with Chrome's own interception. (Watching an agent's page is
+/// answered by whichever engine holds that agent's page.)
 fn chrome_only(request: &Request) -> bool {
-    matches!(
-        request.tool.as_str(),
-        "view_preview" | "view_agents" | "view_unwatch"
-    ) || request.args["watch"].is_string()
+    request.tool == "view_preview"
 }
 
 impl Hub {
@@ -193,7 +190,24 @@ impl Hub {
         if !request.scope.starts_with("user:") {
             return failure("that belongs to the person's browser tab");
         }
-        let servo = !chrome_only(&request) && self.wants_servo(&request.scope);
+        if request.tool == "view_agents" {
+            return self.agents(request).await;
+        }
+        if let Some(agent) = request.args["watch"].as_str()
+            && self.engines.owns(agent)
+        {
+            return match self
+                .engines
+                .watch(agent, &request.tool, &request.args)
+                .await
+            {
+                Ok(value) => text(value.to_string()),
+                Err(error) => failure(format!("{error:#}")),
+            };
+        }
+        let servo = !chrome_only(&request)
+            && request.args["watch"].is_null()
+            && self.wants_servo(&request.scope);
         if servo {
             match self
                 .engines
@@ -214,15 +228,17 @@ impl Hub {
         }
         match &self.browser {
             Some(browser) => browser.call(request).await,
-            None => failure(if chrome_only(&request) {
-                "watching an agent's page and previewing a folder need Chrome or Chromium, \
+            None => failure(
+                if chrome_only(&request) || !request.args["watch"].is_null() {
+                    "previewing a folder, and watching a page of Chrome's, need Chrome or Chromium, \
                  which was not found"
                     .to_owned()
-            } else if self.engines.required() {
-                self.engines.why_missing()
-            } else {
-                "no Chrome, Chromium or orochi-servo was found for the browser tab".to_owned()
-            }),
+                } else if self.engines.required() {
+                    self.engines.why_missing()
+                } else {
+                    "no Chrome, Chromium or orochi-servo was found for the browser tab".to_owned()
+                },
+            ),
         }
     }
 
@@ -239,6 +255,23 @@ impl Hub {
             BrowserEngine::Servo => true,
             BrowserEngine::Auto => self.engines.available(),
         }
+    }
+
+    /// The agents that have a page open, on either engine.
+    async fn agents(&self, request: Request) -> Value {
+        let mut agents = self.engines.agents().await;
+        if let Some(browser) = &self.browser {
+            let reply = browser.call(request).await;
+            if let Some(chrome) = reply["content"][0]["text"]
+                .as_str()
+                .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                .and_then(|v| v["agents"].as_array().cloned())
+            {
+                agents.extend(chrome);
+            }
+        }
+        agents.sort_by(|a, b| a["scope"].as_str().cmp(&b["scope"].as_str()));
+        text(json!({"agents": agents}).to_string())
     }
 
     /// The person's tabs on either engine. Not a thing an agent's scope may ask for.
