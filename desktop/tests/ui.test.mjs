@@ -119,12 +119,14 @@ async function open(answers = {}, { prompt, pick, language, stored = {}, setup }
   // A scope of its own, with the globals the page would have given it. The poll is held
   // rather than run, so a test drives time instead of waiting for it.
   let poll = () => {};
+  const intervals = [];
   new Function("window", "document", "localStorage", "setInterval", source)(
     window,
     document,
     localStorage,
-    (fn) => {
+    (fn, ms) => {
       poll = fn;
+      intervals.push({ fn, ms });
       return 0;
     },
   );
@@ -134,7 +136,7 @@ async function open(answers = {}, { prompt, pick, language, stored = {}, setup }
     await poll();
     await new Promise((resolve) => setTimeout(resolve, 20));
   };
-  return { calls, tick, window, localStorage, el: (id) => document.getElementById(id) };
+  return { calls, tick, intervals, window, localStorage, el: (id) => document.getElementById(id) };
 }
 
 /// What `orochi setup --check` says on a machine with Node but no usable agent.
@@ -4868,6 +4870,105 @@ test("the manual pairing fields and the copy button are Japanese too", async () 
   assert.match(text, /ホスト/);
   assert.match(text, /ポート/);
   assert.match(text, /コード/);
+});
+
+test("while a conversation works, the window opens the tab of an agent that shows its page or hands it over, once", async () => {
+  const sidebar = structuredClone(recorded.sidebar);
+  for (const project of sidebar) for (const thread of project.threads) thread.status = "working";
+  const agent = { scope: "implementer-1a2b3c4d", label: "implementer", title: "Sign in", url: "http://localhost:3000/login", tabs: 1 };
+  let agents = [];
+  const { el, intervals } = await open({
+    sidebar,
+    // The conversation the sidebar opens is the one the window draws.
+    thread: { ...recorded.thread, thread: { ...recorded.thread.thread, id: sidebar[0].threads[0].id } },
+    browser_status: { enabled: true, servo: "orochi-servo" },
+    browser_call: ({ tool }) => {
+      if (tool === "view_agents") return { agents };
+      if (tool === "view_frame") return { url: agent.url, handoff: agents[0]?.handoff || null, frame: { seq: 1, jpeg: "QQ==", width: 200, height: 100 } };
+      return {};
+    },
+  }, { setup: () => { globalThis.Image = class { set src(value) { void value; } }; } });
+  const fire = async () => { for (const { fn } of intervals.filter((i) => i.ms === 2000)) await fn(); await settle(40); };
+  await fire();
+  assert.equal(tabIds(el).some((id) => id.startsWith("w")), false, "an agent with nothing to show opens nothing");
+
+  agents = [{ ...agent, shown: true, handoff: null }];
+  await fire();
+  assert.ok(tabIds(el).includes("w1"), "an agent that shows its page has the tab opened");
+  tabButton(el, "chat").dispatch("click");
+
+  agents = [{ ...agent, shown: true, handoff: "sign in to the shop" }];
+  await fire();
+  await settle(60);
+  assert.match(el("doc-body").render(), /sign in to the shop/, "what the person is to do is on the page");
+  assert.equal(tabIds(el).filter((id) => id.startsWith("w")).length, 1, "one tab, not one per ask");
+
+  tabButton(el, "chat").dispatch("click");
+  await fire();
+  assert.equal(shownPanels(el).length, 0, "the same ask does not pull the person back to it again");
+  await closeBrowsers(el, "w");
+});
+
+// Run by hand, with a real agent working in the background (OROCHI_E2E_DATA is the data
+// directory its broker is in): the window's own script, wired to the real broker instead of
+// recorded answers, finds an agent's handed-over page by itself, shows what the person is to
+// do, takes the person's input and gives the page back.
+test("e2e: a real agent hands its page to the window, the person fills it in there, and Done gives it back", {
+  skip: !process.env.OROCHI_E2E_DATA, timeout: 300000,
+}, async () => {
+  const { connect } = await import("node:net");
+  const socketPath = join(process.env.OROCHI_E2E_DATA, "browser", "b.sock");
+  const broker = (request) => new Promise((resolve, reject) => {
+    const socket = connect(socketPath);
+    let buffer = "";
+    socket.on("error", reject);
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      if (buffer.includes("\n")) {
+        socket.end();
+        const reply = JSON.parse(buffer);
+        const said = reply.content?.[0]?.text ?? "";
+        if (reply.isError) reject(said);
+        else resolve(said ? JSON.parse(said) : null);
+      }
+    });
+    socket.write(`${JSON.stringify(request)}\n`);
+  });
+  const sidebar = structuredClone(recorded.sidebar);
+  for (const project of sidebar) for (const thread of project.threads) thread.status = "working";
+  const { el, intervals } = await open({
+    sidebar,
+    thread: { ...recorded.thread, thread: { ...recorded.thread.thread, id: sidebar[0].threads[0].id } },
+    browser_status: { enabled: true, servo: "orochi-servo" },
+    browser_call: ({ thread, tab, tool, args }) =>
+      broker({ scope: `user:${thread}:${tab}`, tool, args, read_only: false, cwd: null }),
+  }, { setup: () => { globalThis.Image = class { set src(value) { void value; } }; } });
+  const fire = async () => { for (const { fn } of intervals.filter((i) => i.ms === 2000)) await fn(); };
+  const until = async (what, done, seconds = 240) => {
+    const end = Date.now() + seconds * 1000;
+    while (Date.now() < end) {
+      await fire();
+      await settle(300);
+      if (await done()) return;
+    }
+    assert.fail(`never happened: ${what}`);
+  };
+  await until("the window opens the agent's tab by itself", () => tabIds(el).some((id) => id.startsWith("w")));
+  await until("the page asks the person for something", () => /verification code/i.test(el("doc-body").render()));
+  const canvas = el("doc-body").querySelectorAll(".browser-canvas")[0];
+  const typing = el("doc-body").querySelectorAll(".browser-typing")[0];
+  const click = async (x, y) => {
+    canvas.dispatch("mousedown", { clientX: x, clientY: y, button: 0, buttons: 1, detail: 1 });
+    canvas.dispatch("mouseup", { clientX: x, clientY: y, button: 0, buttons: 0, detail: 1 });
+    await settle(400);
+  };
+  await click(100, 120);
+  typing.dispatch("compositionend", { data: "ZEBRA-7" });
+  await settle(600);
+  await click(100, 180);
+  el("doc-body").querySelectorAll("button").find((b) => b.textContent === "Done").dispatch("click");
+  await settle(1500);
+  await closeBrowsers(el, "w");
 });
 
 test("the phone page switches the listener, pairs a phone with a code that counts down, and revokes one", async () => {
