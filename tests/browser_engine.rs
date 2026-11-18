@@ -655,11 +655,10 @@ async fn an_agents_page_that_leaves_the_allowed_hosts_is_sent_to_a_blank_page() 
         message.contains("evil.example") && message.contains("about:blank"),
         "{message}"
     );
-    let last = agent_asked(dir.path()).pop().unwrap();
-    assert_eq!(
-        (last["cmd"].as_str(), last["url"].as_str()),
-        (Some("navigate"), Some("about:blank"))
-    );
+    logged(dir.path(), |c| {
+        c["cmd"] == "navigate" && c["url"] == "about:blank"
+    })
+    .await;
 }
 
 #[tokio::test]
