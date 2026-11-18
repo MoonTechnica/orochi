@@ -39,7 +39,7 @@ For a phone, start the mock with `--host <your LAN or tailnet address>`.
 
 ## Run on a phone
 
-1. On the desktop: Settings → Mobile → enable, then "Pair a phone" shows a QR code (valid 5 min,
+1. On the desktop: Settings → Orochi mobile app → enable, then "Pair a phone" shows a QR code (valid 5 min,
    single use). The desktop binds only to its Tailscale address, so the phone must be on the same
    tailnet (Tailscale app installed and connected).
 2. Install the app: `npm run start -w @orochi/app` and open it in **Expo Go**, or build a
@@ -133,7 +133,7 @@ work (matched by host:port).
 `orochi://pair?host=&port=&code=&name=&id=` -> `POST /pair {code, device, device_id}` -> `{token, name}`.
 `device_id` is a random id made once per install (`orochi.install` in the secure store); pairing again
 with the same one replaces that phone's old row on the desktop (without it nothing is guessed from
-the name). The desktop's name is editable in Settings → Mobile (default: host name without domain). The token
+the name). The desktop's name is editable in Settings → Orochi mobile app (default: host name without domain). The token
 is sent as `Authorization: Bearer` on `/me` and `/rpc/<command>`, and as `?token=` on `/media`,
 `/file` and the `/events` WebSocket. A 401 anywhere unpairs the app.
 
