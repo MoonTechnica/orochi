@@ -398,22 +398,13 @@ pub struct Media {
     pub data: Option<String>,
 }
 
-pub fn media(cwd: &Path, path: &str) -> Result<Media> {
-    let full = within(cwd, path)?;
-    ensure!(std::fs::metadata(&full)?.is_file(), "{path} is not a file");
-    let mut file = std::fs::File::open(&full)?;
-    let meta = file.metadata()?;
-    ensure!(meta.is_file(), "{path} is not a file");
-    let ext = full
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let mime = IMAGES
+/// The type a file's extension says it is, for what the window can preview or play.
+pub fn mime_for_extension(ext: &str) -> &'static str {
+    IMAGES
         .iter()
         .find(|(e, _)| *e == ext)
         .map(|(_, m)| *m)
-        .or(match ext.as_str() {
+        .or(match ext {
             "mp4" | "m4v" => Some("video/mp4"),
             "webm" => Some("video/webm"),
             "mov" => Some("video/quicktime"),
@@ -437,7 +428,21 @@ pub fn media(cwd: &Path, path: &str) -> Result<Media> {
             }
             _ => None,
         })
-        .unwrap_or("application/octet-stream");
+        .unwrap_or("application/octet-stream")
+}
+
+pub fn media(cwd: &Path, path: &str) -> Result<Media> {
+    let full = within(cwd, path)?;
+    ensure!(std::fs::metadata(&full)?.is_file(), "{path} is not a file");
+    let mut file = std::fs::File::open(&full)?;
+    let meta = file.metadata()?;
+    ensure!(meta.is_file(), "{path} is not a file");
+    let ext = full
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mime = mime_for_extension(&ext);
     let mut result = Media {
         bytes: meta.len(),
         mime: mime.into(),

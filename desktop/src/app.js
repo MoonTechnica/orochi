@@ -194,6 +194,33 @@ const WORDS = {
     Setup: "初期設定",
     "Set up Orochi": "Orochi の初期設定",
     Storage: "保存場所",
+    Mobile: "モバイル",
+    "Allow a phone to connect over Tailscale": "Tailscale 経由でスマートフォンからの接続を許可する",
+    "Listening on": "待ち受け中",
+    "Not running.": "起動していません。",
+    "Off. Nothing is listening.": "オフです。何も待ち受けていません。",
+    "The server listens only on this machine's Tailscale address, so only devices on your tailnet can reach it, and each phone needs the code shown here once.":
+      "サーバーはこのマシンの Tailscale アドレスでのみ待ち受けるため、tailnet 内の端末だけが接続でき、各スマートフォンはここに表示するコードを一度入力する必要があります。",
+    "Pair a phone": "スマートフォンをペアリング",
+    "QR code for pairing": "ペアリング用の QR コード",
+    "Valid once, until": "一度だけ有効、期限",
+    "Scan the QR from the Orochi app on your phone.": "スマートフォンの Orochi アプリで QR を読み取ってください。",
+    "New code": "新しいコード",
+    "Machine id": "マシン ID",
+    "Name shown on the phone": "スマートフォンに表示する名前",
+    "Copy link": "リンクをコピー",
+    "Copied": "コピーしました",
+    "Or enter by hand in the app: ": "QR を使えない場合はアプリに手入力してください：",
+    Host: "ホスト",
+    Port: "ポート",
+    Code: "コード",
+    "Show QR code": "QR コードを表示",
+    "Paired phones": "ペアリング済みのスマートフォン",
+    "None yet.": "まだありません。",
+    "last seen": "最終接続",
+    paired: "ペアリング日",
+    Revoke: "解除",
+    "Revoke? This phone is signed out": "解除しますか？このスマートフォンはサインアウトされます",
     "Helpers' worktrees": "ヘルパーのワークツリー",
     "Each conversation's writing helpers work in worktrees here, one folder per repository. Ones already open stay where they are.":
       "会話のヘルパーが書き込み作業をするワークツリーを、リポジトリごとのフォルダに作ります。すでに開いているものは今の場所に残ります。",
@@ -5076,6 +5103,7 @@ const SETTINGS_PAGES = [
   ["decision", "Decision model"],
   ["sandboxes", "Sandboxes"],
   ["storage", "Storage"],
+  ["mobile", "Mobile"],
   ["phone", "Use from a phone"],
   ["sep"],
   ["conversations", "Conversations"],
@@ -5244,6 +5272,176 @@ async function setPlace(place, path) {
   const done = await call("set_place", { which: place.which, path, force });
   if (done !== undefined) report(t("Saved. It applies from the next run."));
   await drawScreen();
+}
+
+// Mobile: the phone's door (`docs/mobile-remote-design.md`). Off until switched on here; the QR
+// carries a single-use code, and a phone that has paired is listed and can be signed out.
+const PAIRING_MS = 5 * 60 * 1000;
+
+async function drawMobile(host) {
+  const status = await call("remote_status", {});
+  if (!status) return;
+  const devices = (await call("remote_devices", {})) || [];
+  // A phone that paired used the code up: the QR is not shown again for it.
+  if (state.remotePairing && devices.length > (state.remotePairing.devices ?? 0)) state.remotePairing = null;
+  if (state.remotePairing && state.remotePairing.expires_at <= Date.now()) state.remotePairing = null;
+  if (!status.running) state.remotePairing = null;
+
+  const card = text("div", "card mobile-status");
+  card.dataset.name = "mobile-status";
+  const on = document.createElement("input");
+  on.type = "checkbox";
+  on.checked = status.enabled;
+  on.addEventListener("change", async () => {
+    on.disabled = true;
+    state.remotePairing = null;
+    const done = await call(on.checked ? "remote_enable" : "remote_disable", {});
+    if (done === undefined) on.checked = !on.checked;
+    await drawScreen();
+  });
+  const label = document.createElement("label");
+  label.className = "row";
+  label.append(on, text("span", null, t("Allow a phone to connect over Tailscale")));
+  card.append(label);
+  card.append(
+    text(
+      "div",
+      "note",
+      status.running
+        ? `${t("Listening on")} ${status.address} · ${status.name}`
+        : status.enabled
+          ? t("Not running.")
+          : t("Off. Nothing is listening."),
+    ),
+  );
+  // The name the phone shows for this desktop: the host name without its domain until chosen.
+  const nameRow = text("div", "row mobile-name");
+  nameRow.dataset.name = "mobile-name";
+  const nameLabel = text("label", null);
+  nameLabel.append(text("span", null, `${t("Name shown on the phone")} `));
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "mobile-name-input";
+  nameInput.maxLength = 40;
+  nameInput.value = status.name || "";
+  nameInput.placeholder = status.default_name || "";
+  nameLabel.append(nameInput);
+  const nameSave = document.createElement("button");
+  nameSave.type = "button";
+  nameSave.textContent = t("Save");
+  nameSave.addEventListener("click", async () => {
+    const done = await call("remote_set_name", { name: nameInput.value });
+    if (done) await drawScreen();
+  });
+  nameRow.append(nameLabel, nameSave);
+  card.append(nameRow);
+  if (status.id) card.append(text("div", "note machine-id", `${t("Machine id")} ${status.id}`));
+  if (status.error) card.append(text("div", "note error", status.error));
+  card.append(
+    text(
+      "p",
+      "caveat",
+      t("The server listens only on this machine's Tailscale address, so only devices on your tailnet can reach it, and each phone needs the code shown here once."),
+    ),
+  );
+  host.append(card);
+
+  if (status.running) {
+    const pair = text("div", "card mobile-pair");
+    pair.dataset.name = "mobile-pair";
+    pair.append(text("div", "where", t("Pair a phone")));
+    const shown = state.remotePairing;
+    if (shown) {
+      const img = document.createElement("img");
+      img.className = "qr";
+      img.alt = t("QR code for pairing");
+      img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(shown.svg)}`;
+      pair.append(img);
+      pair.append(text("div", "code", `${shown.code.slice(0, 4)} ${shown.code.slice(4)}`));
+      pair.append(
+        text(
+          "div",
+          "note",
+          `${t("Valid once, until")} ${new Date(shown.expires_at).toLocaleTimeString()}`,
+        ),
+      );
+      pair.append(text("div", "note url", shown.url));
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "copy-link";
+      copy.textContent = t("Copy link");
+      copy.addEventListener("click", async () => {
+        await copyText(shown.url);
+        copy.textContent = t("Copied");
+      });
+      pair.append(copy);
+      // Typed by hand where a camera is not an option (a simulator, a phone that cannot scan).
+      const parts = (() => {
+        try {
+          const u = new URL(shown.url);
+          return { host: u.searchParams.get("host"), port: u.searchParams.get("port") };
+        } catch {
+          return {};
+        }
+      })();
+      const manual = text("div", "note manual", t("Or enter by hand in the app: "));
+      manual.dataset.name = "mobile-manual";
+      for (const [label, value] of [
+        [t("Host"), shown.host ?? parts.host],
+        [t("Port"), String(shown.port ?? parts.port ?? "")],
+        [t("Code"), shown.code],
+      ]) {
+        if (!value) continue;
+        const item = text("span", "manual-field");
+        item.append(text("span", "label", `${label} `), text("code", null, value));
+        manual.append(item, " ");
+      }
+      pair.append(manual);
+    } else {
+      pair.append(text("div", "note", t("Scan the QR from the Orochi app on your phone.")));
+    }
+    const make = document.createElement("button");
+    make.type = "button";
+    make.textContent = shown ? t("New code") : t("Show QR code");
+    make.addEventListener("click", async () => {
+      const made = await call("remote_pair", {});
+      if (!made) return;
+      state.remotePairing = { ...made, devices: devices.length };
+      await drawScreen();
+    });
+    pair.append(make);
+    host.append(pair);
+  }
+
+  const list = text("div", "card mobile-devices");
+  list.dataset.name = "mobile-devices";
+  list.append(text("div", "where", t("Paired phones")));
+  if (!devices.length) list.append(text("div", "note", t("None yet.")));
+  for (const device of devices) {
+    const row = text("div", "row device");
+    row.dataset.device = device.id;
+    row.append(text("span", "name", device.name));
+    const seen = device.last_seen
+      ? `${t("last seen")} ${new Date(device.last_seen).toLocaleString()}`
+      : `${t("paired")} ${new Date(device.paired_at).toLocaleDateString()}`;
+    row.append(text("span", "note", seen));
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.textContent = t("Revoke");
+    revoke.addEventListener("click", async () => {
+      // Pressed twice, as a delete is: a stray click must not sign a phone out.
+      if (revoke.dataset.sure !== "yes") {
+        revoke.dataset.sure = "yes";
+        revoke.textContent = t("Revoke? This phone is signed out");
+        return;
+      }
+      await call("remote_revoke", { id: device.id });
+      await drawScreen();
+    });
+    row.append(revoke);
+    list.append(row);
+  }
+  host.append(list);
 }
 
 /// Settings, Use from a phone: the person's browser tabs in a phone's own browser
@@ -5459,6 +5657,10 @@ async function drawSettingsPage(page, host) {
   }
   if (page === "storage") {
     await drawStorage(host);
+    return;
+  }
+  if (page === "mobile") {
+    await drawMobile(host);
     return;
   }
   if (page === "phone") {

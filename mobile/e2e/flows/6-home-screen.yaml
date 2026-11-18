@@ -1,0 +1,9 @@
+# The app icon on the simulator's home screen (the simulator stays in its light appearance).
+appId: dev.orochi.mobile
+---
+- launchApp:
+    stopApp: true
+- waitForAnimationToEnd
+- pressKey: home
+- waitForAnimationToEnd
+- takeScreenshot: ios-icon2-05-home-screen-flow

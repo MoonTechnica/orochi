@@ -3,7 +3,9 @@
 //! The app is a view over SQLite: the core writes rows, this reads them, and the few things
 //! the window changes are rows too. `view` is that whole contract; `main.rs` is a shell that
 //! hands it to a webview.
+pub mod demo;
 pub mod files;
 pub mod media;
+pub mod remote;
 pub mod term;
 pub mod view;

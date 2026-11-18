@@ -1824,6 +1824,17 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 .git-ref[data-kind="remote"], .git-ref[data-kind="tag"] { color: var(--muted); }
 .git-detail { margin: 2px 0 6px; padding: 8px; font: 11px/1.45 ui-monospace, "SF Mono", Menlo, monospace; background: var(--raised); border-radius: 6px; overflow: auto; max-height: 340px; white-space: pre; }
 
+/* Settings, Mobile: the QR is drawn on white whatever the theme, since a scanner needs the
+   contrast; the code under it is read aloud or typed. */
+#settings-body .mobile-status label.row { display: flex; gap: 8px; align-items: center; }
+#settings-body .mobile-pair img.qr { display: block; width: 240px; height: 240px; background: #fff; border-radius: 6px; margin: 8px 0; }
+#settings-body .mobile-pair .code { font: 600 22px/1.2 ui-monospace, monospace; letter-spacing: 0.12em; margin: 4px 0; }
+#settings-body .mobile-pair .url { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+#settings-body .mobile-pair .manual-field { margin-right: 10px; white-space: nowrap; }
+#settings-body .mobile-pair .manual-field code { font: 600 13px/1.2 ui-monospace, monospace; user-select: all; }
+#settings-body .mobile-devices .device { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+#settings-body .mobile-devices .device .name { flex: 1; }
+#settings-body .note.error { color: var(--danger); }
 /* Settings, Use from a phone */
 #settings-body .pair-url { display: block; margin: 8px 0 6px; padding: 6px 8px; border: 1px solid var(--line);
   border-radius: var(--radius); word-break: break-all; user-select: all; }

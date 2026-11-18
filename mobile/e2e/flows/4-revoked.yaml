@@ -1,0 +1,42 @@
+# run-ios.sh emptied the desktop's device list and restarted it: this phone's token is refused.
+appId: dev.orochi.mobile
+---
+- extendedWaitUntil:
+    visible: 'Pair again'
+    timeout: 60000
+- takeScreenshot: ios-41-revoked-needs-pairing
+# The panel never replaces the tab bar: every tab, Remove and the other desktop stay reachable.
+- assertVisible: 'Home, tab.*'
+- assertVisible: 'Settings, tab.*'
+- assertVisible: 'Remove this desktop'
+- tapOn: 'Activity, tab.*'
+- waitForAnimationToEnd
+- assertVisible: 'Pair again'
+- assertVisible: 'Settings, tab.*'
+- takeScreenshot: ios-41b-revoked-panel-keeps-tab-bar
+- takeScreenshot: ios-home6-09-revoked-panel
+- tapOn: 'Switch desktop.*'
+- extendedWaitUntil:
+    visible: '.*Add a desktop'
+- takeScreenshot: ios-42-switcher-revoked
+- tapOn: 'TakanorinoMac-Studio, Online'
+- waitForAnimationToEnd
+- tapOn: 'Home, tab.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-43-home-revoked-desktop
+- tapOn: '.*, Needs pairing again'
+- waitForAnimationToEnd
+- assertVisible: 'Pairing was revoked on the desktop. Pair again.'
+- takeScreenshot: ios-home3-05-repair-nest-reason
+- takeScreenshot: ios-home6-10-repair-nest
+- tapOn: 'Settings, tab.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-44-settings
+- takeScreenshot: ios-home6-05-settings-light
+- tapOn:
+    point: 84%,64%
+- waitForAnimationToEnd
+- takeScreenshot: ios-45-notification-permission
+- tapOn: '(Allow|許可)'
+- waitForAnimationToEnd
+- takeScreenshot: ios-46-notifications-on

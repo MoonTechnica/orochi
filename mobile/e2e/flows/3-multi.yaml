@@ -1,0 +1,51 @@
+# A second desktop was paired by deep link (run-ios.sh): the offer, the dashboard, the switcher.
+appId: dev.orochi.mobile
+---
+- extendedWaitUntil:
+    visible: 'Stay here'
+    timeout: 15000
+- takeScreenshot: ios-35-add-desktop-offer
+- tapOn: 'Stay here'
+- waitForAnimationToEnd
+- tapOn: 'Home, tab.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-36-home-two-desktops
+- takeScreenshot: ios-home3-03-two-desktops
+# Both desktops run the same demo, so each has its own "Allow once"; answer them all.
+- repeat:
+    while:
+      visible: 'Allow once'
+    times: 4
+    commands:
+      - tapOn: 'Allow once'
+      - waitForAnimationToEnd
+- extendedWaitUntil:
+    notVisible: 'Allow once'
+    timeout: 10000
+- takeScreenshot: ios-home3-04-answered-on-home
+- tapOn: 'Conversations, tab.*'
+- waitForAnimationToEnd
+- tapOn: 'Switch desktop.*'
+- extendedWaitUntil:
+    visible: '.*Add a desktop'
+- takeScreenshot: ios-37-switcher
+# Both desktops are called the same: the list tells them apart by address.
+- assertVisible: '.*TakanorinoMac-Studio \(127.0.0.1:47821\).*'
+- tapOn: 'More: TakanorinoMac-Studio \(127.0.0.1:47822\)'
+- extendedWaitUntil:
+    visible: 'Rename'
+- takeScreenshot: ios-38-machine-menu
+- tapOn: 'Rename'
+- extendedWaitUntil:
+    visible: 'Save'
+- eraseText: 40
+- inputText: 'Work Mac'
+- waitForAnimationToEnd
+- tapOn: 'Save'
+- waitForAnimationToEnd
+- assertNotVisible: 'Save'
+- assertVisible: 'Work Mac.*'
+- takeScreenshot: ios-39-machine-renamed
+- tapOn: 'Work Mac.*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-40-switched-work-mac

@@ -1390,7 +1390,7 @@ test("everything that is not a conversation lives behind the row at the foot", a
   const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
   assert.deepEqual(
     pages,
-    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "phone", "conversations", "notifications", "setup"],
+    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "mobile", "phone", "conversations", "notifications", "setup"],
     "every former panel is a page of it",
   );
   el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === "insights").dispatch("click");
@@ -4754,6 +4754,120 @@ test("an agent's page takes the person's input only while the agent has handed i
   await settle(30);
   assert.ok(viewTools(calls).some((c) => c.tool === "view_handoff_done" && c.args.watch === agent.scope));
   await closeBrowsers(el, "w");
+});
+
+// Settings → Mobile (docs/mobile-remote-design.md): off by default, a QR with a single-use code
+// once on, and a phone that has paired can be signed out.
+const REMOTE_OFF = { enabled: false, running: false, address: null, name: "mac", error: null, devices: 0 };
+const REMOTE_ON = { ...REMOTE_OFF, enabled: true, running: true, address: "100.64.0.7:47821", devices: 1 };
+const PHONE = { id: "ab12", name: "Pixel", paired_at: 1700000000000, last_seen: null };
+const PAIRING = {
+  svg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+  code: "12345678",
+  expires_at: Date.now() + 300000,
+  url: "orochi://pair?host=100.64.0.7&port=47821&code=12345678&name=mac",
+  host: "100.64.0.7",
+  port: 47821,
+  name: "mac",
+};
+
+test("the mobile page is off until it is switched on, and says nothing is listening", async () => {
+  let status = REMOTE_OFF;
+  const { el, calls } = await open({
+    remote_status: () => status,
+    remote_devices: [],
+    remote_enable: () => (status = REMOTE_ON),
+  });
+  await openSettingsPage(el, "mobile");
+  const body = el("settings-body");
+  assert.match(body.render(), /Off\. Nothing is listening\./);
+  assert.equal(body.querySelectorAll(".mobile-pair").length, 0, "no QR while it is off");
+  const box = body.querySelectorAll("input").find((i) => i.type === "checkbox");
+  box.checked = true;
+  box.dispatch("change");
+  await settle();
+  assert.ok(calls.some(([name]) => name === "remote_enable"));
+  assert.match(el("settings-body").render(), /100\.64\.0\.7:47821/);
+});
+
+test("a QR carries the code and is drawn from the SVG the core made; a phone is revoked by pressing twice", async () => {
+  let devices = [PHONE];
+  const { el, calls } = await open({
+    remote_status: REMOTE_ON,
+    remote_devices: () => devices,
+    remote_pair: PAIRING,
+    remote_revoke: ({ id }) => {
+      devices = devices.filter((d) => d.id !== id);
+      return true;
+    },
+  });
+  await openSettingsPage(el, "mobile");
+  const body = () => el("settings-body");
+  assert.match(body().render(), /Pixel/);
+  body().querySelectorAll("button").find((b) => b.textContent === "Show QR code").dispatch("click");
+  await settle();
+  const img = body().querySelectorAll("img")[0];
+  assert.match(img.src, /^data:image\/svg\+xml/);
+  assert.match(decodeURIComponent(img.src), /<svg/);
+  assert.match(body().render(), /1234 5678/);
+  assert.match(body().render(), /orochi:\/\/pair\?host=100\.64\.0\.7/);
+  // Without a camera: the same pairing as text to type, and the link to copy.
+  const manual = body().querySelectorAll(".manual-field").map((f) => f.render());
+  assert.equal(manual.length, 3);
+  assert.match(manual.join(" "), /100\.64\.0\.7/);
+  assert.match(manual.join(" "), /47821/);
+  assert.match(manual.join(" "), /12345678/);
+  assert.ok(body().querySelectorAll("button").some((b) => b.textContent === "Copy link"));
+
+  const revoke = () => body().querySelectorAll("button").find((b) => /^Revoke/.test(b.textContent));
+  revoke().dispatch("click");
+  await settle();
+  assert.equal(calls.some(([name]) => name === "remote_revoke"), false, "once is a question");
+  revoke().dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([name]) => name === "remote_revoke").map(([, a]) => a), [{ id: "ab12" }]);
+  assert.doesNotMatch(body().render(), /Pixel/);
+});
+
+test("the name a phone shows for this desktop is editable and defaults to the host name", async () => {
+  let status = { ...REMOTE_ON, name: "studio", default_name: "studio" };
+  const { el, calls } = await open({
+    remote_status: () => status,
+    remote_devices: [],
+    remote_set_name: ({ name }) => (status = { ...status, name: name.trim() || status.default_name }),
+  });
+  await openSettingsPage(el, "mobile");
+  const body = () => el("settings-body");
+  const input = body().querySelectorAll("input").find((i) => i.className === "mobile-name-input");
+  assert.equal(input.value, "studio");
+  assert.equal(input.placeholder, "studio");
+  input.value = "Work Mac";
+  body().querySelectorAll("button").find((b) => b.textContent === "Save").dispatch("click");
+  await settle();
+  assert.deepEqual(calls.filter(([n]) => n === "remote_set_name").map(([, a]) => a), [{ name: "Work Mac" }]);
+  assert.match(body().render(), /Work Mac/);
+});
+
+test("the mobile page speaks Japanese on a Japanese machine", async () => {
+  const { el } = await open({ remote_status: REMOTE_OFF, remote_devices: [] }, { language: "ja-JP" });
+  await openSettingsPage(el, "mobile");
+  assert.match(el("settings-body").render(), /オフです/);
+  assert.match(el("settings-body").render(), /スマートフォンに表示する名前/);
+});
+
+test("the manual pairing fields and the copy button are Japanese too", async () => {
+  const { el } = await open(
+    { remote_status: REMOTE_ON, remote_devices: [], remote_pair: PAIRING },
+    { language: "ja-JP" },
+  );
+  await openSettingsPage(el, "mobile");
+  el("settings-body").querySelectorAll("button").find((b) => b.textContent === "QR コードを表示").dispatch("click");
+  await settle();
+  const text = el("settings-body").render();
+  assert.match(text, /リンクをコピー/);
+  assert.match(text, /ホスト/);
+  assert.match(text, /ポート/);
+  assert.match(text, /コード/);
 });
 
 test("the phone page switches the listener, pairs a phone with a code that counts down, and revokes one", async () => {
