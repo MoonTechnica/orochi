@@ -401,6 +401,11 @@ pub struct BrowserConfig {
     /// The `orochi-servo` to run, when not the one in `<data>/toolchain/servo/current/` or
     /// beside this executable.
     pub servo: Option<std::path::PathBuf>,
+    /// Servo engines — the person's tab and every agent's session — keep and share their
+    /// sign-ins (cookies), so a login made once, by the person or through a handoff, is not
+    /// asked for again. Off: an agent's session starts signed out and ends the same way. A
+    /// host still has to be in `allow` before an agent can reach it.
+    pub share_logins: bool,
     /// Showing the person's tabs to a phone's browser.
     pub remote: RemoteConfig,
 }
@@ -454,6 +459,7 @@ impl Default for BrowserConfig {
             agent_evaluate: false,
             engine: BrowserEngine::Auto,
             servo: None,
+            share_logins: true,
             remote: RemoteConfig::default(),
         }
     }

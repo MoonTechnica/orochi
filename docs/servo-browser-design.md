@@ -188,10 +188,23 @@ phone ask what changed since the last `seq` they drew.
   the session, since an agent's engine has no profile. Chrome sessions answer both tools
   with that said; Chrome pages are still watched read-only.
 * **Still Chrome's:** `view_preview`.
-* **Consequence the user should know:** the person's tab and an agent's page are in
-  **different engines and different profiles**. An agent cannot use the person's logged-in
-  session, and sharing one (`conversation-tabs-design.md` §3.5.6, "share with agent") is
-  **not available** for a Servo tab.
+* **Sign-ins are shared and kept (2026-11-18, the user's request: "do not make me sign in
+  every time").** Servo writes its cookie jar only when an engine exits, and two engines on
+  one profile each write the whole of theirs: measured with the real engine, the one that
+  ended last **erased the other's sign-in**. So an agent's engine still has no profile, and
+  the person's tab keeps its own, but **every engine is given one file of Orochi's own at
+  start** (`<data>/browser/servo/logins.json`, `0600`: `cookies_import`), **hands back what
+  it changed** when it ends or when the person gives a handed-over page back
+  (`cookies_export`, from the origins it showed and the sites that hold cookies), and the
+  broker — one process — merges (the newest word on a cookie wins; an engine writes back
+  only what differs from what it was given, so an old session cannot undo a newer one).
+  Measured: two sessions signing in together and ending one after the other both reach a
+  third. `browser.share_logins = false` turns it off. **What it costs and what it does not
+  do:** the agents now act with the person's sign-ins, bounded only by `browser.allow` (a
+  host not named there is unreachable whoever is signed in); cookies only, so a site that
+  keeps its sign-in in `localStorage` asks again; a cookie the site removes (a sign-out) is
+  not removed from the file, so the next engine is given a dead cookie the site refuses;
+  nothing is shared with a Chrome session.
 * `browser.engine = "chromium" | "servo" | "auto"` (default `auto`). The window shows the
   engine in the tab's corner.
 

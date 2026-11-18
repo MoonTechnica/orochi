@@ -24,6 +24,7 @@ open(os.path.join(here, "fake-servo.argv"), "w").write(json.dumps(args))
 out = sys.stdout.buffer
 seq = 0
 history, at = [], -1
+jar = []
 
 
 def send(event):
@@ -59,6 +60,8 @@ def show(url):
 
 def go(url):
     global at
+    if url == "http://shop.test/login":
+        jar.append({"url": "http://shop.test/", "cookie": "sid=abc; Path=/; HttpOnly"})
     if not url.startswith(("http://", "https://")) and url != "about:blank":
         send({"event": "refused", "url": url})
         return
@@ -93,6 +96,10 @@ for line in sys.stdin:
     elif cmd == "resize":
         width, height, ratio = int(command["width"]), int(command["height"]), float(command["ratio"])
         frame()
+    elif cmd == "cookies_import":
+        jar.extend(command.get("items", []))
+    elif cmd == "cookies_export":
+        send({"event": "cookies", "id": command["id"], "items": jar})
     elif cmd == "frames":
         if command.get("on"):
             frame()

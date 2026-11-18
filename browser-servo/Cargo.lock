@@ -3715,6 +3715,7 @@ dependencies = [
 name = "orochi-servo"
 version = "0.0.0"
 dependencies = [
+ "cookie 0.18.2",
  "dpi",
  "euclid",
  "image",

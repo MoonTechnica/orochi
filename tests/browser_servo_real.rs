@@ -478,3 +478,99 @@ async fn tool_as(hub: &Arc<Hub>, scope: &str, tool: &str, args: Value) -> Value 
     })
     .await
 }
+
+#[tokio::test]
+#[ignore = "needs a built browser-servo/target/release/orochi-servo"]
+async fn the_real_engines_share_every_sign_in_even_when_two_end_after_one_another() {
+    let binary =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("browser-servo/target/release/orochi-servo");
+    assert!(binary.is_file(), "build it first: {}", binary.display());
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    // A page that signs in whoever visits /set/<name>, and says which cookies it was sent.
+    let script = r#"
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        if self.path.startswith("/set/"):
+            self.send_header("Set-Cookie", self.path[5:] + "=1; Max-Age=86400; Path=/")
+        body = b"<title>cookies</title><p>ok"
+        self.send_header("Content-Type", "text/html"); self.send_header("Content-Length", str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+"#;
+    let mut server = Command::new("python3")
+        .args(["-c", script, &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let data = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data.path().join("browser")).unwrap();
+    let config = BrowserConfig {
+        engine: BrowserEngine::Servo,
+        servo: Some(binary),
+        agent_evaluate: true,
+        ..BrowserConfig::default()
+    };
+    let hub = Arc::new(Hub::new(
+        None,
+        Engines::new(&config, data.path()),
+        &config,
+        data.path(),
+        Arc::new(|| {}),
+    ));
+    let base = format!("http://127.0.0.1:{port}");
+    // Two sessions alive together, each signing in to something of its own.
+    for (scope, name) in [
+        ("helper-aaaa0001", "login_a"),
+        ("helper-bbbb0002", "login_b"),
+    ] {
+        said(
+            &tool_as(
+                &hub,
+                scope,
+                "browser_navigate",
+                json!({"url": format!("{base}/set/{name}")}),
+            )
+            .await,
+        );
+    }
+    // They end one after the other, which is what used to leave only the last one's.
+    hub.forget("helper-aaaa0001").await;
+    hub.forget("helper-bbbb0002").await;
+
+    let later = "helper-cccc0003";
+    said(
+        &tool_as(
+            &hub,
+            later,
+            "browser_navigate",
+            json!({"url": format!("{base}/")}),
+        )
+        .await,
+    );
+    let cookies = said(
+        &tool_as(
+            &hub,
+            later,
+            "browser_evaluate",
+            json!({"expression": "document.cookie"}),
+        )
+        .await,
+    );
+    assert!(
+        cookies.contains("login_a=1") && cookies.contains("login_b=1"),
+        "both sign-ins reach a session that never made them: {cookies}"
+    );
+    hub.forget(later).await;
+    hub.shutdown().await;
+    let _ = server.kill();
+    let _ = server.wait();
+}

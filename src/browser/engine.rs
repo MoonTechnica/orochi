@@ -9,6 +9,7 @@
 //!
 //! An agent session can hold a tab here too (`tools.rs`): it gets an engine of its own with no
 //! profile, so nothing it stores outlives the session and nothing of the person's is in it.
+mod logins;
 mod tools;
 
 use super::policy::Policy;
@@ -80,6 +81,7 @@ struct State {
     next_id: u64,
     evals: HashMap<u64, tokio::sync::oneshot::Sender<std::result::Result<Value, String>>>,
     shots: HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>,
+    exports: HashMap<u64, tokio::sync::oneshot::Sender<Vec<Value>>>,
     /// Whether the engine has been told to draw frames: an agent's engine draws none until
     /// the window looks.
     frames_on: bool,
@@ -97,6 +99,9 @@ struct Tab {
     child: tokio::sync::Mutex<tokio::process::Child>,
     /// Woken when the person gives a handed-over page back.
     returned: tokio::sync::Notify,
+    logins: Option<Arc<logins::Logins>>,
+    /// The cookies this engine was given, so only what it changed is handed back.
+    given: Mutex<HashMap<String, String>>,
 }
 
 /// How long a page may stay with the person before the agent is told nobody came.
@@ -110,6 +115,7 @@ pub struct Engines {
     binary: Option<PathBuf>,
     policy: Policy,
     tabs: Mutex<HashMap<String, Arc<Tab>>>,
+    logins: Option<Arc<logins::Logins>>,
     /// The last frame number each tab drew, so a tab started again under the same name goes
     /// on counting from there: the window asks for frames newer than the last it drew.
     drawn: Mutex<HashMap<String, u64>>,
@@ -132,6 +138,11 @@ impl Engines {
             binary: find_servo(config, data),
             policy: Policy::new(config),
             tabs: Mutex::default(),
+            logins: config.share_logins.then(|| {
+                Arc::new(logins::Logins::new(
+                    data.join("browser").join("servo").join("logins.json"),
+                ))
+            }),
             drawn: Mutex::default(),
         }
     }
@@ -280,11 +291,28 @@ impl Engines {
             state,
             child: tokio::sync::Mutex::new(child),
             returned: tokio::sync::Notify::new(),
+            logins: self.logins.clone(),
+            given: Mutex::default(),
         });
         self.tabs
             .lock()
             .unwrap()
             .insert(scope.to_owned(), tab.clone());
+        if let Some(logins) = &self.logins {
+            let items = logins.load();
+            if !items.is_empty() {
+                tab.given.lock().unwrap().extend(items.iter().map(|i| {
+                    (
+                        logins::key(i),
+                        i["cookie"].as_str().unwrap_or("").to_owned(),
+                    )
+                }));
+                // Sent before anything else is, so the first page already has them.
+                let _ = tab
+                    .send(&json!({"cmd": "cookies_import", "items": items}))
+                    .await;
+            }
+        }
         Ok(tab)
     }
 
@@ -441,6 +469,8 @@ impl Engines {
                 Ok(json!({"ok": true}))
             }
             "view_handoff_done" => {
+                // What the person signed in with is kept before the agent goes on.
+                tab.save_logins().await;
                 let had = tab.state.lock().unwrap().handoff.take().is_some();
                 tab.returned.notify_waiters();
                 Ok(json!({"returned": had}))
@@ -531,8 +561,62 @@ impl Tab {
         }
     }
 
+    /// The engine's cookies, as `{url, cookie}` items.
+    async fn export_cookies(&self) -> Result<Vec<Value>> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let id = {
+            let mut state = self.state.lock().unwrap();
+            state.next_id += 1;
+            let id = state.next_id;
+            state.exports.insert(id, sender);
+            id
+        };
+        self.send(&json!({"cmd": "cookies_export", "id": id}))
+            .await?;
+        match tokio::time::timeout(Duration::from_secs(5), receiver).await {
+            Ok(Ok(items)) => Ok(items),
+            Ok(Err(_)) => bail!("the tab's engine has ended"),
+            Err(_) => {
+                self.state.lock().unwrap().exports.remove(&id);
+                bail!("the engine did not answer in 5 seconds")
+            }
+        }
+    }
+
+    /// Hands what this engine changed in its cookies to the shared file.
+    async fn save_logins(&self) {
+        let Some(logins) = &self.logins else {
+            return;
+        };
+        {
+            let state = self.state.lock().unwrap();
+            if state.ended || !state.ready {
+                return;
+            }
+        }
+        let Ok(items) = self.export_cookies().await else {
+            return;
+        };
+        let mut given = self.given.lock().unwrap();
+        let changed: Vec<Value> = items
+            .into_iter()
+            .filter(|item| {
+                given.get(&logins::key(item)).map(String::as_str) != item["cookie"].as_str()
+            })
+            .collect();
+        for item in &changed {
+            given.insert(
+                logins::key(item),
+                item["cookie"].as_str().unwrap_or("").to_owned(),
+            );
+        }
+        drop(given);
+        logins.merge(&changed);
+    }
+
     /// Asks the engine to exit and waits for it, killing it only if it will not.
     async fn end(&self) {
+        self.save_logins().await;
         let mut line = br#"{"cmd":"shutdown"}"#.to_vec();
         line.push(b'\n');
         {
@@ -689,6 +773,12 @@ async fn read_events(stdout: tokio::process::ChildStdout, state: Arc<Mutex<State
                     } else {
                         Err(text_of(&event["error"]))
                     });
+                }
+            }
+            "cookies" => {
+                let id = event["id"].as_u64().unwrap_or(0);
+                if let Some(waiting) = state.exports.remove(&id) {
+                    let _ = waiting.send(event["items"].as_array().cloned().unwrap_or_default());
                 }
             }
             "ready" => state.ready = true,

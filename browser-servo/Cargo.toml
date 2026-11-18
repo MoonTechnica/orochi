@@ -19,6 +19,7 @@ libc = "0.2"
 euclid = "0.22"
 keyboard-types = "0.8"
 serde_json = "1"
+cookie = "0.18"
 
 [profile.release]
 lto = "thin"

@@ -783,3 +783,80 @@ async fn the_window_sees_an_agents_page_and_drives_it_only_while_the_agent_has_h
     logged(dir.path(), |c| c["cmd"] == "frames" && c["on"] == false).await;
     hub.forget(AGENT).await;
 }
+
+#[tokio::test]
+async fn a_sign_in_made_in_one_engine_is_given_to_the_next_one_and_only_when_sharing_is_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), BrowserEngine::Servo, Some(fake()));
+    answer(
+        &hub.call(request(
+            TAB,
+            "view_open",
+            json!({"url": "http://shop.test/login"}),
+        ))
+        .await,
+    );
+    // The engine ends with its tab, and hands back the cookie it holds.
+    answer(&hub.call(request(TAB, "view_close", json!({}))).await);
+    let kept = std::fs::read_to_string(dir.path().join("browser/servo/logins.json")).unwrap();
+    assert!(kept.contains("sid=abc"), "{kept}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.path().join("browser/servo/logins.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "a file of sign-ins is the person's alone"
+        );
+    }
+
+    // An agent's engine, a moment later, is given it before anything else it is asked.
+    said(
+        &hub.call(request(
+            AGENT,
+            "browser_navigate",
+            json!({"url": "http://localhost:3000/"}),
+        ))
+        .await,
+    );
+    let asked = agent_asked(dir.path());
+    let first = asked.first().expect("the engine was asked something");
+    assert_eq!(first["cmd"], "cookies_import", "{asked:?}");
+    assert_eq!(first["items"][0]["cookie"], "sid=abc; Path=/; HttpOnly");
+    hub.forget(AGENT).await;
+
+    // Nothing was changed there, so nothing is written back over a newer word.
+    let before = std::fs::read_to_string(dir.path().join("browser/servo/logins.json")).unwrap();
+    assert_eq!(before, kept, "an unchanged cookie is not rewritten");
+
+    // With sharing off an engine starts signed out and leaves nothing behind.
+    let other = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(other.path().join("browser")).unwrap();
+    let config = BrowserConfig {
+        engine: BrowserEngine::Servo,
+        servo: Some(fake()),
+        share_logins: false,
+        ..BrowserConfig::default()
+    };
+    let hub = Arc::new(Hub::new(
+        None,
+        Engines::new(&config, other.path()),
+        &config,
+        other.path(),
+        Arc::new(|| {}),
+    ));
+    answer(
+        &hub.call(request(
+            TAB,
+            "view_open",
+            json!({"url": "http://shop.test/login"}),
+        ))
+        .await,
+    );
+    answer(&hub.call(request(TAB, "view_close", json!({}))).await);
+    assert!(!other.path().join("browser/servo/logins.json").exists());
+}

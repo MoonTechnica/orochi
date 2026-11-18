@@ -141,6 +141,8 @@ struct Delegate {
     dirty: Cell<bool>,
     animating: Cell<bool>,
     dialog: RefCell<Option<SimpleDialog>>,
+    /// Every origin this engine has shown, so a cookie export can ask for each of them.
+    origins: RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl WebViewDelegate for Delegate {
@@ -152,6 +154,15 @@ impl WebViewDelegate for Delegate {
         self.animating.set(animating);
     }
     fn notify_url_changed(&self, _: WebView, url: url::Url) {
+        if let Some(host) = url.host_str()
+            && matches!(url.scheme(), "http" | "https")
+        {
+            let origin = format!("{}://{host}/", url.scheme());
+            let mut origins = self.origins.borrow_mut();
+            if origins.len() < 500 {
+                origins.insert(origin);
+            }
+        }
         out::event(json!({"event": "url", "url": url.as_str()}));
     }
     fn notify_page_title_changed(&self, _: WebView, title: Option<String>) {
@@ -461,6 +472,42 @@ fn main() {
                             }
                         }
                         None => out::event(json!({"event": "screenshot", "id": id, "len": 0})),
+                    }
+                }
+                "cookies_export" => {
+                    // The sites that hold cookies, and every origin shown here: a cookie is
+                    // asked for by address, so each address is asked.
+                    let manager = servo.site_data_manager();
+                    let mut origins = delegate.origins.borrow().clone();
+                    for site in manager.site_data(servo::StorageType::Cookies) {
+                        origins.insert(format!("https://{}/", site.name()));
+                    }
+                    let mut items = vec![];
+                    for origin in origins {
+                        let Ok(url) = url::Url::parse(&origin) else {
+                            continue;
+                        };
+                        for cookie in manager.cookies_for_url(url, servo::CookieSource::HTTP) {
+                            items.push(json!({"url": origin, "cookie": cookie.to_string()}));
+                        }
+                    }
+                    out::event(json!({"event": "cookies", "id": command["id"], "items": items}));
+                }
+                "cookies_import" => {
+                    for item in command["items"].as_array().into_iter().flatten() {
+                        let (Some(url), Some(cookie)) =
+                            (item["url"].as_str(), item["cookie"].as_str())
+                        else {
+                            continue;
+                        };
+                        if let (Ok(url), Ok(cookie)) = (
+                            url::Url::parse(url),
+                            cookie::Cookie::parse(cookie.to_owned()),
+                        ) {
+                            servo
+                                .site_data_manager()
+                                .set_cookie_for_url(url, cookie, None);
+                        }
                     }
                 }
                 "frames" => {
