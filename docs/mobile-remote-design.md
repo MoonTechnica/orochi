@@ -12,7 +12,7 @@ phone (Expo)  ──HTTP + WebSocket over the tailnet──▶  orochi-desktop (
 
 The server lives in the **desktop crate** (`desktop/src-tauri/src/remote.rs`, a library module so
 it is tested without a webview) and calls the same `view::Client` the Tauri commands call. It is
-**off by default**, enabled in Settings → Mobile.
+**off by default**, enabled in Settings → Orochi mobile app.
 
 ## Security (non-negotiable)
 
@@ -24,7 +24,7 @@ it is tested without a webview) and calls the same `view::Client` the Tauri comm
 - Pairing: the desktop makes a **single-use code, valid 5 minutes**, shown as a QR
   `orochi://pair?host=<ip>&port=<port>&code=<code>&name=<machine>&id=<machine id>`. `POST /pair` trades it for a
   per-device **bearer token** (256-bit random). Only the SHA-256 of a token is stored
-  (`<data>/remote/devices.json`, 0600). Devices are listed and revocable in Settings → Mobile.
+  (`<data>/remote/devices.json`, 0600). Devices are listed and revocable in Settings → Orochi mobile app.
   Wrong codes are rate-limited (5 failures → the pairing code is burned).
 - Every route except `/pair` and `/health` needs `Authorization: Bearer <token>`; `/media` and
   `/file` also take `?token=` because `<Image>`/video players cannot always set headers.
@@ -60,7 +60,7 @@ Whitelisted RPC commands (read): `sidebar`, `thread`, `patch`, `room`, `chatter`
 
 ## Desktop side
 
-Tauri commands for Settings → Mobile (not remotely callable): `remote_status`, `remote_enable`,
+Tauri commands for Settings → Orochi mobile app (not remotely callable): `remote_status`, `remote_enable`,
 `remote_disable`, `remote_pair` (returns `{ svg, code, expires_at, url }`, QR drawn in Rust),
 `remote_devices`, `remote_revoke`. Section added to the window's Settings (hand-written JS in
 `desktop/src/app.js`, English + Japanese strings, same conventions), covered by
@@ -94,7 +94,7 @@ loopback through `OROCHI_REMOTE_BIND`; `desktop/tests/ui.test.mjs` for the Setti
 `desktop/src-tauri/src/remote.rs` (axum; pairing with single-use 5-minute codes burned after 5
 wrong tries; SHA-256 device tokens in `<data>/remote/devices.json` at 0600 compared in constant
 time; the `/rpc` whitelist; `/events` over one shared poller; `/media` and `/file` with `Range`;
-`/health`, `/me`), the `remote_*` Tauri commands, and Settings → Mobile (English and Japanese).
+`/health`, `/me`), the `remote_*` Tauri commands, and Settings → Orochi mobile app (English and Japanese).
 
 Decisions the design left open:
 
@@ -111,7 +111,7 @@ Decisions the design left open:
 - The Settings page is built by `app.js` alone; `index.html` needed no change.
 
 Added 2026-11-17 (same day, second pass): the headless `orochi-remote` binary and the seeded demo
-store (section below), "Copy link" and the host/port/code as plain text in Settings → Mobile
+store (section below), "Copy link" and the host/port/code as plain text in Settings → Orochi mobile app
 (`Pairing` now also carries `host`, `port`, `name`; Japanese strings and `ui.test.mjs` updated), and
 `tests/remote.rs` starts the real binary on `127.0.0.1:0` with demo data, pairs with the code it
 prints, reads the sidebar, room, members and thread over `/rpc`, fetches media and a folder file
@@ -160,7 +160,7 @@ seeded them, so they read as live only while `orochi-remote --demo-data` keeps r
 
 Each desktop has a stable random `machine_id` (16 bytes hex, `<data>/remote/machine.json`, 0600,
 made once). It is in `/health`, `/pair`, `/me`, the pairing link (`&id=`), `Status.id` /
-`Pairing.id`, the `orochi-remote --json` line, and Settings → Mobile ("Machine id"). The phone
+`Pairing.id`, the `orochi-remote --json` line, and Settings → Orochi mobile app ("Machine id"). The phone
 keeps a list of machines and matches a pairing by that id, or by host:port when either side has none.
 
 Implemented and tested: the server side (`tests/remote.rs`, the machine id test; fmt, clippy
@@ -220,7 +220,7 @@ phone's old row, and so its old token. Without an id nothing is guessed from the
 called "iPhone" must not replace each other). The app makes one id per install (`orochi.install` in
 the secure store). Tests: `tests/remote.rs` (`the_device_file_is_the_truth...`, `pairing_again_from_the_same_install...`).
 
-The name a phone shows is now `machine.json`'s `name` (Settings → Mobile → "Name shown on the phone",
+The name a phone shows is now `machine.json`'s `name` (Settings → Orochi mobile app → "Name shown on the phone",
 `remote_set_name`, at most 40 characters, empty = default), else the host name **without its domain**
 (`mac.example.net` -> `mac`). `/health`, `/me`, `/pair`, the pairing link and `Status` carry it
 (`Status.default_name` is the placeholder). English and Japanese strings and `ui.test.mjs` updated.

@@ -4758,7 +4758,7 @@ test("an agent's page takes the person's input only while the agent has handed i
   await closeBrowsers(el, "w");
 });
 
-// Settings → Mobile (docs/mobile-remote-design.md): off by default, a QR with a single-use code
+// Settings → Orochi mobile app (docs/mobile-remote-design.md): off by default, a QR with a single-use code
 // once on, and a phone that has paired can be signed out.
 const REMOTE_OFF = { enabled: false, running: false, address: null, name: "mac", error: null, devices: 0 };
 const REMOTE_ON = { ...REMOTE_OFF, enabled: true, running: true, address: "100.64.0.7:47821", devices: 1 };
