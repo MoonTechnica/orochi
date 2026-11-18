@@ -897,9 +897,14 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
     #[cfg(unix)]
     if joins && config.browser.enabled {
         // No tools for a browser that is not there: a Chrome or Chromium on this machine, or
-        // the one `browser.chrome` names.
+        // the one `browser.chrome` names, or an orochi-servo.
+        let servo = config.browser.engine != crate::config::BrowserEngine::Chromium
+            && crate::browser::engine::find_servo(&config.browser, &paths.data).is_some();
         match crate::browser::find_chrome(&config.browser) {
             Ok(_) => {
+                crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
+            }
+            Err(_) if servo => {
                 crate::browser::register(&paths.data, std::env::current_exe()?, &config.browser)?;
             }
             Err(error) => tracing::debug!(%error, "no browser for the agents"),

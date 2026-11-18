@@ -1,5 +1,5 @@
-//! Which engine answers a call: Chrome for the agents and for whatever needs it, Servo for the
-//! person's own tab where it is configured and present (`docs/servo-browser-design.md` §3.4).
+//! Which engine answers a call: Servo where it is configured and present, for the person's tab
+//! and the agents' sessions alike, Chrome for whatever only it does (`docs/servo-browser-design.md` §3.4).
 //!
 //! Everything that reaches the broker — the unix socket the window and the agents' MCP relays
 //! use, and the phone listener — goes through [`Hub::call`], so a rule here (an agent cannot
@@ -168,9 +168,25 @@ impl Hub {
             return self.list(&request);
         }
         if !request.tool.starts_with("view_") {
+            // An agent's session sticks to the engine it started on, like the person's tab.
+            if self.wants_servo(&request.scope) {
+                match self.engines.warm(&request.scope).await {
+                    Ok(()) => return self.engines.agent(&request).await,
+                    Err(error)
+                        if self.browser.is_some()
+                            && !self.engines.owns(&request.scope)
+                            && self.config.engine == BrowserEngine::Auto =>
+                    {
+                        tracing::debug!(%error, "servo could not start a session; using Chrome");
+                    }
+                    Err(error) => return failure(format!("{error:#}")),
+                }
+            }
             return match &self.browser {
                 Some(browser) => browser.call(request).await,
-                None => failure("no Chrome or Chromium was found for the agents' browser"),
+                None => {
+                    failure("no Chrome, Chromium or orochi-servo was found for the agents' browser")
+                }
             };
         }
         // Same wall as the Chrome path has: a person's tab is never an agent's.

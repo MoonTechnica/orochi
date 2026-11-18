@@ -148,3 +148,162 @@ async fn the_real_engine_draws_a_local_page_and_takes_a_click_and_typing() {
     let _ = server.kill();
     let _ = server.wait();
 }
+
+const SHOP: &str = r#"<!doctype html><meta charset=utf-8><title>shop</title>
+<style>body{font:20px sans-serif;margin:0} .gap{height:1500px} #end{display:block}</style>
+<h1>Shop</h1><label for=q>Search</label><input id=q>
+<div id=ed contenteditable style="border:1px solid #888;height:40px">notes: </div>
+<a href="/next.html">Next page</a><div class=gap></div>
+<button id=buy onclick="document.title='bought '+q.value+'|'+ed.textContent">Buy</button>
+<script>document.addEventListener('keydown',e=>{if(e.key==='Enter'&&document.activeElement===q)document.title='enter '+q.value})</script>"#;
+
+async fn tool(hub: &Arc<Hub>, tool: &str, args: Value) -> Value {
+    hub.call(Request {
+        scope: "helper-real0001".into(),
+        tool: tool.into(),
+        args,
+        read_only: false,
+        cwd: None,
+    })
+    .await
+}
+
+fn said(reply: &Value) -> String {
+    assert_ne!(reply["isError"], true, "{reply}");
+    reply["content"][0]["text"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+#[ignore = "needs a built browser-servo/target/release/orochi-servo"]
+async fn the_real_engine_lets_an_agent_read_a_page_by_refs_and_act_on_it() {
+    let binary =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("browser-servo/target/release/orochi-servo");
+    assert!(binary.is_file(), "build it first: {}", binary.display());
+    let site = tempfile::tempdir().unwrap();
+    std::fs::write(site.path().join("index.html"), SHOP).unwrap();
+    std::fs::write(
+        site.path().join("next.html"),
+        "<title>second</title><p>the second page",
+    )
+    .unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut server = Command::new("python3")
+        .args([
+            "-m",
+            "http.server",
+            &port.to_string(),
+            "--bind",
+            "127.0.0.1",
+        ])
+        .current_dir(site.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let data = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(data.path().join("browser")).unwrap();
+    let config = BrowserConfig {
+        engine: BrowserEngine::Servo,
+        servo: Some(binary),
+        agent_evaluate: true,
+        ..BrowserConfig::default()
+    };
+    let hub = Arc::new(Hub::new(
+        None,
+        Engines::new(&config, data.path()),
+        &config,
+        data.path(),
+        Arc::new(|| {}),
+    ));
+    let base = format!("http://127.0.0.1:{port}");
+    said(&tool(&hub, "browser_navigate", json!({"url": format!("{base}/")})).await);
+    let snapshot = said(&tool(&hub, "browser_snapshot", json!({})).await);
+    println!("{snapshot}");
+    let find = |needle: &str| -> String {
+        let line = snapshot
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} not in\n{snapshot}"));
+        line.split("[ref=")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(']')
+            .to_owned()
+    };
+    let (search, notes, link, buy) = (
+        find("textbox \"Search\""),
+        find("textbox \"notes:\""),
+        find("link \"Next page\""),
+        find("button \"Buy\""),
+    );
+    assert_ne!(
+        search, notes,
+        "the editable div is another element: {snapshot}"
+    );
+
+    said(
+        &tool(
+            &hub,
+            "browser_type",
+            json!({"ref": search, "text": "boots"}),
+        )
+        .await,
+    );
+    said(&tool(&hub, "browser_type", json!({"ref": notes, "text": "gift"})).await);
+    // The button is far down the page: clicking it scrolls it into view first.
+    said(&tool(&hub, "browser_click", json!({"ref": buy})).await);
+    let title = said(
+        &tool(
+            &hub,
+            "browser_evaluate",
+            json!({"expression": "document.title"}),
+        )
+        .await,
+    );
+    assert!(
+        title.contains("bought boots|") && title.contains("gift"),
+        "typing and a click far below: {title}"
+    );
+
+    said(
+        &tool(
+            &hub,
+            "browser_type",
+            json!({"ref": search, "text": "!", "submit": true}),
+        )
+        .await,
+    );
+    let title = said(
+        &tool(
+            &hub,
+            "browser_evaluate",
+            json!({"expression": "document.title"}),
+        )
+        .await,
+    );
+    assert!(title.contains("enter boots!"), "Enter submits: {title}");
+
+    let shot = tool(&hub, "browser_screenshot", json!({})).await;
+    assert_eq!(shot["content"][0]["type"], "image");
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(shot["content"][0]["data"].as_str().unwrap())
+        .unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    std::fs::write(std::env::temp_dir().join("orochi-servo-agent.png"), &png).unwrap();
+
+    said(&tool(&hub, "browser_click", json!({"ref": link})).await);
+    said(&tool(&hub, "browser_wait", json!({"text": "the second page"})).await);
+    assert!(said(&tool(&hub, "browser_snapshot", json!({})).await).contains("the second page"));
+    said(&tool(&hub, "browser_back", json!({})).await);
+    assert!(said(&tool(&hub, "browser_snapshot", json!({})).await).contains("Shop"));
+
+    hub.forget("helper-real0001").await;
+    hub.shutdown().await;
+    let _ = server.kill();
+    let _ = server.wait();
+}

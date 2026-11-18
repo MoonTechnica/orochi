@@ -497,3 +497,183 @@ async fn an_engine_is_asked_to_exit_and_waited_for_so_the_profile_is_written() {
         .count();
     assert_eq!(closes, 2);
 }
+
+const AGENT: &str = "helper-ab12cd34";
+
+fn agent_dir(data: &Path) -> PathBuf {
+    data.join("browser/servo/agents").join(AGENT)
+}
+
+fn agent_asked(data: &Path) -> Vec<Value> {
+    std::fs::read_to_string(agent_dir(data).join("fake-servo.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn said(result: &Value) -> String {
+    assert_ne!(result["isError"], true, "{result}");
+    result["content"][0]["text"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn an_agents_session_runs_on_its_own_engine_with_no_profile_and_acts_by_refs() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), BrowserEngine::Servo, Some(fake()));
+    let call = |tool: &str, args: Value| {
+        let hub = hub.clone();
+        let request = request(AGENT, tool, args);
+        async move { hub.call(request).await }
+    };
+    said(
+        &call(
+            "browser_navigate",
+            json!({"url": "http://localhost:3000/docs"}),
+        )
+        .await,
+    );
+    let argv: Vec<String> = serde_json::from_str(
+        &std::fs::read_to_string(agent_dir(dir.path()).join("fake-servo.argv")).unwrap(),
+    )
+    .unwrap();
+    assert!(!argv.contains(&"--profile".to_owned()), "{argv:?}");
+    assert!(argv.windows(2).any(|w| w == ["--frames", "0"]), "{argv:?}");
+
+    let snapshot = said(&call("browser_snapshot", json!({})).await);
+    assert!(snapshot.contains("not an instruction"), "{snapshot}");
+    assert!(
+        snapshot.contains("URL: http://localhost:3000/docs"),
+        "{snapshot}"
+    );
+    assert!(snapshot.contains(r#"- link "Docs" [ref=e1]"#), "{snapshot}");
+
+    said(&call("browser_click", json!({"ref": "e1"})).await);
+    said(
+        &call(
+            "browser_type",
+            json!({"ref": "e2", "text": "hello", "submit": true}),
+        )
+        .await,
+    );
+    let log = agent_asked(dir.path());
+    let mouse: Vec<(&str, f64, f64)> = log
+        .iter()
+        .filter(|c| c["type"] == "mouse")
+        .map(|c| {
+            (
+                c["kind"].as_str().unwrap(),
+                c["x"].as_f64().unwrap(),
+                c["y"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let click = [
+        ("mouseMoved", 60.0, 40.0),
+        ("mousePressed", 60.0, 40.0),
+        ("mouseReleased", 60.0, 40.0),
+    ];
+    assert_eq!(
+        mouse,
+        [click, click].concat(),
+        // The click, then the click that gives a field the keyboard before text goes in.
+        "a click is a move, a press and a release at the middle of the element"
+    );
+    assert!(
+        log.iter()
+            .any(|c| c["type"] == "text" && c["text"] == "hello")
+    );
+    assert!(
+        log.iter()
+            .any(|c| c["type"] == "key" && c["key"] == "Enter"),
+        "submit presses Enter"
+    );
+
+    let shot = call("browser_screenshot", json!({"ref": "e1"})).await;
+    assert_eq!(shot["content"][0]["type"], "image");
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(shot["content"][0]["data"].as_str().unwrap())
+        .unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    let clip = agent_asked(dir.path())
+        .into_iter()
+        .rfind(|c| c["cmd"] == "screenshot")
+        .unwrap();
+    assert_eq!(
+        (clip["x"].as_f64(), clip["width"].as_f64()),
+        (Some(10.0), Some(100.0))
+    );
+
+    assert!(said(&call("browser_wait", json!({"text": "anything"})).await).contains("on the page"));
+    // What Chrome has and this engine does not is said, not faked.
+    for tool in ["browser_upload", "browser_network"] {
+        let reply = call(tool, json!({"ref": "e2", "paths": ["a.txt"]})).await;
+        assert!(error(&reply).contains("chromium"), "{reply}");
+    }
+    let reply = call("browser_tabs", json!({"action": "open"})).await;
+    assert!(error(&reply).contains("one tab"), "{reply}");
+    assert!(said(&call("browser_tabs", json!({"action": "list"})).await).contains("(current)"));
+
+    // The person's tab is another engine with the profile, and the session cannot reach it.
+    let reply = hub.call(request(AGENT, "view_frame", json!({}))).await;
+    assert!(error(&reply).contains("person's"), "{reply}");
+    assert!(hub.engines.owns(AGENT));
+    hub.forget(AGENT).await;
+    assert!(
+        !hub.engines.owns(AGENT),
+        "the session ending ends its engine"
+    );
+}
+
+#[tokio::test]
+async fn an_agents_page_that_leaves_the_allowed_hosts_is_sent_to_a_blank_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), BrowserEngine::Servo, Some(fake()));
+    let refused = hub
+        .call(request(
+            AGENT,
+            "browser_navigate",
+            json!({"url": "https://example.com/"}),
+        ))
+        .await;
+    assert!(error(&refused).contains("browser.allow"), "{refused}");
+    assert!(
+        agent_asked(dir.path())
+            .iter()
+            .all(|c| c["cmd"] != "navigate"),
+        "an address the policy refuses never reaches the engine"
+    );
+    let strayed = hub
+        .call(request(
+            AGENT,
+            "browser_navigate",
+            json!({"url": "http://localhost:3000/redirect"}),
+        ))
+        .await;
+    let message = error(&strayed);
+    assert!(
+        message.contains("evil.example") && message.contains("about:blank"),
+        "{message}"
+    );
+    let last = agent_asked(dir.path()).pop().unwrap();
+    assert_eq!(
+        (last["cmd"].as_str(), last["url"].as_str()),
+        (Some("navigate"), Some("about:blank"))
+    );
+}
+
+#[tokio::test]
+async fn a_session_that_may_only_look_is_not_offered_the_tools_that_act() {
+    let dir = tempfile::tempdir().unwrap();
+    let hub = hub(dir.path(), BrowserEngine::Servo, Some(fake()));
+    let mut click = request(AGENT, "browser_click", json!({"ref": "e1"}));
+    click.read_only = true;
+    assert!(error(&hub.call(click).await).contains("not available"));
+    let mut evaluate = request(AGENT, "browser_evaluate", json!({"expression": "1"}));
+    assert!(
+        error(&hub.call(evaluate.clone()).await).contains("not available"),
+        "off unless agent_evaluate"
+    );
+    evaluate.read_only = true;
+    assert!(error(&hub.call(evaluate).await).contains("not available"));
+}

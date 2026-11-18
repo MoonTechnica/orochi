@@ -48,3 +48,14 @@ pub fn frame(seq: u64, width: u32, height: u32, jpeg: &[u8]) {
         std::process::exit(0);
     }
 }
+
+/// A binary answer to a command: a line naming it, then `bytes`.
+pub fn blob(kind: &str, id: u64, bytes: &[u8]) {
+    let mut line = serde_json::json!({"event": kind, "id": id, "len": bytes.len()})
+        .to_string()
+        .into_bytes();
+    line.push(b'\n');
+    if !write(&[&line, bytes]) {
+        std::process::exit(0);
+    }
+}

@@ -7,8 +7,10 @@
 //! `view_frame` answers from, in the shape the Chromium path already answers in — the window
 //! and the phone cannot tell which engine drew the page.
 //!
-//! Agents never reach this engine: their tools stay on Chrome (§3.4), and a tab held here has
-//! a profile of its own.
+//! An agent session can hold a tab here too (`tools.rs`): it gets an engine of its own with no
+//! profile, so nothing it stores outlives the session and nothing of the person's is in it.
+mod tools;
+
 use super::policy::Policy;
 use crate::config::{BrowserConfig, BrowserEngine};
 use anyhow::{Context, Result, bail};
@@ -25,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 pub const BINARY: &str = "orochi-servo";
 /// Engines running at once, across every conversation.
-const MAX_TABS: usize = 8;
+const MAX_TABS: usize = 12;
 /// One frame may not be larger than this; a bigger length is a broken engine, not a picture.
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const CONSOLE_LINES: usize = 200;
@@ -72,6 +74,12 @@ struct State {
     refused: Option<String>,
     popup: Option<String>,
     console: VecDeque<String>,
+    /// Lines the console has ever written, so a cursor still means the same line after the
+    /// oldest ones were dropped.
+    console_total: u64,
+    next_id: u64,
+    evals: HashMap<u64, tokio::sync::oneshot::Sender<std::result::Result<Value, String>>>,
+    shots: HashMap<u64, tokio::sync::oneshot::Sender<Vec<u8>>>,
 }
 
 struct Tab {
@@ -84,6 +92,7 @@ pub struct Engines {
     data: PathBuf,
     config: BrowserConfig,
     binary: Option<PathBuf>,
+    policy: Policy,
     tabs: Mutex<HashMap<String, Arc<Tab>>>,
     /// The last frame number each tab drew, so a tab started again under the same name goes
     /// on counting from there: the window asks for frames newer than the last it drew.
@@ -105,6 +114,7 @@ impl Engines {
             data: data.to_path_buf(),
             config: config.clone(),
             binary: find_servo(config, data),
+            policy: Policy::new(config),
             tabs: Mutex::default(),
             drawn: Mutex::default(),
         }
@@ -193,16 +203,39 @@ impl Engines {
             }
         }
         let binary = self.binary.as_ref().with_context(|| self.why_missing())?;
-        let profile = self.data.join("browser").join("servo").join("profile");
-        std::fs::create_dir_all(&profile)?;
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(self.data.join("browser").join("servo.log"))?;
         let mut command = tokio::process::Command::new(binary);
+        if scope.starts_with("user:") {
+            let profile = self.data.join("browser").join("servo").join("profile");
+            std::fs::create_dir_all(&profile)?;
+            command.arg("--profile").arg(&profile);
+        } else {
+            // An agent's engine has no profile, so what it stores ends with it, and no frames
+            // are drawn for a window that is not looking.
+            command.args(["--frames", "0"]);
+            let name: String = scope
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let home = self
+                .data
+                .join("browser")
+                .join("servo")
+                .join("agents")
+                .join(name);
+            std::fs::create_dir_all(&home)?;
+            command.current_dir(home);
+        }
         command
-            .arg("--profile")
-            .arg(&profile)
             .args(["--width", "1024", "--height", "768", "--quality", "70"])
             .env_clear()
             .stdin(Stdio::piped())
@@ -381,6 +414,58 @@ impl Tab {
         }
     }
 
+    /// Runs a script in the page and returns what it evaluated to.
+    async fn eval(&self, script: &str) -> Result<Value> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let id = {
+            let mut state = self.state.lock().unwrap();
+            state.next_id += 1;
+            let id = state.next_id;
+            state.evals.insert(id, sender);
+            id
+        };
+        self.send(&json!({"cmd": "eval", "id": id, "script": script}))
+            .await?;
+        match tokio::time::timeout(Duration::from_secs(20), receiver).await {
+            Ok(Ok(Ok(value))) => Ok(value),
+            Ok(Ok(Err(error))) => bail!("the script threw: {error}"),
+            Ok(Err(_)) => bail!("the tab's engine has ended"),
+            Err(_) => {
+                self.state.lock().unwrap().evals.remove(&id);
+                bail!("the page did not answer a script in 20 seconds")
+            }
+        }
+    }
+
+    /// A PNG of the page, or of the clip `[x, y, width, height]`.
+    async fn screenshot(&self, clip: Option<[f64; 4]>) -> Result<Vec<u8>> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let id = {
+            let mut state = self.state.lock().unwrap();
+            state.next_id += 1;
+            let id = state.next_id;
+            state.shots.insert(id, sender);
+            id
+        };
+        let mut command = json!({"cmd": "screenshot", "id": id});
+        if let Some([x, y, width, height]) = clip {
+            command["x"] = json!(x);
+            command["y"] = json!(y);
+            command["width"] = json!(width);
+            command["height"] = json!(height);
+        }
+        self.send(&command).await?;
+        match tokio::time::timeout(Duration::from_secs(20), receiver).await {
+            Ok(Ok(bytes)) if !bytes.is_empty() => Ok(bytes),
+            Ok(Ok(_)) => bail!("the engine could not take a picture"),
+            Ok(Err(_)) => bail!("the tab's engine has ended"),
+            Err(_) => {
+                self.state.lock().unwrap().shots.remove(&id);
+                bail!("the engine did not answer in 20 seconds")
+            }
+        }
+    }
+
     async fn send(&self, command: &Value) -> Result<()> {
         // The engine says `ready` once its first page has loaded, and a command sent before
         // that is dropped (measured with the real engine), so nothing is sent until then.
@@ -444,8 +529,33 @@ async fn read_events(stdout: tokio::process::ChildStdout, state: Arc<Mutex<State
             });
             continue;
         }
+        if event["event"] == "screenshot" {
+            let len = event["len"].as_u64().unwrap_or(0) as usize;
+            if len > MAX_FRAME {
+                break;
+            }
+            let mut bytes = vec![0u8; len];
+            if len > 0 && reader.read_exact(&mut bytes).await.is_err() {
+                break;
+            }
+            let id = event["id"].as_u64().unwrap_or(0);
+            if let Some(waiting) = state.lock().unwrap().shots.remove(&id) {
+                let _ = waiting.send(bytes);
+            }
+            continue;
+        }
         let mut state = state.lock().unwrap();
         match event["event"].as_str().unwrap_or("") {
+            "eval" => {
+                let id = event["id"].as_u64().unwrap_or(0);
+                if let Some(waiting) = state.evals.remove(&id) {
+                    let _ = waiting.send(if event["ok"].as_bool().unwrap_or(false) {
+                        Ok(event["value"].clone())
+                    } else {
+                        Err(text_of(&event["error"]))
+                    });
+                }
+            }
             "ready" => state.ready = true,
             "url" => state.url = text_of(&event["url"]),
             "title" => state.title = text_of(&event["title"]),
@@ -463,6 +573,7 @@ async fn read_events(stdout: tokio::process::ChildStdout, state: Arc<Mutex<State
             "refused" => state.refused = Some(text_of(&event["url"])),
             "crashed" => state.crashed = true,
             "console" => {
+                state.console_total += 1;
                 let line = format!("{}: {}", text_of(&event["level"]), text_of(&event["text"]));
                 state.console.push_back(line);
                 while state.console.len() > CONSOLE_LINES {

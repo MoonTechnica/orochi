@@ -17,9 +17,10 @@ def option(name, default):
 
 profile = option("--profile", None)
 width, height, ratio = int(option("--width", "1024")), int(option("--height", "768")), 1.0
-here = os.path.dirname(profile) if profile else "."
+here = os.path.dirname(profile) if profile else os.getcwd()
 log = open(os.path.join(here, "fake-servo.log"), "a", buffering=1)
 open(os.path.join(here, "fake-servo.pid"), "w").write(str(os.getpid()))
+open(os.path.join(here, "fake-servo.argv"), "w").write(json.dumps(args))
 out = sys.stdout.buffer
 seq = 0
 history, at = [], -1
@@ -46,6 +47,8 @@ def show(url):
     send({"event": "history", "back": at > 0, "forward": at < len(history) - 1})
     send({"event": "loading", "state": "complete"})
     frame()
+    if url.endswith("/redirect"):
+        send({"event": "url", "url": "https://evil.example/landing"})
     if url == "http://crash.test/":
         send({"event": "crashed"})
     if url == "http://dialog.test/":
@@ -95,5 +98,27 @@ for line in sys.stdin:
     elif cmd == "input" and command.get("type") == "text":
         send({"event": "title", "title": "typed: " + command.get("text", "")})
         frame()
+    elif cmd == "eval":
+        script = command.get("script", "")
+        if "JSON.stringify({ text: out" in script:
+            value = json.dumps({"text": '- link "Docs" [ref=e1]\n- textbox "Search" [ref=e2]\n', "refs": 2})
+        elif "getBoundingClientRect" in script:
+            value = json.dumps({"x": 10, "y": 20, "width": 100, "height": 40, "tag": "A"})
+        elif "el.focus()" in script:
+            value = json.dumps({"ok": True})
+        elif "innerText.includes" in script:
+            value = True
+        elif "throw" in script:
+            send({"event": "eval", "id": command["id"], "ok": False, "error": "boom"})
+            continue
+        else:
+            value = "eval:" + script[:40]
+        send({"event": "eval", "id": command["id"], "ok": True, "value": value})
+    elif cmd == "screenshot":
+        body = b"\x89PNG\r\n\x1a\nFAKE" + json.dumps(
+            {k: command[k] for k in ("x", "y", "width", "height") if k in command}).encode()
+        send({"event": "screenshot", "id": command["id"], "len": len(body)})
+        out.write(body)
+        out.flush()
     elif cmd == "shutdown":
         break

@@ -73,6 +73,7 @@ def serve():
 class Engine:
     def __init__(self, binary, profile=None, width=1024, height=768, quality=70, out=None):
         args = [binary, "--width", str(width), "--height", str(height), "--quality", str(quality)]
+        args += os.environ.get("DRIVE_ARGS", "").split()
         if profile:
             args += ["--profile", profile]
         self.out = out
@@ -105,6 +106,8 @@ class Engine:
                     with open(os.path.join(self.out, f"frame-{event['seq']}.jpg"), "wb") as f:
                         f.write(data)
                 continue
+            if event.get("event") == "screenshot" and event.get("len"):
+                event["bytes"] = out.read(event["len"])
             if event.get("event") == "title":
                 self.title = event["title"]
             if event.get("event") == "url":
@@ -263,6 +266,24 @@ def t_fps(ctx):
     return r
 
 
+def t_agent(ctx):
+    e = Engine(ctx.binary, out=ctx.out)
+    e.wait(lambda x: x["event"] == "ready", 30)
+    e.open(ctx.base + "/form", title="form")
+    time.sleep(0.5)
+    r = {}
+    for n, script in enumerate(["1+1", "'a'+'b'", "({x:[1,'two',true,null]})", "document.title",
+                                "throw new Error('boom')", "undefined"], 1):
+        e.send(cmd="eval", id=n, script=script)
+        got = e.wait(lambda x, n=n: x["event"] == "eval" and x["id"] == n, 5)
+        r[script] = got and {k: got.get(k) for k in ("ok", "value", "error")}
+    e.send(cmd="screenshot", id=9)
+    got = e.wait(lambda x: x["event"] == "screenshot", 10)
+    r["screenshot"] = got and [got.get("len"), (got.get("bytes") or b"")[:4].hex()]
+    e.close()
+    return r
+
+
 def t_scroll(ctx):
     e = Engine(ctx.binary, out=ctx.out)
     e.wait(lambda x: x["event"] == "ready", 30)
@@ -380,7 +401,7 @@ def t_exit(ctx):
     return r
 
 
-TESTS = {f.__name__[2:]: f for f in (t_basics, t_latency, t_fps, t_scroll, t_ime, t_typing, t_policy, t_persist, t_exit)}
+TESTS = {f.__name__[2:]: f for f in (t_basics, t_agent, t_latency, t_fps, t_scroll, t_ime, t_typing, t_policy, t_persist, t_exit)}
 
 
 def main():

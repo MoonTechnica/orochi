@@ -373,7 +373,7 @@ allow = ["localhost", "127.0.0.1", "[::1]", "*.localhost"]   # where an agent ma
 deny = []             # always refused, whatever `allow` says
 # chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # default: a Chrome or Chromium found on this machine
 agent_evaluate = false  # true lets an agent run its own script in a page, which no host list then bounds
-engine = "auto"       # what draws the person's own tab (docs/servo-browser-design.md): "servo", "chromium", or "auto" (Servo where an orochi-servo is found, Chrome otherwise). Agents' tools always use Chrome. Servo is built by `mise run servo`; not yet run against the sites a person signs in to
+engine = "auto"       # what draws the person's own tab (docs/servo-browser-design.md): "servo", "chromium", or "auto" (Servo where an orochi-servo is found, Chrome otherwise). The agents' tools use the same engine, each session in an engine of its own with no profile; Servo has no file chooser, request log or second tab, and `engine = "chromium"` gives them back. Servo is built by `mise run servo`; not yet run against the sites a person signs in to
 # servo = "/path/to/orochi-servo"   # default: <data>/toolchain/servo/current/orochi-servo, then beside this executable
 
 [browser.remote]        # the person's tabs on a paired phone's browser (docs/servo-browser-design.md §6); off, and not run against a real phone

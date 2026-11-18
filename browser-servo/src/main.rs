@@ -41,6 +41,9 @@ struct Args {
     width: u32,
     height: u32,
     quality: u8,
+    exec_command: bool,
+    temporary: bool,
+    frames: bool,
 }
 
 fn parse_args() -> Args {
@@ -49,6 +52,9 @@ fn parse_args() -> Args {
         width: 1024,
         height: 768,
         quality: 70,
+        exec_command: true,
+        temporary: false,
+        frames: true,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -58,6 +64,9 @@ fn parse_args() -> Args {
             "--width" => args.width = value.parse().unwrap_or(args.width),
             "--height" => args.height = value.parse().unwrap_or(args.height),
             "--quality" => args.quality = value.parse().unwrap_or(args.quality).clamp(1, 100),
+            "--exec-command" => args.exec_command = value == "1",
+            "--frames" => args.frames = value != "0",
+            "--temporary-storage" => args.temporary = value == "1",
             other => {
                 eprintln!("orochi-servo: unknown argument {other}");
                 std::process::exit(2);
@@ -65,6 +74,18 @@ fn parse_args() -> Args {
         }
     }
     args
+}
+
+fn js_json(value: servo::JSValue) -> Value {
+    use servo::JSValue as J;
+    match value {
+        J::Undefined | J::Null => Value::Null,
+        J::Boolean(b) => json!(b),
+        J::Number(n) => json!(n),
+        J::String(s) | J::Element(s) | J::ShadowRoot(s) | J::Frame(s) | J::Window(s) => json!(s),
+        J::Array(items) => Value::Array(items.into_iter().map(js_json).collect()),
+        J::Object(map) => Value::Object(map.into_iter().map(|(k, v)| (k, js_json(v))).collect()),
+    }
 }
 
 fn cursor_name(cursor: Cursor) -> &'static str {
@@ -277,10 +298,16 @@ fn main() {
     }
     let opts = Opts {
         config_dir: args.profile.clone(),
+        temporary_storage: args.temporary,
         ..Opts::default()
+    };
+    let preferences = servo::Preferences {
+        dom_exec_command_enabled: args.exec_command,
+        ..servo::Preferences::default()
     };
     let servo = ServoBuilder::default()
         .opts(opts)
+        .preferences(preferences)
         .event_loop_waker(Box::new(Waker(sender.clone())))
         .build();
     let delegate = Rc::new(Delegate::default());
@@ -385,13 +412,63 @@ fn main() {
                         out::event(json!({"event": "dialog_closed"}));
                     }
                 }
+                "eval" => {
+                    let id = command["id"].as_u64().unwrap_or(0);
+                    let script = command["script"].as_str().unwrap_or("").to_owned();
+                    webview.evaluate_javascript(script, move |result| {
+                        out::event(match result {
+                            Ok(value) => json!({"event": "eval", "id": id, "ok": true,
+                                                "value": js_json(value)}),
+                            Err(error) => json!({"event": "eval", "id": id, "ok": false,
+                                                 "error": format!("{error:?}")}),
+                        });
+                    });
+                }
+                "screenshot" => {
+                    let id = command["id"].as_u64().unwrap_or(0);
+                    let size = context.size();
+                    let rect = servo::DeviceIntRect::from_size(servo::DeviceIntSize::new(
+                        size.width as i32,
+                        size.height as i32,
+                    ));
+                    match context.read_to_image(rect) {
+                        Some(image) => {
+                            // A clip is in device pixels, kept inside the picture.
+                            let image = match (command["x"].as_f64(), command["y"].as_f64()) {
+                                (Some(x), Some(y)) => {
+                                    let x =
+                                        (x.max(0.0) as u32).min(image.width().saturating_sub(1));
+                                    let y =
+                                        (y.max(0.0) as u32).min(image.height().saturating_sub(1));
+                                    let width = (command["width"].as_f64().unwrap_or(1.0).max(1.0)
+                                        as u32)
+                                        .min(image.width() - x);
+                                    let height =
+                                        (command["height"].as_f64().unwrap_or(1.0).max(1.0) as u32)
+                                            .min(image.height() - y);
+                                    image::imageops::crop_imm(&image, x, y, width, height)
+                                        .to_image()
+                                }
+                                _ => image,
+                            };
+                            let mut png = std::io::Cursor::new(Vec::new());
+                            let ok = image.write_to(&mut png, image::ImageFormat::Png).is_ok();
+                            if ok {
+                                out::blob("screenshot", id, png.get_ref());
+                            } else {
+                                out::event(json!({"event": "screenshot", "id": id, "len": 0}));
+                            }
+                        }
+                        None => out::event(json!({"event": "screenshot", "id": id, "len": 0})),
+                    }
+                }
                 "shutdown" => break 'main,
                 _ => {}
             }
         }
         servo.spin_event_loop();
 
-        if shown && delegate.dirty.get() && frames.last.elapsed() >= FRAME_INTERVAL {
+        if shown && args.frames && delegate.dirty.get() && frames.last.elapsed() >= FRAME_INTERVAL {
             let size = context.size();
             let rect = servo::DeviceIntRect::from_size(servo::DeviceIntSize::new(
                 size.width as i32,

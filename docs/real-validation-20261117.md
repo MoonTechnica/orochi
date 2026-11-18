@@ -54,3 +54,22 @@ exposes no address); `confirm()` and `prompt()` dialogs (only `alert()` was run)
 tabs in one process; a long-lived session (memory growth, hours); the user's own login site;
 `kill -9` of the broker. As in the first spike, some SVG icons draw as black squares
 (`GLD_TEXTURE_INDEX_2D is unloadable` in the log).
+
+## 2026-11-18: `contenteditable`, session isolation, and the agents' tools
+
+What was run: the same release `orochi-servo` (Servo 0.8.0, still the newest on crates.io),
+driven by `tools/drive.py` and, for the last row, by `tests/browser_servo_real.rs`.
+
+| Question | Result |
+|---|---|
+| Typing into a `contenteditable` | **Works with `dom_exec_command_enabled` on, not without it.** Keys gave `xyz`, the `text` command `xyzpq`; with the preference off nothing was inserted (the 2026-11-17 result). The preference is Servo's own and off by default in 0.8.0; the engine now turns it on |
+| IME commit into a `contenteditable` | With every update delivered it ended as `にほん日本語` (each update is inserted, none replaces the last). Delivering only the commit as start → update → end gives `日本語`; the `<input>` result is unchanged (`日本`) |
+| `Opts::temporary_storage` | **Does not isolate when a profile is given**: with `--profile` the cookie jar and storage were still written there and a second process saw the cookie. Not used |
+| A process started with no `--profile` | **Keeps nothing**: two runs in turn, the second sent no cookie (`None`) and its `localStorage` counter was 1 again. This is how an agent session's engine runs |
+| `eval` and `screenshot` commands | `1+1` → `2`, strings, nested arrays and objects, a thrown error → `ok: false` with the message, `undefined` → `null`; a PNG (`89504e47`), 18 KB for 1024×768, with an optional clip |
+| Focus and text, measured on a page with an `<input>` and a `contenteditable` | A click followed at once by the text landed in the field that had focus **before** (`bootsnotes:` in the editable div, the input empty); with 0.3 s between them it went to the right field. The `browser_type` tool now waits until `document.activeElement` is the field |
+| The agents' tools on the real engine (`the_real_engine_lets_an_agent_read_a_page_by_refs_and_act_on_it`) | **Passed**: snapshot with refs, typing into an `<input>` and a `contenteditable`, a click on a button 1500 px down (scrolled into view first), Enter, a screenshot, a link, wait for text, back, evaluate |
+
+Not run: a real site, a model driving the tools, a rich-text editor (Notion, Gmail, Slack),
+sign-in, a long session; `<select>` (the engine still drops the picker, so an agent cannot
+choose an option except by script).

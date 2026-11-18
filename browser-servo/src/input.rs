@@ -119,27 +119,21 @@ pub fn events(args: &Value, composition: &mut Composition) -> Vec<InputEvent> {
             })
             .collect(),
         "ime" => {
-            let text = string("text").to_owned();
-            let mut out = vec![];
-            if !composition.active {
-                composition.active = true;
-                out.push(InputEvent::Ime(ImeEvent::Composition(CompositionEvent {
-                    state: CompositionState::Start,
-                    data: String::new(),
-                })));
+            // A contenteditable inserts each Update instead of replacing the last, so only
+            // the committed text is delivered, as one composition.
+            if !args["commit"].as_bool().unwrap_or(false) {
+                return vec![];
             }
+            let text = string("text").to_owned();
             let composition_event = |state, data: String| {
                 InputEvent::Ime(ImeEvent::Composition(CompositionEvent { state, data }))
             };
-            if args["commit"].as_bool().unwrap_or(false) {
-                composition.active = false;
-                // Servo's End keeps what the last update left, so the final text is an update.
-                out.push(composition_event(CompositionState::Update, text.clone()));
-                out.push(composition_event(CompositionState::End, text));
-            } else {
-                out.push(composition_event(CompositionState::Update, text));
-            }
-            out
+            composition.active = false;
+            vec![
+                composition_event(CompositionState::Start, String::new()),
+                composition_event(CompositionState::Update, text.clone()),
+                composition_event(CompositionState::End, text),
+            ]
         }
         _ => vec![],
     }

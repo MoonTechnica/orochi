@@ -11,10 +11,12 @@ Status: **built 2026-11-17, not run against a real phone or the user's own login
 |---|---|---|
 | D5 | What engine draws the window's centre-column browser tab | **Servo** (`servo` crate, MPL-2.0), embedded as a library. This supersedes D4 of `conversation-tabs-design.md` **for the person's own tab**; D4's reasons (trusted input, console, network, file upload for agents) are about the agents' tools, which this document does not move (§3.4) |
 | D6 | Can the tab be seen from a phone | **Yes.** The same tab, over the network, in the phone's own browser (§6) |
-| D7 | Is Chromium dropped | **No.** Chromium stays as the engine for agent tools and as a per-machine fallback for the tab (`browser.engine`, §3.4). Servo is a new backend, not a replacement of the old one, until it has been run on the sites the user logs into (§9) |
+| D7 | Is Chromium dropped | **No.** Chromium stays as the fallback (`browser.engine`, §3.4). Servo is the standard for the person's tab and, since 2026-11-18, for the agents' tools too (D8), until it has been run on the sites the user logs into (§9) |
+| D8 | Which engine the agents' `browser_*` tools use | **Servo where an `orochi-servo` is found** (`browser.engine = "auto"`), on the user's instruction 2026-11-18 ("the embedded browser should be the standard"); Chrome where there is none, and for what Servo cannot do (§3.4) |
 
-D7 is mine, not the user's: it is the cheapest way to keep the tab usable if Servo cannot
-render a site the user needs, and it is easy to remove once §9's questions are answered.
+D7 was mine, not the user's: it is the cheapest way to keep the browser usable if Servo
+cannot render a site the user needs, and it is easy to remove once §9's questions are
+answered.
 
 ## 1. Requirements
 
@@ -145,23 +147,39 @@ phone ask what changed since the last `seq` they drew.
   the fallback is `OffscreenRenderingContext` on a hidden GL window, which is a different
   context type with the same `WebView` API.
 
-### 3.4 What stays on Chromium
+### 3.4 Agents' tools on Servo, and what stays on Chromium
 
-* **The agents' `browser_*` tools** (`broker.rs` `call`, everything not `view_*`) are
-  CDP-based and stay on Chromium: they were chosen for trusted input, console, network and
-  upload (D4), and Servo has no CDP. Its own surfaces (`evaluate_javascript`, the
-  accessibility tree, `WebDriver`, an `InputEvent` API) could carry them later; that is a
-  second project and is not part of this one.
-* **Consequence the user should know:** with `engine = "servo"` the person's tab and an
-  agent's page are in **different engines and different profiles**. An agent cannot use the
-  person's logged-in session, and the person does not see what the agent's Chrome sees
-  except through the existing read-only *Agents' browser* tab. Sharing one logged-in
-  session with an agent (`conversation-tabs-design.md` §3.5.6, "share with agent") is
-  **not available** for a Servo tab. If that matters more than the engine, keep
-  `engine = "chromium"`.
-* `browser.engine = "chromium" | "servo"` (default `chromium` until §9 is answered; then
-  `servo` where an `orochi-servo` is present). The window shows the engine in the tab's
-  corner.
+* **The agents' `browser_*` tools** go to Servo where `browser.engine` is `auto` and an
+  `orochi-servo` is found (or `servo`). A session gets **its own engine process with no
+  profile** (`--frames 0`: no picture is drawn for a window that is not looking), so what it
+  stores ends with it and nothing of the person's is in it. The session sticks to the engine
+  it started on, like the person's tab; if Servo cannot start in `auto` the session uses
+  Chrome. `engine/tools.rs` builds the tools from what the engine offers: `eval` (a script
+  in the page, `WebView::evaluate_javascript`), `screenshot` (a PNG, optionally a clip) and
+  the same `input` events the person's tab uses.
+* **Snapshot** is a walk of the DOM in the page (`engine/snapshot.js`), not Chrome's
+  accessibility tree: roles from tags and `role`, names from `aria-label`, labels, text,
+  `alt`, `placeholder`; elements to act on get a ref (`e1`…), kept in a non-enumerable
+  property of the page's window (the page can read it, as it can read anything in its own
+  window). It is coarser than Chrome's.
+* **A click or a type** scrolls the element into view, then clicks its middle with real
+  mouse events; typing clicks first and waits until the page says the field has the
+  keyboard, because the click and the keyboard reach the page by different ways and text
+  sent at once landed in the field that had focus before (measured).
+* **Policy** is the same: `browser.allow`/`deny` checked before a navigation and on where the
+  tab is afterwards (a page that leaves is sent to `about:blank` and told so).
+* **What Servo cannot do answers with that said**, and the way out is `engine = "chromium"`:
+  `browser_upload` (no file chooser), `browser_network` (no request log), more than one tab
+  per session, and a promise returned by `browser_evaluate` is not awaited.
+* **Still Chrome's:** `view_preview`, `view_agents` and `view_unwatch` (watching an
+  agent's page), which read what an agent's Chrome context holds. An agent on Servo cannot
+  be watched yet.
+* **Consequence the user should know:** the person's tab and an agent's page are in
+  **different engines and different profiles**. An agent cannot use the person's logged-in
+  session, and sharing one (`conversation-tabs-design.md` §3.5.6, "share with agent") is
+  **not available** for a Servo tab.
+* `browser.engine = "chromium" | "servo" | "auto"` (default `auto`). The window shows the
+  engine in the tab's corner.
 
 ## 4. The tab, behaviour by behaviour
 
@@ -388,6 +406,7 @@ the engine: it is built first for that reason (§10).
 | `orochi-servo` (`browser-servo/`: `main.rs`, `input.rs`, `out.rs`, `tools/drive.py`) | **Built and run** against pages served from this machine: frames, mouse, wheel, keys, `text`, IME into an `<input>`, `alert()`, refusal of non-web addresses, a profile that keeps a cookie and `localStorage` across two processes, exit on `shutdown` and on stdin EOF. Numbers in `docs/real-validation-20261117.md`. **Not working:** typing and IME into a `contenteditable`; `<select>`, colour and file pickers and the context menu are dropped; a popup's address is empty; some SVG icons draw as black squares. **Not run:** back/forward/reload, `confirm`/`prompt`, touch, downloads, several tabs per process, a long session, the user's login site, `kill -9` (the profile is written only on a clean exit) |
 | `src/browser/engine.rs`, `hub.rs`, `server.rs` (the broker without Chrome, engines, `remote_*` admin tools), `config.rs`, `policy.rs` | **Built**, tested by `tests/browser_engine.rs` (12) over `tests/fixtures/fake_servo.py`, including that nothing is sent before `ready`, that an engine is asked to exit and waited for, and that a restarted tab goes on counting frames; and by `tests/browser_servo_real.rs` (`#[ignore]`, run by hand) against the **real** engine: a page, typing and a click through the hub |
 | `src/browser/remote.rs`, `viewer.html`, the window's Settings → *Use from a phone* | **Built**; `tests/browser_remote.rs` (20) covers pairing, cookie and `Origin` checks, tool and scope whitelists, one driver per tab, one frame in flight, revocation, hashed tokens, restart, and the whole chain phone → listener → hub → engine process. **Never run on a real phone**: touch, soft keyboard, IME, safe areas, `visualViewport` and iOS Safari are unverified. Tailscale and `tailscale serve` are unverified. The settings page was tested only against a faked admin answer |
+| Agents' tools on Servo (`engine/tools.rs`, `snapshot.js`, the engine's `eval` and `screenshot`) | **Built.** `tests/browser_engine.rs` (3 more, over `fake_servo.py`: refs and actions, no profile and no frames, policy, read-only sessions) and `tests/browser_servo_real.rs` (`#[ignore]`, **run 2026-11-18**: snapshot, type into an `<input>` and a `contenteditable`, a click on a button 1500 px down, Enter, screenshot, a link, wait, back, evaluate). **Not run:** a real site, an agent (a model) driving it, the other tools on a long session |
 | `engine = "auto"` as default | Chosen by the user's instruction, **before** item 4 of §9 was answered (their own login site); `engine = "chromium"` is the way back |
 
 Known costs and limits, as the user should hear them:
@@ -400,8 +419,11 @@ Known costs and limits, as the user should hear them:
 * **One profile for the whole machine** (`<data>/browser/servo/profile`), not one per project
   as §5 first said; two tabs of the person share cookies. Per-project profiles need the
   broker to know a thread's repository.
-* **A page that needs `contenteditable`** (rich-text editors, many chat boxes) cannot be typed
-  into in Servo 0.8.0.
+* **`contenteditable`** is typed into only because the engine turns `dom_exec_command_enabled`
+  on (Servo's own preference, off by default in 0.8.0; measured 2026-11-18 on a plain
+  `contenteditable` div, **not** on a real rich-text editor). An IME commit is delivered as
+  one composition (start, update, end) because a `contenteditable` inserts every update
+  instead of replacing the last.
 * **The unix socket is the trust boundary** for `remote_*` and `view_*` alike: any process of
   this user can open it, as it could before this work. An agent's shell can therefore ask the
   broker for a pairing code. A sandboxed agent cannot reach it.
