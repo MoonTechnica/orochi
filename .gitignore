@@ -5,3 +5,12 @@
 .DS_Store
 /dist/
 __pycache__/
+
+mobile/**/node_modules/
+/mobile/.expo/
+/mobile/apps/app/.expo/
+/mobile/apps/app/dist/
+/mobile/apps/app/ios/
+/mobile/apps/app/android/
+/mobile/e2e/out/
+/mobile/e2e/screenshots/

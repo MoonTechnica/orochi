@@ -1,0 +1,31 @@
+# The Office in Japanese (the simulator is set to the dark appearance by run-ios.sh).
+appId: dev.orochi.mobile
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      -AppleLanguages: '(ja)'
+      -AppleLocale: 'ja_JP'
+- extendedWaitUntil:
+    visible:
+      id: office-card
+    timeout: 25000
+- takeScreenshot: ios-office-08-home-entry-ja-dark
+- takeScreenshot: ios-office-startup-04-home-card-ja-dark
+- takeScreenshot: ios-home6-07-home-ja-dark
+- tapOn:
+    id: office-card
+- extendedWaitUntil:
+    visible:
+      id: stat-working
+    timeout: 15000
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-09-rooms-ja-dark
+- takeScreenshot: ios-office-startup-05-rooms-ja-dark
+- takeScreenshot: ios-home6-08-office-ja-dark
+# Every character on one page (not linked from anywhere; reached by its address).
+- openLink:
+    link: orochi://avatars
+    optional: true
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-startup-06-characters-ja-dark

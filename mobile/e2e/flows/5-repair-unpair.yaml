@@ -1,0 +1,33 @@
+# run-ios.sh paired the revoked desktop again by deep link; then both desktops are removed.
+appId: dev.orochi.mobile
+---
+- waitForAnimationToEnd
+- takeScreenshot: ios-47-repair-by-deeplink
+- tapOn:
+    text: 'Stay here'
+    optional: true
+- waitForAnimationToEnd
+- tapOn: 'Settings, tab.*'
+- waitForAnimationToEnd
+- tapOn: 'More: Work Mac'
+- extendedWaitUntil:
+    visible: 'Remove'
+- takeScreenshot: ios-48-remove-menu
+- tapOn: 'Remove'
+- extendedWaitUntil:
+    visible: 'Remove this desktop\?'
+- takeScreenshot: ios-49-remove-confirm
+- tapOn: 'Remove'
+- waitForAnimationToEnd
+- assertNotVisible: 'Work Mac.*'
+- takeScreenshot: ios-50-one-desktop-left
+- tapOn: 'More: TakanorinoMac-Studio.*'
+- extendedWaitUntil:
+    visible: 'Remove'
+- tapOn: 'Remove'
+- extendedWaitUntil:
+    visible: 'Remove this desktop\?'
+- tapOn: 'Remove'
+- waitForAnimationToEnd
+- assertVisible: 'Scan QR code'
+- takeScreenshot: ios-51-unpaired-pair-screen

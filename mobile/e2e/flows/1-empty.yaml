@@ -1,0 +1,16 @@
+# A fresh install: the guide, and the scan screen on a device with no camera.
+appId: dev.orochi.mobile
+---
+- launchApp:
+    clearState: true
+    clearKeychain: true
+    stopApp: true
+    arguments:
+      -AppleLanguages: '(en)'
+      -AppleLocale: 'en_US'
+- assertVisible: 'Scan QR code'
+- takeScreenshot: ios-01-empty-guide
+- tapOn: 'Scan QR code'
+- waitForAnimationToEnd
+- takeScreenshot: ios-02-scan-no-camera
+- assertVisible: 'Paste the pairing link'

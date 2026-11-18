@@ -1,0 +1,98 @@
+{
+  "expo": {
+    "name": "Orochi",
+    "slug": "orochi-mobile",
+    "scheme": "orochi",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.orochi.mobile",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "NSLocalNetworkUsageDescription": "Orochi talks to your desktop over your tailnet.",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "icon": {
+        "light": "./assets/icon/icon-light.png",
+        "dark": "./assets/icon/icon-dark.png",
+        "tinted": "./assets/icon/icon-tinted.png"
+      }
+    },
+    "android": {
+      "package": "dev.orochi.mobile",
+      "usesCleartextTraffic": true,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon/adaptive-foreground.png",
+        "backgroundImage": "./assets/icon/adaptive-background.png",
+        "monochromeImage": "./assets/icon/adaptive-monochrome.png",
+        "backgroundColor": "#121212"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/icon/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/icon/splash.png",
+          "imageWidth": 220,
+          "backgroundColor": "#121212",
+          "resizeMode": "contain",
+          "dark": {
+            "image": "./assets/icon/splash.png",
+            "backgroundColor": "#121212"
+          }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon/notification.png",
+          "color": "#e0160e"
+        }
+      ],
+      "expo-secure-store",
+      "expo-video",
+      "expo-audio",
+      "expo-sharing",
+      "expo-image",
+      "expo-localization",
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Orochi scans the pairing QR code shown on your desktop."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Orochi can save images and videos from a conversation to your library.",
+          "savePhotosPermission": "Orochi saves images and videos you choose to your library.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "icon": "./assets/icon/icon-light.png"
+  }
+}

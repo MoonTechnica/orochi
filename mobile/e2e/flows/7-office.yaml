@@ -1,0 +1,47 @@
+# The Office: Home's entry, rooms stacked by project, the avatar sheet, stopping a seat, a room
+# opening its conversation. run-ios.sh paired the app with a mock desktop serving the recorded
+# Office data (tools/mock-server.mjs --office) by deep link first.
+appId: dev.orochi.mobile
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      -AppleLanguages: '(en)'
+      -AppleLocale: 'en_US'
+- extendedWaitUntil:
+    visible:
+      id: office-card
+    timeout: 25000
+- takeScreenshot: ios-office-01-home-entry
+- takeScreenshot: ios-office-startup-01-home-card-light
+- tapOn:
+    id: office-card
+- extendedWaitUntil:
+    visible:
+      id: stat-working
+    timeout: 15000
+- assertVisible: 'Fix the flaky mailbox test, .*'
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-02-rooms
+- takeScreenshot: ios-office-startup-02-rooms-light
+- takeScreenshot: ios-home6-06-office-light
+- tapOn: 'designer, .*'
+- extendedWaitUntil:
+    visible: 'Stop this seat'
+    timeout: 8000
+- takeScreenshot: ios-office-03-seat-sheet
+- takeScreenshot: ios-office-startup-03-seat-sheet-light
+- tapOn: 'Stop this seat'
+- extendedWaitUntil:
+    notVisible: 'Stop this seat'
+    timeout: 8000
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-04-seat-stopped
+- tapOn: 'orochi, .* rooms?. Hide this floor'
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-05-floor-folded
+- tapOn: 'Add sign-in with a magic link, .*'
+- extendedWaitUntil:
+    visible: 'Message.*'
+    timeout: 15000
+- takeScreenshot: ios-office-06-room-opens-thread

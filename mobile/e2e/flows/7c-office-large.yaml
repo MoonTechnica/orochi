@@ -1,0 +1,92 @@
+# The Office at scale: 120 people in 36 rooms (tools/mock-server.mjs --office-large, paired by
+# run-ios.sh). Scrolling through the virtualized list, a room's "+N" sheet and a person hidden
+# behind it, the Needs you filter, the Strip tile as a filter, and a compact row opening in place.
+appId: dev.orochi.mobile
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      -AppleLanguages: '(en)'
+      -AppleLocale: 'en_US'
+- extendedWaitUntil:
+    visible:
+      id: office-card
+    timeout: 25000
+- tapOn:
+    id: office-card
+- extendedWaitUntil:
+    visible:
+      id: stat-working
+    timeout: 15000
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-01-top
+# Compact rows of a crowded floor, below the rooms that need you.
+- scrollUntilVisible:
+    element:
+      text: 'Retry the quota probe, .*'
+    direction: DOWN
+    timeout: 60000
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-02-compact-rows
+- tapOn: 'Retry the quota probe, .*'
+- extendedWaitUntil:
+    visible:
+      id: collapse-L08
+    timeout: 8000
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-03-compact-expanded
+- tapOn:
+    id: collapse-L08
+- extendedWaitUntil:
+    notVisible:
+      id: collapse-L08
+    timeout: 8000
+# A crowded room (16 people) opened from its one-line row: six people and a "+N" tile; the tile's
+# sheet lists all of them.
+- tapOn: 'Redesign the home screen, .*'
+- scroll
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-04-capped-room
+- tapOn:
+    id: more-L01
+- extendedWaitUntil:
+    visible: 'Everyone in Redesign the home screen'
+    timeout: 8000
+- takeScreenshot: ios-office-scale-05-plus-n-sheet
+# Someone behind the tile still opens the seat sheet (Stop is offered for a working one).
+- tapOn: 'scribe, .*'
+- extendedWaitUntil:
+    visible: 'Stop this seat'
+    timeout: 8000
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-06-hidden-person-sheet
+- tapOn:
+    point: 50%,10%
+- extendedWaitUntil:
+    notVisible: 'Open thread'
+    timeout: 8000
+# Filters: the chip, then the Strip tile.
+- repeat:
+    times: 10
+    commands:
+      - swipe:
+          direction: DOWN
+          duration: 250
+- tapOn:
+    id: filter-needs
+- waitForAnimationToEnd
+- assertVisible: 'Fix the flaky mailbox test, .*'
+- takeScreenshot: ios-office-scale-07-filter-needs-you
+- tapOn:
+    id: filter-working
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-08-filter-working
+- tapOn:
+    id: filter-all
+- tapOn:
+    id: stat-asking
+- waitForAnimationToEnd
+- takeScreenshot: ios-office-scale-09-strip-tile-filter
+- tapOn:
+    id: stat-asking
+- waitForAnimationToEnd

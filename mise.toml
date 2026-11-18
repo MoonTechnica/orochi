@@ -71,6 +71,11 @@ run = "cargo test --locked"
 description = "Regenerate desktop/src/preview.html from index.html"
 run = "node desktop/tests/make-preview.mjs"
 
+[tasks.mobile]
+description = "The mobile app: typecheck and the pure-logic tests (needs `npm install` in mobile/ once)"
+dir = "{{config_root}}/mobile"
+run = ["npm run typecheck", "npm test"]
+
 [tasks.check]
 description = "Everything CI checks, plus the desktop crate"
 depends = ["fmt", "lint", "test", "desktop:lint", "desktop:test"]

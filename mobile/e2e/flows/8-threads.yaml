@@ -1,0 +1,102 @@
+# Threads as Slack draws them: footers under the messages that have a thread, the Threads pill and
+# list, a thread screen (parent, "N replies", replies, the "Also send to the channel" checkbox), the
+# unread marker clearing. run-ios.sh paired the app with tools/mock-threads.mjs by deep link first
+# (a team channel with implementer, reviewer and docs; docs needs you; nothing seen yet).
+appId: dev.orochi.mobile
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      -AppleLanguages: '(en)'
+      -AppleLocale: 'en_US'
+- extendedWaitUntil:
+    visible: 'Add tests for greet\(\), .*'
+    timeout: 30000
+- tapOn: 'Add tests for greet\(\), .*'
+- extendedWaitUntil:
+    visible: 'Allow once'
+    timeout: 20000
+- tapOn: 'Allow once'
+- waitForAnimationToEnd
+# The footers: faces, "N replies", last reply, unread; needs-you on the docs thread.
+- assertVisible: 'Threads \(3\).*'
+- assertVisible: 'Thread docs.*Needs you.*'
+- assertVisible: 'Thread reviewer.*unread'
+- takeScreenshot: ios-threads-01-channel-footers
+# A reply also sent to the channel carries "Replied to a thread".
+- assertVisible: 'Replied to a thread.*'
+- takeScreenshot: ios-threads-02-broadcast-caption
+# Open a thread: parent, "N replies", the replies, the composer and the checkbox.
+- tapOn: 'Thread docs.*'
+- extendedWaitUntil:
+    visible: '2 replies'
+    timeout: 15000
+- assertVisible: 'Reply…'
+- assertVisible: 'Also send to the channel'
+- takeScreenshot: ios-threads-03-thread-screen
+# Reply with "also send": the box resets after sending.
+- tapOn: 'Also send to the channel'
+- assertVisible: 'Also send to the channel'
+- tapOn: 'Reply…'
+- inputText: 'Testing, please'
+- takeScreenshot: ios-threads-04-also-send-ticked
+- tapOn: 'Send'
+- extendedWaitUntil:
+    visible: '.*Testing, please.*'
+    timeout: 15000
+- assertVisible: 'Also send to the channel'
+# (ticked and reset are read from screenshots 04 and 05: maestro cannot read a checkbox's state here)
+- takeScreenshot: ios-threads-05-after-reply
+# A second reply, without "also send".
+- tapOn: 'Reply…'
+- inputText: 'Only in the thread'
+- tapOn: 'Send'
+- extendedWaitUntil:
+    visible: '.*Only in the thread.*'
+    timeout: 15000
+- tapOn: 'Back'
+- waitForAnimationToEnd
+# The docs thread was seen: its unread marker is gone, "Needs you" stays (it still asks).
+- assertNotVisible: 'Thread docs.*unread'
+- assertVisible: 'Thread docs.*Needs you.*'
+- takeScreenshot: ios-threads-06-channel-seen
+# The Threads view, from the pill: unread first.
+- tapOn: 'Threads \(3\).*'
+- extendedWaitUntil:
+    visible: 'Thread implementer.*unread'
+    timeout: 15000
+- takeScreenshot: ios-threads-07-threads-list
+- tapOn: 'Thread reviewer.*'
+- extendedWaitUntil:
+    visible: 'Reply…'
+    timeout: 15000
+- takeScreenshot: ios-threads-08-reviewer-thread
+- tapOn: 'Back'
+- waitForAnimationToEnd
+- assertNotVisible: 'Thread reviewer.*unread'
+- takeScreenshot: ios-threads-09-list-reviewer-seen
+- tapOn: 'Back'
+# The drawer's entry opens the same view.
+- tapOn: 'More'
+- extendedWaitUntil:
+    visible: 'Threads \(3\)'
+    timeout: 10000
+- takeScreenshot: ios-threads-10-drawer-entry
+- tapOn: 'Threads \(3\)'
+- extendedWaitUntil:
+    visible: 'Thread implementer.*'
+    timeout: 15000
+- takeScreenshot: ios-threads-11-threads-from-drawer
+# A long press on a message with a thread: copy, or reply in the thread.
+- tapOn: 'Back'
+- waitForAnimationToEnd
+- longPressOn: 'lead: @docs readme.*'
+- extendedWaitUntil:
+    visible: 'Reply in thread'
+    timeout: 10000
+- takeScreenshot: ios-threads-12-long-press
+- tapOn: 'Reply in thread'
+- extendedWaitUntil:
+    visible: 'Reply…'
+    timeout: 15000
+- takeScreenshot: ios-threads-13-reply-in-thread
