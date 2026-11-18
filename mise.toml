@@ -54,6 +54,16 @@ depends = ["fmt", "lint", "test:quick"]
 description = "Build the CLI and place it where the desktop crate expects it"
 run = "scripts/sidecar.sh"
 
+[tasks."desktop:app"]
+description = "Build the window as an app with the browser engine (Servo) inside it; Servo takes minutes to build"
+run = '''
+set -e
+scripts/sidecar.sh --release
+scripts/servo-sidecar.sh
+cd desktop/src-tauri
+npx --yes "@tauri-apps/cli@^2" build --config tauri.servo.conf.json
+'''
+
 [tasks."desktop:lint"]
 description = "Clippy on the desktop crate"
 depends = ["desktop:sidecar"]

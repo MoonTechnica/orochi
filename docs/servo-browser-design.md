@@ -82,12 +82,21 @@ answered.
   data directory without Servo having to partition one.
 * **Launched through `orochi --internal-supervise`**, like every agent and Chrome, so it dies
   with the broker (`process.rs`).
-* **Distribution (not built).** A Servo build is hundreds of MiB
-  unpacked (*unmeasured*). Built per platform by a release workflow, published with a
-  SHA-256 pinned in source (as `ANTIGRAVITY_BUILDS` does), put in by `setup` on demand the
-  first time a Servo tab is asked for (as `setup::sandbox_on_demand` does for Lima), never
-  in the app bundle. Until that job exists: `mise run servo` builds it from `browser-servo/`
-  into `<data>/toolchain/servo/`.
+* **Distribution.** A Servo build is hundreds of MiB unpacked (the release engine is 125 MB on
+  macOS arm64, measured 2026-11-18). **In the app bundle (2026-11-18, the user: Servo should
+  be usable the moment the desktop app starts):** `mise run desktop:app` builds the engine
+  (`scripts/servo-sidecar.sh`), puts it beside the CLI sidecar and bundles both
+  (`desktop/src-tauri/tauri.servo.conf.json` adds `binaries/orochi-servo` to `externalBin`),
+  so `orochi-servo` sits next to the app's own executables and `find_servo` finds it there.
+  It is a separate config on purpose: the desktop crate's checks and the ordinary release
+  workflow do not build Servo (minutes of SpiderMonkey), and a bundle built the ordinary way
+  has none. **Verified:** a macOS arm64 `Orochi.app` built this way holds `orochi-servo`
+  beside `orochi`, and that bundled `orochi`, given an empty data directory, opened a local
+  page and took a snapshot with no `mise run servo`. **Not done:** the release workflow does
+  not build it (a hand-run workflow, and the build is slow), Linux and the universal macOS
+  build are written but not run, nothing is signed or notarized, and a hosted download put
+  in by `setup` (SHA-256 pinned, as `ANTIGRAVITY_BUILDS` does) does not exist. Without a
+  bundle, `mise run servo` builds it from `browser-servo/` into `<data>/toolchain/servo/`.
 
 ### 3.2 The engine protocol
 

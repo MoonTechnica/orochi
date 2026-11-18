@@ -4388,7 +4388,7 @@ async function closeBrowsers(el, prefix = "b") {
 }
 const viewTools = (calls) => calls.filter(([name]) => name === "browser_call").map(([, a]) => a);
 
-test("a browser tab says why it is empty when the browser is off or there is no Chrome", async () => {
+test("a browser tab says why it is empty when the browser is off or there is no browser engine", async () => {
   let status = { enabled: false, chrome: null };
   const { el, calls } = await open({ browser_status: () => status, browser_call: {} });
   await newBrowser(el);
@@ -4397,7 +4397,7 @@ test("a browser tab says why it is empty when the browser is off or there is no 
   status = { enabled: true, chrome: null };
   await closeBrowsers(el);
   await newBrowser(el);
-  assert.match(el("doc-body").render(), /No Chrome or Chromium/);
+  assert.match(el("doc-body").render(), /orochi-servo\) was not found/);
   await closeBrowsers(el);
 });
 
