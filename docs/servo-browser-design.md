@@ -97,8 +97,9 @@ answered.
   directory, a release without an engine not failing the run, a second run downloading
   nothing), and `package-servo.sh`'s archive installed by the real `orochi setup` from a
   local server. **Not done:** the `servo` release job has never run (its system packages are
-  Servo's documented ones and unchecked), so **no published release carries an engine yet**
-  and `orochi setup` finds none on the real URL; Windows has no engine; nothing is signed.
+  Servo's documented ones and unchecked), so **no release has been published at all** (this repository has none),
+  `orochi setup` finds nothing on the real URL, and a private repository would also refuse an
+  unauthenticated download; Windows has no engine; nothing is signed.
   Until a release carries one, `mise run servo` builds it from `browser-servo/` into
   `<data>/toolchain/servo/`.
 
