@@ -187,7 +187,7 @@ phone ask what changed since the last `seq` they drew.
   is told never to type a password, a code or a card number itself. A login lasts as long as
   the session, since an agent's engine has no profile. Chrome sessions answer both tools
   with that said; Chrome pages are still watched read-only.
-* **Still Chrome's, and so off by default:** `view_preview` (a folder served to a tab whose requests outside it are refused by Chrome's own interception; Servo has no such confinement built here yet — it has `load_web_resource` to build it on), `browser_upload`, the network log and several tabs. Each answers that `browser.engine` must be `chromium` (or `auto`) for it.
+* **Still Chrome's, and so off by default:** `view_preview` (a folder served to a tab whose requests outside it are refused by Chrome's own interception; **decided 2026-11-18 not to build it for Servo: a page is opened from a web server the person or an agent runs**, and the Preview button answers saying so), `browser_upload`, the network log and several tabs. Each answers that `browser.engine` must be `chromium` (or `auto`) for it.
 * **Sign-ins are shared and kept (2026-11-18, the user's request: "do not make me sign in
   every time").** Servo writes its cookie jar only when an engine exits, and two engines on
   one profile each write the whole of theirs: measured with the real engine, the one that
