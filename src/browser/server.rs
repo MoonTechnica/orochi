@@ -108,7 +108,7 @@ pub fn server_for(
     ))
 }
 
-fn load(data: &Path) -> Result<BrowserConfig> {
+pub(super) fn load(data: &Path) -> Result<BrowserConfig> {
     let text = std::fs::read_to_string(config_file(data))
         .context("the browser is not set up: no browser/config.json in the data directory")?;
     Ok(serde_json::from_str(&text)?)
@@ -219,28 +219,59 @@ async fn broker_main(data: &Path) -> Result<()> {
     };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let config = load(data)?;
-    let chrome = find_chrome(&config)?;
-    let profile = dir(data).join("profile");
-    std::fs::create_dir_all(&profile)?;
-    reap_stale_chrome(&profile);
-    let args: Vec<String> = [
-        "--headless=new",
-        "--remote-debugging-pipe",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-sync",
-        "--disable-background-networking",
-        "--window-size=1280,800",
-    ]
-    .map(String::from)
-    .into_iter()
-    .chain([
-        format!("--user-data-dir={}", profile.display()),
-        "about:blank".into(),
-    ])
-    .collect();
-    let log = std::fs::File::create(dir(data).join("chrome.log"))?;
-    let browser = broker::Browser::start(&chrome, &args, &config, log.into()).await?;
+    let engines = super::engine::Engines::new(&config, data);
+    // Chrome is the agents' browser and the person's when Servo is not: with Servo drawing
+    // the tab, a machine without Chrome still has a browser.
+    let browser = match find_chrome(&config) {
+        Ok(chrome) => {
+            let profile = dir(data).join("profile");
+            std::fs::create_dir_all(&profile)?;
+            reap_stale_chrome(&profile);
+            let args: Vec<String> = [
+                "--headless=new",
+                "--remote-debugging-pipe",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-sync",
+                "--disable-background-networking",
+                "--window-size=1280,800",
+            ]
+            .map(String::from)
+            .into_iter()
+            .chain([
+                format!("--user-data-dir={}", profile.display()),
+                "about:blank".into(),
+            ])
+            .collect();
+            let log = std::fs::File::create(dir(data).join("chrome.log"))?;
+            Some(broker::Browser::start(&chrome, &args, &config, log.into()).await?)
+        }
+        Err(error) if engines.available() => {
+            eprintln!("orochi: browser: no Chrome for the agents ({error:#}); Servo only");
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64)
+    };
+    let last = Arc::new(AtomicI64::new(now()));
+    let open = Arc::new(AtomicUsize::new(0));
+    let touched = last.clone();
+    let hub = Arc::new(super::hub::Hub::new(
+        browser,
+        engines,
+        &config,
+        data,
+        Arc::new(move || touched.store(now(), Ordering::SeqCst)),
+    ));
+    if config.remote.enabled
+        && let Err(error) = hub.start_remote().await
+    {
+        eprintln!("orochi: browser: the phone listener did not start: {error:#}");
+    }
     std::fs::write(dir(data).join("broker.pid"), std::process::id().to_string())?;
     let socket = socket_path(data);
     let _ = std::fs::remove_file(&socket);
@@ -250,13 +281,6 @@ async fn broker_main(data: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     }
-    let now = || {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64)
-    };
-    let last = Arc::new(AtomicI64::new(now()));
-    let open = Arc::new(AtomicUsize::new(0));
     let idle = config.idle_secs as i64;
     let mut tick = tokio::time::interval(Duration::from_secs(5));
     // Ending on a signal lets `Browser` drop, which is what stops Chrome with it.
@@ -266,15 +290,17 @@ async fn broker_main(data: &Path) -> Result<()> {
         tokio::select! {
             _ = terminate.recv() => {
                 let _ = std::fs::remove_file(&socket);
+                hub.shutdown().await;
                 return Ok(());
             }
             _ = hangup.recv() => {
                 let _ = std::fs::remove_file(&socket);
+                hub.shutdown().await;
                 return Ok(());
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                let (browser, last, open) = (browser.clone(), last.clone(), open.clone());
+                let (hub, last, open) = (hub.clone(), last.clone(), open.clone());
                 open.fetch_add(1, Ordering::SeqCst);
                 tokio::spawn(async move {
                     let (read, mut write) = stream.into_split();
@@ -283,10 +309,10 @@ async fn broker_main(data: &Path) -> Result<()> {
                         last.store(now(), Ordering::SeqCst);
                         let reply = match serde_json::from_str::<broker::Request>(&line) {
                             Ok(request) if request.tool == "__end" => {
-                                browser.forget(&request.scope).await;
+                                hub.forget(&request.scope).await;
                                 broker::text("bye")
                             }
-                            Ok(request) => browser.call(request).await,
+                            Ok(request) => hub.call(request).await,
                             Err(error) => json!({"content": [{"type": "text", "text": format!("not a request: {error}")}], "isError": true}),
                         };
                         let mut bytes = reply.to_string().into_bytes();
@@ -300,11 +326,12 @@ async fn broker_main(data: &Path) -> Result<()> {
                 });
             }
             _ = tick.tick() => {
-                if browser.is_closed() {
+                if hub.browser.as_ref().is_some_and(|b| b.is_closed()) {
                     bail!("the browser ended");
                 }
                 if open.load(Ordering::SeqCst) == 0 && now() - last.load(Ordering::SeqCst) > idle {
                     let _ = std::fs::remove_file(&socket);
+                    hub.shutdown().await;
                     return Ok(());
                 }
             }

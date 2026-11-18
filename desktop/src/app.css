@@ -1834,3 +1834,7 @@ table.data .n { color: var(--muted); text-align: right; cursor: default; }
 #settings-body .mobile-devices .device { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
 #settings-body .mobile-devices .device .name { flex: 1; }
 #settings-body .note.error { color: var(--danger); }
+/* Settings, Use from a phone */
+#settings-body .pair-url { display: block; margin: 8px 0 6px; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: var(--radius); word-break: break-all; user-select: all; }
+#settings-body .device .note { margin-bottom: 4px; }

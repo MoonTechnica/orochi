@@ -14,3 +14,4 @@ mobile/**/node_modules/
 /mobile/apps/app/android/
 /mobile/e2e/out/
 /mobile/e2e/screenshots/
+/browser-servo/target/

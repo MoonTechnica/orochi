@@ -373,6 +373,15 @@ allow = ["localhost", "127.0.0.1", "[::1]", "*.localhost"]   # where an agent ma
 deny = []             # always refused, whatever `allow` says
 # chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # default: a Chrome or Chromium found on this machine
 agent_evaluate = false  # true lets an agent run its own script in a page, which no host list then bounds
+engine = "auto"       # what draws the person's own tab (docs/servo-browser-design.md): "servo", "chromium", or "auto" (Servo where an orochi-servo is found, Chrome otherwise). Agents' tools always use Chrome. Servo is built by `mise run servo`; not yet run against the sites a person signs in to
+# servo = "/path/to/orochi-servo"   # default: <data>/toolchain/servo/current/orochi-servo, then beside this executable
+
+[browser.remote]        # the person's tabs on a paired phone's browser (docs/servo-browser-design.md §6); off, and not run against a real phone
+enabled = false
+bind = "127.0.0.1"    # loopback, or a Tailscale address (100.64.0.0/10); anything else needs insecure_lan = true, because the link is then not encrypted
+port = 0              # 0: a free one, remembered in <data>/browser/remote.json
+insecure_lan = false
+device_days = 30      # a paired phone unused this long is forgotten
 
 [memory]
 enabled = true        # default
@@ -648,7 +657,7 @@ src/router/         Task Profiler and task classification over ACP, candidate ge
 src/scheduler/      Execution, fallback, quota / circuit breaker
 src/process.rs      Agent supervisor processes, recording descendants, reclaiming after a forced kill
 src/mailbox.rs      Inter-process messages between agents (MCP server, retention-limited storage)
-src/browser.rs      A browser agents and the person share: host policy, config (`[browser]`); `browser/` holds the CDP pipe client, the broker with its tools and the person's-tab API, the loopback file server behind an HTML preview, and the unix broker process and MCP relay
+src/browser.rs      A browser agents and the person share: host policy, config (`[browser]`); `browser/` holds the CDP pipe client, the broker with its tools and the person's-tab API, the hub that sends each call to Chrome or Servo, the Servo engine-process client (`engine.rs`, against `browser-servo/`'s `orochi-servo`), the phone listener with its pairing and viewer page (`remote.rs`, `viewer.html`), the loopback file server behind an HTML preview, and the unix broker process and MCP relay
 src/media.rs        Pictures, sound and video a conversation produced (ACP image/audio blocks, `resource_link`, files a reply names, the mailbox's `share_file`): sniffed from bytes, kept by hash beside the activity store
 src/mcp.rs          The MCP servers a session is given: configured, named by the repository's own .mcp.json, and forwarded by an ACP client
 src/mcp/oauth.rs    Signing in to a remote MCP server on the agents' behalf (spec-order discovery, registration, PKCE, refresh; keychain or 0600 file)

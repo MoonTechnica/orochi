@@ -13,7 +13,13 @@ pub mod broker;
 #[cfg(unix)]
 pub mod cdp;
 #[cfg(unix)]
+pub mod engine;
+#[cfg(unix)]
+pub mod hub;
+#[cfg(unix)]
 pub mod preview;
+#[cfg(unix)]
+pub mod remote;
 #[cfg(unix)]
 mod server;
 #[cfg(unix)]

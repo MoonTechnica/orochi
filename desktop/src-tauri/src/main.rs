@@ -838,18 +838,105 @@ fn data_dir() -> anyhow::Result<std::path::PathBuf> {
     Ok(orochi::config::Paths::resolve(None, chosen)?.data)
 }
 
-/// Whether the browser is on and which Chrome it would use.
+/// Whether the browser is on and which Chrome and `orochi-servo` it would use. The window
+/// draws a tab when either exists: a machine with only Servo has a browser too.
 #[tauri::command]
 fn browser_status(open: State<'_, Open>) -> serde_json::Value {
-    let (config, _) = open.0.lock().unwrap().paths();
+    let (config, data) = open.0.lock().unwrap().paths();
     let config = orochi::config::Config::load(&config).unwrap_or_default();
     #[cfg(unix)]
-    let chrome = orochi::browser::find_chrome(&config.browser)
-        .ok()
-        .map(|p| p.display().to_string());
+    let (chrome, servo) = (
+        orochi::browser::find_chrome(&config.browser)
+            .ok()
+            .map(|p| p.display().to_string()),
+        orochi::browser::engine::find_servo(&config.browser, &data)
+            .map(|p| p.display().to_string()),
+    );
     #[cfg(not(unix))]
-    let chrome: Option<String> = None;
-    serde_json::json!({ "enabled": config.browser.enabled, "chrome": chrome })
+    let (chrome, servo): (Option<String>, Option<String>) = {
+        let _ = &data;
+        (None, None)
+    };
+    serde_json::json!({ "enabled": config.browser.enabled, "chrome": chrome, "servo": servo })
+}
+
+/// The connection to the broker for one key (a conversation, or the settings page's own),
+/// opened on first use after the browser has been registered with the current settings.
+#[cfg(unix)]
+fn broker_client(
+    open: &State<'_, Open>,
+    views: &State<'_, Views>,
+    key: &str,
+    refresh: bool,
+) -> Result<std::sync::Arc<Mutex<orochi::browser::Client>>, String> {
+    let (config_path, data) = open.0.lock().unwrap().paths();
+    // The broker reads its settings from a file `register` writes; the settings page changes
+    // them while the window runs, so it asks for the file to be brought up to date.
+    if refresh || !*views.ready.lock().unwrap() {
+        let config = orochi::config::Config::load(&config_path).map_err(fail)?;
+        if !config.browser.enabled {
+            return Err("the browser is off: set `enabled = true` under [browser]".into());
+        }
+        orochi::browser::register(&data, orochi(), &config.browser).map_err(fail)?;
+        *views.ready.lock().unwrap() = true;
+    }
+    let mut clients = views.clients.lock().unwrap();
+    if !clients.contains_key(key) {
+        let opened = orochi::browser::Client::open(&orochi(), &data).map_err(fail)?;
+        clients.insert(key.to_owned(), std::sync::Arc::new(Mutex::new(opened)));
+    }
+    Ok(clients[key].clone())
+}
+
+/// What the broker answered, as JSON, or its error text.
+#[cfg(unix)]
+fn broker_answer(reply: serde_json::Value) -> Result<serde_json::Value, String> {
+    let said = reply["content"][0]["text"].as_str().unwrap_or("");
+    if reply["isError"] == true {
+        return Err(said.to_owned());
+    }
+    serde_json::from_str(said).map_err(|e| e.to_string())
+}
+
+/// The broker's own administration (`remote_*`: the phone listener), which has no tab and no
+/// conversation. Anything but a `remote_` tool is refused here, so the window cannot be made
+/// to speak an agent's tools.
+#[tauri::command]
+async fn browser_admin(
+    open: State<'_, Open>,
+    views: State<'_, Views>,
+    tool: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    #[cfg(not(unix))]
+    {
+        let _ = (&open, &views, &tool, &args);
+        Err("the browser is not available on this platform yet".to_owned())
+    }
+    #[cfg(unix)]
+    {
+        if !tool.starts_with("remote_") {
+            return Err(format!("{tool} is not an administration call"));
+        }
+        const KEY: &str = "\u{0}admin";
+        let client = broker_client(&open, &views, KEY, true)?;
+        let request = orochi::browser::broker::Request {
+            scope: "admin".into(),
+            tool,
+            args,
+            read_only: false,
+            cwd: None,
+        };
+        let reply =
+            tauri::async_runtime::spawn_blocking(move || client.lock().unwrap().call(&request))
+                .await
+                .map_err(|e| e.to_string())?;
+        let reply = reply.map_err(|error| {
+            views.clients.lock().unwrap().remove(KEY);
+            fail(error)
+        })?;
+        broker_answer(reply)
+    }
 }
 
 /// One call of the person's browser tab (`view_*`): the answer is the broker's JSON.
@@ -869,23 +956,7 @@ async fn browser_call(
     }
     #[cfg(unix)]
     {
-        let (config_path, data) = open.0.lock().unwrap().paths();
-        if !*views.ready.lock().unwrap() {
-            let config = orochi::config::Config::load(&config_path).map_err(fail)?;
-            if !config.browser.enabled {
-                return Err("the browser is off: set `enabled = true` under [browser]".into());
-            }
-            orochi::browser::register(&data, orochi(), &config.browser).map_err(fail)?;
-            *views.ready.lock().unwrap() = true;
-        }
-        let client = {
-            let mut clients = views.clients.lock().unwrap();
-            if !clients.contains_key(&thread) {
-                let opened = orochi::browser::Client::open(&orochi(), &data).map_err(fail)?;
-                clients.insert(thread.clone(), std::sync::Arc::new(Mutex::new(opened)));
-            }
-            clients[&thread].clone()
-        };
+        let client = broker_client(&open, &views, &thread, false)?;
         // A preview serves a file of this conversation's folder, and only that: the folder is
         // the window's to say, never the page's.
         if tool == "view_preview" {
@@ -913,11 +984,7 @@ async fn browser_call(
             views.clients.lock().unwrap().remove(&thread);
             fail(error)
         })?;
-        let said = reply["content"][0]["text"].as_str().unwrap_or("");
-        if reply["isError"] == true {
-            return Err(said.to_owned());
-        }
-        serde_json::from_str(said).map_err(|e| e.to_string())
+        broker_answer(reply)
     }
 }
 
@@ -1089,7 +1156,8 @@ fn main() {
             remote_pair,
             remote_set_name,
             remote_devices,
-            remote_revoke
+            remote_revoke,
+            browser_admin
         ])
         .build(tauri::generate_context!())
         .expect("orochi desktop failed to start")
