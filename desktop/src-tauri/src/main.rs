@@ -3,12 +3,12 @@
 //! is one call into `view`, which is where the app's behavior lives and where it is tested.
 use orochi::activity::{ProjectRow, Thread};
 use orochi_desktop::view::{AgentRow, Client, Folder, Prompt, Remembered, RouteStats, Said};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 
 /// The one connection this window reads through. `Client` is not `Sync` (a SQLite connection
 /// is not), so the window holds it behind a mutex and never across an await.
-struct Open(Mutex<Client>);
+struct Open(Arc<Mutex<Client>>);
 
 /// The shells in the window's terminal tabs.
 struct Shells(orochi_desktop::term::Terminals);
@@ -775,6 +775,60 @@ fn live_tasks(open: State<'_, Open>) -> Result<Vec<orochi::activity::LiveTask>, 
     open.0.lock().unwrap().live_tasks().map_err(fail)
 }
 
+// Settings → Mobile (`docs/mobile-remote-design.md`). These are the window's own commands: the
+// phone's `/rpc` whitelist does not include any of them.
+
+#[tauri::command]
+fn remote_status(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+) -> orochi_desktop::remote::Status {
+    remote.status()
+}
+
+#[tauri::command]
+async fn remote_enable(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+) -> Result<orochi_desktop::remote::Status, String> {
+    remote.enable().await.map_err(fail)
+}
+
+#[tauri::command]
+async fn remote_disable(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+) -> Result<orochi_desktop::remote::Status, String> {
+    remote.disable().await.map_err(fail)
+}
+
+#[tauri::command]
+fn remote_pair(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+) -> Result<orochi_desktop::remote::Pairing, String> {
+    remote.pair().map_err(fail)
+}
+
+#[tauri::command]
+fn remote_set_name(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+    name: String,
+) -> Result<orochi_desktop::remote::Status, String> {
+    remote.set_name(&name).map_err(fail)
+}
+
+#[tauri::command]
+fn remote_devices(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+) -> Vec<orochi_desktop::remote::DeviceView> {
+    remote.devices()
+}
+
+#[tauri::command]
+fn remote_revoke(
+    remote: State<'_, orochi_desktop::remote::Remote>,
+    id: String,
+) -> Result<bool, String> {
+    remote.revoke(&id).map_err(fail)
+}
+
 /// Where the core keeps its data, by the same rule the CLI uses, so the window and the
 /// terminal are looking at one store.
 fn data_dir() -> anyhow::Result<std::path::PathBuf> {
@@ -928,8 +982,17 @@ fn main() {
                 .unwrap_or_default()
         })
         .setup(|app| {
-            let client = Client::open(&data_dir()?)?;
-            app.manage(Open(Mutex::new(client)));
+            let data = data_dir()?;
+            let client = Arc::new(Mutex::new(Client::open(&data)?));
+            app.manage(Open(client.clone()));
+            app.manage(orochi_desktop::remote::Remote::new(&data, client, orochi()));
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                handle
+                    .state::<orochi_desktop::remote::Remote>()
+                    .resume()
+                    .await;
+            });
             app.manage(Shells(orochi_desktop::term::Terminals::default()));
             app.manage(Views::default());
             Ok(())
@@ -1019,7 +1082,14 @@ fn main() {
             term_resize,
             term_close,
             browser_status,
-            browser_call
+            browser_call,
+            remote_status,
+            remote_enable,
+            remote_disable,
+            remote_pair,
+            remote_set_name,
+            remote_devices,
+            remote_revoke
         ])
         .build(tauri::generate_context!())
         .expect("orochi desktop failed to start")

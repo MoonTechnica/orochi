@@ -41,7 +41,7 @@ pub fn serve(data: &Path, request: &str, range: Option<&str>) -> Reply {
     let Some(kind) = orochi::media::sniff(&head[..read]) else {
         return plain(404, "not found");
     };
-    let mut headers = vec![
+    let headers = vec![
         ("Content-Type", kind.mime.to_string()),
         ("Accept-Ranges", "bytes".into()),
         ("X-Content-Type-Options", "nosniff".into()),
@@ -56,6 +56,17 @@ pub fn serve(data: &Path, request: &str, range: Option<&str>) -> Reply {
             "private, max-age=31536000, immutable".into(),
         ),
     ];
+    ranged(file, length, headers, range)
+}
+
+/// Answers from an open file whole or by `Range`, adding `Content-Range`/`Content-Length` to
+/// the headers given. Shared by every route that serves a file's bytes.
+pub fn ranged(
+    mut file: std::fs::File,
+    length: u64,
+    mut headers: Vec<(&'static str, String)>,
+    range: Option<&str>,
+) -> Reply {
     let (start, end, status) = match range.and_then(|r| byte_range(r, length)) {
         Some((start, end)) => (start, end, 206),
         None if range.is_some() => {
@@ -88,6 +99,10 @@ pub fn serve(data: &Path, request: &str, range: Option<&str>) -> Reply {
         headers,
         body,
     }
+}
+
+pub fn plain_reply(status: u16, text: &str) -> Reply {
+    plain(status, text)
 }
 
 /// `bytes=START-END`, `bytes=START-` or `bytes=-SUFFIX` for a file of `length`, as inclusive

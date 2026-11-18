@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.96"
 description = "A window onto the conversations Orochi records"
 license = "MIT"
+default-run = "orochi-desktop"
 
 [lib]
 name = "orochi_desktop"
@@ -16,6 +17,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "orochi-desktop"
 path = "src/main.rs"
+
+# The phone's door without a window: no webview, only the remote and view modules.
+[[bin]]
+name = "orochi-remote"
+path = "src/bin/orochi-remote.rs"
 
 [dependencies]
 anyhow = "1"
@@ -30,10 +36,16 @@ libc = "0.2"
 portable-pty = "0.9"
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+getrandom = "0.3"
+sha2 = "0.10"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
-sha2 = "0.10"
+tokio-tungstenite = "0.29"
+futures-util = { version = "0.3", features = ["sink"] }
 tempfile = "3"
