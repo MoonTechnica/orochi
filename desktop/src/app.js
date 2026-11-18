@@ -532,7 +532,7 @@ const WORDS = {
     "last used": "最終使用",
     "Revoke": "取り消す",
     "Paired phones": "ペアリング済みのスマホ",
-    "The browser engine (orochi-servo) was not found. Build it with `mise run servo`, or use an app built with `mise run desktop:app`.": "ブラウザエンジン（orochi-servo）が見つかりません。`mise run servo` で作るか、`mise run desktop:app` で作ったアプリを使ってください。",
+    "The browser engine (orochi-servo) is not installed. Run setup (`orochi setup`) to download it, or build it with `mise run servo`.": "ブラウザエンジン（orochi-servo）が入っていません。`orochi setup` で入れるか、`mise run servo` で作ってください。",
     Forward: "進む",
     Reload: "再読み込み",
     "Type a web address": "ウェブのアドレスを入力",
@@ -7127,7 +7127,7 @@ async function startBrowser(id, panel) {
     return;
   }
   if (!status.chrome && !status.servo) {
-    panel.append(text("p", "empty", t("The browser engine (orochi-servo) was not found. Build it with `mise run servo`, or use an app built with `mise run desktop:app`.")));
+    panel.append(text("p", "empty", t("The browser engine (orochi-servo) is not installed. Run setup (`orochi setup`) to download it, or build it with `mise run servo`.")));
     return;
   }
   const bar = text("div", "browser-bar");
@@ -7325,7 +7325,7 @@ async function startWatch(id, panel) {
   if (!tabs.panels.has(id) || tabs.panels.get(id) !== panel) return;
   if (!status?.enabled || (!status.chrome && !status.servo)) {
     panel.append(text("p", "empty", t(status?.enabled
-      ? "The browser engine (orochi-servo) was not found. Build it with `mise run servo`, or use an app built with `mise run desktop:app`."
+      ? "The browser engine (orochi-servo) is not installed. Run setup (`orochi setup`) to download it, or build it with `mise run servo`."
       : "The browser is off. Set `enabled = true` under [browser] in the configuration.")));
     return;
   }

@@ -4397,7 +4397,7 @@ test("a browser tab says why it is empty when the browser is off or there is no 
   status = { enabled: true, chrome: null };
   await closeBrowsers(el);
   await newBrowser(el);
-  assert.match(el("doc-body").render(), /orochi-servo\) was not found/);
+  assert.match(el("doc-body").render(), /orochi-servo\) is not installed/);
   await closeBrowsers(el);
 });
 

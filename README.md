@@ -103,7 +103,7 @@ Claude/Codex are detected even when only the CLI itself is installed. If the ada
 
 ```sh
 orochi setup --check          # what this machine has: Node.js, each CLI, whether it is signed in
-orochi setup                  # the config file, Node.js and the GitHub CLI if there are none, and the adapters
+orochi setup                  # the config file, Node.js and the GitHub CLI if there are none, the adapters, and the browser engine (large, so it is put in here and not in the app)
 orochi setup --install claude # also a CLI itself (claude, codex or antigravity)
 orochi setup --sandbox        # also the sandbox host: Lima if missing, then the VM, Incus and the image
 orochi agents --discover
@@ -373,7 +373,7 @@ allow = ["localhost", "127.0.0.1", "[::1]", "*.localhost"]   # where an agent ma
 deny = []             # always refused, whatever `allow` says
 # chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # default: a Chrome or Chromium found on this machine
 agent_evaluate = false  # true lets an agent run its own script in a page, which no host list then bounds
-engine = "servo"      # default (2026-11-18): Servo draws the person's tab and runs the agents' tools, and Orochi starts no Chrome (build orochi-servo with `mise run servo`). "chromium": Chrome for everything (several tabs, file uploads, the network log, folder previews); "auto": Servo where an orochi-servo is found and Chrome otherwise, which starts a Chrome. Each agent session has an engine of its own; its sign-ins are shared (`share_logins`)
+engine = "servo"      # default (2026-11-18): Servo draws the person's tab and runs the agents' tools, and Orochi starts no Chrome (`orochi setup` downloads orochi-servo from the release of the running version, once a release carries one; until then build it with `mise run servo`). "chromium": Chrome for everything (several tabs, file uploads, the network log, folder previews); "auto": Servo where an orochi-servo is found and Chrome otherwise, which starts a Chrome. Each agent session has an engine of its own; its sign-ins are shared (`share_logins`)
 share_logins = true   # default: Servo's tabs and agents' sessions keep and share their sign-ins (cookies) in <data>/browser/servo/logins.json (0600), so a login made once is not asked for again; false: an agent's session starts signed out. An agent can still reach only the hosts in `allow`
 # servo = "/path/to/orochi-servo"   # default: <data>/toolchain/servo/current/orochi-servo, then beside this executable
 

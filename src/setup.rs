@@ -41,6 +41,9 @@ pub const LIMA_RELEASES: &str = "https://github.com/lima-vm/lima/releases/downlo
 /// (`workspaces.rs`), and a machine without it would have a worktree with nowhere to go.
 pub const GH_VERSION: &str = "2.102.0";
 pub const GH_RELEASES: &str = "https://github.com/cli/cli/releases/download";
+/// Where the browser engine is published: this repository's own release of the version that is
+/// running, so the engine and the CLI that speaks to it are always the same build.
+pub const SERVO_RELEASES: &str = "https://github.com/MoonTechnica/orochi/releases/download";
 
 /// The data directory this process works in, so a lookup that is given none (`locate`) still
 /// finds the toolchain under it. Set once, by whoever resolved the paths.
@@ -673,6 +676,7 @@ pub async fn run(
     node_dist: &str,
     lima_releases: &str,
     gh_releases: &str,
+    servo_releases: &str,
     antigravity: &AntigravitySource,
 ) -> Result<Status> {
     std::fs::create_dir_all(toolchain(data))?;
@@ -686,6 +690,7 @@ pub async fn run(
         Lima,
         Host,
         Image,
+        Servo,
     }
     let mut todo = vec![Todo::Config, Todo::Node, Todo::Gh];
     for id in &plan.install {
@@ -726,6 +731,11 @@ pub async fn run(
         todo.push(Todo::Host);
         todo.push(Todo::Image);
     }
+    // Last, and never fatal: the engine is large, a release may not carry one for this
+    // machine, and Orochi runs without a browser.
+    if servo_wanted(config) {
+        todo.push(Todo::Servo);
+    }
     let names = todo
         .iter()
         .map(|step| match step {
@@ -737,6 +747,7 @@ pub async fn run(
             Todo::Lima => "Installing Lima".to_owned(),
             Todo::Host => "Preparing the sandbox VM and Incus".to_owned(),
             Todo::Image => "Building the container image".to_owned(),
+            Todo::Servo => "Installing the browser engine".to_owned(),
         })
         .collect();
     let mut progress = Progress::new(data, names)?;
@@ -839,6 +850,7 @@ pub async fn run(
                     toolchain(data).join("lima").display()
                 ))
             }),
+            Todo::Servo => install_servo_step(config, data, servo_releases).await,
             Todo::Host | Todo::Image => {
                 let host_only = matches!(step, Todo::Host);
                 let (sandbox, data) = (config.sandbox.clone(), data.to_path_buf());
@@ -852,6 +864,10 @@ pub async fn run(
             }
         };
         match result {
+            Err(error) if matches!(step, Todo::Servo) => {
+                progress.end(index, "failed", Some(format!("{error:#}")));
+                eprintln!("orochi: the browser engine was not installed: {error:#}");
+            }
             Ok(Outcome::Done(detail)) => {
                 progress.end(index, "done", (!detail.is_empty()).then_some(detail))
             }
@@ -1134,6 +1150,133 @@ pub async fn install_gh(data: &Path, releases: &str) -> Result<()> {
     point(&gh.join("current"), Path::new(GH_VERSION))?;
     std::fs::create_dir_all(bin(data))?;
     point(&bin(data).join("gh"), &gh.join("current/bin/gh"))?;
+    Ok(())
+}
+
+/// The browser engine is wanted where the browser is on, the settings do not ask for Chrome
+/// instead, and a build is published for this machine.
+fn servo_wanted(config: &Config) -> bool {
+    cfg!(unix)
+        && config.browser.enabled
+        && config.browser.engine != crate::config::BrowserEngine::Chromium
+        && servo_target().is_some()
+}
+
+/// The target a release names the engine's build for this machine by.
+pub fn servo_target() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
+}
+
+async fn install_servo_step(config: &Config, data: &Path, releases: &str) -> Result<Outcome> {
+    #[cfg(unix)]
+    if let Some(found) = crate::browser::engine::find_servo(&config.browser, data) {
+        return Ok(Outcome::Skipped(format!(
+            "orochi-servo at {}",
+            found.display()
+        )));
+    }
+    let _ = config;
+    install_servo(data, releases).await?;
+    Ok(Outcome::Done(format!(
+        "orochi-servo {} under {}",
+        env!("CARGO_PKG_VERSION"),
+        toolchain(data).join("servo").display()
+    )))
+}
+
+/// The browser engine into `<data>/toolchain/servo/<version>/orochi-servo`, `current` pointing
+/// at it, from this repository's release of the version that is running. The archive is
+/// checked against the `.sha256` published beside it before anything is unpacked, as the CLI's
+/// own `install.sh` checks its download. The engine is large (125 MB on macOS arm64), which
+/// is why it is put in here, once, and is not carried in an app bundle.
+pub async fn install_servo(data: &Path, releases: &str) -> Result<()> {
+    let target = servo_target().context("no browser engine is published for this machine")?;
+    let version = env!("CARGO_PKG_VERSION");
+    let name = format!("orochi-servo-{version}-{target}");
+    let base = format!("{releases}/v{version}");
+    let client = reqwest::Client::builder()
+        .user_agent(format!("orochi/{version}"))
+        .build()?;
+    println!("  downloading the browser engine {version} for {target}");
+    let published = client
+        .get(format!("{base}/{name}.tar.gz.sha256"))
+        .send()
+        .await?
+        .error_for_status()
+        .with_context(|| format!("release v{version} has no browser engine for {target}"))?
+        .text()
+        .await?;
+    let expected = published
+        .split_whitespace()
+        .next()
+        .context("the published checksum is empty; refusing to install the engine")?
+        .to_owned();
+    let bytes = client
+        .get(format!("{base}/{name}.tar.gz"))
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    {
+        use sha2::Digest;
+        let actual = format!("{:x}", sha2::Sha256::digest(&bytes));
+        ensure!(
+            actual == expected,
+            "the browser engine download does not match its published checksum"
+        );
+    }
+    let servo = toolchain(data).join("servo");
+    std::fs::create_dir_all(&servo)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".servo-")
+        .tempdir_in(&servo)?;
+    let file = stage.path().join(format!("{name}.tar.gz"));
+    std::fs::write(&file, &bytes)?;
+    let output = tokio::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(&file)
+        .arg("-C")
+        .arg(stage.path())
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .context("unpacking needs `tar`")?;
+    ensure!(
+        output.status.success(),
+        "unpacking the browser engine failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let unpacked = stage.path().join(&name).join("orochi-servo");
+    ensure!(
+        unpacked.is_file(),
+        "the browser engine archive did not contain orochi-servo"
+    );
+    let destination = servo.join(version);
+    std::fs::create_dir_all(&destination)?;
+    let installed = destination.join("orochi-servo");
+    std::fs::copy(&unpacked, destination.join("orochi-servo.new"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            destination.join("orochi-servo.new"),
+            std::fs::Permissions::from_mode(0o755),
+        )?;
+    }
+    std::fs::rename(destination.join("orochi-servo.new"), &installed)?;
+    // `mise run servo` makes `current` a directory of its own; this makes it a link.
+    let current = servo.join("current");
+    if current.is_dir() && !current.is_symlink() {
+        std::fs::remove_dir_all(&current)?;
+    }
+    point(&current, Path::new(version))?;
     Ok(())
 }
 

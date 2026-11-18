@@ -82,21 +82,25 @@ answered.
   data directory without Servo having to partition one.
 * **Launched through `orochi --internal-supervise`**, like every agent and Chrome, so it dies
   with the broker (`process.rs`).
-* **Distribution.** A Servo build is hundreds of MiB unpacked (the release engine is 125 MB on
-  macOS arm64, measured 2026-11-18). **In the app bundle (2026-11-18, the user: Servo should
-  be usable the moment the desktop app starts):** `mise run desktop:app` builds the engine
-  (`scripts/servo-sidecar.sh`), puts it beside the CLI sidecar and bundles both
-  (`desktop/src-tauri/tauri.servo.conf.json` adds `binaries/orochi-servo` to `externalBin`),
-  so `orochi-servo` sits next to the app's own executables and `find_servo` finds it there.
-  It is a separate config on purpose: the desktop crate's checks and the ordinary release
-  workflow do not build Servo (minutes of SpiderMonkey), and a bundle built the ordinary way
-  has none. **Verified:** a macOS arm64 `Orochi.app` built this way holds `orochi-servo`
-  beside `orochi`, and that bundled `orochi`, given an empty data directory, opened a local
-  page and took a snapshot with no `mise run servo`. **Not done:** the release workflow does
-  not build it (a hand-run workflow, and the build is slow), Linux and the universal macOS
-  build are written but not run, nothing is signed or notarized, and a hosted download put
-  in by `setup` (SHA-256 pinned, as `ANTIGRAVITY_BUILDS` does) does not exist. Without a
-  bundle, `mise run servo` builds it from `browser-servo/` into `<data>/toolchain/servo/`.
+* **Distribution (2026-11-18, the user: the heavy things are put in when Orochi is first set
+  up, not carried in the app).** The engine is large (125 MB on macOS arm64, measured), so it
+  is in no app bundle. A release carries it as `orochi-servo-<version>-<target>.tar.gz` and
+  its `.sha256` (`scripts/package-servo.sh`; the `servo` job of `release.yml`), and **`orochi
+  setup`** — which the window's first-launch dialog runs as its Prepare job — downloads the one
+  for the running version, checks it against the published SHA-256 before unpacking, and puts
+  it in `<data>/toolchain/servo/<version>/`, `current` pointing at it (`setup::install_servo`).
+  The step is the last of a run, is skipped where an engine is already found, and **never
+  fails the run**: a release without an engine for this machine leaves the browser tab saying
+  the engine is not installed. `OROCHI_SERVO_RELEASES` points a test at a local server.
+  **Verified:** the install path against a local server in `tests/setup.rs` (checksum
+  checked and a tampered one refused, `current` replaced where `mise run servo` had made it a
+  directory, a release without an engine not failing the run, a second run downloading
+  nothing), and `package-servo.sh`'s archive installed by the real `orochi setup` from a
+  local server. **Not done:** the `servo` release job has never run (its system packages are
+  Servo's documented ones and unchecked), so **no published release carries an engine yet**
+  and `orochi setup` finds none on the real URL; Windows has no engine; nothing is signed.
+  Until a release carries one, `mise run servo` builds it from `browser-servo/` into
+  `<data>/toolchain/servo/`.
 
 ### 3.2 The engine protocol
 

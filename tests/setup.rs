@@ -149,6 +149,53 @@ fn gh_release(releases: &Path, tamper: bool) -> PathBuf {
     releases.to_path_buf()
 }
 
+/// A stand-in for this repository's release of the running version: the engine's archive for
+/// this machine, which unpacks as one directory named after itself holding `orochi-servo`, and
+/// the `.sha256` beside it.
+fn servo_release(releases: &Path, tamper: bool) -> PathBuf {
+    let target = setup::servo_target().expect("a target the engine is published for");
+    let version = env!("CARGO_PKG_VERSION");
+    let name = format!("orochi-servo-{version}-{target}");
+    let build = releases.join("build").join(&name);
+    std::fs::create_dir_all(&build).unwrap();
+    executable(
+        &build.join("orochi-servo"),
+        "#!/bin/sh\necho engine fixture\n",
+    );
+    let release = releases.join(format!("v{version}"));
+    std::fs::create_dir_all(&release).unwrap();
+    let archive = release.join(format!("{name}.tar.gz"));
+    assert!(
+        Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(releases.join("build"))
+            .arg(&name)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let sum = {
+        use sha2::Digest;
+        format!(
+            "{:x}",
+            sha2::Sha256::digest(std::fs::read(&archive).unwrap())
+        )
+    };
+    let sum = if tamper {
+        sum.replace(|c: char| c.is_ascii_hexdigit(), "0")
+    } else {
+        sum
+    };
+    std::fs::write(
+        release.join(format!("{name}.tar.gz.sha256")),
+        format!("{sum}  {name}.tar.gz\n"),
+    )
+    .unwrap();
+    releases.to_path_buf()
+}
+
 /// `python3 -m http.server` on a loopback port of the system's choosing, stopped when dropped.
 struct Served {
     child: Child,
@@ -235,6 +282,8 @@ impl Machine {
             .env("OROCHI_SEARCH_DIRS", "")
             .env("OROCHI_NODE_DIST", dist)
             .env("OROCHI_GH_RELEASES", format!("{dist}/gh"))
+            // Never this repository's real releases: a test reaches nothing outside the machine.
+            .env("OROCHI_SERVO_RELEASES", format!("{dist}/servo"))
             .args(["--config", self.config().to_str().unwrap()])
             .args(["--data-dir", self.data().to_str().unwrap()]);
         cmd
@@ -258,6 +307,7 @@ impl Machine {
 fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and_nothing_else() {
     let fixture = tempfile::tempdir().unwrap();
     let (dist, log) = node_dist(fixture.path(), false);
+    servo_release(&dist.join("servo"), false);
     let served = Served::new(&dist);
     let machine = Machine::new();
 
@@ -370,6 +420,7 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
             (gh_step.as_str(), progress.steps[2].state.as_str()),
             ("Installing claude", "done"),
             ("Preparing the ACP adapter for claude", "done"),
+            ("Installing the browser engine", "done"),
         ]
     );
     for step in &progress.steps {
@@ -419,7 +470,7 @@ fn setup_puts_node_and_a_cli_under_the_data_directory_from_checked_downloads_and
     assert!(stdout.contains("Node.js v24.0.0 at"), "{stdout}");
     assert!(!stdout.contains("downloading"), "{stdout}");
     let again = setup::Progress::read(&machine.data()).unwrap();
-    assert_eq!(again.steps.len(), 3);
+    assert_eq!(again.steps.len(), 4);
     assert!(
         again.steps.iter().all(|s| s.state == "skipped"),
         "{again:?}"
@@ -959,4 +1010,105 @@ fn opencode_with_a_local_provider_configured_counts_as_signed_in() {
     assert!(setup::opencode_has_provider(home.path()));
     std::fs::write(&config, "not json").unwrap();
     assert!(!setup::opencode_has_provider(home.path()));
+}
+
+#[tokio::test]
+async fn the_browser_engine_is_put_under_the_toolchain_from_a_checked_release_and_found_from_there()
+{
+    let fixture = tempfile::tempdir().unwrap();
+    let releases = servo_release(&fixture.path().join("servo"), false);
+    let served = Served::new(&releases);
+    let data = tempfile::tempdir().unwrap();
+    // `mise run servo` leaves `current` a directory; the install makes it a link.
+    std::fs::create_dir_all(data.path().join("toolchain/servo/current")).unwrap();
+    setup::install_servo(data.path(), &served.url)
+        .await
+        .unwrap();
+    let engine = data.path().join("toolchain/servo/current/orochi-servo");
+    let out = Command::new(&engine).output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "engine fixture"
+    );
+    assert!(
+        data.path()
+            .join("toolchain/servo/current")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    // The place the broker looks is this one.
+    let config = orochi::config::BrowserConfig::default();
+    assert_eq!(
+        orochi::browser::engine::find_servo(&config, data.path()),
+        Some(engine)
+    );
+
+    let tampered = tempfile::tempdir().unwrap();
+    let releases = servo_release(&tampered.path().join("servo"), true);
+    let served = Served::new(&releases);
+    let fresh = tempfile::tempdir().unwrap();
+    let error = setup::install_servo(fresh.path(), &served.url)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match"), "{error}");
+    assert!(!fresh.path().join("toolchain/servo/current").exists());
+}
+
+#[test]
+fn setup_installs_the_browser_engine_last_and_a_release_without_one_does_not_fail_it() {
+    let fixture = tempfile::tempdir().unwrap();
+    let (dist, _log) = node_dist(fixture.path(), false);
+    let machine = Machine::new();
+
+    // A release that carries no engine: the step fails, and setup goes on.
+    let served = Served::new(&dist);
+    let out = machine
+        .orochi(&served.url)
+        .args(["setup"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let progress = setup::Progress::read(&machine.data()).unwrap();
+    let last = progress.steps.last().unwrap();
+    assert_eq!(last.name, "Installing the browser engine");
+    assert_eq!(last.state, "failed", "{last:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("the browser engine was not installed"));
+
+    // And one that carries it puts it in.
+    let releases = servo_release(&dist.join("servo"), false);
+    assert!(releases.is_dir());
+    let again = machine
+        .orochi(&served.url)
+        .args(["setup"])
+        .output()
+        .unwrap();
+    assert!(
+        again.status.success(),
+        "{}",
+        String::from_utf8_lossy(&again.stderr)
+    );
+    let progress = setup::Progress::read(&machine.data()).unwrap();
+    assert_eq!(progress.steps.last().unwrap().state, "done");
+    assert!(
+        machine
+            .data()
+            .join("toolchain/servo/current/orochi-servo")
+            .is_file()
+    );
+
+    // Present already: nothing is downloaded again.
+    let third = machine
+        .orochi(&served.url)
+        .args(["setup"])
+        .output()
+        .unwrap();
+    assert!(third.status.success());
+    let progress = setup::Progress::read(&machine.data()).unwrap();
+    assert_eq!(progress.steps.last().unwrap().state, "skipped");
 }
