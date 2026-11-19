@@ -14,6 +14,7 @@ export * from './home';
 export * from './office';
 export * from './zoom';
 export * from './avatar';
+export * from './brand';
 export * from './people';
 export * from './officeScale';
 export * from './threads';

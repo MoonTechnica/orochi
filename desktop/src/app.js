@@ -801,9 +801,15 @@ const STATES = {
 /// Who is working, drawn as the agent it is: Orochi runs several, and which one took a
 /// conversation is the first thing to tell apart. A letter on the provider's colour rather than
 /// a vendor's logo, which is theirs to draw.
-const BRANDS = new Set(["anthropic", "openai", "google"]);
+const BRANDS = new Set(["anthropic", "openai", "google", "qwen", "deepseek", "meta", "mistral", "xai", "nvidia"]);
+// opencode and its kind are one agent in front of many makers: the mark follows the model.
+const MODEL_BRANDS = [[/qwen|qwq/i, "qwen"], [/claude/i, "anthropic"], [/gpt|\bo[134]\b/i, "openai"], [/gemini|gemma/i, "google"], [/deepseek/i, "deepseek"], [/llama/i, "meta"], [/mistral|mixtral|codestral|devstral|magistral/i, "mistral"], [/grok/i, "xai"], [/nemotron/i, "nvidia"]];
+function brandOf(provider, model) {
+  if (BRANDS.has(provider)) return provider;
+  return MODEL_BRANDS.find(([pattern]) => pattern.test(model || ""))?.[1] || "";
+}
 const FACES = { anthropic: "C", openai: "O", google: "G" };
-function face(agent, provider) {
+function face(agent, provider, model) {
   const node = text("span", "face", "");
   if (!agent) {
     node.dataset.provider = "none";
@@ -812,7 +818,9 @@ function face(agent, provider) {
   node.dataset.provider = provider || "other";
   node.setAttribute("title", agent);
   // The vendor's own icon where its app is installed here; a letter on its colour otherwise.
-  const icon = BRANDS.has(provider) ? `vendor/brands/${provider}.svg` : state.icons?.[provider];
+  const brand = brandOf(provider, model);
+  const icon = brand ? `vendor/brands/${brand}.svg` : state.icons?.[provider];
+  if (brand) node.dataset.provider = brand;
   if (icon) {
     const image = document.createElement("img");
     image.setAttribute("src", icon);
@@ -847,7 +855,7 @@ function member(thread, used) {
   const row = text("div", "member");
   row.dataset.live = String(used.live > 0);
   row.append(drawn(used.live > 0 ? "loader" : "dot", "state"));
-  row.append(face(used.agent, used.provider));
+  row.append(face(used.agent, used.provider, used.model));
   row.append(text("span", "role", used.role || used.agent));
   row.append(text("span", "model", [used.agent, used.model].filter(Boolean).join(" · ")));
   const seat = state.live.find((s) => s.thread_id === thread.id && s.role === used.role);
@@ -934,7 +942,7 @@ function place(project, cwd, threads) {
       for (const used of members(thread)) seen.set(`${used.agent}/${used.provider}`, used);
     }
     const agents = text("span", "faces");
-    for (const used of [...seen.values()].slice(0, 3)) agents.append(face(used.agent, used.provider));
+    for (const used of [...seen.values()].slice(0, 3)) agents.append(face(used.agent, used.provider, used.model));
     marks.append(agents);
     marks.append(text("span", "more", `${threads.length} ${t("conversations")}`));
     const count = (status) => threads.filter((th) => th.status === status).length;
@@ -977,7 +985,7 @@ function place(project, cwd, threads) {
     const team = members(thread);
     // One agent is the conversation's own mark; several are listed under it instead, and the
     // row keeps its width for the title.
-    if (team.length <= 1) row.append(face(team[0]?.agent, team[0]?.provider));
+    if (team.length <= 1) row.append(face(team[0]?.agent, team[0]?.provider, team[0]?.model));
     const line = text("span", "line");
     line.append(text("span", "name", thread.title || t("New conversation")));
     // What the lead is doing right now, while it is doing it: `title - Bash: curl …`.
@@ -1790,7 +1798,7 @@ function post(voice, run) {
   } else {
     const who = text("div", "who");
     // An agent is drawn as the agent it is, as in the list; a person keeps their own mark.
-    who.append(voice.agent ? face(voice.agent, voice.provider) : mark(voice.who));
+    who.append(voice.agent ? face(voice.agent, voice.provider, voice.model) : mark(voice.who));
     who.append(text("span", "name", voice.who));
     if (voice.to) who.append(text("span", "to", voice.to));
     if (voice.model) who.append(text("span", "model", voice.model));
@@ -4084,13 +4092,13 @@ function threadBar(thread, name, said = state.said || []) {
   node.dataset.member = name;
   if (m?.needs) node.dataset.needs = m.needs;
   const faces = text("span", "stack");
-  faces.append(face(m?.agent, m?.provider));
+  faces.append(face(m?.agent, m?.provider, m?.model));
   const seen = new Set([`${m?.agent}/${m?.provider}`]);
   for (const row of rows) {
     const id = `${row.agent}/${row.provider}`;
     if (!row.agent || seen.has(id)) continue;
     seen.add(id);
-    faces.append(face(row.agent, row.provider));
+    faces.append(face(row.agent, row.provider, row.model));
   }
   node.append(faces);
   node.append(text("span", "name", name));
@@ -4154,7 +4162,7 @@ async function drawMember(thread) {
   const m = memberOf(name);
   const head = el("member-title");
   head.replaceChildren();
-  head.append(face(m?.agent, m?.provider));
+  head.append(face(m?.agent, m?.provider, m?.model));
   head.append(text("span", "name", name));
   const route = [m?.agent, m?.model].filter(Boolean).join(" · ");
   if (route) head.append(text("span", "route-name", route));
@@ -4318,7 +4326,7 @@ function drawThreadsControl() {
     row.type = "button";
     row.dataset.member = m.name;
     if (m.needs) row.dataset.needs = m.needs;
-    row.append(face(m.agent, m.provider));
+    row.append(face(m.agent, m.provider, m.model));
     row.append(text("span", "name", m.name));
     row.append(text("span", "state", memberState(m).label));
     if (m.needs) row.append(text("span", "needs", t(NEEDS[m.needs] || m.needs)));
@@ -4388,7 +4396,7 @@ function drawMentions() {
     row.setAttribute("aria-selected", String(index === picker.index));
     row.dataset.name = c.name;
     if (c.channel) row.append(text("span", "face channel", "#"));
-    else row.append(face(c.agent, c.provider));
+    else row.append(face(c.agent, c.provider, c.model));
     row.append(text("span", "name", `@${c.name}`));
     const route = [c.agent, c.model].filter(Boolean).join(" · ");
     if (route) row.append(text("span", "route-name", route));
@@ -6862,9 +6870,9 @@ function termTheme() {
   const style = window.getComputedStyle?.(document.documentElement);
   const read = (name, fallback) => style?.getPropertyValue?.(name)?.trim() || fallback;
   return {
-    background: read("--bg", "#111216"),
-    foreground: read("--text", "#e6e8ee"),
-    cursor: read("--brand", "#f7b731"),
+    background: read("--bg", "#121212"),
+    foreground: read("--text", "#f5f5f5"),
+    cursor: read("--brand", "#f5f5f5"),
   };
 }
 
@@ -8322,7 +8330,7 @@ function desk(thread, m) {
   const speaking = talk && Date.now() - talk.at < FRESH_MS;
   frame.append(character(m, leaving ? "bye" : asking ? "ask" : speaking ? "talk" : working ? "work" : "idle"));
   avatar.append(frame);
-  const badge = face(m.agent, m.provider);
+  const badge = face(m.agent, m.provider, m.model);
   badge.classList?.add?.("badge");
   avatar.append(badge);
   node.append(avatar);

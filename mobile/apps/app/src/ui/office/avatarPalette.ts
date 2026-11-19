@@ -47,6 +47,12 @@ const VENDOR: Record<string, string> = {
   openai: '#10a37f',
   google: '#4285f4',
   opencode: '#7c5cff',
+  qwen: '#615ced',
+  deepseek: '#4d6bfe',
+  meta: '#0467df',
+  mistral: '#fa520f',
+  xai: '#111111',
+  nvidia: '#76b900',
 };
 export const vendorColor = (provider: string | null | undefined) =>
   VENDOR[provider ?? ''] ?? '#6b7280';

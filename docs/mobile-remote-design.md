@@ -235,8 +235,9 @@ physical device, a real tailnet, Android, camera scanning, notification delivery
 
 ## Look of the phone app (2026-11-17)
 
-The phone's UI follows its **icon** (black, white serpent, red eyes), not the desktop window, which
-keeps its amber on purpose: the two apps share the data, not the palette. Near black and white
+The phone's UI follows its **icon** (black, white serpent, red eyes). Since 2026-11-19 the desktop window
+uses the same palette (`desktop/src/app.css` `:root`: `--brand` is the inversion, `--on-brand` its text,
+`--danger-fill` the red fill, `--ok` plain text colour, project tones grey). Near black and white
 with greys; the main action and what waits for the user are the **inversion** (white fill with
 black text in dark, black fill with white text in light, a thick border and a halo for what waits),
 and **red (`#e0160e`, the eyes' red) means error, failure or a destructive action only**. A desktop

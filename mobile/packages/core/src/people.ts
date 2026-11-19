@@ -16,6 +16,7 @@ export interface Who {
   role: string | null;
   agent: string | null;
   provider: string | null;
+  model?: string | null;
   lead: boolean;
   /** The person using the app. */
   you: boolean;
@@ -35,6 +36,7 @@ export function whoOf(
     role?: string | null;
     agent?: string | null;
     provider?: string | null;
+    model?: string | null;
     mine?: boolean;
   },
   leadRole: string | null,
@@ -46,6 +48,7 @@ export function whoOf(
     role,
     agent: ref.agent ?? null,
     provider: ref.provider ?? null,
+    model: ref.model ?? null,
     lead:
       !you && Boolean(role) && (lowered(role) === lowered(leadRole) || lowered(role) === 'lead'),
     you,
@@ -74,16 +77,31 @@ export function whoNamed(
   const leadRole = leadRoleOf(thread);
   const m = members.find((x) => lowered(x.name) === key);
   if (m)
-    return whoOf({ name: m.name, role: m.role, agent: m.agent, provider: m.provider }, leadRole);
+    return whoOf(
+      { name: m.name, role: m.role, agent: m.agent, provider: m.provider, model: m.model },
+      leadRole,
+    );
   const lead = thread?.agents?.find((a) => a.lead);
   if (lead && (key === 'lead' || key === lowered(lead.role)))
     return whoOf(
-      { name, role: lead.role || 'lead', agent: lead.agent, provider: lead.provider },
+      {
+        name,
+        role: lead.role || 'lead',
+        agent: lead.agent,
+        provider: lead.provider,
+        model: lead.model,
+      },
       leadRole,
     );
   const other = thread?.agents?.find((a) => lowered(a.role) === key);
   return whoOf(
-    { name, role: other?.role ?? name, agent: other?.agent, provider: other?.provider },
+    {
+      name,
+      role: other?.role ?? name,
+      agent: other?.agent,
+      provider: other?.provider,
+      model: other?.model,
+    },
     leadRole,
   );
 }

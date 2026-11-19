@@ -113,7 +113,7 @@ function WhoFaceView({ who, size = FACE, state, badge, decorative = true }: Prop
         <Character look={look} face={face} still />
       </View>
       {marked && who.agent ? (
-        <ProviderBadge provider={who.provider} agent={who.agent} size={size} />
+        <ProviderBadge provider={who.provider} model={who.model} agent={who.agent} size={size} />
       ) : null}
     </View>
   );

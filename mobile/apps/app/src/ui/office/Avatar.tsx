@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { Image, Text, View } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import Animated, {
   Easing,
   cancelAnimation,
@@ -9,15 +10,26 @@ import Animated, {
   withSequence,
   withTiming,
 } from 'react-native-reanimated';
-import { faceOf, kindOf, lookFor, seedOf, type Person, type PersonState } from '@orochi/core';
+import {
+  brandOf,
+  faceOf,
+  kindOf,
+  lookFor,
+  seedOf,
+  type Person,
+  type PersonState,
+} from '@orochi/core';
 import { usePrefs } from '../../state/prefs';
 import { Character } from './Character';
 import { useOfficeMotion } from './motion';
+import { BRAND_PATHS } from './brandPaths';
 import { BADGE_IMAGE_GROUND, BADGE_LETTER, vendorColor } from './avatarPalette';
 
 const LETTERS: Record<string, string> = { anthropic: 'C', openai: 'O', google: 'G' };
 
-type Face = Pick<Person, 'role' | 'lead' | 'provider' | 'agent' | 'state' | 'speaking'>;
+type Face = Pick<Person, 'role' | 'lead' | 'provider' | 'agent' | 'state' | 'speaking'> & {
+  model?: string | null;
+};
 
 /**
  * The round avatar: the ring says what it is doing (solid and pulsing while it works, dashed while
@@ -136,7 +148,13 @@ export function Avatar({
         </View>
       </View>
       {person.agent ? (
-        <ProviderBadge provider={person.provider} agent={person.agent} size={size} icon={icon} />
+        <ProviderBadge
+          provider={person.provider}
+          model={person.model}
+          agent={person.agent}
+          size={size}
+          icon={icon}
+        />
       ) : null}
       {mail ? <Envelope /> : null}
     </View>
@@ -146,17 +164,20 @@ export function Avatar({
 /** The provider's mark at the corner of a face (its own colour, its first letter or its image). */
 export function ProviderBadge({
   provider,
+  model,
   agent,
   size,
   icon,
 }: {
   provider: string | null | undefined;
+  model?: string | null;
   agent: string;
   size: number;
   icon?: string;
 }) {
   const { colors } = usePrefs();
   const badge = Math.max(14, Math.round(size * 0.3));
+  const brand = brandOf(provider, model);
   const letter = LETTERS[provider ?? ''] ?? (agent || '?').slice(0, 1).toUpperCase();
   return (
     <View
@@ -169,7 +190,7 @@ export function ProviderBadge({
         borderRadius: badge / 2,
         borderWidth: 1.5,
         borderColor: colors.bg,
-        backgroundColor: icon ? BADGE_IMAGE_GROUND : vendorColor(provider),
+        backgroundColor: icon || brand ? BADGE_IMAGE_GROUND : vendorColor(provider),
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'hidden',
@@ -177,6 +198,10 @@ export function ProviderBadge({
     >
       {icon ? (
         <Image source={{ uri: icon }} style={{ width: badge - 5, height: badge - 5 }} />
+      ) : brand ? (
+        <Svg width={badge - 5} height={badge - 5} viewBox="0 0 24 24">
+          <Path d={BRAND_PATHS[brand]} fill={vendorColor(brand)} />
+        </Svg>
       ) : (
         <Text style={{ color: BADGE_LETTER, fontWeight: '700', fontSize: badge * 0.55 }}>
           {letter}
