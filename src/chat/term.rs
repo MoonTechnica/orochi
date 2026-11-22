@@ -28,6 +28,9 @@ pub enum Key {
     Queued {
         turn: String,
         text: String,
+        /// Written by a routine, not by a person: it runs reading only, whatever the thread's
+        /// approval mode is, because nobody is there to have meant anything else.
+        routine: bool,
     },
     /// Input ended (a closed pipe or terminal).
     Eof,

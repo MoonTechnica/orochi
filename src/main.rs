@@ -17,6 +17,9 @@ fn main() -> std::process::ExitCode {
         {
             return orochi::process::supervise(&args[2..]);
         }
+        if args.get(1).is_some_and(|a| a == orochi::keeper::FLAG) {
+            return orochi::keeper::serve(&args[2..]);
+        }
         if args
             .get(1)
             .is_some_and(|a| a == orochi::mailbox::SERVE_FLAG)

@@ -738,7 +738,14 @@ fn a_host_that_stops_at_once_is_reported_rather_than_counted_as_running() {
     let _ = std::process::Command::new(&old)
         .stderr(std::process::Stdio::null())
         .status();
-    let error = view::start_host(&old, "thread-1").unwrap_err().to_string();
+    let error = view::start_host(
+        &old,
+        &dir.path().join("config.toml"),
+        dir.path(),
+        "thread-1",
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
         error.contains("--thread") && error.contains("old-orochi"),
         "it says which binary and what it said: {error}"
@@ -746,12 +753,23 @@ fn a_host_that_stops_at_once_is_reported_rather_than_counted_as_running() {
 
     // One that stays up is hosting the thread, and is left to it.
     let good = write("orochi", "#!/bin/sh\nsleep 30\n");
-    view::start_host(&good, "thread-1").expect("a host that keeps running is a host");
+    view::start_host(
+        &good,
+        &dir.path().join("config.toml"),
+        dir.path(),
+        "thread-1",
+    )
+    .expect("a host that keeps running is a host");
 
     // Nothing there at all is not a silent success either.
-    let missing = view::start_host(&dir.path().join("nowhere"), "thread-1")
-        .unwrap_err()
-        .to_string();
+    let missing = view::start_host(
+        &dir.path().join("nowhere"),
+        &dir.path().join("config.toml"),
+        dir.path(),
+        "thread-1",
+    )
+    .unwrap_err()
+    .to_string();
     assert!(missing.contains("nowhere"), "{missing}");
 }
 
@@ -887,10 +905,10 @@ fn a_message_between_agents_says_which_conversation_each_end_works_in() {
     );
 }
 
-/// A host outlives the call that started it, and goes on writing to stderr as it works. The
-/// pipe it was started with is read for long enough to say why it stopped, and then it must
-/// keep being read — the first line written after the reader went away killed the host, which
-/// is why a message sent from the window sat there with nothing happening (2026-09-21).
+/// A host outlives the call that started it, and goes on writing to stderr as it works. Its
+/// stderr was a pipe the window had to go on reading — the first line written after the reader
+/// went away killed the host, which is why a message sent from the window sat there with
+/// nothing happening (2026-09-21). It is a file now, so nothing has to keep reading it.
 #[test]
 #[cfg(unix)]
 fn a_host_survives_the_call_that_started_it() {
@@ -909,7 +927,13 @@ fn a_host_survives_the_call_that_started_it() {
     .unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    view::start_host(&path, "thread-1").expect("it is running");
+    view::start_host(
+        &path,
+        &dir.path().join("config.toml"),
+        dir.path(),
+        "thread-1",
+    )
+    .expect("it is running");
     // Four seconds of talking, and however long a loaded machine adds to forty launches.
     let finished = dir.path().join("finished");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -1741,4 +1765,64 @@ fn a_kept_picture_is_in_the_thread_and_answered_by_the_media_scheme() {
     let reply = orochi_desktop::media::serve(dir.path(), &format!("/{thread}/{}", kept.sha), None);
     assert_eq!(reply.status, 200);
     assert_eq!(reply.body, png);
+}
+
+#[test]
+fn a_source_link_opens_only_a_web_page_this_conversation_fetched() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = share(Activity::open(dir.path(), 30).unwrap());
+    let thread = {
+        let db = store.lock().unwrap();
+        db.project("proj", std::path::Path::new("/tmp/orochi"))
+            .unwrap();
+        let thread = db
+            .create_thread(
+                "proj",
+                std::path::Path::new("/tmp/orochi"),
+                Some("main"),
+                "repo-hash",
+                Origin::Console,
+                &Overrides::default(),
+                "ask",
+            )
+            .unwrap();
+        let turn = db
+            .queue_turn(&thread, "When is it due?", &[], "auto", "terminal")
+            .unwrap();
+        db.item(
+            &thread,
+            &turn,
+            None,
+            ItemKind::ToolCall,
+            Some("completed"),
+            Some("call-1"),
+            "",
+            Some(r#"{"tool_kind":"fetch","raw_input":{"url":"https://example.com/terms"}}"#),
+        )
+        .unwrap();
+        thread
+    };
+    drop(store);
+    let client = Client::open(dir.path()).unwrap();
+    // Each of these is refused before anything is started; the one fetched page is not tried
+    // here, since opening it would open a browser on the machine running the tests.
+    for (url, why) in [
+        (
+            "https://example.com/other",
+            "a page this conversation never fetched",
+        ),
+        ("file:///etc/passwd", "an address that is not a web page"),
+        ("javascript:alert(1)", "a script"),
+    ] {
+        assert!(
+            client.open_source(&thread, url).is_err(),
+            "{why} is refused"
+        );
+    }
+    assert!(
+        client
+            .open_source("another-thread", "https://example.com/terms")
+            .is_err(),
+        "a page another conversation fetched is not this one's"
+    );
 }

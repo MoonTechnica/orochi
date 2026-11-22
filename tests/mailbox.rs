@@ -1573,6 +1573,7 @@ fn a_host_seats_a_heavy_turn_the_way_the_console_does() {
     let sent = orochi(&[
         "threads",
         "send",
+        "--no-host",
         &thread,
         "redesign the architecture of the storage layer so every caller goes through one interface",
     ])

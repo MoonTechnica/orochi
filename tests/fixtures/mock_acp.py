@@ -56,7 +56,9 @@ def mailbox_tools():
     assert names[4:8] == ["post", "read_channel", "read_thread", "share_file"], names
     team = ["list_work", "stop_agent"]
     link = ["list_projects", "message_project"]
+    schedule = ["schedule", "list_schedules", "cancel_schedule", "pause_schedule", "resume_schedule"]
     ranks = [[], lead, [*lead, *manager], [*lead, *team]]
+    ranks += [[*r, *schedule] for r in ranks]
     assert names[8:] in [*ranks, *[[*r, *link] for r in ranks]], names
     offered.extend(names)
 
@@ -82,6 +84,32 @@ def record_failure():
     import traceback
     with open(log_path + ".err", "a") as out:
         out.write(f"--- pid {os.getpid()} at {time.time():.1f}\n" + traceback.format_exc())
+
+
+def schedule_asks(request):
+    """A resident asks to be woken later; what Orochi answered goes to a file the test reads."""
+    proc, tool = mailbox_tools()
+    answers = {
+        "good": tool("schedule", when="daily at 07:30", instruction="Brief me on the news", name="news"),
+        "fast": tool("schedule", when="every 5m", instruction="poll all day"),
+        "watch": tool("schedule", watch="git log -1 --format=%h", every="15m", instruction="Say what landed"),
+        "list": tool("list_schedules"),
+        "missing": tool("cancel_schedule", id="nope"),
+    }
+    mine = answers["watch"].get("proposed")
+    if mine:
+        answers["cancelled"] = tool("cancel_schedule", id=mine)
+    text = " ".join(p.get("text", "") for p in request["params"]["prompt"])
+    theirs = [r["id"] for r in answers["list"].get("routines", []) if r["made_by"] == "user"]
+    for words, name, key in (
+        ("pause their routine", "pause_schedule", "pause_theirs"),
+        ("resume their routine", "resume_schedule", "resume_theirs"),
+        ("stop their routine", "cancel_schedule", "stop_theirs"),
+    ):
+        if theirs and words in text.lower():
+            answers[key] = tool(name, id=theirs[0])
+    (root / "schedule_answers.json").write_text(json.dumps(answers))
+    proc.terminate()
 
 
 def converse(request):
@@ -119,11 +147,13 @@ def converse(request):
 def seats(request):
     """Two seats of one Orochi process: the lead asks, the read-only seat answers."""
     text = request["params"]["prompt"][0]["text"]
-    if "you own every change" not in text.lower() and "every write tool is refused" not in text:
+    # A routine's lead reads only too; it owns the report instead of the changes.
+    leads = "you own every change" in text.lower() or "you own the report" in text.lower()
+    if not leads and "every write tool is refused" not in text:
         return  # A step that runs on its own (design, review): nothing to coordinate.
     proc, tool = mailbox_tools()
     me = next(p["name"] for p in tool("list_peers")["peers"] if p["you"])
-    if "you own every change" in text.lower():
+    if leads:
         wanted = int(os.environ.get("MOCK_SEATS", "1"))
         deadline, others = time.time() + 40, []
         while len(others) < wanted and time.time() < deadline:
@@ -589,7 +619,7 @@ def finish(request):
                 "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": part}}}})
             time.sleep(float(os.environ.get("MOCK_LINE_DELAY", "0.01")))
     send({"method": "session/update", "params": {"sessionId": session, "update": {
-        "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Fixture completed."}}}})
+        "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": os.environ.get("MOCK_REPLY", "Fixture completed.")}}}})
     time.sleep(float(os.environ.get("MOCK_FINISH_DELAY", "0")))
     # One per model request, which is how often codex-acp reports usage and how little of the
     # turn its final figure then covers.
@@ -689,6 +719,13 @@ for line in sys.stdin:
             result(request, {"stopReason": "end_turn", "usage": {"totalTokens": 40, "inputTokens": 30, "outputTokens": 10}})
         elif behavior == "mailbox_chat":
             mailbox_chat(request)
+            finish(request)
+        elif behavior == "schedule_asks":
+            try:
+                schedule_asks(request)
+            except BaseException:
+                record_failure()
+                raise
             finish(request)
         elif behavior == "org":
             try:
@@ -809,7 +846,7 @@ for line in sys.stdin:
         elif behavior == "permission":
             pending = request
             send({"id": "permission-1", "method": "session/request_permission", "params": {
-                "sessionId": session, "toolCall": {"toolCallId": "call-1", "title": "Write fixture file", "kind": "edit"},
+                "sessionId": session, "toolCall": {"toolCallId": "call-1", "title": "Write fixture file", "kind": os.environ.get("MOCK_PERMISSION_KIND", "edit")},
                 "options": [{"optionId": "deny", "name": "Deny", "kind": "reject_once"}, {"optionId": "allow", "name": "Allow", "kind": "allow_once"}]}})
         elif behavior == "incomplete":
             result(request, {"stopReason": "max_tokens"})

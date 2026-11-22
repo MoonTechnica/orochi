@@ -1392,7 +1392,7 @@ test("everything that is not a conversation lives behind the row at the foot", a
   const pages = el("settings-nav").querySelectorAll("button").map((b) => b.dataset.page);
   assert.deepEqual(
     pages,
-    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "mobile", "phone", "conversations", "notifications", "setup"],
+    ["roster", "preferences", "accounts", "insights", "decision", "sandboxes", "storage", "mobile", "phone", "conversations", "notifications", "routines", "setup"],
     "every former panel is a page of it",
   );
   el("settings-nav").querySelectorAll("button").find((b) => b.dataset.page === "insights").dispatch("click");
@@ -5041,4 +5041,89 @@ test("the phone page switches the listener, pairs a phone with a code that count
   await settle();
   assert.equal(saved.at(-1).browser.remote.enabled, false, "turning it off is saved with the settings");
   assert.ok(admin.some(([tool]) => tool === "remote_stop"), "and the listener is closed now, not at the next start");
+});
+
+// ---- routines, residents and notices (desktop/src/routines.js) -------------------------
+
+import { createRequire } from "node:module";
+const routines = createRequire(import.meta.url)("../src/routines.js");
+
+test("today's spending is a fraction of the budget that never leaves 0 to 1", () => {
+  assert.equal(routines.share(150, 300), 0.5);
+  assert.equal(routines.share(900, 300), 1);
+  assert.equal(routines.share(-5, 300), 0);
+  assert.equal(routines.share(10, 0), 0, "no budget is not a division by nothing");
+});
+
+test("what happened to a notice on each sink is said in words, and an unknown one is passed through", () => {
+  assert.equal(routines.sink("held"), "held for quiet hours");
+  assert.equal(routines.sink("not_registered"), "phone not registered");
+  assert.equal(routines.sink(null), "—");
+  assert.equal(routines.sink("odd"), "odd");
+});
+
+test("the next time is a clock today and a date with the clock another day", () => {
+  const noon = new Date(2026, 10, 21, 12, 0).getTime();
+  const today = Math.floor(new Date(2026, 10, 21, 18, 30).getTime() / 1000);
+  const later = Math.floor(new Date(2026, 10, 23, 9, 0).getTime() / 1000);
+  assert.doesNotMatch(routines.when(today, noon), /Nov/);
+  assert.match(routines.when(later, noon), /23/);
+  assert.equal(routines.when(0, noon), "—");
+  assert.equal(routines.when(null, noon), "—");
+});
+
+test("a schedule is said in Japanese in a Japanese window and left as written otherwise", () => {
+  assert.equal(routines.scheduleWords("daily at 07:30", "ja-JP"), "毎日 07:30");
+  assert.equal(routines.scheduleWords("every mon,thu at 10:00", "ja"), "毎週 月・木 10:00");
+  assert.equal(routines.scheduleWords("every 2h from 09:00 to 19:00", "ja"), "09:00〜19:00 の間 2時間ごと");
+  assert.equal(routines.scheduleWords("cron 0 9 * * 1", "ja"), "cron 0 9 * * 1");
+  assert.equal(routines.scheduleWords("daily at 07:30", "en-US"), "daily at 07:30");
+});
+
+// ---- the assistant (desktop/src/assistant.js) -------------------------------------------------
+
+const assistant = createRequire(import.meta.url)("../src/assistant.js");
+
+test("the assistant draws the person and the reply as bubbles, with what was read under the reply", () => {
+  let seq = 0;
+  const item = (over) => ({ seq: ++seq, turn: "t1", lane: 0, at: 1000 + seq, kind: "agent_message", text: "", data: null, turn_origin: null, ...over });
+  const lines = assistant.chatLines(
+    {
+      thread: { id: "r1", status: "idle" },
+      items: [
+        item({ kind: "user_message", lane: null, text: "引っ越し先の住所教えて" }),
+        item({ kind: "tool_call", data: { tool_kind: "read", locations: [{ path: "/home/me/mail/quote.pdf" }] } }),
+        item({ kind: "tool_call", data: { tool_kind: "fetch", raw_input: { url: "https://www.example.com/a" } } }),
+        item({ kind: "tool_call", data: { tool_kind: "fetch", raw_input: { url: "file:///etc/passwd" } } }),
+        item({ kind: "tool_call", data: { tool_kind: "execute", raw_input: { command: "ls" } } }),
+        item({ text: "東京都北区中里" }),
+        item({ text: "以上です。" }),
+        item({ kind: "user_message", lane: null, turn: "t2", turn_origin: "routine", text: 'This turn was started by a routine, "Morning brief" (due …)' }),
+        item({ turn: "t2", text: "おはようございます" }),
+        item({ turn: "t2", lane: 1, text: "a second seat says nothing here" }),
+      ],
+    },
+    [
+      { id: "p1", thread_id: "r1", proposed: true, schedule: "daily at 07:30" },
+      { id: "p2", thread_id: "r1", proposed: false, schedule: "daily at 08:00" },
+      { id: "p3", thread_id: "r2", proposed: true, schedule: "daily at 09:00" },
+    ],
+    [],
+  );
+  assert.deepEqual(lines.map((l) => l.type), ["me", "agent", "woke", "agent", "proposal"]);
+  assert.equal(lines[1].text, "東京都北区中里\n\n以上です。", "one turn's messages are one bubble");
+  assert.deepEqual(lines[1].sources, [
+    { kind: "file", target: "/home/me/mail/quote.pdf", label: "quote.pdf" },
+    { kind: "web", target: "https://www.example.com/a", label: "example.com" },
+  ]);
+  assert.equal(lines[2].routine, "Morning brief");
+  assert.equal(lines[4].routine.id, "p1", "only this conversation's proposals, only while proposed");
+});
+
+test("a proposed watch shows its command, and a long reply folds at a sentence", () => {
+  assert.deepEqual(assistant.proposalWords({ watch: "gh run list", every_secs: 900 }), { when: "every 15m", command: "gh run list" });
+  assert.deepEqual(assistant.proposalWords({ schedule: "daily at 07:30" }), { when: "daily at 07:30", command: null });
+  const long = `${"あ".repeat(400)}。${"い".repeat(400)}`;
+  assert.deepEqual(assistant.folded(long), { head: `${"あ".repeat(400)}。…`, more: true });
+  assert.deepEqual(assistant.folded("short"), { head: "short", more: false });
 });

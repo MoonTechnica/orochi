@@ -35,6 +35,13 @@ export default function TabsLayout() {
             }}
           />
           <Tabs.Screen
+            name="assistant"
+            options={{
+              title: t('Assistant'),
+              href: empty ? null : undefined,
+            }}
+          />
+          <Tabs.Screen
             name="conversations"
             options={{
               title: t('Conversations'),

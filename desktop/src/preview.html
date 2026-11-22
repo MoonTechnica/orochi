@@ -10,6 +10,7 @@
 <div id="app">
   <aside id="sidebar">
     <header>
+      <button type="button" id="assistant-btn" title="Talk to your assistant"><span class="label">Assistant</span><span id="assistant-count"></span></button>
       <button type="button" id="office-btn" title="See every team at work"><span class="label">Office</span></button>
       <button type="button" id="activity" title="Every conversation, by what it needs"><span class="label">Activity</span><span id="activity-count"></span></button>
       <button id="new-thread" title="Start a thread here"><span class="label">New thread</span></button>
@@ -103,6 +104,7 @@
       <button class="tab" data-pane="changes" role="tab" aria-selected="false">Changes</button>
       <button class="tab" data-pane="plan" role="tab" aria-selected="false">Plan</button>
       <button class="tab" data-pane="files" role="tab" aria-selected="false">Files</button>
+      <button class="tab" data-pane="git" role="tab" aria-selected="false" hidden>Git</button>
     </div>
     <section id="pane-team" class="pane">
       <div id="roster"></div>
@@ -129,6 +131,7 @@
       </form>
     </section>
     <section id="pane-plan" class="pane" hidden></section>
+    <section id="pane-git" class="pane" hidden></section>
     <section id="pane-files" class="pane" hidden>
       <header id="files-head">
         <span id="files-where"></span>
@@ -159,6 +162,9 @@
     </header>
     <div id="activity-page-body"></div>
   </section>
+
+  <section id="assistant-page" aria-label="Assistant" hidden></section>
+
 
   <section id="settings" hidden>
     <nav id="settings-nav" aria-label="Settings"></nav>
@@ -254,10 +260,13 @@
   </dialog>
   <div id="context-menu" role="menu" hidden></div>
 </div>
+<script src="routines.js"></script>
+<script src="assistant.js"></script>
 <script src="preview-data.js"></script>
 <script src="preview-files.js"></script>
 <script src="preview-channel.js"></script>
 <script src="preview-office.js"></script>
+<script src="preview-routines.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

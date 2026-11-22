@@ -265,6 +265,7 @@ impl<'a> Background<'a> {
                             manager: offered.manager,
                             team: offered.team,
                             link: offered.link,
+                            ..Default::default()
                         },
                     )
                 })

@@ -16,6 +16,7 @@ interface BarProps {
 
 const ICONS: Record<string, IconName> = {
   index: 'git-network-outline',
+  assistant: 'sparkles-outline',
   conversations: 'chatbubbles-outline',
   activity: 'pulse-outline',
   settings: 'settings-outline',

@@ -31,6 +31,9 @@ pub struct Config {
     pub console: ConsoleConfig,
     pub sandbox: SandboxConfig,
     pub browser: BrowserConfig,
+    pub routines: RoutinesConfig,
+    pub residents: ResidentsConfig,
+    pub notify: NotifyConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -73,6 +76,9 @@ impl Default for Config {
             console: ConsoleConfig::default(),
             sandbox: SandboxConfig::default(),
             browser: BrowserConfig::default(),
+            routines: RoutinesConfig::default(),
+            residents: ResidentsConfig::default(),
+            notify: NotifyConfig::default(),
         }
     }
 }
@@ -1022,6 +1028,139 @@ impl Default for ManagerConfig {
     }
 }
 
+/// Routines: what wakes a thread without anyone asking (`docs/resident-agent-design.md`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RoutinesConfig {
+    /// Off: the keeper starts nothing and `orochi routines add` refuses.
+    pub enabled: bool,
+    /// The least time between two runs of a repeating routine, whoever proposed it: an agent's
+    /// proposal runs only once the person allows it, so the person's floor is the one floor.
+    pub min_interval_secs: i64,
+    /// Routines on one thread, and how many proposals an agent may have waiting on one.
+    pub max_per_thread: i64,
+    pub max_proposals: i64,
+    /// Days a proposal nobody answered waits before it is dropped.
+    pub proposal_days: i64,
+    /// How late a routine may still run when the machine was asleep at its time.
+    pub max_late_secs: i64,
+    /// Weighted tokens routines may spend in a day; reaching it skips the rest until tomorrow.
+    pub daily_tokens: i64,
+    /// An unanswered question on a routine's turn is declined after this long.
+    pub ask_secs: i64,
+    /// A watch's command is stopped after this long.
+    pub watch_timeout_secs: u64,
+}
+impl Default for RoutinesConfig {
+    fn default() -> Self {
+        // Orochi's own starting values, none of them measured (resident-agent-design §8.2).
+        Self {
+            enabled: true,
+            min_interval_secs: 900,
+            max_per_thread: 10,
+            max_proposals: 5,
+            proposal_days: 7,
+            max_late_secs: 21_600,
+            daily_tokens: 300_000,
+            ask_secs: 1800,
+            watch_timeout_secs: 60,
+        }
+    }
+}
+
+/// Residents: agents with a home folder of their own that routines wake
+/// (`docs/resident-agent-design.md` §6, §12).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResidentsConfig {
+    /// Where residents' folders go: a template like `workspaces.root`, with `{data}`.
+    pub root: String,
+    /// How much of a resident's `NOTES.md` is put in front of it at each wake.
+    pub notes_chars: usize,
+    /// How many of a routine's earlier reports a wake is shown.
+    pub brief_reports: usize,
+}
+impl Default for ResidentsConfig {
+    fn default() -> Self {
+        Self {
+            root: "{data}/residents".into(),
+            notes_chars: 6000,
+            brief_reports: 3,
+        }
+    }
+}
+
+/// How the user hears of what routines did (`docs/resident-agent-design.md` §13).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotifyConfig {
+    /// A notification on this Mac when no Orochi window is open to show it.
+    pub mac: bool,
+    /// How much a third party sees: `title`, `summary` (the first 120 characters) or `full`.
+    pub level: String,
+    /// Push to the phone once the window has had no use for this long.
+    pub away_secs: i64,
+    /// At most one push per thread in this long.
+    pub coalesce_secs: i64,
+    /// `HH:MM-HH:MM`, local time, when nothing is pushed; empty is off.
+    pub quiet: String,
+    /// A question still reaches the phone during quiet hours.
+    pub wake_for_approvals: bool,
+    /// The kinds of notice sent at all.
+    pub kinds: Vec<String>,
+    /// Keys go to the macOS keychain; tests set this false.
+    pub keychain: bool,
+    pub onesignal: OneSignalConfig,
+}
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            mac: true,
+            level: "title".into(),
+            away_secs: 300,
+            coalesce_secs: 60,
+            quiet: String::new(),
+            wake_for_approvals: false,
+            kinds: [
+                "ask",
+                "report",
+                "mention",
+                "trouble",
+                "scheduled",
+                "budget",
+                "keeper",
+            ]
+            .map(String::from)
+            .to_vec(),
+            keychain: true,
+            onesignal: OneSignalConfig::default(),
+        }
+    }
+}
+
+/// Push to the phone through OneSignal. Off until the user gives a key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OneSignalConfig {
+    pub enabled: bool,
+    /// The OneSignal app's id: public, and built into the phone app.
+    pub app_id: String,
+    /// `https` (or loopback, for a test); a relay's address instead of OneSignal's own.
+    pub url: String,
+    /// The variable holding the REST API key; else `ONESIGNAL_REST_API_KEY`, then the keychain.
+    pub api_key_env: String,
+}
+impl Default for OneSignalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: String::new(),
+            url: "https://api.onesignal.com/notifications".into(),
+            api_key_env: String::new(),
+        }
+    }
+}
+
 /// The shape of the agent organization a conversation may grow (`docs/org-design.md`). The
 /// defaults are today's flat team: only the lead in the user's tree starts helpers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1325,6 +1464,45 @@ impl Config {
         );
         self.org.validate()?;
         ensure!(
+            self.residents.root.starts_with("{data}")
+                || Path::new(&self.residents.root).is_absolute(),
+            "residents.root must be an absolute path, or start with {{data}}"
+        );
+        ensure!(
+            matches!(self.notify.level.as_str(), "title" | "summary" | "full"),
+            "notify.level must be title, summary or full"
+        );
+        ensure!(
+            self.notify.quiet.is_empty() || quiet_hours(&self.notify.quiet).is_some(),
+            "notify.quiet reads like 23:00-07:00, or is empty"
+        );
+        {
+            let url = &self.notify.onesignal.url;
+            ensure!(
+                url.starts_with("https://")
+                    || url.starts_with("http://127.0.0.1")
+                    || url.starts_with("http://localhost"),
+                "notify.onesignal.url must be https (or loopback)"
+            );
+        }
+        ensure!(
+            (60..=86_400).contains(&self.routines.min_interval_secs),
+            "routines.min_interval_secs must be 60..=86400"
+        );
+        ensure!(
+            self.routines.max_per_thread > 0
+                && (0..=self.routines.max_per_thread).contains(&self.routines.max_proposals),
+            "routines.max_per_thread must be above zero and max_proposals within it"
+        );
+        ensure!(
+            self.routines.proposal_days > 0
+                && self.routines.max_late_secs >= 0
+                && self.routines.daily_tokens > 0
+                && (1..=86_400).contains(&self.routines.ask_secs)
+                && (1..=3600).contains(&self.routines.watch_timeout_secs),
+            "routines.proposal_days, daily_tokens must be above zero, max_late_secs not below zero and ask_secs 1..=86400"
+        );
+        ensure!(
             matches!(self.workspaces.finish.as_str(), "merge" | "pr"),
             "workspaces.finish must be `merge` or `pr`"
         );
@@ -1546,4 +1724,15 @@ impl Paths {
             _ => bail!("set --config and --data-dir when HOME is unavailable"),
         }
     }
+}
+
+/// `23:00-07:00` as minutes of the day.
+pub fn quiet_hours(text: &str) -> Option<(u16, u16)> {
+    let (from, to) = text.split_once('-')?;
+    let minute = |t: &str| {
+        let (h, m) = t.trim().split_once(':')?;
+        let (h, m): (u16, u16) = (h.parse().ok()?, m.parse().ok()?);
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    };
+    Some((minute(from)?, minute(to)?))
 }

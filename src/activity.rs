@@ -13,6 +13,8 @@
 //! older Orochi sharing the data directory keeps working (`storage::minor_migrations` makes
 //! the same promise for telemetry).
 pub mod recorder;
+pub mod residents;
+pub mod routines;
 
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -2949,6 +2951,43 @@ impl Activity {
         Ok(id)
     }
 
+    /// Lets a question stand for `secs` more and then be declined by itself.
+    pub fn expire_prompt_after(&self, prompt: &str, secs: i64) -> Result<()> {
+        self.connection.execute(
+            "UPDATE prompts SET expires_at=?2 WHERE id=?1 AND answer IS NULL",
+            params![prompt, millis() + secs * 1000],
+        )?;
+        Ok(())
+    }
+
+    /// Declines a question whose time has run out. The empty answer is a refusal, and
+    /// `answered_by = 'expired'` is how a reader tells it from a person's.
+    pub fn expire_prompt(&self, prompt: &str) -> Result<bool> {
+        Ok(self.connection.execute(
+            "UPDATE prompts SET answer='', answered_by='expired', answered_at=?2
+             WHERE id=?1 AND answer IS NULL AND expires_at IS NOT NULL AND expires_at<=?2",
+            params![prompt, millis()],
+        )? == 1)
+    }
+
+    /// Whether the turn was written by a routine.
+    pub fn turn_is_routine(&self, turn: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT COALESCE(origin = 'routine', 0) FROM turns WHERE id=?1",
+            [turn],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Whether a question in this thread is still waiting for an answer.
+    pub fn has_open_prompt(&self, thread: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM prompts WHERE thread_id=?1 AND answer IS NULL)",
+            [thread],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn heartbeat(&self, host: &str) -> Result<()> {
         self.connection.execute(
             "UPDATE hosts SET heartbeat_at=?2 WHERE id=?1",
@@ -3041,6 +3080,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // (NULL for a report of the lead in the user's tree) and the role it was hired in.
     ("seats", "manager", "TEXT"),
     ("seats", "org_role", "TEXT"),
+    // When an unanswered question is declined by itself (a routine's turn has nobody to ask),
+    // in milliseconds; NULL waits for an answer as a person's question does.
+    ("prompts", "expires_at", "INTEGER"),
 ];
 
 /// Tables added since `USER_VERSION` 2, each created (and filled from what is already there)
@@ -3084,6 +3126,93 @@ CREATE TRIGGER IF NOT EXISTS ch_agent_requests_i AFTER INSERT ON agent_requests 
 CREATE TRIGGER IF NOT EXISTS ch_agent_requests_u AFTER UPDATE ON agent_requests BEGIN
   INSERT INTO changes (tbl,row,thread_id,at)
     VALUES ('agent_requests',new.id,new.thread_id,new.created_at); END;
+"#,
+    ),
+    // Routines and what became of each due time (`docs/resident-agent-design.md` §15). Instants
+    // are unix seconds. Content (an instruction is text), so here and never in telemetry.
+    (
+        "routines",
+        r#"
+CREATE TABLE IF NOT EXISTS routines (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, instruction TEXT NOT NULL,
+  schedule TEXT, schedule_parsed TEXT,
+  watch TEXT, every_secs INTEGER, watch_hash TEXT, watch_failures INTEGER NOT NULL DEFAULT 0,
+  access TEXT NOT NULL CHECK (access IN ('read','home','worktree')),
+  notify TEXT NOT NULL DEFAULT 'mention' CHECK (notify IN ('always','mention','never')),
+  catch_up TEXT NOT NULL DEFAULT 'once' CHECK (catch_up IN ('once','skip')),
+  descriptor TEXT,
+  made_by TEXT NOT NULL CHECK (made_by IN ('user','agent')),
+  expires_at INTEGER, paused INTEGER NOT NULL DEFAULT 0,
+  next_at INTEGER, last_at INTEGER, created_at INTEGER NOT NULL,
+  -- An agent's proposal: held paused, and run only once the person allows it.
+  proposed INTEGER NOT NULL DEFAULT 0,
+  CHECK ((schedule IS NULL) <> (watch IS NULL)));
+CREATE INDEX IF NOT EXISTS routines_due ON routines(next_at) WHERE paused = 0;
+CREATE INDEX IF NOT EXISTS routines_thread ON routines(thread_id);
+CREATE TRIGGER IF NOT EXISTS ch_routines_i AFTER INSERT ON routines BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('routines',new.id,new.thread_id,CAST(strftime('%s','now') AS INTEGER)*1000); END;
+CREATE TRIGGER IF NOT EXISTS ch_routines_u AFTER UPDATE ON routines BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('routines',new.id,new.thread_id,CAST(strftime('%s','now') AS INTEGER)*1000); END;
+CREATE TABLE IF NOT EXISTS firings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  routine_id TEXT NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+  due_at INTEGER NOT NULL, started_at INTEGER,
+  turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+  skipped TEXT CHECK (skipped IN
+    ('paused','overlap','budget','quota','late','gate','unchanged','failed')),
+  -- Whether the finished turn has been looked at (its notes kept, its notice made), and
+  -- what it cost in weighted tokens, which the day's budget adds up.
+  settled INTEGER NOT NULL DEFAULT 0, tokens INTEGER);
+CREATE INDEX IF NOT EXISTS firings_routine ON firings(routine_id, id);
+"#,
+    ),
+    // A resident is a thread with a folder of its own; a notice is one thing the user should
+    // hear of, whether or not it reached them (`docs/resident-agent-design.md` §13, §15).
+    (
+        "residents",
+        r#"
+CREATE TABLE IF NOT EXISTS residents (
+  thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+  name TEXT NOT NULL UNIQUE, home TEXT NOT NULL,
+  instruction TEXT NOT NULL, access TEXT NOT NULL CHECK (access IN ('read','home')),
+  paused INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+CREATE TRIGGER IF NOT EXISTS ch_residents_i AFTER INSERT ON residents BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('residents',new.thread_id,new.thread_id,CAST(strftime('%s','now') AS INTEGER)*1000); END;
+CREATE TRIGGER IF NOT EXISTS ch_residents_u AFTER UPDATE ON residents BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at)
+    VALUES ('residents',new.thread_id,new.thread_id,CAST(strftime('%s','now') AS INTEGER)*1000); END;
+"#,
+    ),
+    // Things about the app itself, not a thread: when a person last used the window.
+    (
+        "app_state",
+        r#"
+CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
+"#,
+    ),
+    (
+        "notices",
+        r#"
+CREATE TABLE IF NOT EXISTS notices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN
+    ('ask','report','mention','trouble','scheduled','budget','keeper')),
+  thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
+  routine_id TEXT REFERENCES routines(id) ON DELETE SET NULL,
+  prompt_id TEXT REFERENCES prompts(id) ON DELETE SET NULL,
+  title TEXT NOT NULL, body TEXT,
+  mac TEXT, phone TEXT,
+  created_at INTEGER NOT NULL, read_at INTEGER);
+CREATE INDEX IF NOT EXISTS notices_unread ON notices(created_at) WHERE read_at IS NULL;
+CREATE TRIGGER IF NOT EXISTS ch_notices_i AFTER INSERT ON notices BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('notices',new.id,new.thread_id,new.created_at); END;
+CREATE TRIGGER IF NOT EXISTS ch_notices_u AFTER UPDATE ON notices BEGIN
+  INSERT INTO changes (tbl,row,thread_id,at) VALUES ('notices',new.id,new.thread_id,new.created_at); END;
 "#,
     ),
     // A merge trial of a helper's worktree and what it found, as `merge::Trial` serializes it:
@@ -3753,7 +3882,7 @@ DROP VIEW IF EXISTS v_open_prompts;
 CREATE VIEW v_open_prompts AS
 SELECT pr.id, pr.thread_id, t.title AS thread_title, p.name AS project,
        pr.turn_id, pr.attempt_id, pr.item_id, pr.kind, pr.request, pr.created_at,
-       a.agent, a.model, s.role, i.text AS tool_text, i.data AS tool_data,
+       pr.expires_at, a.agent, a.model, s.role, i.text AS tool_text, i.data AS tool_data,
        s.read_only, s.lead
 FROM prompts pr
 JOIN threads t ON t.id=pr.thread_id
@@ -3769,6 +3898,41 @@ SELECT pt.turn_id, tn.thread_id, pt.id, pt.brief, pt.paths, pt.after, pt.wave, p
        pt.state, pt.strays,
        (SELECT s.id FROM seats s WHERE s.turn_id=pt.turn_id AND s.part_id=pt.id LIMIT 1) AS seat_id
 FROM parts pt JOIN turns tn ON tn.id=pt.turn_id;
+
+DROP VIEW IF EXISTS v_routines;
+CREATE VIEW v_routines AS
+SELECT r.id AS routine_id, r.thread_id, t.title AS thread_title, r.name, r.instruction,
+       r.schedule, r.watch, r.every_secs, r.access, r.notify, r.catch_up, r.made_by,
+       r.expires_at, r.paused, r.next_at, r.last_at, r.created_at, r.proposed,
+       (SELECT f.skipped FROM firings f WHERE f.routine_id=r.id ORDER BY f.id DESC LIMIT 1)
+         AS last_skipped,
+       (SELECT tn.state FROM firings f JOIN turns tn ON tn.id=f.turn_id
+         WHERE f.routine_id=r.id ORDER BY f.id DESC LIMIT 1) AS last_state
+FROM routines r JOIN threads t ON t.id=r.thread_id;
+
+DROP VIEW IF EXISTS v_firings;
+CREATE VIEW v_firings AS
+SELECT f.id AS firing_id, f.routine_id, r.name, r.thread_id, f.due_at, f.started_at,
+       f.turn_id, f.skipped, tn.state AS turn_state
+FROM firings f JOIN routines r ON r.id=f.routine_id LEFT JOIN turns tn ON tn.id=f.turn_id;
+
+DROP VIEW IF EXISTS v_residents;
+CREATE VIEW v_residents AS
+SELECT rs.thread_id, rs.name, rs.home, rs.instruction, rs.access, rs.paused, rs.created_at,
+       (SELECT min(r.next_at) FROM routines r WHERE r.thread_id=rs.thread_id AND r.paused=0)
+         AS next_at,
+       (SELECT count(*) FROM routines r WHERE r.thread_id=rs.thread_id) AS routines,
+       (SELECT count(*) FROM prompts pr WHERE pr.thread_id=rs.thread_id AND pr.answer IS NULL)
+         AS asking,
+       EXISTS(SELECT 1 FROM turns tn WHERE tn.thread_id=rs.thread_id AND tn.state='running')
+         AS working
+FROM residents rs;
+
+DROP VIEW IF EXISTS v_notices;
+CREATE VIEW v_notices AS
+SELECT n.id AS notice_id, n.kind, n.thread_id, t.title AS thread_title, n.routine_id,
+       n.prompt_id, n.title, n.body, n.mac, n.phone, n.created_at, n.read_at
+FROM notices n LEFT JOIN threads t ON t.id=n.thread_id;
 
 DROP VIEW IF EXISTS v_merges;
 CREATE VIEW v_merges AS

@@ -310,11 +310,14 @@ fn watch(open: State<'_, Open>, thread: String) -> Result<orochi_desktop::view::
 /// terminal is holding keeps its owner; this never takes one over.
 #[tauri::command]
 fn ensure_host(open: State<'_, Open>, thread: String) -> Result<bool, String> {
-    let needed = open.0.lock().unwrap().needs_host(&thread).map_err(fail)?;
+    let (needed, (config, data)) = {
+        let client = open.0.lock().unwrap();
+        (client.needs_host(&thread).map_err(fail)?, client.paths())
+    };
     if !needed {
         return Ok(false);
     }
-    orochi_desktop::view::start_host(&orochi(), &thread).map_err(fail)?;
+    orochi_desktop::view::start_host(&orochi(), &config, &data, &thread).map_err(fail)?;
     Ok(true)
 }
 
@@ -384,6 +387,247 @@ async fn refresh_quota(open: State<'_, Open>) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?
     .map_err(fail)
+}
+
+// Residents, routines, notices and the keeper (`docs/resident-agent-design.md` §14).
+#[tauri::command]
+fn residents(open: State<'_, Open>) -> Result<Vec<serde_json::Value>, String> {
+    open.0.lock().unwrap().residents().map_err(fail)
+}
+
+#[tauri::command]
+fn routines(open: State<'_, Open>) -> Result<Vec<serde_json::Value>, String> {
+    open.0.lock().unwrap().routines().map_err(fail)
+}
+
+#[tauri::command]
+fn routine_firings(
+    open: State<'_, Open>,
+    id: String,
+) -> Result<Vec<orochi::activity::routines::Firing>, String> {
+    open.0.lock().unwrap().routine_firings(&id).map_err(fail)
+}
+
+#[tauri::command]
+fn routine_preview(
+    open: State<'_, Open>,
+    when: String,
+    count: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .routine_preview(&when, count.unwrap_or(3))
+        .map_err(fail)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn routine_add(
+    open: State<'_, Open>,
+    thread: String,
+    when: String,
+    name: String,
+    instruction: String,
+    notify: String,
+    catchup: String,
+    watch: Option<String>,
+    every: Option<String>,
+) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .routine_add(
+            &orochi(),
+            &thread,
+            &when,
+            &name,
+            &instruction,
+            &notify,
+            &catchup,
+            watch.as_deref().unwrap_or(""),
+            every.as_deref().unwrap_or(""),
+        )
+        .map_err(fail)
+}
+
+/// Runs a watch's command once, as the keeper would, so it can be tried before it is made.
+#[tauri::command]
+async fn routine_try(
+    open: State<'_, Open>,
+    thread: String,
+    command: String,
+) -> Result<serde_json::Value, String> {
+    let (config_path, data) = open.0.lock().unwrap().paths();
+    let config = orochi::config::Config::load(&config_path).map_err(fail)?;
+    let (ok, output) = tauri::async_runtime::spawn_blocking(move || {
+        let activity = orochi::activity::Activity::open(&data, config.activity.retention_days)?;
+        let thread = activity
+            .resolve_thread(&thread)?
+            .ok_or_else(|| anyhow::anyhow!("no thread {thread}"))?;
+        tauri::async_runtime::block_on(orochi::routines::api::try_watch(
+            &config, &data, &thread, &activity, &command,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(fail)?;
+    Ok(serde_json::json!({ "ok": ok, "output": output }))
+}
+
+#[tauri::command]
+fn routine_action(
+    open: State<'_, Open>,
+    id: String,
+    action: String,
+) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .routine_action(&orochi(), &id, &action)
+        .map_err(fail)
+}
+
+/// A page the assistant read for an answer, opened in the browser.
+#[tauri::command]
+fn open_source(open: State<'_, Open>, thread: String, url: String) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .open_source(&thread, &url)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn resident_add(
+    open: State<'_, Open>,
+    name: String,
+    instruction: String,
+) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .resident_add(&name, &instruction)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn resident_action(
+    open: State<'_, Open>,
+    name: String,
+    action: String,
+) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .resident_action(&name, &action)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn resident_notes(open: State<'_, Open>, name: String) -> Result<serde_json::Value, String> {
+    open.0.lock().unwrap().resident_notes(&name).map_err(fail)
+}
+
+#[tauri::command]
+fn save_resident(
+    open: State<'_, Open>,
+    name: String,
+    notes: String,
+    instruction: String,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .save_resident(&name, &notes, &instruction)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn notices(
+    open: State<'_, Open>,
+    unread: Option<bool>,
+) -> Result<Vec<orochi::activity::residents::Notice>, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .notices(unread.unwrap_or(false))
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn read_notices(open: State<'_, Open>, id: Option<i64>) -> Result<(), String> {
+    open.0.lock().unwrap().read_notices(id).map_err(fail)
+}
+
+#[tauri::command]
+fn keeper(open: State<'_, Open>) -> Result<serde_json::Value, String> {
+    open.0.lock().unwrap().keeper().map_err(fail)
+}
+
+#[tauri::command]
+fn keeper_login(open: State<'_, Open>, on: bool) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .keeper_login(&orochi(), on)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn notify_settings(open: State<'_, Open>) -> Result<serde_json::Value, String> {
+    open.0.lock().unwrap().notify_settings().map_err(fail)
+}
+
+#[tauri::command]
+fn save_section(
+    open: State<'_, Open>,
+    section: String,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .save_section(&section, &value)
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn notify_key(
+    open: State<'_, Open>,
+    action: String,
+    key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    open.0
+        .lock()
+        .unwrap()
+        .notify_key(&action, key.as_deref())
+        .map_err(fail)
+}
+
+#[tauri::command]
+fn phone_forget(open: State<'_, Open>, id: String) -> Result<bool, String> {
+    open.0.lock().unwrap().phone_forget(&id).map_err(fail)
+}
+
+#[tauri::command]
+async fn notify_test(open: State<'_, Open>) -> Result<serde_json::Value, String> {
+    let (config_path, data) = open.0.lock().unwrap().paths();
+    let config = orochi::config::Config::load(&config_path).map_err(fail)?;
+    // The test holds the conversation store across its network call, which a task shared
+    // between threads may not; it runs to the end on a thread of its own.
+    let (id, sent) = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(orochi::notify::send_test(&config, &data))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(fail)?;
+    Ok(serde_json::json!({ "notice": id, "mac": sent.mac, "phone": sent.phone }))
+}
+
+#[tauri::command]
+fn touch_active(open: State<'_, Open>) -> Result<(), String> {
+    open.0.lock().unwrap().touch_active().map_err(fail)
 }
 
 #[tauri::command]
@@ -1114,6 +1358,28 @@ fn main() {
             agents,
             refresh_quota,
             insights,
+            residents,
+            routines,
+            routine_firings,
+            routine_preview,
+            routine_add,
+            routine_try,
+            routine_action,
+            open_source,
+            resident_add,
+            resident_action,
+            resident_notes,
+            save_resident,
+            notices,
+            read_notices,
+            keeper,
+            keeper_login,
+            notify_settings,
+            save_section,
+            notify_key,
+            phone_forget,
+            notify_test,
+            touch_active,
             board,
             team,
             tree_files,

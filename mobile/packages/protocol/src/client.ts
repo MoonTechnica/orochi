@@ -101,15 +101,36 @@ export class RemoteClient {
   }
 
   /** `deviceId` is this install's stable id: pairing again with it replaces the old device row. */
-  async pair(code: string, device: string, deviceId?: string): Promise<PairResult> {
+  async pair(
+    code: string,
+    device: string,
+    deviceId?: string,
+    pushId?: string,
+  ): Promise<PairResult> {
     return this.request<PairResult>(
       '/pair',
       {
         method: 'POST',
-        body: JSON.stringify(deviceId ? { code, device, device_id: deviceId } : { code, device }),
+        body: JSON.stringify({
+          code,
+          device,
+          ...(deviceId ? { device_id: deviceId } : {}),
+          ...(pushId ? { push_id: pushId } : {}),
+        }),
       },
       false,
     );
+  }
+
+  /**
+   * Gives this desktop the id notices for this phone are addressed to. It is learned once the
+   * app may show notifications, which is usually after it paired; it names nobody.
+   */
+  registerPush(pushId: string) {
+    return this.request<{ ok: boolean }>('/push', {
+      method: 'POST',
+      body: JSON.stringify({ push_id: pushId }),
+    });
   }
 
   me() {

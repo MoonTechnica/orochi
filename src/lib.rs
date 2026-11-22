@@ -14,12 +14,14 @@ pub mod effort;
 pub mod evaluator;
 pub mod gateway;
 pub mod interrupt;
+pub mod keeper;
 pub mod learning;
 pub mod mailbox;
 pub mod mcp;
 pub mod media;
 pub mod memory;
 pub mod merge;
+pub mod notify;
 pub mod org;
 pub mod pane;
 pub mod places;
@@ -41,8 +43,10 @@ pub mod process {
 }
 pub mod quota_sources;
 pub mod reclaim;
+pub mod resident;
 pub mod roster;
 pub mod router;
+pub mod routines;
 pub mod sandbox;
 pub mod scheduler;
 pub mod setup;

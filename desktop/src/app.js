@@ -122,6 +122,7 @@ const AT = {
 /// The words the markup ships with, said again in the window's language once it is open.
 const LABELS = {
   "office-btn": "Office",
+  "assistant-btn": "Assistant",
   activity: "Activity",
   "new-thread": "New thread",
   "projects-label": "Projects",
@@ -649,6 +650,154 @@ const WORDS = {
     "also send to the channel": "チャンネルにも送信",
     Reply: "返信",
     "Reply in thread…": "スレッドに返信…",
+    "Don't allow": "許可しない",
+    "Assistant": "アシスタント",
+    "Talk to your assistant": "アシスタントと話す",
+    "Your assistant": "あなたのアシスタント",
+    "An assistant lives on your desktop with a folder and notes of its own. Talk to it here; ask it to check something every morning and it proposes a routine for you to allow.": "アシスタントはこのデスクトップに常駐し、自分のフォルダとメモを持ちます。ここで話しかけてください。「毎朝〜を確認して」と頼むと、予定を提案するので、許可すると始まります。",
+    "Ask it anything, or for something every morning: it proposes, you allow.": "何でも聞いてください。「毎朝〜して」と頼めば予定を提案します。許可すると始まります。",
+    "Conversation": "会話",
+    "Full conversation": "会話の詳細",
+    "Stops everything it has scheduled until you resume it": "再開するまで、予定したことをすべて止めます",
+    "It runs reading only, with nobody present.": "誰もいないときに、読み取り専用で実行します。",
+    "It runs this command here with nobody present, reading only.": "誰もいないときに、このコマンドをこの Mac で読み取り専用で実行します。",
+    "Make my assistant": "アシスタントを作る",
+    "Message {name}": "{name} にメッセージを送信",
+    "Next wakes at {when}": "次は {when} に起きます",
+    "Nothing scheduled — ask it to keep you up with something": "予定はありません — 定期的に知りたいことを頼んでください",
+    "Proposed routine": "予定の提案",
+    "Proposed watch": "監視の提案",
+    "Show less": "折りたたむ",
+    "Who is it, and what is it for?": "どんなアシスタントで、何をしてほしいですか？",
+    "Woke by a routine": "予定で起きました",
+    "Woke for “{name}”": "「{name}」で起きました",
+    "Working…": "作業中…",
+    "That did not open.": "開けませんでした。",
+    "proposed by an agent": "エージェントの提案",
+    "Allow": "許可",
+    "Proposals an agent may leave waiting per conversation": "1 会話で承認待ちにできる提案の数",
+    "Days an unanswered proposal waits": "未回答の提案を残しておく日数",
+    "No routines yet. Ask in a conversation — \"every weekday at 8, tell me how CI did\" — and the agent proposes one for you to allow.": "ルーティンはまだありません。会話で「平日の 8 時に CI の結果を教えて」のように頼むと、エージェントが提案し、ここで許可できます。",
+    "Residents and routines": "常駐エージェントとルーティン",
+    "Notifications": "通知設定",
+    "A notification on this Mac": "この Mac の通知",
+    "Conversations": "会話",
+    "Decline an unanswered question after (minutes)": "未回答の質問を断るまでの時間（分）",
+    "Delete this resident, its conversation and its routines? Its folder is kept.": "この常駐エージェントと、その会話・ルーティンを削除しますか？フォルダは残ります。",
+    "Delete this routine?": "このルーティンを削除しますか？",
+    "Held in": "保留する時間帯",
+    "It has not been due yet.": "まだ実行時刻になっていません。",
+    "It runs here with nobody present, so only you can write one.": "誰もいない状態でここで実行されるため、書けるのはあなただけです。",
+    "It starts again when a routine is waiting and Orochi is used, or at login if you turn that on in Settings.": "ルーティンが待っていて Orochi を使うと再び起動します。設定でオンにすればログイン時にも起動します。",
+    "Keeper": "キーパー",
+    "Keeper running": "キーパー稼働中",
+    "Keeper stopped": "キーパー停止中",
+    "Make resident": "常駐にする",
+    "Make routine": "ルーティンを作成",
+    "Mark read": "既読にする",
+    "Name (optional)": "名前（任意）",
+    "New resident": "新しい常駐エージェント",
+    "New routine": "新しいルーティン",
+    "No residents. A resident is an agent with a folder of its own and notes it keeps between wakes; routines wake it.": "常駐エージェントはいません。常駐エージェントは専用のフォルダと、起動の合間に残すメモを持ち、ルーティンで起こされます。",
+    "None. The Orochi phone app registers itself when it pairs and notifications are allowed.": "なし。Orochi のスマホアプリは、ペアリングして通知を許可すると自分で登録します。",
+    "Not set. It is kept in the keychain, never in the settings file.": "未設定。キーチェーンに保存され、設定ファイルには書かれません。",
+    "Notes": "メモ",
+    "Nothing is pushed then; it is sent when they end.": "その間は通知せず、終わってから送ります。",
+    "Nothing yet. What routines and residents have to tell you lands here, whether or not it reached your phone.": "まだありません。ルーティンと常駐エージェントからの知らせは、スマホに届いたかどうかに関係なくここに入ります。",
+    "Notices": "通知",
+    "On your phone (OneSignal)": "スマホへ（OneSignal）",
+    "OneSignal app ID": "OneSignal アプリ ID",
+    "OneSignal, and Apple or Google, carry what you let them see below.": "OneSignal と Apple / Google は、下で許可した内容を運びます。",
+    "Only after I have been away (minutes)": "離席してから（分）経ったときだけ",
+    "Open": "開く",
+    "Open conversation": "会話を開く",
+    "Pause": "一時停止",
+    "Push to my phone": "スマホにプッシュ",
+    "Quiet hours": "静かな時間帯",
+    "REST API key": "REST API キー",
+    "Remove": "削除",
+    "Remove the key": "キーを削除",
+    "Residents": "常駐エージェント",
+    "Resume": "再開",
+    "Routines": "ルーティン",
+    "Routines are off": "ルーティンはオフです",
+    "Routines are on": "ルーティンはオンです",
+    "Run one the Mac slept through if within (hours)": "Mac がスリープ中に過ぎた予定を実行する範囲（時間以内）",
+    "Running": "実行中",
+    "Saved.": "保存しました。",
+    "Say when, and the next times show here.": "いつ実行するかを書くと、次の実行時刻がここに出ます。",
+    "Send a test": "テストを送信",
+    "Shortest time between runs (minutes)": "実行間隔の最短（分）",
+    "Start at login": "ログイン時に起動",
+    "Stopped. It starts when a routine is waiting and Orochi is used.": "停止中。ルーティンが待っていて Orochi を使うと起動します。",
+    "That did not work.": "うまくいきませんでした。",
+    "That is not a schedule I can read.": "読み取れない時刻の書き方です。",
+    "The keeper's state could not be read.": "キーパーの状態を読み取れませんでした。",
+    "The previous version is kept beside it as NOTES.md.prev.": "前の版は NOTES.md.prev として隣に残ります。",
+    "The resident was not made.": "常駐エージェントを作成できませんでした。",
+    "The routine was not made.": "ルーティンを作成できませんでした。",
+    "The settings could not be read.": "設定を読み取れませんでした。",
+    "This is all it remembers between wakes. You can edit it; it keeps the file in its own folder.": "起動の合間に覚えているのはこれだけです。編集できます。ファイルは専用フォルダに保存されます。",
+    "Today": "今日",
+    "Tokens per day": "1 日あたりのトークン",
+    "Try it": "試す",
+    "Used when no Orochi window is open to show it.": "表示できる Orochi のウィンドウが開いていないときに使います。",
+    "Wake me for approvals": "承認の確認で通知を鳴らす",
+    "Watch a command instead of a time": "時刻ではなくコマンドを監視する",
+    "Weighted tokens routines may spend in a day; the rest are skipped until tomorrow.": "ルーティンが 1 日に使える加重トークン数。超えた分は明日までスキップされます。",
+    "What OneSignal is shown": "OneSignal に見せる内容",
+    "What should it do each time?": "起動のたびに何をしますか？",
+    "What to tell me": "知らせる内容",
+    "Where it reaches you": "届ける先",
+    "Who is it, and what is it for? It is told this at every wake.": "誰で、何のためのものですか？起動のたびに伝えられます。",
+    "Who it is": "役割",
+    "daily at 08:00 · weekdays at 09:00 · every 2h from 09:00 to 19:00": "daily at 08:00 · weekdays at 09:00 · every 2h from 09:00 to 19:00",
+    "gh run list --limit 5": "gh run list --limit 5",
+    "how often: 15m, 2h": "間隔: 15m, 2h",
+    "macOS will start Orochi's keeper when you log in, so routines run without the app open. Nothing outside your user's Library is changed.": "ログイン時に macOS が Orochi のキーパーを起動するため、アプリを開いていなくてもルーティンが動きます。ユーザーの Library の外は変更されません。",
+    "name (lowercase letters, digits, -)": "名前（小文字・数字・-）",
+    "phone": "スマホ",
+    "set — type to replace": "設定済み — 入力すると置き換えます",
+    "skipped": "スキップ",
+    "tokens": "トークン",
+    "watch": "監視",
+    "Routine": "ルーティン",
+    "When": "いつ",
+    "Next run": "次回",
+    "Last run": "前回",
+    "Run now": "今すぐ実行",
+    "paused": "一時停止中",
+    "started": "開始済み",
+    "not run yet": "未実行",
+    "interrupted": "中断",
+    "completed": "完了",
+    "queued": "待機中",
+    "budget": "予算超過",
+    "quota": "クォータ不足",
+    "late": "遅れすぎ",
+    "gate": "判断で見送り",
+    "unchanged": "変化なし",
+    "Report": "報告",
+    "Mentioned you": "あなたに言及",
+    "Problem": "問題",
+    "Scheduled": "予約",
+    "Budget": "予算",
+    "sent": "送信済み",
+    "off": "オフ",
+    "held for quiet hours": "静かな時間帯のため保留",
+    "window was open": "ウィンドウが開いていた",
+    "joined an earlier push": "先のプッシュにまとめた",
+    "phone not registered": "スマホ未登録",
+    "no key": "キーなし",
+    "no phone paired": "ペアリング済みのスマホなし",
+    "Only the name of the routine": "ルーティン名のみ",
+    "The name and the first lines": "名前と冒頭の数行",
+    "Everything it says": "すべての内容",
+    "Tell me when it mentions me": "自分に言及したとき知らせる",
+    "Tell me every time": "毎回知らせる",
+    "Never tell me": "知らせない",
+    "If the Mac was asleep, run it once": "Mac がスリープ中だったら 1 回だけ実行",
+    "If the Mac was asleep, skip it": "Mac がスリープ中だったらスキップ",
   },
 };
 
@@ -5073,6 +5222,7 @@ function closePanel() {
 }
 
 async function openActivity() {
+  closeAssistant();
   state.panel = "activity";
   state.settings = null;
   el("settings").hidden = true;
@@ -5094,6 +5244,98 @@ function closeActivity() {
 }
 
 el("activity-page-close").addEventListener("click", closeActivity);
+
+// Settings for what wakes by itself; the drawing is `routines.js`, which this only gives the
+// window's own helpers. Routines themselves are started and stopped in the assistant.
+const routinesApi = () => (typeof window !== "undefined" ? window.OrochiRoutines : null);
+const routinesContext = () => ({ call, t, lang: LANG, report });
+
+
+// The assistant: a resident's conversation drawn as a messenger, in the conversation's place
+// like Routines. The drawing is `assistant.js`; the window gives it its Markdown, its question
+// card and the ways out (the full conversation, Routines).
+const assistantApi = () => (typeof window !== "undefined" ? window.OrochiAssistant : null);
+const assistantContext = () => ({
+  call,
+  t,
+  lang: LANG,
+  report,
+  markdown,
+  askCard,
+  drawn: (name) => drawn(name),
+  openThread: (id) => select(id),
+  close: closeAssistant,
+  refresh: () => drawAssistantAgain(),
+  openSource: async (source) => {
+    const { thread, home = "" } = el("assistant-page").dataset || {};
+    if (!thread) return;
+    // A file opens through the same path the Files pane uses, held to the resident's folder
+    // (so it is named from there); a page only if this conversation fetched it.
+    const path = home && source.target.startsWith(`${home}/`) ? source.target.slice(home.length + 1) : source.target;
+    const done =
+      source.kind === "web"
+        ? await call("open_source", { thread, url: source.target })
+        : await call("open_path", { thread, path, reveal: false });
+    if (done === null) report(t("That did not open."));
+  },
+});
+
+async function openAssistant() {
+  closeActivity();
+  closeSettings();
+  leaveOffice();
+  state.panel = "assistant";
+  el("thread").hidden = true;
+  el("side").hidden = true;
+  el("assistant-page").hidden = false;
+  await assistantApi()?.drawAssistant(el("assistant-page"), assistantContext());
+}
+
+/// What the assistant said since: only the list and the head, never the composer.
+async function drawAssistantAgain() {
+  if (state.panel !== "assistant") return;
+  await assistantApi()?.update(el("assistant-page"), assistantContext());
+}
+
+function closeAssistant() {
+  if (state.panel !== "assistant") return;
+  state.panel = null;
+  el("assistant-page").hidden = true;
+  el("office").hidden = !state.office;
+  el("thread").hidden = state.office;
+  el("side").hidden = state.office;
+}
+
+el("assistant-btn")?.addEventListener("click", openAssistant);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.panel === "assistant" && !el("panel").open && !el("confirm").open) {
+    closeAssistant();
+  }
+});
+
+// What waits on the person in the assistants (a proposal to allow, a question), on the button
+// that opens them; and the moment a person was last at the window, which decides whether the
+// phone is buzzed.
+async function assistantBadge() {
+  const [residents, routines] = await Promise.all([call("residents", {}), call("routines", {})]);
+  const mine = new Set((residents || []).map((r) => r.thread_id));
+  const waiting =
+    (routines || []).filter((r) => r.proposed && mine.has(r.thread_id)).length +
+    (residents || []).reduce((n, r) => n + (r.asking || 0), 0);
+  const count = el("assistant-count");
+  if (count) count.textContent = waiting ? String(waiting) : "";
+}
+let lastActive = 0;
+const active = () => {
+  if (Date.now() - lastActive < 30000) return;
+  lastActive = Date.now();
+  call("touch_active", {});
+};
+if (typeof window !== "undefined" && window.addEventListener) {
+  for (const type of ["pointerdown", "keydown"]) window.addEventListener(type, active, true);
+}
+setInterval(assistantBadge, 15000);
+assistantBadge();
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && state.panel === "activity" && !el("panel").open && !el("confirm").open) {
     closeActivity();
@@ -5120,6 +5362,7 @@ const SETTINGS_PAGES = [
   ["sep"],
   ["conversations", "Conversations"],
   ["notifications", "Notifications"],
+  ["routines", "Residents and routines"],
   ["sep"],
   ["setup", "Setup"],
 ];
@@ -5127,6 +5370,7 @@ const SETTINGS_PAGES = [
 async function openSettings(page) {
   state.settings = page;
   closeActivity();
+  closeAssistant();
   remember("settings-page", page);
   el("thread").hidden = true;
   el("side").hidden = true;
@@ -5163,13 +5407,13 @@ async function drawSettings() {
     const row = document.createElement("button");
     row.type = "button";
     row.dataset.page = page;
-    row.textContent = label;
+    row.textContent = t(label);
     if (page === state.settings) row.setAttribute("aria-current", "page");
     row.addEventListener("click", () => (page === "setup" ? openSetup() : openSettings(page)));
     nav.append(row);
   }
   el("settings-title").textContent =
-    SETTINGS_PAGES.find(([p]) => p === state.settings)?.[1] || "Settings";
+    t(SETTINGS_PAGES.find(([p]) => p === state.settings)?.[1] || "Settings");
   const host = el("settings-body");
   // A key half typed into the sign-in form is not redrawn away.
   if (state.settings === "sandboxes" && state.secretTyping && host.children?.length) return;
@@ -5179,6 +5423,7 @@ async function drawSettings() {
 
 async function drawScreen() {
   if (state.settings) return drawSettings();
+  if (state.panel === "assistant") return drawAssistantAgain();
   const host = el(state.panel === "activity" ? "activity-page-body" : "panel-body");
   // The palette is typed into; redrawing it on every refresh would take the typing away.
   if (state.panel === "search" && host.children?.length) return;
@@ -5732,6 +5977,11 @@ async function drawSettingsPage(page, host) {
       remember("sound", state.sound);
     });
     host.append(field("Play a sound with notifications", sound));
+    await routinesApi()?.drawNotifySettings(host, routinesContext());
+    return;
+  }
+  if (page === "routines") {
+    await routinesApi()?.drawRoutineSettings(host, routinesContext());
     return;
   }
   if (page === "insights") {
@@ -8122,8 +8372,9 @@ function leaveOffice() {
 function enterOffice() {
   state.office = true;
   state.settings = null;
-  state.panel = state.panel === "activity" ? null : state.panel;
+  state.panel = ["activity", "assistant"].includes(state.panel) ? null : state.panel;
   el("activity-page").hidden = true;
+  el("assistant-page").hidden = true;
   el("settings").hidden = true;
   el("thread").hidden = true;
   el("side").hidden = true;
@@ -8938,6 +9189,7 @@ async function select(id) {
   leaveOffice();
   closeSettings();
   closeActivity();
+  closeAssistant();
   if (id !== state.thread) {
     closeMember();
     state.members = [];

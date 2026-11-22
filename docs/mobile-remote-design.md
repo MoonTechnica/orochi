@@ -301,3 +301,24 @@ credential helper); the phone never sends any.
 Tests: `desktop/src-tauri/tests/remote.rs` (browse and add inside and outside the allowed places;
 a clone through a local repository standing in for a host, and every refused address) and
 `desktop/tests/ui.test.mjs` (the Settings row). Not run: a real phone, a clone from a real host.
+
+## Routines, notices and push (2026-11-21)
+
+Designed in [Resident Agents](resident-agent-design.md) §13–14; built against the mock agent and a mock push
+server, **not run on a device or with a real OneSignal app** (§22 there).
+
+- **The server** gains `POST /push` (authenticated: `{push_id}`) and a `push_id` field when pairing. A push id is
+  16–64 characters of `[A-Za-z0-9_-]` that the phone makes at random; it names nobody. It is kept with the
+  pairing, replaced when the phone sends another or pairs again from the same install, and removed — from
+  `<data>/remote/push.json`, the list the keeper pushes to — when the phone is revoked.
+- **The whitelist** gains reads `residents`, `routines`, `routine_firings`, `notices`, `keeper` and writes
+  `routine_action` (`run`, `pause` or `resume` only; a phone cannot delete a routine or make one) and
+  `read_notices`. Making and editing stay at the desktop. `tests/remote.rs` pins both.
+- **The app** has a *Routines* screen (Home → Routines) listing notices, routines and residents with run/pause/
+  resume, and a push provider (`src/state/push.tsx`) that starts OneSignal once notifications are on and
+  `extra.oneSignalAppId` is set, signs the phone in under its push id (`OneSignal.login`), tells each desktop the
+  id once per run, opens the thread a tapped push names (ids only — the desktop never puts content in `data`), and
+  suppresses a push while the app is in the foreground. With no app id it does nothing.
+- **Unverified:** delivery on iOS or Android (needs a development build, an APNs key uploaded to the OneSignal app
+  and a physical device), whether the SDK and `expo-notifications` share the iOS notification delegate, and
+  whether a push and the app's own local notification can say one thing twice when the app is backgrounded.

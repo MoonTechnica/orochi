@@ -22,6 +22,10 @@ import type {
   BoardPart,
   FileRow,
   DiffScope,
+  KeeperState,
+  NoticeRow,
+  ResidentRow,
+  RoutineRow,
 } from './types';
 import type { RemoteClient } from './client';
 
@@ -41,6 +45,23 @@ export const api = (c: RemoteClient) => ({
   search: (query: string) => c.rpc<SearchHit[]>('search', { query }),
   agents: () => c.rpc<AgentRow[]>('agents'),
   insights: () => c.rpc<RouteStats[]>('insights'),
+  residents: () => c.rpc<ResidentRow[]>('residents'),
+  routines: () => c.rpc<RoutineRow[]>('routines'),
+  notices: (unread = false) => c.rpc<NoticeRow[]>('notices', { unread }),
+  keeper: () => c.rpc<KeeperState>('keeper'),
+  /**
+   * A phone can run, pause or resume a routine, and allow or decline one an agent proposed;
+   * deleting one stays at the desktop.
+   */
+  routineAction: (id: string, action: 'run' | 'pause' | 'resume' | 'approve' | 'decline') =>
+    c.rpc<boolean>('routine_action', { id, action }),
+  /** Makes a resident: a pinned conversation with a folder of its own, to talk to. */
+  residentAdd: (name: string, instruction: string) =>
+    c.rpc<{ thread: string; home: string }>('resident_add', { name, instruction }),
+  /** Pauses or resumes a resident: the one switch for everything it has scheduled. */
+  residentAction: (name: string, action: 'pause' | 'resume') =>
+    c.rpc<boolean>('resident_action', { name, action }),
+  readNotices: (id?: number) => c.rpc<null>('read_notices', id === undefined ? {} : { id }),
   /** Provider -> small PNG data URL of the vendor's icon, where its app is installed on the desktop. */
   agentIcons: () => c.rpc<Record<string, string>>('agent_icons'),
   folders: () => c.rpc<Folder[]>('folders'),

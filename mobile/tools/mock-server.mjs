@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { largeOffice } from './office-large.mjs';
+import { installResidents } from './mock-residents.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const load = (name) =>
@@ -768,6 +769,7 @@ const rpc = {
   set_route: () => null,
   comment: () => 'ok',
 };
+installResidents({ projects, threads, changed, sync, rpc });
 if (OFFICE) {
   Object.assign(rpc, {
     sidebar: () =>

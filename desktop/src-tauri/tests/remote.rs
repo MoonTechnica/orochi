@@ -1045,3 +1045,177 @@ async fn a_phone_clones_a_repository_into_the_chosen_folder_and_nothing_else() {
         "a failed clone leaves nothing"
     );
 }
+
+const PUSH_A: &str = "3f9a1c0de2b74a65b3c1d0e9f8a7b6c5";
+const PUSH_B: &str = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+
+fn phones(door: &Door) -> Vec<String> {
+    orochi::notify::phones(&door.data)
+        .into_iter()
+        .map(|p| p.id)
+        .collect()
+}
+
+/// What a notice is addressed to is a random id the phone makes, and it goes where the pairing
+/// goes: registered when the phone pairs or says so later, replaced when it changes, and gone
+/// when the phone is revoked — a revoked phone is pushed to no more.
+#[tokio::test]
+async fn a_phones_push_id_is_registered_with_its_pairing_and_goes_when_the_pairing_does() {
+    let door = door().await;
+    let code = door.remote.pair().unwrap().code;
+    let body = json!({"code": code, "device": "iPhone", "device_id": "install-aaaaaaaa", "push_id": PUSH_A});
+    let answer = request(door.addr, "POST", "/pair", None, &[], Some(&body)).await;
+    assert_eq!(answer.status, 200);
+    let token = answer.json()["token"].as_str().unwrap().to_owned();
+    assert_eq!(phones(&door), vec![PUSH_A], "registered when it paired");
+
+    // Learned later (notifications are allowed after pairing), and changed.
+    let told = request(
+        door.addr,
+        "POST",
+        "/push",
+        Some(&token),
+        &[],
+        Some(&json!({"push_id": PUSH_B})),
+    )
+    .await;
+    assert_eq!(told.status, 200);
+    assert_eq!(
+        phones(&door),
+        vec![PUSH_B],
+        "the old one is replaced, not kept beside it"
+    );
+
+    // Nothing that is not a push id is taken, and nobody unauthenticated may set one.
+    for bad in ["short", "me@example.com-aaaaaaaa", ""] {
+        let refused = request(
+            door.addr,
+            "POST",
+            "/push",
+            Some(&token),
+            &[],
+            Some(&json!({"push_id": bad})),
+        )
+        .await;
+        assert_eq!(refused.status, 400, "{bad}");
+    }
+    let anonymous = request(
+        door.addr,
+        "POST",
+        "/push",
+        None,
+        &[],
+        Some(&json!({"push_id": PUSH_A})),
+    )
+    .await;
+    assert_eq!(anonymous.status, 401);
+    assert_eq!(phones(&door), vec![PUSH_B]);
+
+    // Pairing again from the same install replaces the row and its push id.
+    let again = door.remote.pair().unwrap().code;
+    let body = json!({"code": again, "device": "iPhone", "device_id": "install-aaaaaaaa", "push_id": PUSH_A});
+    assert_eq!(
+        request(door.addr, "POST", "/pair", None, &[], Some(&body))
+            .await
+            .status,
+        200
+    );
+    assert_eq!(phones(&door), vec![PUSH_A]);
+
+    let id = door.remote.devices().first().unwrap().id.clone();
+    assert!(door.remote.revoke(&id).unwrap());
+    assert!(
+        phones(&door).is_empty(),
+        "a revoked phone is pushed to no more"
+    );
+}
+
+/// A phone may look at routines, residents and notices, run, pause or resume a routine, allow
+/// or decline what an agent proposed, and make a resident to talk to; it may not make or delete
+/// a routine by hand, or change the settings.
+#[tokio::test]
+async fn a_phone_can_read_routines_answer_proposals_and_make_or_pause_a_resident_but_not_delete_either()
+ {
+    let door = door().await;
+    let token = paired(&door).await;
+    for command in ["residents", "routines", "notices", "keeper"] {
+        let answer = rpc(&door, &token, command, json!({})).await;
+        assert_eq!(
+            answer.status,
+            200,
+            "{command}: {}",
+            String::from_utf8_lossy(&answer.body)
+        );
+    }
+    assert!(rpc(&door, &token, "keeper", json!({})).await.json()["enabled"].is_boolean());
+    for command in [
+        "routine_add",
+        "routine_try",
+        "save_section",
+        "notify_key",
+        "keeper_login",
+        "notify_test",
+        "save_resident",
+    ] {
+        assert_eq!(
+            rpc(&door, &token, command, json!({})).await.status,
+            404,
+            "{command} stays at the desktop"
+        );
+    }
+    let refused = rpc(
+        &door,
+        &token,
+        "routine_action",
+        json!({"id": "x", "action": "delete"}),
+    )
+    .await;
+    assert_eq!(refused.status, 400, "a phone cannot delete a routine");
+    let made = rpc(
+        &door,
+        &token,
+        "resident_add",
+        json!({"name": "assistant", "instruction": "Keep me up with my mail."}),
+    )
+    .await;
+    assert_eq!(made.status, 200, "{}", String::from_utf8_lossy(&made.body));
+    let listed = rpc(&door, &token, "residents", json!({})).await.json();
+    assert_eq!(listed[0]["name"], "assistant");
+    // The one switch for everything a resident has scheduled reaches the phone; deleting does not.
+    let paused = rpc(
+        &door,
+        &token,
+        "resident_action",
+        json!({"name": "assistant", "action": "pause"}),
+    )
+    .await;
+    assert_eq!(
+        paused.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&paused.body)
+    );
+    assert_eq!(
+        rpc(&door, &token, "residents", json!({})).await.json()[0]["paused"],
+        true
+    );
+    let refused = rpc(
+        &door,
+        &token,
+        "resident_action",
+        json!({"name": "assistant", "action": "delete"}),
+    )
+    .await;
+    assert_eq!(refused.status, 400, "a phone cannot delete a resident");
+    let missing = rpc(
+        &door,
+        &token,
+        "routine_action",
+        json!({"id": "nope", "action": "pause"}),
+    )
+    .await;
+    assert_ne!(
+        missing.status, 200,
+        "and an unknown routine is an error, not silence"
+    );
+}

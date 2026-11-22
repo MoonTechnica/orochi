@@ -68,6 +68,11 @@ const READS: &[&str] = &[
     "watch",
     "agent_icons",
     "browse",
+    "residents",
+    "routines",
+    "routine_firings",
+    "notices",
+    "keeper",
 ];
 const WRITES: &[&str] = &[
     "send",
@@ -86,6 +91,10 @@ const WRITES: &[&str] = &[
     "comment",
     "add_project",
     "clone_project",
+    "routine_action",
+    "read_notices",
+    "resident_add",
+    "resident_action",
 ];
 
 pub fn whitelisted(command: &str) -> bool {
@@ -273,6 +282,10 @@ struct Stored {
     /// the same one replaces this row instead of leaving it beside the new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     device_id: Option<String>,
+    /// The random id this phone registered with the push service (`orochi::notify`): what a
+    /// notice is addressed to. It names nobody, and goes with the pairing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    push_id: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -597,6 +610,7 @@ impl Remote {
             .route("/health", get(health))
             .route("/pair", post(pair))
             .route("/me", get(me))
+            .route("/push", post(register_push))
             .route("/rpc/{command}", post(rpc))
             .route("/events", get(events))
             .route("/media/{thread}/{sha}", get(media))
@@ -756,6 +770,12 @@ impl Remote {
         let mut devices = locked(&self.shared.devices);
         devices.refresh();
         let before = devices.list.len();
+        // A phone that is unpaired is pushed to no more.
+        for gone in devices.list.iter().filter(|d| d.id == id) {
+            if let Some(push) = &gone.push_id {
+                let _ = orochi::notify::remove_phone(&self.shared.data, push);
+            }
+        }
         devices.list.retain(|d| d.id != id);
         let removed = devices.list.len() != before;
         if removed {
@@ -858,6 +878,9 @@ struct PairBody {
     /// The phone's stable id for this install; see `Stored::device_id`.
     #[serde(default)]
     device_id: Option<String>,
+    /// The phone's push id, when it has notifications on.
+    #[serde(default)]
+    push_id: Option<String>,
 }
 
 async fn pair(State(app): State<App>, body: Bytes) -> Response {
@@ -913,6 +936,12 @@ async fn pair(State(app): State<App>, body: Bytes) -> Response {
                     && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
             })
             .map(str::to_owned),
+        push_id: body
+            .push_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| orochi::notify::valid_push_id(p))
+            .map(str::to_owned),
     };
     let mut devices = locked(&app.shared.devices);
     devices.refresh();
@@ -920,6 +949,15 @@ async fn pair(State(app): State<App>, body: Bytes) -> Response {
     // The same install pairing again replaces its earlier row (and so that token), never
     // another phone's: nothing is guessed from the name.
     if let Some(id) = &stored.device_id {
+        for old in devices
+            .list
+            .iter()
+            .filter(|d| d.device_id.as_deref() == Some(id.as_str()))
+        {
+            if let Some(push) = &old.push_id {
+                let _ = orochi::notify::remove_phone(&app.shared.data, push);
+            }
+        }
         devices
             .list
             .retain(|d| d.device_id.as_deref() != Some(id.as_str()));
@@ -929,10 +967,49 @@ async fn pair(State(app): State<App>, body: Bytes) -> Response {
         devices.list = before;
         return failure(StatusCode::INTERNAL_SERVER_ERROR, &format!("{error:#}"));
     }
+    if let Some(push) = &stored.push_id {
+        let _ = orochi::notify::add_phone(&app.shared.data, push, &stored.name);
+    }
     axum::Json(
         json!({ "token": token, "name": locked(&app.shared.name).clone(), "id": app.shared.id }),
     )
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct PushBody {
+    push_id: String,
+}
+
+/// A paired phone gives (or changes) the id notices are addressed to: it only learns it once
+/// the app has notification permission, which is after it paired.
+async fn register_push(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
+    let Some(device) = authenticate(&app, &headers, None) else {
+        return unauthorized();
+    };
+    let Ok(body) = serde_json::from_slice::<PushBody>(&body) else {
+        return failure(StatusCode::BAD_REQUEST, "expected {push_id}");
+    };
+    let id = body.push_id.trim();
+    if !orochi::notify::valid_push_id(id) {
+        return failure(StatusCode::BAD_REQUEST, "that is not a push id");
+    }
+    let mut devices = locked(&app.shared.devices);
+    devices.refresh();
+    let Some(row) = devices.list.iter_mut().find(|d| d.id == device.id) else {
+        return unauthorized();
+    };
+    if let Some(old) = row.push_id.replace(id.to_owned())
+        && old != id
+    {
+        let _ = orochi::notify::remove_phone(&app.shared.data, &old);
+    }
+    let name = row.name.clone();
+    if let Err(error) = devices.save() {
+        return failure(StatusCode::INTERNAL_SERVER_ERROR, &format!("{error:#}"));
+    }
+    let _ = orochi::notify::add_phone(&app.shared.data, id, &name);
+    axum::Json(json!({ "ok": true })).into_response()
 }
 
 async fn me(State(app): State<App>, headers: HeaderMap) -> Response {
@@ -1013,6 +1090,43 @@ fn call(
         "search" => value(client.search(&text(args, "query")?)),
         "agents" => value(client.agents()),
         "insights" => value(client.insights()),
+        "residents" => value(client.residents()),
+        "routines" => value(client.routines()),
+        "routine_firings" => value(client.routine_firings(&text(args, "id")?)),
+        "notices" => value(client.notices(flag(args, "unread"))),
+        "keeper" => value(client.keeper()),
+        // What a phone may do to a routine is to run, pause or resume it, and allow or
+        // decline what an agent proposed in the conversation; deleting one stays at the window.
+        "routine_action" => {
+            let action = text(args, "action")?;
+            if !matches!(
+                action.as_str(),
+                "run" | "pause" | "resume" | "approve" | "decline"
+            ) {
+                return Err(Failure::bad(
+                    "a phone can run, pause, resume, allow or decline a routine",
+                ));
+            }
+            value(client.routine_action(&shared.binary, &text(args, "id")?, &action))
+        }
+        "read_notices" => value(client.read_notices(args.get("id").and_then(Value::as_i64))),
+        "resident_add" => value(
+            client.resident_add(
+                &text(args, "name")?,
+                args.get("instruction")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            ),
+        ),
+        // The phone pauses or resumes a resident, its one switch for everything the resident
+        // has scheduled; deleting one stays at the window.
+        "resident_action" => {
+            let action = text(args, "action")?;
+            if !matches!(action.as_str(), "pause" | "resume") {
+                return Err(Failure::bad("a phone can pause or resume a resident"));
+            }
+            value(client.resident_action(&text(args, "name")?, &action))
+        }
         "folders" => value(client.folders()),
         "git_overview" => value(client.git_overview(&thread()?)),
         "git_show" => value(client.git_show(&thread()?, &text(args, "hash")?)),
@@ -1075,7 +1189,8 @@ fn call(
             if !client.needs_host(&thread)? {
                 return Ok(Value::Bool(false));
             }
-            crate::view::start_host(&shared.binary, &thread)?;
+            let (config, data) = client.paths();
+            crate::view::start_host(&shared.binary, &config, &data, &thread)?;
             Ok(Value::Bool(true))
         }
         "rename_thread" => value(client.rename_thread(&thread()?, &text(args, "title")?)),

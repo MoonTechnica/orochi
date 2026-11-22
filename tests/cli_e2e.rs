@@ -37,6 +37,10 @@ impl Workspace {
         config.decision.backend = Some(orochi::config::DecisionBackend::Off);
         // A test never touches the keychain of the machine it runs on.
         config.mcp.keychain = false;
+        // Nothing a test does may raise a notification on the machine it runs on, or touch
+        // its keychain for a push key.
+        config.notify.mac = false;
+        config.notify.keychain = false;
         // The browser is on wherever a Chrome is, so which servers an agent is given would
         // depend on the machine; the tests of it are `tests/browser*.rs`.
         config.browser.enabled = false;
@@ -2969,7 +2973,13 @@ fn a_headless_host_runs_queued_turns_and_leaves_its_questions_for_a_client() {
         .as_str()
         .unwrap()
         .to_owned();
-    success(&workspace.run(&["threads", "send", &thread, "Implement endpoint"]));
+    success(&workspace.run(&[
+        "threads",
+        "send",
+        "--no-host",
+        &thread,
+        "Implement endpoint",
+    ]));
 
     let mut host = workspace
         .command()
@@ -3070,6 +3080,1297 @@ fn a_headless_host_runs_queued_turns_and_leaves_its_questions_for_a_client() {
     assert_eq!(left, 0, "a host that ends releases its thread");
 }
 
+/// `orochi threads send` says a host is started when there is none. Nothing else will start
+/// one when no window is open, so a message sent from a script sat queued for ever.
+#[test]
+fn sending_to_a_thread_nobody_hosts_starts_a_host_that_runs_it() {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let new = workspace.run(&["threads", "new", "--json"]);
+    success(&new);
+    let thread = serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent = workspace.run(&["--json", "threads", "send", &thread, "Implement endpoint"]);
+    success(&sent);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&sent.stdout).unwrap()["host_started"],
+        true
+    );
+    until("the host the send started did not run the turn", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT state FROM turns", [], |r| r.get::<_, String>(0))
+            .is_ok_and(|state| state == "completed")
+    });
+    assert!(workspace.dir.path().join("repo/completed.txt").exists());
+
+    // A second message finds that host rather than starting another.
+    let again = workspace.run(&["--json", "threads", "send", &thread, "Now document it"]);
+    success(&again);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&again.stdout).unwrap()["host_started"],
+        false
+    );
+    let log = data.join("hosts").join(format!("{thread}.log"));
+    assert!(
+        log.is_file(),
+        "a host's stderr goes to a file nobody has to keep reading"
+    );
+
+    success(&workspace.run(&["threads", "stop", &thread]));
+    until("the host did not leave after being asked to stop", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT count(*) FROM hosts", [], |r| r.get::<_, i64>(0))
+            .is_ok_and(|hosts| hosts == 0)
+    });
+}
+
+/// Routines are driven on a clock the test moves: a file holding unix seconds, read by the
+/// keeper and by every command (`OROCHI_KEEPER_CLOCK`), in UTC so the days are the test's own.
+struct Moved {
+    clock: std::path::PathBuf,
+}
+impl Moved {
+    fn new(workspace: &Workspace, at: i64) -> Self {
+        let moved = Self {
+            clock: workspace.dir.path().join("clock"),
+        };
+        moved.set(at);
+        moved
+    }
+    fn set(&self, at: i64) {
+        std::fs::write(&self.clock, at.to_string()).unwrap();
+    }
+    fn run(&self, workspace: &Workspace, args: &[&str]) -> Output {
+        workspace
+            .command()
+            .env("OROCHI_KEEPER_CLOCK", &self.clock)
+            .env("TZ", "UTC")
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn json(&self, workspace: &Workspace, args: &[&str]) -> serde_json::Value {
+        let out = self.run(workspace, args);
+        success(&out);
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+    fn keeper_running(&self, workspace: &Workspace) -> bool {
+        self.json(workspace, &["--json", "keeper", "status"])["running"] == true
+    }
+}
+
+/// 2026-11-21 06:00 UTC, a Saturday.
+const MORNING: i64 = 1_795_240_800;
+const DAY: i64 = 86_400;
+
+fn thread_in(workspace: &Workspace) -> String {
+    let new = workspace.run(&["--permission", "allow", "threads", "new", "--json"]);
+    success(&new);
+    serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn firings(moved: &Moved, workspace: &Workspace, routine: &str) -> Vec<serde_json::Value> {
+    moved.json(workspace, &["--json", "routines", "show", routine])["firings"]
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// What makes an always-on agent safe to leave alone: the turn the clock writes has nobody at
+/// the keyboard, so it reads and never changes, even in a thread set to allow everything.
+/// The same thread, spoken to by a person, writes.
+#[test]
+fn a_due_routine_runs_in_its_thread_reading_only_and_the_keeper_leaves_when_none_remain() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "permission".into());
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+
+    let added = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Say good morning",
+        ],
+    );
+    let routine = added["routine"].as_str().unwrap().to_owned();
+    assert_eq!(added["next_at"], MORNING + 2 * 3600);
+    until("the keeper was not started by adding a routine", || {
+        moved.keeper_running(&workspace)
+    });
+
+    moved.set(MORNING + 2 * 3600 + 30);
+    until("the due routine did not run", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT t.state FROM firings f JOIN turns t ON t.id=f.turn_id",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .is_ok_and(|state| state != "queued" && state != "running")
+    });
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let origin: String = activity
+        .connection()
+        .query_row("SELECT origin FROM turns", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(origin, "routine");
+    assert!(
+        !activity.has_open_prompt(&thread).unwrap(),
+        "an edit asked of nobody is refused, not left waiting"
+    );
+    assert!(
+        !workspace.dir.path().join("repo/completed.txt").exists(),
+        "a routine's turn must not change the tree, though the thread says allow"
+    );
+    let listed = moved.json(&workspace, &["--json", "routines", "list"]);
+    assert_eq!(
+        listed[0]["next_at"],
+        MORNING + DAY + 2 * 3600,
+        "it is due again tomorrow"
+    );
+
+    success(&workspace.run(&["threads", "send", &thread, "Implement endpoint"]));
+    until(
+        "a person's message in the same thread did not write",
+        || workspace.dir.path().join("repo/completed.txt").exists(),
+    );
+
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    until("the keeper stayed with nothing to wait for", || {
+        !moved.keeper_running(&workspace)
+    });
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// A laptop that slept through three mornings does not run three briefs on waking.
+#[test]
+fn a_machine_that_slept_runs_one_firing_if_the_latest_time_is_recent_and_records_a_late_one_otherwise()
+ {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let added = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Brief me",
+        ],
+    );
+    let routine = added["routine"].as_str().unwrap().to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+
+    // Wakes on the 24th at 09:00: the 21st, 22nd, 23rd and 24th at 08:00 all fell due.
+    moved.set(MORNING + 3 * DAY + 3 * 3600);
+    until("the morning was not run", || {
+        !firings(&moved, &workspace, &routine).is_empty()
+    });
+    let seen = firings(&moved, &workspace, &routine);
+    assert_eq!(
+        seen.len(),
+        1,
+        "four missed mornings are one firing, not four"
+    );
+    assert!(seen[0]["skipped"].is_null());
+    assert_eq!(
+        seen[0]["due_at"],
+        MORNING + 3 * DAY + 2 * 3600,
+        "the latest of them"
+    );
+
+    // Wakes on the 27th at 20:00: the morning's 08:00 is twelve hours gone, past the six.
+    moved.set(MORNING + 6 * DAY + 14 * 3600);
+    until("the late morning was not recorded", || {
+        firings(&moved, &workspace, &routine).len() == 2
+    });
+    let newest = &firings(&moved, &workspace, &routine)[0];
+    assert_eq!(newest["skipped"], "late");
+    assert!(newest["turn_id"].is_null(), "a late one costs no turn");
+
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// A routine whose last turn has not finished is not started again on top of itself.
+#[test]
+fn a_routine_still_running_is_skipped_rather_than_started_twice() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_FINISH_DELAY".into(), "8".into());
+    workspace.config.activity.host_idle_secs = 60;
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let added = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "every 15m",
+            "--",
+            "Check on it",
+        ],
+    );
+    let routine = added["routine"].as_str().unwrap().to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+
+    moved.set(MORNING + 901);
+    until("the first firing did not start", || {
+        !firings(&moved, &workspace, &routine).is_empty()
+    });
+    moved.set(MORNING + 1802);
+    until("the second firing was not recorded", || {
+        firings(&moved, &workspace, &routine).len() == 2
+    });
+    assert_eq!(
+        firings(&moved, &workspace, &routine)[0]["skipped"],
+        "overlap",
+        "keeper log: {}",
+        std::fs::read_to_string(workspace.dir.path().join("data/keeper/keeper.log"))
+            .unwrap_or_default()
+    );
+
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+    until("the keeper stayed", || !moved.keeper_running(&workspace));
+}
+
+#[test]
+fn a_routine_may_not_wake_more_often_than_the_floor_and_a_schedule_is_previewed_before_it_is_made()
+{
+    let workspace = Workspace::new();
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    for (when, why) in [
+        ("every 5m", "five minutes is under the floor"),
+        ("cron * * * * *", "every minute is under the floor"),
+        ("daily at 08:00, 08:05", "two times five minutes apart"),
+        ("sometimes", "not a schedule"),
+    ] {
+        let out = moved.run(
+            &workspace,
+            &["routines", "add", &thread, "--when", when, "--", "x"],
+        );
+        assert!(!out.status.success(), "{why}");
+    }
+    assert!(
+        moved
+            .json(&workspace, &["--json", "routines", "list"])
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "a refused routine is not made"
+    );
+    assert!(
+        !moved.keeper_running(&workspace),
+        "and with none made there is no keeper"
+    );
+
+    let preview = moved.json(
+        &workspace,
+        &["--json", "routines", "preview", "weekdays at 09:00"],
+    );
+    assert_eq!(
+        preview["text"],
+        serde_json::json!(["2026-11-23 09:00", "2026-11-24 09:00", "2026-11-25 09:00"]),
+        "Saturday morning's next three weekday mornings"
+    );
+}
+
+/// One day a year has no 02:30 and one has two 01:30s; a daily routine still runs once a day.
+#[test]
+fn a_daily_routine_runs_once_on_the_days_the_clocks_change() {
+    let workspace = Workspace::new();
+    for (start, clock) in [(1_772_946_000i64, "02:30"), (1_793_476_800, "01:30")] {
+        let moved = Moved::new(&workspace, start);
+        let out = workspace
+            .command()
+            .env("OROCHI_KEEPER_CLOCK", &moved.clock)
+            .env("TZ", "America/New_York")
+            .args([
+                "--json",
+                "routines",
+                "preview",
+                &format!("daily at {clock}"),
+                "--count",
+                "4",
+            ])
+            .output()
+            .unwrap();
+        success(&out);
+        let times: Vec<i64> =
+            serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["next"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t.as_i64().unwrap())
+                .collect();
+        assert_eq!(times.len(), 4);
+        for pair in times.windows(2) {
+            let gap = pair[1] - pair[0];
+            assert!(
+                (22 * 3600..=26 * 3600).contains(&gap),
+                "consecutive runs are a day apart, give or take the hour the clocks moved: {gap}"
+            );
+        }
+    }
+}
+
+/// Two keepers would fire every due time twice, so the second finds the lock held and leaves.
+#[test]
+fn a_second_keeper_finds_the_machine_already_kept_and_exits() {
+    let workspace = Workspace::new();
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    success(&moved.run(
+        &workspace,
+        &[
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Brief me",
+        ],
+    ));
+    until("no keeper", || moved.keeper_running(&workspace));
+    let config = workspace.dir.path().join("config.toml");
+    let data = workspace.dir.path().join("data");
+    let mut second = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .arg("--internal-keeper")
+        .arg(&config)
+        .arg(&data)
+        .env("OROCHI_KEEPER_CLOCK", &moved.clock)
+        .spawn()
+        .unwrap();
+    until("the second keeper stayed", || {
+        second.try_wait().unwrap().is_some()
+    });
+    assert!(second.wait().unwrap().success());
+    assert!(moved.keeper_running(&workspace), "the first is undisturbed");
+    let routine = moved.json(&workspace, &["--json", "routines", "list"])[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    until("the keeper stayed", || !moved.keeper_running(&workspace));
+}
+
+/// A paused routine wakes nothing, and resuming does not run what the pause skipped.
+#[test]
+fn pausing_a_routine_wakes_nothing_and_resuming_starts_from_now() {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Brief me",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "pause", &routine]));
+    until("a keeper with nothing active stayed", || {
+        !moved.keeper_running(&workspace)
+    });
+
+    moved.set(MORNING + 2 * 3600 + 60);
+    success(&moved.run(&workspace, &["routines", "resume", &routine]));
+    let listed = moved.json(&workspace, &["--json", "routines", "list"]);
+    assert_eq!(
+        listed[0]["next_at"],
+        MORNING + DAY + 2 * 3600,
+        "the 08:00 it slept through is not run; the next is tomorrow's"
+    );
+    assert!(firings(&moved, &workspace, &routine).is_empty());
+    until("resuming did not start the keeper again", || {
+        moved.keeper_running(&workspace)
+    });
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    until("the keeper stayed", || !moved.keeper_running(&workspace));
+}
+
+/// A routine's turn is a team where the work calls for one, as a message's would be: the same
+/// seats, talking over the mailbox, in one turn — and with nobody at the keyboard, none of them
+/// writes, the lead included, and no design → implement split runs.
+#[test]
+fn a_routine_whose_work_calls_for_a_team_runs_one_that_only_reads() {
+    let mut workspace = Workspace::new();
+    for (key, value) in [("MOCK_BEHAVIOR", "seats"), ("MOCK_SEATS", "1")] {
+        workspace.config.agents[0]
+            .env
+            .insert(key.into(), value.into());
+    }
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.scheduler.prompt_timeout_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let repo = workspace.dir.path().join("repo");
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "redesign the architecture of the storage layer so every caller goes through one interface",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "run", &routine]));
+    until("the routine's turn did not finish", || {
+        firings(&moved, &workspace, &routine)
+            .first()
+            .is_some_and(|f| f["turn_state"] == "completed" || f["turn_state"] == "failed")
+    });
+    let fixture_error =
+        std::fs::read_to_string(workspace.dir.path().join("agent.jsonl.err")).unwrap_or_default();
+    assert!(fixture_error.is_empty(), "{fixture_error}");
+    assert_eq!(
+        firings(&moved, &workspace, &routine)[0]["turn_state"],
+        "completed"
+    );
+    let read = |name: &str| std::fs::read_to_string(repo.join(name)).unwrap_or_default();
+    assert!(
+        read("advice.txt").contains("watch the error path"),
+        "the lead never heard from the seat beside it"
+    );
+    assert!(!read("asked.txt").is_empty(), "no seat ran beside the lead");
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let seats: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM seats s JOIN turns t ON t.id=s.turn_id WHERE t.origin='routine'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(seats, 2, "one turn, two seats, no phases");
+    let prompts =
+        std::fs::read_to_string(workspace.dir.path().join("agent.jsonl")).unwrap_or_default();
+    assert!(
+        prompts.contains("you own the report"),
+        "the lead was not told it reads only too"
+    );
+    assert!(
+        !prompts.contains("Plan the work first"),
+        "a routine ran a design phase"
+    );
+    // The fixture writes its own files; what Orochi decides is the edit a seat asks for, and
+    // the lead's reading only is pinned by the first routine test above.
+    assert!(
+        !read("refused.txt").contains("\"allow"),
+        "a seat on a routine's turn was allowed to edit: {}",
+        read("refused.txt")
+    );
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// A routine that keeps failing is one incident: the person hears of the first failure, not of
+/// each one, and the third in a row pauses it and says so; it is never rerun on its own.
+#[test]
+fn a_routine_whose_turn_fails_three_times_in_a_row_is_told_once_and_then_paused() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "rate".into());
+    workspace.config.activity.host_idle_secs = 60;
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Brief me",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    let troubles = || {
+        moved
+            .json(&workspace, &["--json", "notices"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["kind"] == "trouble")
+            .map(|n| n["title"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    for n in 1..=3 {
+        success(&moved.run(&workspace, &["routines", "run", &routine]));
+        until("the failed turn was not settled", || {
+            let seen = firings(&moved, &workspace, &routine);
+            seen.len() == n
+                && seen.iter().all(|f| f["turn_state"] == "failed")
+                && troubles().len() == if n < 3 { 1 } else { 2 }
+        });
+    }
+    let told = troubles();
+    assert!(
+        told.iter().any(|t| t.contains("did not finish")),
+        "{told:?}"
+    );
+    assert!(
+        told.iter().any(|t| t.contains("paused: it failed 3 times")),
+        "{told:?}"
+    );
+    assert_eq!(
+        moved.json(&workspace, &["--json", "routines", "list"])[0]["paused"],
+        true
+    );
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// Nobody is there to answer a routine's question, so it is declined when its time runs out
+/// and the turn goes on with the refusal, rather than holding a host and a session for ever.
+#[test]
+fn a_question_on_a_routines_turn_that_nobody_answers_is_declined_when_its_time_runs_out() {
+    let mut workspace = Workspace::new();
+    let env = &mut workspace.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "permission".into());
+    // Reading is allowed unasked; running something is a question.
+    env.insert("MOCK_PERMISSION_KIND".into(), "execute".into());
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.routines.ask_secs = 2;
+    let data = workspace.dir.path().join("data");
+    let moved = Moved::new(&workspace, MORNING);
+    let new = workspace.run(&["--permission", "ask", "threads", "new", "--json"]);
+    success(&new);
+    let thread = serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Look around",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    moved.set(MORNING + 2 * 3600 + 30);
+
+    until("the question was never opened", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM prompts WHERE expires_at IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .is_ok_and(|n| n == 1)
+    });
+    until("the question was never declined", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT answered_by FROM prompts", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .is_ok_and(|by| by.as_deref() == Some("expired"))
+    });
+    until("the turn did not end after the refusal", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT state FROM turns", [], |r| r.get::<_, String>(0))
+            .is_ok_and(|state| state != "queued" && state != "running")
+    });
+    assert!(
+        !orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .has_open_prompt(&thread)
+            .unwrap()
+    );
+    assert!(!workspace.dir.path().join("repo/completed.txt").exists());
+
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// A resident remembers nothing between wakes but what it wrote down: its notes come back to
+/// it, in the next wake's brief, from a file in its own folder that the person can read.
+#[test]
+fn a_resident_keeps_notes_between_wakes_and_each_wake_is_told_them() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0].env.insert(
+        "MOCK_REPLY".into(),
+        "Two new things, @you.\n<notes>\n- the person prefers tea\n</notes>".into(),
+    );
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let moved = Moved::new(&workspace, MORNING);
+    let made = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "resident",
+            "new",
+            "assistant",
+            "--instruction",
+            "You are the person's morning assistant.",
+        ],
+    );
+    let thread = made["thread"].as_str().unwrap().to_owned();
+    let home = std::path::PathBuf::from(made["home"].as_str().unwrap());
+    assert!(
+        home.starts_with(&data),
+        "its folder is under the data directory by default"
+    );
+    assert!(home.join("NOTES.md").is_file());
+
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Look at what is new",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+
+    moved.set(MORNING + 2 * 3600 + 30);
+    until("the first wake was not settled", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT count(*) FROM firings WHERE settled=1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .is_ok_and(|n| n == 1)
+    });
+    assert!(
+        std::fs::read_to_string(home.join("NOTES.md"))
+            .unwrap()
+            .contains("the person prefers tea"),
+        "the notes it ended its reply with were kept"
+    );
+    assert!(home.join("NOTES.md.prev").is_file());
+    let notices = moved.json(&workspace, &["--json", "notices"]);
+    assert_eq!(notices[0]["kind"], "mention", "it mentioned the person");
+    let body = notices[0]["body"].as_str().unwrap();
+    assert!(body.contains("Two new things"));
+    assert!(
+        !body.contains("<notes>"),
+        "the report is what it said, not its notes block"
+    );
+
+    // The next morning's wake is shown them.
+    moved.set(MORNING + DAY + 2 * 3600 + 30);
+    until("the second wake did not run", || {
+        firings(&moved, &workspace, &routine).len() == 2
+    });
+    until("the second wake was not recorded as a prompt", || {
+        workspace.log().matches("You are assistant").count() >= 2
+    });
+    let log = workspace.log();
+    let second = log.rsplit("You are assistant").next().unwrap();
+    assert!(
+        second.contains("the person prefers tea"),
+        "the notes come back to it"
+    );
+    assert!(second.contains("You are the person"), "and who it is for");
+    assert!(
+        second.contains("Two new things"),
+        "and what it said last time"
+    );
+
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// The one place Orochi sends the user's words to a third party for them: only with a key the
+/// user gave, only to phones that paired, and no more than the level they chose.
+#[test]
+fn a_push_goes_to_the_paired_phones_with_only_what_the_chosen_level_allows() {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/notifications", listener.local_addr().unwrap());
+    let record = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut raw = vec![];
+            let mut chunk = [0u8; 4096];
+            let body_at = loop {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break None;
+                }
+                raw.extend_from_slice(&chunk[..n]);
+                if let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break Some(p + 4);
+                }
+            };
+            let Some(body_at) = body_at else { continue };
+            let head = String::from_utf8_lossy(&raw[..body_at]).to_string();
+            let length: usize = head
+                .lines()
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            while raw.len() < body_at + length {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..n]);
+            }
+            record
+                .lock()
+                .unwrap()
+                .push((head, String::from_utf8_lossy(&raw[body_at..]).to_string()));
+            let answer = r#"{"id":"n-1"}"#;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                answer.len()
+            );
+        }
+    });
+
+    let mut workspace = Workspace::new();
+    workspace.config.notify.onesignal.enabled = true;
+    workspace.config.notify.onesignal.url = url;
+    workspace.config.notify.onesignal.app_id = "app-123".into();
+    let run = |workspace: &Workspace, key: Option<&str>, args: &[&str]| {
+        let mut cmd = workspace.command();
+        cmd.env_remove("ONESIGNAL_REST_API_KEY").args(args);
+        if let Some(key) = key {
+            cmd.env("ONESIGNAL_REST_API_KEY", key);
+        }
+        cmd.output().unwrap()
+    };
+    let test = |workspace: &Workspace, key: Option<&str>| {
+        let out = run(workspace, key, &["--json", "notify", "test"]);
+        success(&out);
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()
+    };
+
+    assert_eq!(test(&workspace, Some("secret-key"))["phone"], "no_phones");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "no phone paired, nothing sent"
+    );
+
+    success(&run(
+        &workspace,
+        None,
+        &[
+            "notify",
+            "phone-add",
+            "3f9a1c0de2b74a65b3c1d0e9f8a7b6c5",
+            "iPhone",
+        ],
+    ));
+    assert_eq!(test(&workspace, None)["phone"], "no_key");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "no key given, nothing sent"
+    );
+
+    assert_eq!(test(&workspace, Some("secret-key"))["phone"], "sent");
+    {
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let (head, body) = &requests[0];
+        assert!(head.starts_with("POST /notifications "), "{head}");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: key secret-key")
+        );
+        let sent: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(sent["app_id"], "app-123");
+        assert_eq!(sent["target_channel"], "push");
+        assert_eq!(
+            sent["include_aliases"]["external_id"],
+            serde_json::json!(["3f9a1c0de2b74a65b3c1d0e9f8a7b6c5"])
+        );
+        assert_eq!(sent["contents"]["en"], "Test from Orochi");
+        assert!(
+            !body.contains("If you can read this"),
+            "at the title level the body never leaves the machine"
+        );
+        assert!(!body.contains("secret-key"), "and nor does the key");
+    }
+
+    workspace.config.notify.level = "full".into();
+    assert_eq!(test(&workspace, Some("secret-key"))["phone"], "sent");
+    assert!(
+        seen.lock().unwrap()[1].1.contains("If you can read this"),
+        "a user who chose full gets the text through"
+    );
+
+    // Every notice is a row, whether or not it arrived.
+    let rows = serde_json::from_slice::<serde_json::Value>(
+        &run(&workspace, None, &["--json", "notices"]).stdout,
+    )
+    .unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 4);
+}
+
+/// A resident only proposes a routine, a time or a watch: nothing runs until the person
+/// allows it, one under the floor is refused with the reason, and only what the agent proposed
+/// is the agent's to cancel unless the person asked for it.
+#[test]
+fn a_resident_proposes_routines_that_run_only_once_the_person_allows_them() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "schedule_asks".into());
+    workspace.config.activity.host_idle_secs = 60;
+    // Each ask is answered on the console's next look at the mailbox, a second apart.
+    workspace.config.scheduler.prompt_timeout_secs = 60;
+    // Its own wake must be the one that asks: the ask comes from a resident's conversation.
+    let moved = Moved::new(&workspace, MORNING);
+    let made = moved.json(&workspace, &["--json", "resident", "new", "assistant"]);
+    let thread = made["thread"].as_str().unwrap().to_owned();
+    let home = std::path::PathBuf::from(made["home"].as_str().unwrap());
+    // The person's own routine on the same thread, which the agent must not be able to remove.
+    let theirs = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "weekdays at 09:00",
+            "--",
+            "Pause their routine, resume their routine or stop their routine",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    success(&workspace.run(&[
+        "threads",
+        "send",
+        &thread,
+        "Please keep me up with the news",
+    ]));
+    let answers = home.join("schedule_answers.json");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !answers.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the resident never asked; agent failure: {}; host log: {}; tools offered: {}",
+            std::fs::read_to_string(workspace.dir.path().join("agent.jsonl.err"))
+                .unwrap_or_default(),
+            std::fs::read_to_string(
+                workspace
+                    .dir
+                    .path()
+                    .join(format!("data/hosts/{thread}.log"))
+            )
+            .unwrap_or_default(),
+            workspace.log().chars().take(300).collect::<String>()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let said: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&answers).unwrap()).unwrap();
+    let news = said["good"]["proposed"].as_str().unwrap().to_owned();
+    assert!(said["watch"]["proposed"].is_string(), "{said}");
+    assert!(
+        said["fast"]["refused"]
+            .as_str()
+            .unwrap()
+            .contains("shortest allowed is 15"),
+        "the person's floor holds for a proposal too: {said}"
+    );
+    let listed = said["list"]["routines"].as_array().unwrap();
+    assert!(listed.iter().any(|r| r["made_by"] == "agent"
+        && r["name"] == "news"
+        && r["waiting_for_approval"] == true));
+    assert!(
+        listed.iter().any(|r| r["made_by"] == "user"),
+        "the person's own is listed too"
+    );
+    assert!(said["missing"]["refused"].is_string());
+    assert!(
+        said["cancelled"]["cancelled"].is_string(),
+        "what it proposed it may cancel"
+    );
+
+    // The person is asked, as an approval is.
+    let notices = moved.json(&workspace, &["--json", "notices"]);
+    assert!(
+        notices
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["kind"] == "ask" && n["routine_id"] == news.as_str()),
+        "{notices}"
+    );
+    // A proposal does not run, not even by hand, until it is allowed.
+    let shown = |id: &str| {
+        moved
+            .json(&workspace, &["--json", "routines", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(shown(&news)["proposed"], true);
+    assert_eq!(shown(&news)["paused"], true);
+    assert!(
+        !moved
+            .run(&workspace, &["routines", "run", &news])
+            .status
+            .success()
+    );
+    assert!(
+        !moved
+            .run(&workspace, &["routines", "resume", &news])
+            .status
+            .success()
+    );
+    success(&moved.run(&workspace, &["routines", "approve", &news]));
+    let allowed = shown(&news);
+    assert_eq!(allowed["proposed"], false);
+    assert_eq!(allowed["paused"], false);
+    assert!(
+        allowed["expires_at"].is_null(),
+        "an allowed routine does not lapse"
+    );
+    assert!(allowed["next_at"].is_i64());
+    assert!(
+        !moved
+            .run(&workspace, &["routines", "decline", &news])
+            .status
+            .success(),
+        "an allowed routine is not declined, it is removed"
+    );
+    assert_eq!(
+        moved
+            .json(&workspace, &["--json", "routines", "list"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    success(&moved.run(&workspace, &["routines", "rm", &news]));
+
+    // The person stops a routine by asking, so a message of theirs may remove even their own;
+    // a routine's own turn, which nobody asked for, may not.
+    let asked = |text: &str| {
+        let _ = std::fs::remove_file(&answers);
+        success(&workspace.run(&["threads", "send", &thread, text]));
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(raw) = std::fs::read_to_string(&answers)
+                && let Ok(said) = serde_json::from_str::<serde_json::Value>(&raw)
+            {
+                return said;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the resident never answered"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let _ = std::fs::remove_file(&answers);
+    success(&moved.run(&workspace, &["routines", "run", &theirs]));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let said = loop {
+        if let Ok(raw) = std::fs::read_to_string(&answers)
+            && let Ok(said) = serde_json::from_str::<serde_json::Value>(&raw)
+        {
+            break said;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the routine's turn never ran"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    for (key, words) in [
+        ("pause_theirs", "only a message from them can pause it"),
+        ("resume_theirs", "only a message from the person can resume"),
+        ("stop_theirs", "only a message from them"),
+    ] {
+        assert!(
+            said[key]["refused"]
+                .as_str()
+                .is_some_and(|r| r.contains(words)),
+            "{key}: {said}"
+        );
+    }
+    // Held for a while is paused, not removed, and started again from now when they ask.
+    let paused = |workspace: &Workspace| {
+        moved
+            .json(workspace, &["--json", "routines", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == theirs.as_str())
+            .map(|r| r["paused"].as_bool().unwrap())
+    };
+    let said = asked("Please pause their routine for a while");
+    assert_eq!(said["pause_theirs"]["paused"], true, "{said}");
+    assert_eq!(paused(&workspace), Some(true));
+    let said = asked("Please resume their routine");
+    assert_eq!(said["resume_theirs"]["paused"], false, "{said}");
+    assert!(said["resume_theirs"]["next"].is_string(), "{said}");
+    assert_eq!(paused(&workspace), Some(false));
+    let said = asked("Please stop their routine");
+    assert_eq!(said["stop_theirs"]["cancelled"], theirs.as_str(), "{said}");
+    assert!(
+        !moved
+            .json(&workspace, &["--json", "routines", "list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == theirs.as_str())
+    );
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// A watch costs nothing while what it looks at is the same, and wakes the thread once when it
+/// is not: the first look is only a baseline, and the change goes in the turn it starts.
+#[test]
+fn a_watch_wakes_its_thread_only_when_what_the_command_prints_changes() {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let watched = workspace.dir.path().join("repo/watched.txt");
+    std::fs::write(&watched, "build 1: passing\n").unwrap();
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--watch",
+            "cat watched.txt",
+            "--every",
+            "15m",
+            "--",
+            "Say what changed",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    let looks = |n: usize| firings(&moved, &workspace, &routine).len() == n;
+
+    moved.set(MORNING + 901);
+    until("the first look was not recorded", || looks(1));
+    assert_eq!(
+        firings(&moved, &workspace, &routine)[0]["skipped"],
+        "unchanged",
+        "the first look is a baseline, not a change"
+    );
+    moved.set(MORNING + 1802);
+    until("the second look was not recorded", || looks(2));
+    assert!(
+        firings(&moved, &workspace, &routine)[0]["turn_id"].is_null(),
+        "nothing changed"
+    );
+
+    std::fs::write(&watched, "build 2: FAILING\n").unwrap();
+    moved.set(MORNING + 2703);
+    until("the change did not wake the thread", || looks(3));
+    let changed = firings(&moved, &workspace, &routine);
+    assert!(
+        changed[0]["turn_id"].is_string(),
+        "a change starts a turn: {changed:?}"
+    );
+    until("the watch's turn did not carry what changed", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT text FROM items WHERE kind='user_message'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .is_ok_and(|text| text.contains("build 2: FAILING") && text.contains("untrusted"))
+    });
+
+    moved.set(MORNING + 3604);
+    until("the look after was not recorded", || looks(4));
+    assert!(
+        firings(&moved, &workspace, &routine)[0]["turn_id"].is_null(),
+        "the same output again is not another wake"
+    );
+
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+    until("the keeper stayed", || !moved.keeper_running(&workspace));
+}
+
+/// A command that keeps failing is a watch nobody is watching: after three it stops and says so.
+#[test]
+fn a_watch_whose_command_fails_three_times_in_a_row_is_paused_and_the_user_is_told() {
+    let workspace = Workspace::new();
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--watch",
+            "echo nope >&2; exit 3",
+            "--every",
+            "15m",
+            "--",
+            "Never reached",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    for n in 1..=3 {
+        moved.set(MORNING + 901 * n);
+        until("a failing look was not recorded", || {
+            firings(&moved, &workspace, &routine).len() == n as usize
+        });
+    }
+    assert!(
+        firings(&moved, &workspace, &routine)
+            .iter()
+            .all(|f| f["skipped"] == "failed")
+    );
+    until("the watch was not paused", || {
+        moved.json(&workspace, &["--json", "routines", "list"])[0]["paused"] == true
+    });
+    let notices = moved.json(&workspace, &["--json", "notices"]);
+    assert!(
+        notices[0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("command failed three times"),
+        "{notices}"
+    );
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    until("the keeper stayed", || !moved.keeper_running(&workspace));
+}
+
+/// A watch runs a command with nobody present, so it is only ever the user's to write.
+#[test]
+fn a_watch_needs_an_interval_over_the_floor_and_is_not_a_schedule() {
+    let workspace = Workspace::new();
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    for args in [
+        vec!["--watch", "date", "--every", "5m"],
+        vec!["--watch", "date"],
+        vec![
+            "--watch",
+            "date",
+            "--every",
+            "15m",
+            "--when",
+            "daily at 08:00",
+        ],
+        vec!["--every", "15m"],
+    ] {
+        let mut full = vec!["routines", "add", thread.as_str()];
+        full.extend(args.iter());
+        full.extend(["--", "x"]);
+        assert!(!moved.run(&workspace, &full).status.success(), "{args:?}");
+    }
+}
+
 /// A message written in the window names a file as `@path`, as one typed in the console does,
 /// and the host attaches it the same way rather than sending the agent the bare words.
 #[test]
@@ -3088,7 +4389,13 @@ fn a_queued_message_attaches_the_files_it_names() {
         .as_str()
         .unwrap()
         .to_owned();
-    success(&workspace.run(&["threads", "send", &thread, "Summarize @notes.md please"]));
+    success(&workspace.run(&[
+        "threads",
+        "send",
+        "--no-host",
+        &thread,
+        "Summarize @notes.md please",
+    ]));
     let mut host = workspace
         .command()
         .args(["host", "--thread", &thread])
@@ -4404,7 +5711,7 @@ fn a_restarted_host_resumes_the_threads_recorded_session() {
         .into_iter()
         .enumerate()
     {
-        success(&workspace.run(&["threads", "send", &thread, text]));
+        success(&workspace.run(&["threads", "send", "--no-host", &thread, text]));
         let host = workspace
             .command()
             .args(["host", "--thread", &thread])

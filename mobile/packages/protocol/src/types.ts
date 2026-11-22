@@ -470,3 +470,70 @@ export interface MediaData {
 
 export type ServerEvent =
   { type: 'hello' } | { type: 'changed'; threads: string[] } | { type: 'prompts' };
+
+// ---- residents, routines and notices (docs/resident-agent-design.md §14) ------------------
+
+export interface ResidentRow {
+  thread_id: string;
+  name: string;
+  home: string;
+  instruction: string;
+  access: 'read' | 'home';
+  paused: boolean;
+  created_at: number;
+  /** Unix seconds; null when nothing is scheduled. */
+  next_at: number | null;
+  routines: number;
+  asking: number;
+  working: boolean;
+}
+
+export interface RoutineRow {
+  id: string;
+  thread_id: string;
+  thread_title: string | null;
+  name: string;
+  instruction: string;
+  schedule: string | null;
+  watch: string | null;
+  /** How often a watch looks, in seconds. */
+  every_secs: number | null;
+  access: string;
+  notify: 'always' | 'mention' | 'never';
+  catch_up: 'once' | 'skip';
+  made_by: 'user' | 'agent';
+  expires_at: number | null;
+  paused: boolean;
+  /** An agent proposed it in the conversation; it runs only once the person allows it. */
+  proposed: boolean;
+  next_at: number | null;
+  last_at: number | null;
+  last_skipped: string | null;
+  last_state: string | null;
+  tokens_today: number;
+}
+
+export interface NoticeRow {
+  id: number;
+  kind: 'ask' | 'report' | 'mention' | 'trouble' | 'scheduled' | 'budget' | 'keeper';
+  thread_id: string | null;
+  routine_id: string | null;
+  prompt_id: string | null;
+  title: string;
+  body: string | null;
+  /** What became of it on each sink: sent, off, held, skipped_window, coalesced, failed, … */
+  mac: string | null;
+  phone: string | null;
+  /** Milliseconds. */
+  created_at: number;
+  read_at: number | null;
+}
+
+export interface KeeperState {
+  running: boolean;
+  login: boolean;
+  login_supported: boolean;
+  tokens_today: number;
+  daily_tokens: number;
+  enabled: boolean;
+}

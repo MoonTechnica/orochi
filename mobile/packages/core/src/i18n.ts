@@ -1,6 +1,34 @@
 export type Lang = 'en' | 'ja';
 
 const ja: Record<string, string> = {
+  // routines, residents and notices
+  Routines: 'ルーティン',
+  routines: 'ルーティン',
+  Residents: '常駐エージェント',
+  Notices: '通知',
+  'What wakes by itself, and what it did': '自動で動いたものと、その結果',
+  'Keeper running': 'キーパー稼働中',
+  'Keeper stopped': 'キーパー停止中',
+  tokens: 'トークン',
+  'Nothing yet.': 'まだありません。',
+  phone: 'スマホ',
+  'None. Make one at the desktop.': 'ありません。デスクトップで作成できます。',
+  None: 'なし',
+  'None.': 'なし。',
+  watch: '監視',
+  next: '次回',
+  'Run now': '今すぐ実行',
+  Resume: '再開',
+  Pause: '一時停止',
+  paused: '一時停止中',
+  'needs you': '対応が必要',
+  Report: 'レポート',
+  Problem: '問題',
+  Scheduled: '予約済み',
+  Budget: '予算',
+  Keeper: 'キーパー',
+  started: '開始済み',
+  'not run yet': '未実行',
   // tabs and screens
   Conversations: '会話',
   Activity: 'アクティビティ',
@@ -344,6 +372,42 @@ const ja: Record<string, string> = {
   'Could not send the answer.': '回答を送れませんでした。',
   About: 'このアプリについて',
   'Eight heads, one knot.': '八つの頭、ひとつの結び目。',
+  Assistant: 'アシスタント',
+  'Pair a desktop to talk to its assistant.':
+    'デスクトップとペアリングすると、そのアシスタントと話せます。',
+  Menu: 'メニュー',
+  'Working…': '作業中…',
+  'Next wakes at {when}': '次は {when} に起きます',
+  'Nothing scheduled — ask it to keep you up with something':
+    '予定はありません — 定期的に見てほしいことを頼んでください',
+  'Ask it anything, or for something every morning: it proposes, you allow.':
+    '何でも聞いてください。「毎朝〜して」と頼むと、アシスタントが提案し、あなたが許可します。',
+  'Message {name}': '{name} にメッセージを送信',
+  'Pause everything it has scheduled': '予定したことをすべて一時停止',
+  'Conversation details': '会話の詳細',
+  'Talk to {name}': '{name} と話す',
+  'Your assistant': 'あなたのアシスタント',
+  'An assistant lives on your desktop with a folder and notes of its own. Talk to it here; ask it to check something every morning and it proposes a routine for you to allow.':
+    'アシスタントはデスクトップに住み、専用のフォルダとメモを持っています。ここで話しかけてください。「毎朝〜を確認して」と頼むと、予定を提案するので、あなたが許可します。',
+  Name: '名前',
+  'Who it is': '役割',
+  'Who is it, and what is it for?': '誰で、何のためのアシスタントですか？',
+  'Make my assistant': 'アシスタントを作る',
+  'None yet. Ask your assistant for something every morning, and allow what it proposes.':
+    'まだありません。アシスタントに「毎朝〜して」と頼み、提案を許可してください。',
+  Allow: '許可',
+  Decline: '拒否',
+  'Show less': '折りたたむ',
+  'Show more': 'もっと表示する',
+  Source: '参照元',
+  'Woke for “{name}”': '「{name}」で起きました',
+  'Woke by a routine': 'ルーティンで起きました',
+  'Proposed watch': '監視の提案',
+  'Proposed routine': '予定の提案',
+  'It runs this command here with nobody present, reading only.':
+    '誰もいないときに、このコマンドを読み取り専用で実行します。',
+  'It runs reading only, with nobody present.': '誰もいないときに、読み取り専用で実行します。',
+  'waiting for your answer': '承認待ち',
 };
 
 export function t(key: string, lang: Lang = 'en'): string {

@@ -76,6 +76,7 @@ describe('one meaning for red', () => {
   // Where the red tokens may appear: error text, failed checks, destructive buttons and the
   // stop button, and nowhere else. Adding a file here is a decision about what red means.
   const DANGER = [
+    'app/(tabs)/assistant.tsx',
     'app/(tabs)/settings.tsx',
     'app/pair.tsx',
     'app/thread/[id]/files.tsx',

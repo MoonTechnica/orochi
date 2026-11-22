@@ -9,6 +9,7 @@ import { SessionProvider, useSession } from '../src/state/session';
 import { AttentionProvider } from '../src/state/attention';
 import { DataProvider } from '../src/state/data';
 import { NotifyProvider } from '../src/state/notify';
+import { PushProvider } from '../src/state/push';
 
 // A native-driven Animated value that has no listener yet; React Native warns and it is harmless.
 LogBox.ignoreLogs(['Sending `onAnimatedValueUpdate` with no listeners registered.']);
@@ -65,9 +66,11 @@ export default function Root() {
         <SessionProvider>
           <Scoped>
             <NotifyProvider>
-              <Gate>
-                <Shell />
-              </Gate>
+              <PushProvider>
+                <Gate>
+                  <Shell />
+                </Gate>
+              </PushProvider>
             </NotifyProvider>
           </Scoped>
         </SessionProvider>

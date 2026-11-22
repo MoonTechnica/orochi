@@ -193,6 +193,33 @@ pub enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// Things that wake a thread on a schedule: a morning brief, a check every few hours.
+    Routines {
+        #[command(subcommand)]
+        command: crate::routines::cli::RoutinesCommand,
+    },
+    /// Residents: agents with a folder of their own that routines wake.
+    Resident {
+        #[command(subcommand)]
+        command: crate::resident::cli::ResidentCommand,
+    },
+    /// What routines and residents have told you, and whether it reached you.
+    Notices {
+        #[command(subcommand)]
+        command: Option<crate::resident::cli::NoticesCommand>,
+        #[arg(long)]
+        unread: bool,
+    },
+    /// Where notices go: this Mac, and phones through OneSignal.
+    Notify {
+        #[command(subcommand)]
+        command: crate::resident::cli::NotifyCommand,
+    },
+    /// The process that keeps time for routines.
+    Keeper {
+        #[command(subcommand)]
+        command: crate::routines::cli::KeeperCommand,
+    },
     /// The worktrees Orochi's conversations opened for their helpers under this repository's
     /// `.orochi/sessions/`, and the patches of closed ones.
     Workspaces {
@@ -511,6 +538,9 @@ pub enum ThreadCommand {
         /// Reply in this member's thread.
         #[arg(long)]
         thread: Option<String>,
+        /// Only queue the message; start no host, for whoever runs the thread itself.
+        #[arg(long)]
+        no_host: bool,
     },
     /// What the agents have said to you with `@you` that you have not seen.
     Mentions,
@@ -823,6 +853,20 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
         (_, Some(worktree)) => Some(crate::worktrees::hold(&worktree)?),
     };
     let store = Store::open(&paths.data)?;
+    // Routines waiting with nobody keeping time for them (after a restart, say) are picked up
+    // by whichever command runs first. Asking is a lookup and a lock; never fatal.
+    if !matches!(
+        cli.command,
+        Some(
+            Command::Keeper { .. }
+                | Command::Routines { .. }
+                | Command::Resident { .. }
+                | Command::Notices { .. }
+                | Command::Notify { .. }
+        )
+    ) {
+        let _ = crate::keeper::ensure(&config, &paths.config, &paths.data);
+    }
     #[cfg(unix)]
     {
         let leases = paths.data.join("processes");
@@ -1290,6 +1334,21 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                 }
             }
         }
+        Some(Command::Routines { command }) => {
+            return crate::routines::cli::run_routines(command, &config, &paths, cli.json);
+        }
+        Some(Command::Resident { command }) => {
+            return crate::resident::cli::run_resident(command, &config, &paths, cli.json);
+        }
+        Some(Command::Notices { command, unread }) => {
+            return crate::resident::cli::run_notices(command, unread, &config, &paths, cli.json);
+        }
+        Some(Command::Notify { command }) => {
+            return crate::resident::cli::run_notify(command, &config, &paths, cli.json).await;
+        }
+        Some(Command::Keeper { command }) => {
+            return crate::routines::cli::run_keeper(command, &paths, cli.json);
+        }
         Some(Command::Workspaces { command }) => {
             let tools = crate::workspaces::Tools {
                 gh: crate::discovery::find_in("gh", &crate::setup::search_path(Some(&paths.data))),
@@ -1713,7 +1772,12 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         println!("{id}");
                     }
                 }
-                Some(ThreadCommand::Send { id, text, thread }) => {
+                Some(ThreadCommand::Send {
+                    id,
+                    text,
+                    thread,
+                    no_host,
+                }) => {
                     let id = named(&activity, &id)?;
                     // A member's name in the text, or the thread it is sent in, makes it a
                     // note to that member rather than a message for the lead.
@@ -1747,8 +1811,32 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                         }
                     } else {
                         let turn = activity.queue_turn(&id, &text, &[], "auto", "desktop")?;
+                        // A running host takes the message next; with none, this starts one,
+                        // since nothing else will and the turn would sit queued.
+                        let hosted = if no_host || crate::chat::host::running(&activity, &id)? {
+                            false
+                        } else {
+                            let global = [
+                                "--config".into(),
+                                paths.config.as_os_str().to_owned(),
+                                "--data-dir".into(),
+                                paths.data.as_os_str().to_owned(),
+                            ];
+                            // Another client may have started one in the meantime; that is
+                            // the host this message wanted, not a failure.
+                            match crate::chat::host::spawn(
+                                &std::env::current_exe()?,
+                                &global,
+                                &paths.data,
+                                &id,
+                            ) {
+                                Ok(()) => true,
+                                Err(_) if crate::chat::host::running(&activity, &id)? => false,
+                                Err(error) => return Err(error),
+                            }
+                        };
                         if cli.json {
-                            println!("{}", json!({ "turn": turn }));
+                            println!("{}", json!({ "turn": turn, "host_started": hosted }));
                         }
                     }
                 }

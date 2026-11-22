@@ -629,6 +629,10 @@ pub enum Answerer {
     Store,
 }
 
+/// How long a routine's unanswered question stands before it is declined, in seconds. The
+/// host sets it from `routines.ask_secs`; nobody is at the keyboard to wait for.
+pub static ASK_SECS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1800);
+
 /// Opens permission questions as rows and settles them.
 struct Asking {
     store: Shared,
@@ -659,6 +663,15 @@ impl Asking {
             )
             .map_err(|error| tracing::debug!(%error, "permission not recorded"))
             .ok();
+        // A question on a routine's turn has nobody to be asked: it is declined if it is not
+        // answered in time, and the turn goes on with the refusal.
+        if let Some(row) = &row {
+            let store = self.store.lock().expect("activity store");
+            if store.turn_is_routine(&self.turn).unwrap_or(false) {
+                let _ = store
+                    .expire_prompt_after(row, ASK_SECS.load(std::sync::atomic::Ordering::Relaxed));
+            }
+        }
         let downstream = match (downstream, self.answerer) {
             // The row is the only answerer, whether or not anything is watching this run: a
             // watcher with no terminal cannot answer, and holding a channel it never answers
@@ -728,12 +741,11 @@ impl Asking {
                         break answered;
                     }
                     _ = poll.tick() => {
-                        let stored = store
-                            .lock()
-                            .expect("activity store")
-                            .prompt_answer(&row)
-                            .ok()
-                            .flatten();
+                        let stored = {
+                            let db = store.lock().expect("activity store");
+                            let _ = db.expire_prompt(&row);
+                            db.prompt_answer(&row).ok().flatten()
+                        };
                         if let Some(answer) = stored {
                             break answer;
                         }

@@ -18,3 +18,5 @@ export * from './brand';
 export * from './people';
 export * from './officeScale';
 export * from './threads';
+export * from './routines';
+export * from './chat';

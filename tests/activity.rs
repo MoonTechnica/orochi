@@ -1911,3 +1911,30 @@ fn a_store_without_the_holds_table_still_lists_its_threads_and_gets_it_on_open()
         .unwrap();
     assert_eq!(present, 1);
 }
+
+#[test]
+fn a_question_nobody_has_answered_keeps_its_thread_marked_as_waiting() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    assert!(
+        !activity.has_open_prompt(&thread).unwrap(),
+        "a thread with no question is not waiting on anyone"
+    );
+    let prompt = activity
+        .open_prompt(&thread, &turn, None, None, "permission", "{}")
+        .unwrap();
+    assert!(
+        activity.has_open_prompt(&thread).unwrap(),
+        "the host must stay up while the question is open"
+    );
+    assert!(
+        activity
+            .answer_prompt(&prompt, Some(""), "desktop")
+            .unwrap()
+    );
+    assert!(
+        !activity.has_open_prompt(&thread).unwrap(),
+        "an answered question no longer holds the host"
+    );
+}

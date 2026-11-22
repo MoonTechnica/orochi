@@ -28,7 +28,12 @@ use std::{
 const POLL: Duration = Duration::from_millis(100);
 
 pub async fn run(config: &Config, config_path: &Path, data: &Path, thread: &str) -> Result<u8> {
+    crate::keeper::remember_config(config_path);
     let store = Store::open(data)?;
+    crate::activity::recorder::ASK_SECS.store(
+        config.routines.ask_secs,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let activity = share(Activity::open(data, config.activity.retention_days)?);
     let (cwd, overrides, permission) = {
         let db = activity.lock().expect("activity store");
@@ -175,7 +180,19 @@ async fn feed(
                 if !matches!(claimed, Ok(true)) {
                     continue;
                 }
-                if keys.send(Key::Queued { turn, text }).is_err() {
+                let routine = activity
+                    .lock()
+                    .expect("activity store")
+                    .turn_is_routine(&turn)
+                    .unwrap_or(false);
+                if keys
+                    .send(Key::Queued {
+                        turn,
+                        text,
+                        routine,
+                    })
+                    .is_err()
+                {
                     return;
                 }
                 last = Instant::now();
@@ -198,7 +215,14 @@ async fn feed(
                     .unwrap_or(false)
                     // A request held for an agent's limit resumes here, so the host stays up.
                     || crate::chat::holding()
-                    || held;
+                    || held
+                    // A question nobody has answered is a turn waiting on a person: ending the
+                    // host would end the turn the answer was for.
+                    || activity
+                        .lock()
+                        .expect("activity store")
+                        .has_open_prompt(&thread)
+                        .unwrap_or(false);
                 if working {
                     last = Instant::now();
                 }
@@ -210,6 +234,72 @@ async fn feed(
             }
         }
     }
+}
+
+/// Where a host's own stderr goes. A pipe nobody reads would stop it — or kill it, once the
+/// reader went away — so it is a file, which lives as long as the host does.
+pub fn log_path(data: &Path, thread: &str) -> PathBuf {
+    data.join("hosts").join(format!("{thread}.log"))
+}
+
+/// Starts `orochi host` for a thread and makes sure it took. Spawning succeeds whatever the
+/// binary then does, and one too old to know the subcommand rejects it and exits at once, so
+/// the caller would report a host while the turn sat queued for ever with nothing said. A host
+/// still running after a moment is a host; one that has already stopped is reported with what
+/// it said on its way out. `global` are the arguments that name this Orochi's config and data
+/// (`--config`, `--data-dir`), which the host needs to find the same store its caller wrote.
+pub fn spawn(
+    binary: &Path,
+    global: &[std::ffi::OsString],
+    data: &Path,
+    thread: &str,
+) -> Result<()> {
+    let log = log_path(data, thread);
+    std::fs::create_dir_all(log.parent().expect("a log has a folder"))?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log)
+        .with_context(|| format!("could not open {}", log.display()))?;
+    let mut command = std::process::Command::new(binary);
+    command
+        .args(global)
+        .args(["host", "--thread", thread])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(file);
+    // Its own process group, so an interrupt aimed at whoever started it does not reach it.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("could not start {}", binary.display()))?;
+    std::thread::sleep(Duration::from_millis(400));
+    let Some(status) = child.try_wait()? else {
+        return Ok(());
+    };
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    let said = said
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    anyhow::bail!(
+        "{} could not host this thread ({status}){}{said}",
+        binary.display(),
+        if said.is_empty() { "" } else { ": " }
+    )
+}
+
+/// Whether a host is running the thread now. A host whose process is gone has released it.
+pub fn running(activity: &Activity, thread: &str) -> Result<bool> {
+    activity.reap_hosts()?;
+    Ok(activity.connection().query_row(
+        "SELECT EXISTS(SELECT 1 FROM hosts WHERE thread_id=?1)",
+        [thread],
+        |r| r.get(0),
+    )?)
 }
 
 /// A host that ends releases its thread, so the next message can start another.

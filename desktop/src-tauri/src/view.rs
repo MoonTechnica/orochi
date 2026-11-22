@@ -8,51 +8,24 @@
 //! It never speaks to a host, and there is no second protocol: a message sent from here is a
 //! row, and the host that owns the thread finds it on its next look.
 
-/// Starts `orochi host` for a thread and makes sure it took. Spawning succeeds whatever the
-/// binary then does, and one too old to know the subcommand rejects it and exits at once — so
-/// the window would report a host while the turn sat queued for ever with nothing said. A host
-/// that is still running once it has had a moment is a host; one that has already stopped is
-/// reported with whatever it said on its way out.
-pub fn start_host(binary: &std::path::Path, thread: &str) -> Result<()> {
-    use std::io::Read;
-    let mut child = std::process::Command::new(binary)
-        .args(["host", "--thread", thread])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("could not start {}", binary.display()))?;
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    let Some(status) = child.try_wait()? else {
-        // It is running, and it goes on writing as it works. The pipe has to keep being read
-        // for as long as it does: the first line written after this end went away would kill
-        // it, and a full buffer would stop it just as dead.
-        if let Some(mut errors) = child.stderr.take() {
-            std::thread::Builder::new()
-                .name("orochi-host-stderr".into())
-                .spawn(move || {
-                    let mut sink = [0u8; 4096];
-                    while matches!(errors.read(&mut sink), Ok(read) if read > 0) {}
-                })
-                .ok();
-        }
-        return Ok(());
-    };
-    let mut said = String::new();
-    if let Some(mut errors) = child.stderr.take() {
-        let _ = errors.read_to_string(&mut said);
-    }
-    let said = said
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim();
-    bail!(
-        "{} could not host this thread ({status}){}{said}",
-        binary.display(),
-        if said.is_empty() { "" } else { ": " }
-    )
+/// Starts `orochi host` for a thread; see `orochi::chat::host::spawn`, which the command line
+/// shares so that a message sent from anywhere finds a host.
+pub fn start_host(
+    binary: &std::path::Path,
+    config: &std::path::Path,
+    data: &std::path::Path,
+    thread: &str,
+) -> Result<()> {
+    let global = [
+        "--config".into(),
+        config.as_os_str().to_owned(),
+        "--data-dir".into(),
+        data.as_os_str().to_owned(),
+    ];
+    orochi::chat::host::spawn(binary, &global, data, thread)
 }
+mod routines;
+
 use anyhow::{Context, Result, bail, ensure};
 use orochi::activity::{Activity, FileRow, Origin, ProjectRow, Thread, VIEW_API};
 use orochi::storage::Store;

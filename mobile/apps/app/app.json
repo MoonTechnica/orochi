@@ -38,8 +38,17 @@
       "output": "single",
       "favicon": "./assets/icon/favicon.png"
     },
+    "extra": {
+      "oneSignalAppId": ""
+    },
     "plugins": [
       "expo-router",
+      [
+        "onesignal-expo-plugin",
+        {
+          "mode": "development"
+        }
+      ],
       [
         "expo-splash-screen",
         {

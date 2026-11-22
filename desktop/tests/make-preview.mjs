@@ -10,7 +10,7 @@ const markup = readFileSync(join(here, "../src/index.html"), "utf8")
   .replace("<title>Orochi</title>", "<title>Orochi — preview</title>")
   .replace(
     '<script type="module" src="app.js"></script>',
-    '<script src="preview-data.js"></script>\n<script src="preview-files.js"></script>\n<script src="preview-channel.js"></script>\n<script src="preview-office.js"></script>\n<script type="module" src="app.js"></script>',
+    '<script src="preview-data.js"></script>\n<script src="preview-files.js"></script>\n<script src="preview-channel.js"></script>\n<script src="preview-office.js"></script>\n<script src="preview-routines.js"></script>\n<script type="module" src="app.js"></script>',
   );
 writeFileSync(join(here, "../src/preview.html"), markup);
 

@@ -1481,6 +1481,7 @@ impl<'a> Session<'a> {
             tty: self.tty,
             headless: self.headless,
             lead: self.lead_name.clone().unwrap_or_default(),
+            by_person: false,
         };
         let started = grant(
             feed,
@@ -1673,6 +1674,7 @@ impl<'a> Session<'a> {
             tty: self.tty,
             headless: self.headless,
             lead: self.lead_name.clone().unwrap_or_default(),
+            by_person: false,
         };
         grant(
             feed,
@@ -2190,7 +2192,11 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
     let picking = !term.suggestions.is_empty();
     let navigating = picking && matches!(key, Key::Up | Key::Down);
     match key {
-        Key::Queued { turn, text } => {
+        Key::Queued {
+            turn,
+            text,
+            routine,
+        } => {
             // A message written elsewhere (the window, `orochi threads send`) names files the
             // way a typed one does, so its `@path`s are attached the way a typed one's are.
             let mut prompt = Prompt::default();
@@ -2203,7 +2209,7 @@ fn press(term: &mut Term, key: Key, root: &Path) -> Action {
                 attachments,
                 steps: Steps::Auto,
                 from_helpers: false,
-                origin: None,
+                origin: routine.then_some("routine"),
             });
         }
         Key::Char(c) => term.prompt.insert(&c.to_string()),
@@ -2697,7 +2703,9 @@ impl Session<'_> {
             };
             task
         };
-        let steps = if message.from_helpers {
+        // A routine reads only, so a design → implement → review split would be three
+        // read-only sessions in a row; its team sits beside it in one turn instead.
+        let steps = if message.from_helpers || message.origin == Some("routine") {
             vec![]
         } else {
             self.steps(&message, &task)
@@ -4172,6 +4180,16 @@ impl Session<'_> {
         if phase.is_some_and(|p| p.stage != IMPLEMENT) {
             seats[0].writes = false;
         }
+        // A routine's turn has nobody at the keyboard, so nobody in it writes: what it changed
+        // could not be answered for. It is still a team where the work calls for one (the
+        // user's decision, 2026-11-21: that is what Orochi is for) — the same seats a message
+        // would get, each read-only, held back by the same cost gate and by the routine budget
+        // before it started, and all of it inside the one turn the keeper reports on.
+        if message.origin == Some("routine") {
+            for seat in &mut seats {
+                seat.writes = false;
+            }
+        }
         // The seat that holds the whole request is the lead, whatever kind of work it is.
         if self.config.manager.drive == "lead" && phase.is_none() && seats[0].writes {
             seats[0].name = "lead";
@@ -4360,7 +4378,10 @@ impl Session<'_> {
         // language, after pages of English instructions, answered in English anyway.
         task = format!("{LANGUAGE}\n\n{task}");
         if !beside.is_empty() {
-            task = format!("{task}\n\n{}", alongside(lead, &beside));
+            task = format!(
+                "{task}\n\n{}",
+                alongside(lead, &beside, message.origin == Some("routine"))
+            );
             self.view.launched(
                 &format!(
                     "{} beside {lead} · read only, talking over the mailbox",
@@ -4396,7 +4417,13 @@ impl Session<'_> {
             aside_slots.push(None);
             aside_runs.push((
                 role.clone(),
-                beside_seat(lead, role, &seats, &message.text),
+                beside_seat(
+                    lead,
+                    role,
+                    &seats,
+                    &message.text,
+                    message.origin == Some("routine"),
+                ),
                 sender,
             ));
         }
@@ -4414,14 +4441,31 @@ impl Session<'_> {
         let headless = self.headless;
         // The lead of work that writes may ask for helpers, for the length of its turn; a seat
         // beside it, a guest turn and a discussion may not.
-        let _delegation = (seats[0].writes && !guest)
+        // A resident, and any routine's own turn, may also ask to be woken later; that is all a
+        // routine's turn is offered, since it reads only and runs no helpers.
+        let routine_turn = message.origin == Some("routine");
+        let by_person = message.origin.is_none();
+        let resident = own_session
+            && self.config.routines.enabled
+            && self
+                .recorded
+                .as_ref()
+                .and_then(|r| {
+                    let thread = r.thread.clone()?;
+                    r.store().resident_for(&thread).ok().flatten()
+                })
+                .is_some();
+        let may_schedule =
+            self.config.routines.enabled && own_session && (routine_turn || resident);
+        let _delegation = ((seats[0].writes && !guest) || (routine_turn && may_schedule))
             .then(|| {
                 crate::mailbox::delegate_tier(
                     named.then_some(lead),
                     crate::mailbox::Tier {
-                        manager: self.config.manager.enabled && own_session,
+                        manager: self.config.manager.enabled && own_session && !routine_turn,
                         team: false,
-                        link: own_session && !self.config.org.links.is_empty(),
+                        link: own_session && !routine_turn && !self.config.org.links.is_empty(),
+                        schedule: may_schedule,
                     },
                 )
             })
@@ -4656,7 +4700,7 @@ impl Session<'_> {
                             Some(&descriptor),
                             beside.len(),
                             lead_read_only,
-                            Decide { manager, asks, tty, headless: is_headless, lead: lead_name.clone() },
+                            Decide { manager, asks, tty, headless: is_headless, lead: lead_name.clone(), by_person },
                         );
                         if !started.is_empty() {
                             helpers.launched(started);
@@ -5372,6 +5416,8 @@ struct Decide<'d, 'a> {
     headless: bool,
     /// The name the lead's session has in the room, for its helpers' prompts.
     lead: String,
+    /// The running turn is a message the person sent, so the agent acts on their word.
+    by_person: bool,
 }
 
 /// A seat row for a helper under the turn that is running, if one is recorded.
@@ -5436,6 +5482,7 @@ fn grant<'a>(
         tty,
         headless,
         lead,
+        by_person,
     } = decide;
     let lead = lead.as_str();
     deliver_reports(feed, background, &env, recorded, lead);
@@ -5473,7 +5520,7 @@ fn grant<'a>(
         if request.kind != "start" {
             decide_request(
                 &request, refuse, answer, manager, background, &env, recorded, feed, asks, tty,
-                headless,
+                headless, by_person,
             );
             continue;
         }
@@ -5866,6 +5913,7 @@ fn decide_request<'a>(
     asks: &mut VecDeque<Ask>,
     tty: bool,
     headless: bool,
+    by_person: bool,
 ) {
     let thread = recorded.and_then(|r| r.thread.clone());
     // A lead below the top asks about, and stops, only its own team.
@@ -5893,6 +5941,178 @@ fn decide_request<'a>(
             }
             Err(error) => refuse(&format!("{error:#}")),
         },
+        "schedule" | "list_schedules" | "cancel_schedule" | "pause_schedule"
+        | "resume_schedule" => {
+            let (Some(recorded), Some(thread)) = (recorded, &thread) else {
+                refuse("conversations are not recorded here, so nothing can be scheduled");
+                return;
+            };
+            let zone = crate::routines::Zone::Local;
+            let at = crate::routines::now();
+            let store = recorded.store();
+            let activity: &crate::activity::Activity = &store;
+            match request.kind.as_str() {
+                "schedule" => {
+                    let notify = Some(text("notify"))
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| "mention".into());
+                    let name = Some(text("name")).filter(|n| !n.is_empty());
+                    let watch = text("watch");
+                    // An agent proposes; nothing runs until the person allows it in the
+                    // conversation, the window or the phone.
+                    let made = if watch.is_empty() {
+                        crate::routines::api::add(
+                            env.config,
+                            activity,
+                            thread,
+                            &text("when"),
+                            name.as_deref(),
+                            &text("instruction"),
+                            &notify,
+                            "once",
+                            true,
+                            at,
+                            zone,
+                        )
+                    } else {
+                        crate::routines::api::add_watch(
+                            env.config,
+                            activity,
+                            thread,
+                            &watch,
+                            &text("every"),
+                            name.as_deref(),
+                            &text("instruction"),
+                            &notify,
+                            true,
+                            at,
+                        )
+                    };
+                    match made {
+                        Ok(made) => {
+                            let _ = activity.add_notice(
+                                "ask",
+                                Some(thread),
+                                Some(&made.id),
+                                None,
+                                &format!(
+                                    "{} proposes a routine: {}",
+                                    request.requester_name, made.words
+                                ),
+                                Some(&text("instruction")),
+                            );
+                            answer(json!({
+                                "proposed": made.id,
+                                "when": made.words,
+                                "note": format!(
+                                    "Nothing runs yet: the person is asked to allow it, and it is dropped if nobody answers within {} days. Tell them in one line what you proposed.",
+                                    env.config.routines.proposal_days
+                                ),
+                            }));
+                        }
+                        Err(error) => refuse(&format!("{error:#}")),
+                    }
+                }
+                "list_schedules" => {
+                    let rows: Vec<Value> = activity
+                        .routines(Some(thread))
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|r| {
+                            json!({
+                                "id": r.id,
+                                "name": r.name,
+                                "when": r.schedule,
+                                "next": r.next_at.map(|t| crate::routines::cli::stamp(zone, t)),
+                                "made_by": r.made_by,
+                                "paused": r.paused,
+                                "waiting_for_approval": r.proposed,
+                            })
+                        })
+                        .collect();
+                    answer(json!({ "routines": rows }));
+                }
+                // Pausing follows removing; starting one again is the person's alone, so a
+                // routine's turn cannot wake what was put to rest.
+                kind @ ("pause_schedule" | "resume_schedule") => {
+                    let pause = kind == "pause_schedule";
+                    match activity.routine(&text("id")) {
+                        Ok(Some(r)) if r.thread_id != *thread => {
+                            refuse("no routine with that id on this conversation");
+                        }
+                        Ok(Some(r)) if r.proposed => refuse(
+                            "that routine is a proposal waiting for the person's answer; it is not running",
+                        ),
+                        Ok(Some(r)) if !by_person && (!pause || r.made_by != "agent") => {
+                            refuse(if pause {
+                                "that routine is the person's; only a message from them can pause it"
+                            } else {
+                                "only a message from the person can resume a routine"
+                            });
+                        }
+                        Ok(Some(r)) if r.paused == pause => answer(json!({
+                            "routine": r.id,
+                            "paused": pause,
+                            "note": "It was already so; nothing changed.",
+                        })),
+                        Ok(Some(r)) => {
+                            let done = if pause {
+                                activity.set_routine_paused(&r.id, true).map(|_| ())
+                            } else {
+                                crate::routines::api::resume(activity, &r, at, zone)
+                            };
+                            match done {
+                                Ok(()) => {
+                                    let next = activity
+                                        .routine(&r.id)
+                                        .ok()
+                                        .flatten()
+                                        .and_then(|r| r.next_at)
+                                        .filter(|_| !pause)
+                                        .map(|t| crate::routines::cli::stamp(zone, t));
+                                    answer(json!({
+                                        "routine": r.id,
+                                        "paused": pause,
+                                        "next": next,
+                                        "note": format!(
+                                            "Tell the person in one line that “{}” is {}.",
+                                            r.name,
+                                            if pause {
+                                                "paused until they ask to resume it"
+                                            } else {
+                                                "running again"
+                                            }
+                                        ),
+                                    }));
+                                }
+                                Err(error) => refuse(&format!("{error:#}")),
+                            }
+                        }
+                        _ => refuse("no routine with that id on this conversation"),
+                    }
+                }
+                // The person stops a routine by asking for it, so a turn they started may
+                // remove any routine on the conversation; a routine's own turn, nobody's word,
+                // only what an agent made.
+                _ => match activity.routine(&text("id")) {
+                    Ok(Some(r))
+                        if r.thread_id == *thread && (by_person || r.made_by == "agent") =>
+                    {
+                        let _ = activity.delete_routine(&r.id);
+                        answer(json!({
+                            "cancelled": r.id,
+                            "note": format!("Tell the person in one line that “{}” is stopped.", r.name),
+                        }));
+                    }
+                    Ok(Some(r)) if r.thread_id == *thread => {
+                        refuse(
+                            "that routine is the person's; only a message from them can remove it",
+                        );
+                    }
+                    _ => refuse("no routine with that id on this conversation"),
+                },
+            }
+        }
         "projects" | "link" => {
             let Some(recorded) = recorded else {
                 refuse("conversations are not recorded here, so no other project is known");
@@ -6545,12 +6765,27 @@ async fn next_aside(
 }
 
 /// What the lead is told about the seats beside it.
-fn alongside(lead: &str, beside: &[Role]) -> String {
+fn alongside(lead: &str, beside: &[Role], unattended: bool) -> String {
     let who: Vec<String> = beside
         .iter()
         .map(|role| format!("`{}` — {}", role.name, role.brief))
         .collect();
     let (count, plural) = (beside.len(), if beside.len() == 1 { "" } else { "s" });
+    if unattended {
+        // A routine's team: nobody at the keyboard, so nobody writes and nobody is hired.
+        return format!(
+            "{count} other agent{plural} {} working beside you on this, right now:\n{}\n\n\
+             Nobody is at the keyboard for this turn, so all of you read and change nothing, \
+             you included, and no other agent is started. Divide the looking between you with \
+             the mailbox tools: send_message (to one name, or to \"all\") and read_messages, \
+             which waits for a reply only if you pass wait_seconds. They are waiting on you, so \
+             say early who looks at what. You are `{lead}` to them and you own the report; \
+             send_message to \"all\" when it is written, or they will wait for nothing. The \
+             report is your reply: what each found and what you concluded.\n\n{LANGUAGE}",
+            if count == 1 { "is" } else { "are" },
+            who.join("\n")
+        );
+    }
     format!(
         "{count} other agent{plural} {} working beside you on this, right now, in this same \
          working tree:\n{}\n\nThey read everything and change nothing — every write tool is \
@@ -6569,16 +6804,22 @@ fn alongside(lead: &str, beside: &[Role]) -> String {
 }
 
 /// The prompt for a seat beside the lead: same task, same tree, no way to change it.
-fn beside_seat(lead: &str, role: &Role, seats: &[Role], text: &str) -> String {
+fn beside_seat(lead: &str, role: &Role, seats: &[Role], text: &str, unattended: bool) -> String {
     let others: Vec<String> = seats
         .iter()
         .filter(|seat| seat.name != role.name)
         .map(|seat| format!("`{}`", seat.name))
         .collect();
+    let who_writes = if unattended {
+        "Nobody is at the keyboard for this turn, so nobody changes anything, `{lead}` included"
+    } else {
+        "`{lead}` is the only one that may change anything"
+    }
+    .replace("{lead}", lead);
     format!(
         "You are `{name}`, one of {total} agents working on this at the same time, in one \
-         repository. {brief}\n\nThe others are running right now: {others}. `{lead}` leads and \
-         is the only one that may change anything; you cannot, every write tool is refused for \
+         repository. {brief}\n\nThe others are running right now: {others}. `{lead}` leads. \
+         {who_writes}; you cannot, every write tool is refused for \
          this session, deliberately. Never start another agent or another Orochi yourself — the \
          others are already there.\n\nWhat the user asked:\n{text}\n\nRead what you need, then \
          send_message with what you have — to `{lead}`, to another seat by name, or to \"all\" \

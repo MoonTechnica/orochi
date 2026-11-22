@@ -559,7 +559,7 @@ MOCK_RESET_IN = "90"
         listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
                                            capture_output=True, text=True).stdout)
         thread = listed["projects"][0]["threads"][0]["id"]
-        subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+        subprocess.run([*common, "threads", "send", "--no-host", thread, "Summarize the README"], check=True,
                        capture_output=True)
         log = open(work / "host.log", "w")
         host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
@@ -633,7 +633,7 @@ host_idle_secs = 60
         listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
                                            capture_output=True, text=True).stdout)
         thread = listed["projects"][0]["threads"][0]["id"]
-        subprocess.run([*common, "threads", "send", thread, "Implement a small endpoint"], check=True,
+        subprocess.run([*common, "threads", "send", "--no-host", thread, "Implement a small endpoint"], check=True,
                        capture_output=True)
         log = open(work / "host.log", "w")
         host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
@@ -705,7 +705,7 @@ host_idle_secs = 60
                                            capture_output=True, text=True).stdout)
         thread = listed["projects"][0]["threads"][0]["id"]
         # A request the classifier reads as complex, so it runs as a team: design, then implement.
-        subprocess.run([*common, "threads", "send", thread,
+        subprocess.run([*common, "threads", "send", "--no-host", thread,
                         "Rewrite the entire architecture from scratch across the repository"],
                        check=True, capture_output=True)
         log = open(work / "host.log", "w")
@@ -777,7 +777,7 @@ MOCK_RESET_IN = "60"
         listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
                                            capture_output=True, text=True).stdout)
         thread = listed["projects"][0]["threads"][0]["id"]
-        subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+        subprocess.run([*common, "threads", "send", "--no-host", thread, "Summarize the README"], check=True,
                        capture_output=True)
         first_log = open(work / "host1.log", "w")
         first = subprocess.Popen([*common, "host", "--thread", thread], stdout=first_log,
@@ -862,7 +862,7 @@ MOCK_LOG = "{work / 'agent.jsonl'}"
         listed = json.loads(subprocess.run([*common, "threads", "--json"], check=True,
                                            capture_output=True, text=True).stdout)
         thread = listed["projects"][0]["threads"][0]["id"]
-        subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+        subprocess.run([*common, "threads", "send", "--no-host", thread, "Summarize the README"], check=True,
                        capture_output=True)
         log = open(work / "host.log", "w")
         host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
@@ -975,7 +975,7 @@ MOCK_LOG = "{work / 'third.jsonl'}"
                                      "loadable": False}), thread))
             con.commit()
             con.close()
-            subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+            subprocess.run([*common, "threads", "send", "--no-host", thread, "Summarize the README"], check=True,
                            capture_output=True)
             log = open(work / "host.log", "w")
             host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
@@ -1168,7 +1168,7 @@ host_idle_secs = 60
                                      "loadable": False}), thread))
             con.commit()
             con.close()
-            subprocess.run([*common, "threads", "send", thread, "Summarize the README"], check=True,
+            subprocess.run([*common, "threads", "send", "--no-host", thread, "Summarize the README"], check=True,
                            capture_output=True)
             log = open(work / "host.log", "w")
             host = subprocess.Popen([*common, "host", "--thread", thread], stdout=log,
