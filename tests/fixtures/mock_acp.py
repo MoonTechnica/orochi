@@ -686,6 +686,9 @@ for line in sys.stdin:
             reasoning = params["value"]
         elif params["configId"] == "mode":
             mode = params["value"]
+            # Claude's plan mode moves the session to another model (measured 2026-11-23).
+            if mode == "plan" and os.environ.get("MOCK_PLAN_MOVES_TO"):
+                model = os.environ["MOCK_PLAN_MOVES_TO"]
         result(request, {"configOptions": options()})
     elif method == "session/set_model":
         model = params["modelId"]

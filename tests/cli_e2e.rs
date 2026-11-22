@@ -3538,6 +3538,63 @@ fn pausing_a_routine_wakes_nothing_and_resuming_starts_from_now() {
 /// seats, talking over the mailbox, in one turn — and with nobody at the keyboard, none of them
 /// writes, the lead included, and no design → implement split runs.
 #[test]
+fn a_seat_that_only_reads_goes_on_without_a_mode_that_moves_the_session_to_another_model() {
+    let mut workspace = Workspace::new();
+    // The fixture's plan mode switches to the other model, as Claude's does (2026-11-23).
+    for (key, value) in [
+        ("MOCK_MODELS", "sol-test,astra-test"),
+        ("MOCK_PLAN_MOVES_TO", "astra-test"),
+    ] {
+        workspace.config.agents[0]
+            .env
+            .insert(key.into(), value.into());
+    }
+    workspace.config.agents[0].models = vec!["sol-test".into()];
+    workspace.config.activity.host_idle_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "say hello",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "run", &routine]));
+    until("the routine's turn did not finish", || {
+        firings(&moved, &workspace, &routine)
+            .first()
+            .is_some_and(|f| f["turn_state"] == "completed" || f["turn_state"] == "failed")
+    });
+    assert_eq!(
+        firings(&moved, &workspace, &routine)[0]["turn_state"],
+        "completed",
+        "a read-only seat could not start where its mode changed the model"
+    );
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let models: Vec<String> = activity
+        .connection()
+        .prepare("SELECT model FROM attempts ORDER BY started_at")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(models.iter().all(|m| m == "sol-test"), "{models:?}");
+}
+
+#[test]
 fn a_routine_may_start_a_helper_that_only_reads_and_its_report_waits_for_the_answer() {
     let mut workspace = Workspace::new();
     workspace.config.mailbox.enabled = true;

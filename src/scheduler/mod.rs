@@ -819,6 +819,7 @@ async fn run_recorded(
             reasoning: candidate.reasoning_level.clone(),
             resumed: resume.is_some(),
         });
+        let mut plain_mode = None;
         if options.read_only
             && let Some(mode) = clients[index]
                 .capabilities
@@ -833,6 +834,7 @@ async fn run_recorded(
                     })
                 })
         {
+            plain_mode = candidate.mode.clone();
             candidate.mode = Some(mode.clone());
             candidate
                 .reasons
@@ -890,7 +892,22 @@ async fn run_recorded(
                 if let (Some(id), Some(seat)) = (&recorded_attempt, &options.seat) {
                     let _ = seat.store.lock().expect("activity store").attempt_session(id, &clients[index].capabilities.session_id, clients[index].peer_id());
                 }
-                clients[index].configure(&candidate).await
+                let mut done = clients[index].configure(&candidate).await;
+                // Claude's plan mode moves the session to another model (measured 2026-11-23:
+                // haiku asked for, sonnet kept). A seat that only reads is refused every write
+                // here anyway, so it goes on in a fresh session without the mode, on the model
+                // the route chose.
+                if let (Err(error), Some(plain)) = (&done, &plain_mode)
+                    && error.kind == ErrorKind::Configuration
+                {
+                    candidate.mode = Some(plain.clone());
+                    candidate.reasons.push(
+                        "the read-only mode moved the session to another model, so it is not used".into(),
+                    );
+                    clients[index].new_session(root).await?;
+                    done = clients[index].configure(&candidate).await;
+                }
+                done
             } => result,
             _ = since.wait() => Err(AgentError::new(ErrorKind::Cancelled, "interrupted during session setup")),
         };
