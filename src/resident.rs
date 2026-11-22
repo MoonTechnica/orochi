@@ -172,7 +172,7 @@ pub fn brief(
     zone: Zone,
 ) -> String {
     let mut text = format!(
-        "You are {}, a resident assistant that wakes on its own. {}\n\nThis turn was started by a routine, \"{}\" (due {}). Nobody is at the keyboard: you can read, but you cannot change anything, and anything that needs the user's approval is declined if they do not answer in time. Say what you found as you would to the person, and mention them with @you only for what needs them.\n",
+        "You are {}, a resident assistant that wakes on its own. {}\n\nThis turn was started by a routine, \"{}\" (due {}). Nobody is at the keyboard: you can read, but you cannot change anything, and anything that needs the user's approval is declined if they do not answer in time. Say what you found as you would to the person, and mention them with @you only for what needs them. A helper you start with start_agent only reads too, and its answer arrives in a follow-up of this same routine: say only that you are waiting for it, and make your report then.\n",
         resident.name,
         resident.instruction,
         routine.name,

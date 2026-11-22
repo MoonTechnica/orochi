@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemRow, RoutineRow, Thread } from '@orochi/protocol';
-import { buildChat, folded, proposalWords, sourcesOf, wokenBy } from '../src';
+import { buildChat, folded, proposalWords, routineRows, sourcesOf, wokenBy } from '../src';
 
 let seq = 0;
 const item = (over: Partial<ItemRow>): ItemRow => ({
@@ -167,5 +167,23 @@ describe('the pieces of a bubble', () => {
       ),
     ).toEqual([]);
     expect(wokenBy('nothing here')).toBeNull();
+  });
+});
+
+describe('the list of what an assistant has scheduled', () => {
+  it('is its running routines, soonest first, held ones last, and never a proposal', () => {
+    const r = (over: Partial<RoutineRow>) =>
+      routine({ next_at: 100, proposed: false, paused: false, ...over });
+    const rows = routineRows(
+      [
+        r({ id: 'held', paused: true, next_at: 50 }),
+        r({ id: 'late', next_at: 300 }),
+        r({ id: 'soon', next_at: 200 }),
+        r({ id: 'ask', proposed: true }),
+        r({ id: 'other', thread_id: 'elsewhere' }),
+      ],
+      routine({}).thread_id,
+    );
+    expect(rows.map((x) => x.id)).toEqual(['soon', 'late', 'held']);
   });
 });

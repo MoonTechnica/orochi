@@ -5084,6 +5084,24 @@ test("a schedule is said in Japanese in a Japanese window and left as written ot
 
 const assistant = createRequire(import.meta.url)("../src/assistant.js");
 
+test("the assistant lists what it has scheduled, read only, with what is held last and no proposals", () => {
+  const r = (over) => ({ id: "r", thread_id: "a", name: "n", instruction: "", schedule: "daily at 07:00", watch: null, made_by: "agent", paused: false, proposed: false, next_at: 100, ...over });
+  const rows = assistant.routineRows(
+    [
+      r({ id: "held", name: "Held", paused: true, next_at: 50 }),
+      r({ id: "late", name: "Late", next_at: 300 }),
+      r({ id: "soon", name: "Soon", next_at: 200 }),
+      r({ id: "ask", name: "Waiting", proposed: true }),
+      r({ id: "other", thread_id: "b" }),
+      r({ id: "watch", name: "Watch", schedule: null, watch: "gh run list", every_secs: 3600, next_at: 400 }),
+    ],
+    "a",
+  );
+  assert.deepEqual(rows.map((x) => x.id), ["soon", "late", "watch", "held"]);
+  assert.equal(rows[2].when, "every 1h");
+  assert.equal(rows[3].paused, true);
+});
+
 test("the assistant draws the person and the reply as bubbles, with what was read under the reply", () => {
   let seq = 0;
   const item = (over) => ({ seq: ++seq, turn: "t1", lane: 0, at: 1000 + seq, kind: "agent_message", text: "", data: null, turn_origin: null, ...over });

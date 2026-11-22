@@ -104,6 +104,16 @@
     return { when: r.schedule || "", command: null };
   }
 
+  /// What this assistant has scheduled, for the read-only list under its name: the routines it
+  /// runs (a proposal waiting for an answer is a card in the conversation, not a row here),
+  /// the paused ones last. Nothing in it changes anything — it is asked for in the conversation.
+  function routineRows(routines, thread) {
+    return (routines || [])
+      .filter((r) => r.thread_id === thread && !r.proposed)
+      .map((r) => ({ id: r.id, name: r.name, ...proposalWords(r), paused: !!r.paused, next_at: r.next_at || null, last_at: r.last_at || null, byAgent: r.made_by === "agent" }))
+      .sort((a, b) => Number(a.paused) - Number(b.paused) || (a.next_at || Infinity) - (b.next_at || Infinity));
+  }
+
   const words = (text, lang) =>
     (typeof window !== "undefined" && window.OrochiRoutines?.scheduleWords?.(text, lang)) || text;
 
@@ -151,8 +161,8 @@
       head.append(pick);
     }
     const actions = node("div", "as-actions");
-    // There is no list of routines: the person asks the assistant to stop one. This is the
-    // one switch for when that is not enough, and it stops every routine of this resident.
+    // The list under the name only shows; the person asks the assistant to stop one. This is
+    // the one switch for when that is not enough, and it stops every routine of this resident.
     const pause = button(t("Pause"), async () => {
       const me = ((await call("residents", {})) || []).find((r) => r.thread_id === chosen);
       if (!me) return;
@@ -197,7 +207,9 @@
         submit();
       }
     });
-    page.append(head, list, form);
+    const scheduled = node("details", "as-routines");
+    scheduled.append(node("summary", "", ""));
+    page.append(head, scheduled, list, form);
     page.dataset.thread = chosen;
     await update(page, ctx);
   }
@@ -232,6 +244,7 @@
           ? t("Next wakes at {when}").replace("{when}", next)
           : t("Nothing scheduled — ask it to keep you up with something");
     page.querySelector(".as-input").placeholder = t("Message {name}").replace("{name}", title);
+    drawRoutineList(page.querySelector(".as-routines"), routineRows(routines, chosen), ctx);
     const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
     const lines = chatLines(thread, routines || [], prompts || []);
     list.replaceChildren();
@@ -248,6 +261,27 @@
     }
     if (atEnd || !list.dataset.drawn) list.scrollTop = list.scrollHeight;
     list.dataset.drawn = "1";
+  }
+
+  function drawRoutineList(box, rows, ctx) {
+    if (!box) return;
+    const { t } = ctx;
+    box.hidden = rows.length === 0;
+    box.querySelector("summary").textContent = t("Scheduled · {n}").replace("{n}", rows.length);
+    for (const old of [...box.querySelectorAll(".as-routine")]) old.remove();
+    for (const r of rows) {
+      const row = node("div", `as-routine${r.paused ? " paused" : ""}`);
+      row.dataset.routine = r.id;
+      row.append(node("span", "as-r-name", r.name));
+      row.append(node("span", "as-r-when", words(r.when, ctx.lang)));
+      const state = r.paused ? t("paused") : r.next_at ? t("Next wakes at {when}").replace("{when}", clock(r.next_at)) : "";
+      if (state) row.append(node("span", "as-r-state", state));
+      box.append(row);
+    }
+    // Stopping, pausing and resuming one is said to the assistant, which knows which it is.
+    if (rows.length && !box.querySelector(".as-r-hint")) {
+      box.append(node("p", "as-r-hint", t("To pause, resume or stop one, ask the assistant.")));
+    }
   }
 
   function drawLine(line, ctx) {
@@ -380,7 +414,7 @@
     page.append(box);
   }
 
-  const api = { chatLines, sourcesOf, wokenBy, folded, proposalWords, drawAssistant, update };
+  const api = { routineRows, chatLines, sourcesOf, wokenBy, folded, proposalWords, drawAssistant, update };
   if (typeof window !== "undefined") window.OrochiAssistant = api;
   if (typeof module !== "undefined") module.exports = api;
 })();

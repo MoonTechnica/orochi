@@ -1879,6 +1879,14 @@ button.link { background: none; border: 0; color: var(--accent, #3b82f6); cursor
 .as-pick { margin-left: 4px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: inherit; }
 .as-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
 .as-close { border: 0; color: var(--muted); font-size: 20px; line-height: 1; padding: 2px 8px; }
+.as-routines { padding: 4px var(--gutter); border-bottom: 1px solid var(--line); font-size: 12px; }
+.as-routines summary { cursor: pointer; color: var(--muted); }
+.as-routine { display: flex; gap: 10px; padding: 3px 0; align-items: baseline; }
+.as-routine.paused { opacity: 0.6; }
+.as-r-name { font-weight: 600; }
+.as-r-when, .as-r-state { color: var(--muted); }
+.as-r-state { margin-left: auto; }
+.as-r-hint { margin: 4px 0 2px; color: var(--muted); }
 .as-list { flex: 1; min-height: 0; overflow: auto; padding: var(--gutter); display: flex; flex-direction: column; gap: 8px; }
 .as-list > * { width: 100%; max-width: 760px; margin-left: auto; margin-right: auto; }
 .as-list > .empty { color: var(--muted); text-align: center; margin-top: 20vh; }

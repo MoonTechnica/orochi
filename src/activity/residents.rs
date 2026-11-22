@@ -58,6 +58,9 @@ pub struct Finished {
     pub state: String,
 }
 
+/// How long a routine's report waits for its helpers before it is told as it stands (seconds).
+const WAIT_FOR_HELPERS: i64 = 3600;
+
 impl Activity {
     pub fn add_resident(
         &self,
@@ -156,15 +159,16 @@ impl Activity {
     }
 
     /// Firings whose turn has ended and which nobody has settled yet.
-    pub fn unsettled(&self) -> Result<Vec<Finished>> {
+    pub fn unsettled(&self, now: i64) -> Result<Vec<Finished>> {
         Ok(self
             .connection
             .prepare(
                 "SELECT f.id, f.routine_id, r.name, r.notify, r.thread_id, t.id, t.state
                  FROM firings f JOIN routines r ON r.id=f.routine_id JOIN turns t ON t.id=f.turn_id
-                 WHERE f.settled=0 AND t.state NOT IN ('queued','running') ORDER BY f.id",
+                 WHERE f.settled=0 AND t.state NOT IN ('queued','running')
+                   AND (f.waiting=0 OR f.started_at < ?1) ORDER BY f.id",
             )?
-            .query_map([], |r| {
+            .query_map([now - WAIT_FOR_HELPERS], |r| {
                 Ok(Finished {
                     firing: r.get(0)?,
                     routine_id: r.get(1)?,
@@ -176,6 +180,32 @@ impl Activity {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The routine's turn has started helpers: its report waits for what they say.
+    pub fn hold_firing(&self, turn: &str) -> Result<()> {
+        self.connection
+            .execute("UPDATE firings SET waiting=1 WHERE turn_id=?1", [turn])?;
+        Ok(())
+    }
+
+    pub fn firing_waiting(&self, thread: &str) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM firings f JOIN routines r ON r.id=f.routine_id
+                           WHERE r.thread_id=?1 AND f.waiting=1)",
+            [thread],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// The turn the helpers woke is the routine's turn now, and the one reported on.
+    pub fn continue_firing(&self, thread: &str, to: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE firings SET turn_id=?2, waiting=0 WHERE waiting=1
+               AND routine_id IN (SELECT id FROM routines WHERE thread_id=?1)",
+            [thread, to],
+        )?;
+        Ok(())
     }
 
     /// Firings with a turn still to finish: the keeper stays for them.

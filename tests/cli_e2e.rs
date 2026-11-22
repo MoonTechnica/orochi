@@ -3538,6 +3538,93 @@ fn pausing_a_routine_wakes_nothing_and_resuming_starts_from_now() {
 /// seats, talking over the mailbox, in one turn — and with nobody at the keyboard, none of them
 /// writes, the lead included, and no design → implement split runs.
 #[test]
+fn a_routine_may_start_a_helper_that_only_reads_and_its_report_waits_for_the_answer() {
+    let mut workspace = Workspace::new();
+    workspace.config.mailbox.enabled = true;
+    for (key, value) in [
+        ("MOCK_BEHAVIOR", "delegate"),
+        ("MOCK_HELPERS", "spec:Research the API"),
+        // The routine's lead asks for a writing helper; nobody on a routine's turn writes.
+        ("MOCK_WRITERS", "spec"),
+    ] {
+        workspace.config.agents[0]
+            .env
+            .insert(key.into(), value.into());
+    }
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.scheduler.prompt_timeout_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let repo = workspace.dir.path().join("repo");
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Find out how the API is wired",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "run", &routine]));
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    let settled = || -> bool {
+        activity
+            .connection()
+            .query_row(
+                "SELECT settled FROM firings ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n == 1)
+            .unwrap_or(false)
+    };
+    until("the routine's report was never settled", settled);
+    let fixture_error =
+        std::fs::read_to_string(workspace.dir.path().join("agent.jsonl.err")).unwrap_or_default();
+    assert!(fixture_error.is_empty(), "{fixture_error}");
+    let started: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(repo.join("started.txt")).unwrap()).unwrap();
+    assert!(
+        started[0]["workspace"].is_null(),
+        "a helper on a routine's turn was given a worktree to write in: {started}"
+    );
+    let completions = std::fs::read_to_string(repo.join("completions.txt")).unwrap_or_default();
+    assert!(
+        completions.contains("Background agent `spec`"),
+        "the helper's answer never came back: {completions}"
+    );
+    let turns: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM turns WHERE origin='routine'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(turns, 2, "the routine's turn and the turn its helper woke");
+    let (turn_is_the_later, waiting): (bool, i64) = activity
+        .connection()
+        .query_row(
+            "SELECT f.turn_id = (SELECT id FROM turns WHERE origin='routine' ORDER BY rowid DESC LIMIT 1), f.waiting
+             FROM firings f ORDER BY f.id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(turn_is_the_later, "the report was not the helper's turn");
+    assert_eq!(waiting, 0);
+}
+
+#[test]
 fn a_routine_whose_work_calls_for_a_team_runs_one_that_only_reads() {
     let mut workspace = Workspace::new();
     for (key, value) in [("MOCK_BEHAVIOR", "seats"), ("MOCK_SEATS", "1")] {

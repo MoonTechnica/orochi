@@ -665,6 +665,8 @@ const WORDS = {
     "Message {name}": "{name} にメッセージを送信",
     "Next wakes at {when}": "次は {when} に起きます",
     "Nothing scheduled — ask it to keep you up with something": "予定はありません — 定期的に知りたいことを頼んでください",
+    "Scheduled · {n}": "予定 · {n}件",
+    "To pause, resume or stop one, ask the assistant.": "止める・再開する・やめるときは、アシスタントに頼んでください。",
     "Proposed routine": "予定の提案",
     "Proposed watch": "監視の提案",
     "Show less": "折りたたむ",

@@ -378,6 +378,9 @@ const ja: Record<string, string> = {
   Menu: 'メニュー',
   'Working…': '作業中…',
   'Next wakes at {when}': '次は {when} に起きます',
+  'Scheduled · {n}': '予定 · {n}件',
+  'To pause, resume or stop one, ask the assistant.':
+    '止める・再開する・やめるときは、アシスタントに頼んでください。',
   'Nothing scheduled — ask it to keep you up with something':
     '予定はありません — 定期的に見てほしいことを頼んでください',
   'Ask it anything, or for something every morning: it proposes, you allow.':

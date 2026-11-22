@@ -1482,6 +1482,7 @@ impl<'a> Session<'a> {
             headless: self.headless,
             lead: self.lead_name.clone().unwrap_or_default(),
             by_person: false,
+            unattended: false,
         };
         let started = grant(
             feed,
@@ -1675,6 +1676,7 @@ impl<'a> Session<'a> {
             headless: self.headless,
             lead: self.lead_name.clone().unwrap_or_default(),
             by_person: false,
+            unattended: false,
         };
         grant(
             feed,
@@ -1864,6 +1866,13 @@ impl<'a> Session<'a> {
             text = format!("{text}\n\n{note}");
         }
         let (parts, origin) = self.manager.take();
+        // What a routine's helpers said is still that routine's turn: read-only, nobody at the
+        // keyboard, and the report the keeper tells.
+        let routine = self.recorded.as_ref().is_some_and(|r| {
+            r.thread
+                .as_deref()
+                .is_some_and(|thread| r.store().firing_waiting(thread).unwrap_or(false))
+        });
         for part in parts {
             text = if text.is_empty() {
                 part
@@ -1877,7 +1886,9 @@ impl<'a> Session<'a> {
             queued: None,
             steps: Steps::Solo,
             from_helpers: true,
-            origin: Some(if finished.is_empty() {
+            origin: Some(if routine {
+                "routine"
+            } else if finished.is_empty() {
                 origin
             } else {
                 "background"
@@ -2828,6 +2839,9 @@ impl Session<'_> {
                 recorded
                     .store()
                     .turn_origin(&turn, message.origin.unwrap_or("background"))?;
+                if message.origin == Some("routine") {
+                    recorded.store().continue_firing(&thread, &turn)?;
+                }
             }
             recorded.turn = Some(turn);
             Ok(())
@@ -4700,7 +4714,7 @@ impl Session<'_> {
                             Some(&descriptor),
                             beside.len(),
                             lead_read_only,
-                            Decide { manager, asks, tty, headless: is_headless, lead: lead_name.clone(), by_person },
+                            Decide { manager, asks, tty, headless: is_headless, lead: lead_name.clone(), by_person, unattended: routine_turn },
                         );
                         if !started.is_empty() {
                             helpers.launched(started);
@@ -5418,6 +5432,9 @@ struct Decide<'d, 'a> {
     lead: String,
     /// The running turn is a message the person sent, so the agent acts on their word.
     by_person: bool,
+    /// The running turn is a routine's: nobody is at the keyboard, so a helper it starts only
+    /// reads, and the turn's report waits for what the helper says.
+    unattended: bool,
 }
 
 /// A seat row for a helper under the turn that is running, if one is recorded.
@@ -5483,6 +5500,7 @@ fn grant<'a>(
         headless,
         lead,
         by_person,
+        unattended,
     } = decide;
     let lead = lead.as_str();
     deliver_reports(feed, background, &env, recorded, lead);
@@ -5546,7 +5564,7 @@ fn grant<'a>(
             refuse("only the agent leading a conversation can start helpers");
             continue;
         };
-        if read_only && sub.is_none() {
+        if read_only && !unattended && sub.is_none() {
             refuse("this conversation changes nothing, so it has no helpers");
             continue;
         }
@@ -5568,7 +5586,7 @@ fn grant<'a>(
         };
         let named = !hired.name.is_empty();
         // A role says whether its holder writes; without one the lead says.
-        let write = if named { hired.writes } else { request.write };
+        let write = !unattended && if named { hired.writes } else { request.write };
         // What the person asked for outright is never held back for being small.
         let by_user = request.payload["user"].as_bool().unwrap_or(false);
         if !by_user
@@ -5780,6 +5798,13 @@ fn grant<'a>(
             resume,
             post,
         );
+        // The turn's report is the helper's result, so the keeper holds it back until then.
+        if unattended
+            && let Some(recorded) = recorded
+            && let Some(turn) = &recorded.turn
+        {
+            let _ = recorded.store().hold_firing(turn);
+        }
         started.push((name, request.title));
     }
     started

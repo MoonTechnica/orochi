@@ -3052,6 +3052,7 @@ impl Activity {
 /// Orochi sharing the data directory keeps working; but `SCHEMA` only runs when the version
 /// moves, so these are added on open, each at most once (`added`).
 const ADDED: &[(&str, &str, &str)] = &[
+    ("firings", "waiting", "INTEGER NOT NULL DEFAULT 0"),
     // What a seat was started for, in a few words (a background seat's title), whether it
     // outlives its turn, who started it, and what it reported back. Content, so here only.
     ("seats", "title", "TEXT"),
@@ -3166,7 +3167,10 @@ CREATE TABLE IF NOT EXISTS firings (
     ('paused','overlap','budget','quota','late','gate','unchanged','failed')),
   -- Whether the finished turn has been looked at (its notes kept, its notice made), and
   -- what it cost in weighted tokens, which the day's budget adds up.
-  settled INTEGER NOT NULL DEFAULT 0, tokens INTEGER);
+  settled INTEGER NOT NULL DEFAULT 0, tokens INTEGER,
+  -- A turn that started read-only helpers is not over until they have reported: its report
+  -- is the turn they wake, which takes this firing over.
+  waiting INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS firings_routine ON firings(routine_id, id);
 "#,
     ),
@@ -3398,7 +3402,20 @@ fn added(connection: &Connection) -> Result<()> {
     let transaction =
         rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)?;
     let mut sql = String::new();
-    for (table, column, definition) in missing(&transaction)? {
+    // A column of a table that is itself missing is part of that table's own definition, and
+    // a whole table is made before anything is added to one.
+    let mut todo = missing(&transaction)?;
+    todo.sort_by_key(|(table, ..)| !table.is_empty());
+    let made: Vec<&str> = todo
+        .iter()
+        .filter(|(table, ..)| table.is_empty())
+        .map(|(_, _, sql)| *sql)
+        .collect();
+    for (table, column, definition) in todo {
+        let created = format!("CREATE TABLE IF NOT EXISTS {table} ");
+        if !table.is_empty() && made.iter().any(|sql| sql.contains(&created)) {
+            continue;
+        }
         if table.is_empty() {
             // A missing table: `definition` is its whole SQL.
             sql.push_str(definition);

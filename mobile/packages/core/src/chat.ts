@@ -158,6 +158,35 @@ export function proposalWords(r: RoutineRow): { when: string; command: string | 
   return { when: r.schedule ?? '', command: null };
 }
 
+export interface ScheduledRow {
+  id: string;
+  name: string;
+  when: string;
+  command: string | null;
+  paused: boolean;
+  next_at: number | null;
+}
+
+/**
+ * What an assistant has scheduled, for the read-only list: its running routines (a proposal
+ * waiting for an answer is a card in the conversation), soonest first, paused ones last.
+ */
+export function routineRows(routines: RoutineRow[], thread: string): ScheduledRow[] {
+  return routines
+    .filter((r) => r.thread_id === thread && !r.proposed)
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      ...proposalWords(r),
+      paused: r.paused,
+      next_at: r.next_at ?? null,
+    }))
+    .sort(
+      (a, b) =>
+        Number(a.paused) - Number(b.paused) || (a.next_at ?? Infinity) - (b.next_at ?? Infinity),
+    );
+}
+
 /** A line with the day before the first bubble of each day. */
 export function chatWithDays(bubbles: ChatLine[]): ChatLine[] {
   const out: ChatLine[] = [];

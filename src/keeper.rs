@@ -240,7 +240,7 @@ async fn run(config_path: &Path, data: &Path, clock: Clock) -> Result<()> {
                 eprintln!("a routine could not be run: {}: {error:#}", routine.name);
             }
         }
-        if let Err(error) = settle(&activity, &config).await {
+        if let Err(error) = settle(&activity, &config, at).await {
             eprintln!("could not settle the finished routines: {error:#}");
         }
         deliver_notices(&activity, &config, data).await;
@@ -406,7 +406,7 @@ fn wake_text(
 pub fn brief(routine: &Routine, due_at: i64, zone: Zone) -> String {
     let p = zone.parts(due_at);
     format!(
-        "This turn was started by a routine, \"{}\" (due {:04}-{:02}-{:02} {:02}:{:02}). Nobody is at the keyboard: you can read, but you cannot change anything, and anything that needs the user's approval will be declined if they do not answer in time. Say what you found as you would to the person, and mention them with @you only for what needs them.\n\n{}",
+        "This turn was started by a routine, \"{}\" (due {:04}-{:02}-{:02} {:02}:{:02}). Nobody is at the keyboard: you can read, but you cannot change anything, and anything that needs the user's approval will be declined if they do not answer in time. Say what you found as you would to the person, and mention them with @you only for what needs them. A helper you start with start_agent only reads too, and its answer arrives in a follow-up of this same routine: say only that you are waiting for it, and make your report then.\n\n{}",
         routine.name, p.year, p.month, p.day, p.hour, p.minute, routine.instruction
     )
 }
@@ -668,7 +668,7 @@ fn over_budget(activity: &Activity, config: &Config, at: i64, zone: Zone) -> Res
 
 /// A routine's turn has ended: keep the notes it carried, count what it cost, and say what it
 /// found (or that it failed) to whoever should hear.
-async fn settle(activity: &Activity, config: &Config) -> Result<()> {
+async fn settle(activity: &Activity, config: &Config, now: i64) -> Result<()> {
     for (prompt, thread, request, routine) in activity.unannounced_prompts()? {
         let tool = serde_json::from_str::<serde_json::Value>(&request)
             .ok()
@@ -691,7 +691,7 @@ async fn settle(activity: &Activity, config: &Config) -> Result<()> {
             )),
         )?;
     }
-    for done in activity.unsettled()? {
+    for done in activity.unsettled(now)? {
         let reply = activity.last_reply(&done.turn_id)?;
         let tokens = activity.turn_tokens(&done.turn_id)?;
         activity.set_firing_tokens(done.firing, tokens)?;

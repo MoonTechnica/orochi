@@ -883,14 +883,28 @@ one of them read-only, the lead included, and told so (`alongside` / `beside_sea
 `unattended`): nobody is at the keyboard to answer for a change. A routine is never split into
 design → implement → review phases, which would be read-only sessions in a row; its team sits in
 one turn, so the keeper's report, the budget it counts and the question's expiry all hold as for
-one agent. No helper is started (`start_agent` is refused to a lead that reads only): a helper's
-result comes back as a later turn the routine's report would not include. The routine budget is
-checked before the turn starts, so a team can overrun it by what that one turn costs. Tested end
-to end (`a_routine_whose_work_calls_for_a_team_runs_one_that_only_reads`); not with a real agent.
+one agent. The routine budget is checked before the turn starts, so a team can overrun it by what
+that one turn costs. Tested end to end (`a_routine_whose_work_calls_for_a_team_runs_one_that_only_reads`);
+not with a real agent.
 
-Not done: a read-only list of a conversation's routines in the window (every one of the four has a
-list somewhere; here it is `list_schedules` and `orochi routines`), and a real agent deciding
-between pausing and removing.
+**A routine's lead may start helpers, and they only read** (`start_agent`, forced read-only by
+`grant`'s `unattended`; a worktree is never made). A helper's result comes back as a later turn,
+which would have left the keeper reporting "I started it". So a turn that started a helper marks
+its firing `waiting` (`Activity::hold_firing`): `unsettled` skips it, the turn the helper's result
+wakes is a `routine` turn like the first (read-only, questions expiring), and it takes the firing
+over (`continue_firing`), so the notice is made from the answer. A firing still waiting after an
+hour (the host went away) is settled as it stands. The prompt tells the lead to say only that it
+waits. Tested (`a_routine_may_start_a_helper_that_only_reads_and_its_report_waits_for_the_answer`);
+not with a real agent.
+
+**The window lists the assistant's routines, read only** (`routineRows`, a folded "Scheduled · n"
+under its name: when, next wake, paused ones last; proposals stay cards in the conversation).
+Nothing in it changes anything: pausing, resuming and stopping are said to the assistant.
+
+The phone has the same list (`routineRows` in `@orochi/core`, a "Scheduled · n" entry in the
+assistant's menu that opens a sheet; unit-tested, not looked at on a device or in the web build).
+
+Not done: a real agent deciding between pausing and removing.
 
 Not built: a character or voice. Checked with the unit and end-to-end tests above, the window's UI
 tests (`ui.test.mjs`) and `views.rs`, and by hand in the web build against
