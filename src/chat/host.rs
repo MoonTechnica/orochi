@@ -35,6 +35,19 @@ pub async fn run(config: &Config, config_path: &Path, data: &Path, thread: &str)
         std::sync::atomic::Ordering::Relaxed,
     );
     let activity = share(Activity::open(data, config.activity.retention_days)?);
+    {
+        let home = {
+            let db = activity.lock().expect("activity store");
+            db.resident_for(thread)
+                .ok()
+                .flatten()
+                .map(|r| r.home)
+                .unwrap_or_default()
+        };
+        if let Ok(mut policy) = crate::activity::recorder::ROUTINE_APPROVAL.lock() {
+            *policy = (config.routines.approval.clone(), home);
+        }
+    }
     let (cwd, overrides, permission) = {
         let db = activity.lock().expect("activity store");
         let (cwd, overrides, permission) = db

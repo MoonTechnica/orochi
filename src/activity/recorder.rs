@@ -633,6 +633,44 @@ pub enum Answerer {
 /// host sets it from `routines.ask_secs`; nobody is at the keyboard to wait for.
 pub static ASK_SECS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1800);
 
+/// How a routine's permission questions are answered with nobody at the keyboard, and the
+/// folder `smart` trusts: set by the host from `routines.approval` and the resident's home.
+/// `ask` leaves the question open until `ASK_SECS`; `off` allows it at once (OpenClaw's
+/// `security=full`, Hermes' `off`); `smart` allows a change that stays inside the folder and
+/// asks about everything else (Hermes' `smart`, judged by a rule here, not by a model).
+pub static ROUTINE_APPROVAL: std::sync::Mutex<(String, String)> =
+    std::sync::Mutex::new((String::new(), String::new()));
+
+/// Whether the routine policy allows this request outright.
+fn routine_allows(request: &serde_json::Value) -> bool {
+    let (mode, home) = ROUTINE_APPROVAL
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    match mode.as_str() {
+        "off" => true,
+        "smart" => {
+            let call = &request["toolCall"];
+            let places: Vec<&str> = call["locations"]
+                .as_array()
+                .map(|all| all.iter().filter_map(|l| l["path"].as_str()).collect())
+                .unwrap_or_default();
+            let edit = matches!(call["kind"].as_str(), Some("edit" | "delete" | "move"));
+            let home = std::path::Path::new(&home);
+            edit && !home.as_os_str().is_empty()
+                && !places.is_empty()
+                && places.iter().all(|p| {
+                    let p = std::path::Path::new(p);
+                    p.starts_with(home)
+                        && !p
+                            .components()
+                            .any(|c| matches!(c, std::path::Component::ParentDir))
+                })
+        }
+        _ => false,
+    }
+}
+
 /// Opens permission questions as rows and settles them.
 struct Asking {
     store: Shared,
@@ -668,6 +706,14 @@ impl Asking {
         if let Some(row) = &row {
             let store = self.store.lock().expect("activity store");
             if store.turn_is_routine(&self.turn).unwrap_or(false) {
+                if routine_allows(&request)
+                    && let Some(id) = crate::acp::allow_once_option(&request)
+                {
+                    let _ = store.answer_prompt(row, Some(id.as_str()), "policy");
+                    drop(store);
+                    let _ = reply.send(Some(id));
+                    return;
+                }
                 let _ = store
                     .expire_prompt_after(row, ASK_SECS.load(std::sync::atomic::Ordering::Relaxed));
             }

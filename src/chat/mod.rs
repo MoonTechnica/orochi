@@ -4199,7 +4199,7 @@ impl Session<'_> {
         // user's decision, 2026-11-21: that is what Orochi is for) — the same seats a message
         // would get, each read-only, held back by the same cost gate and by the routine budget
         // before it started, and all of it inside the one turn the keeper reports on.
-        if message.origin == Some("routine") {
+        if message.origin == Some("routine") && self.config.residents.access == "read" {
             for seat in &mut seats {
                 seat.writes = false;
             }
@@ -5586,7 +5586,8 @@ fn grant<'a>(
         };
         let named = !hired.name.is_empty();
         // A role says whether its holder writes; without one the lead says.
-        let write = !unattended && if named { hired.writes } else { request.write };
+        let write = (!unattended || env.config.residents.access != "read")
+            && if named { hired.writes } else { request.write };
         // What the person asked for outright is never held back for being small.
         let by_user = request.payload["user"].as_bool().unwrap_or(false);
         if !by_user
@@ -5596,7 +5597,7 @@ fn grant<'a>(
             refuse("work like this has cost less than a helper session costs here; do it yourself");
             continue;
         }
-        if write && !env.worktrees {
+        if write && !unattended && !env.worktrees {
             refuse(
                 "worktrees are off for this conversation (/worktrees on), so do the work yourself",
             );
@@ -5643,7 +5644,7 @@ fn grant<'a>(
             }
         };
         let mut opened = None;
-        let workspace = if write {
+        let workspace = if write && !unattended {
             if let Err(error) = hold_live(&env) {
                 refuse(&format!("cannot hold the session directory: {error:#}"));
                 continue;
@@ -5781,6 +5782,7 @@ fn grant<'a>(
             manager: false,
             team: role.as_ref().is_some_and(|r| r.lead),
             link: role.as_ref().is_some_and(|r| r.lead) && !env.config.org.links.is_empty(),
+            in_place: write && unattended,
             parent: manager_name,
             role,
             brief,
@@ -6797,11 +6799,11 @@ fn alongside(lead: &str, beside: &[Role], unattended: bool) -> String {
         .collect();
     let (count, plural) = (beside.len(), if beside.len() == 1 { "" } else { "s" });
     if unattended {
-        // A routine's team: nobody at the keyboard, so nobody writes and nobody is hired.
+        // A routine's team is the conversation's team with one change: nobody is at the keyboard, so
+        // nobody writes. Roles and helpers work as they always do.
         return format!(
             "{count} other agent{plural} {} working beside you on this, right now:\n{}\n\n\
-             Nobody is at the keyboard for this turn, so all of you read and change nothing, \
-             you included, and no other agent is started. Divide the looking between you with \
+             Nobody is at the keyboard for this turn, so the seats beside you read and change nothing. Divide the looking between you with \
              the mailbox tools: send_message (to one name, or to \"all\") and read_messages, \
              which waits for a reply only if you pass wait_seconds. They are waiting on you, so \
              say early who looks at what. You are `{lead}` to them and you own the report; \

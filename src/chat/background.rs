@@ -63,6 +63,9 @@ pub struct Post {
     pub team: bool,
     /// May message the leads of linked projects.
     pub link: bool,
+    /// Writes in the lead's own folder, with no worktree of its own: a routine's helper, where
+    /// the folder is an assistant's and not a repository (the user's rule 2026-11-23).
+    pub in_place: bool,
 }
 
 pub struct Helper {
@@ -244,7 +247,7 @@ impl<'a> Background<'a> {
             attachments: vec![],
             peer: Some(name.clone()),
             verify: false,
-            read_only: workspace.is_none(),
+            read_only: workspace.is_none() && !post.in_place,
             place: None,
             seat: seat.clone(),
             answerer: answerer(env.permission, env.headless),
@@ -274,7 +277,7 @@ impl<'a> Background<'a> {
             if crate::sandbox::placement(env.data, env.root, config.sandbox.force)?.is_some() {
                 config.sandbox.session_root = Some(env.workspace.clone());
             }
-            let _lock = if options.read_only {
+            let _lock = if options.read_only || offered.in_place {
                 None
             } else {
                 Some(crate::storage::workspace_lock(
@@ -628,6 +631,11 @@ fn prompt(
         return format!(
             "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\n{role}{brief}Implement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree; do not commit, merge or push — `{lead}` closes the worktree when your report is in, merging your changes. Report changed files, checks and remaining issues. {others}\n\nYour task:\n{task}",
             root.display()
+        );
+    }
+    if post.in_place {
+        return format!(
+            "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\n{role}{brief}You work in the same folder as `{lead}`, with no copy of your own, so change only what your task names and leave the rest alone. Each change is asked of the user as in a conversation. Your final reply is what `{lead}` receives: say what you changed and what you found. {others}\n\nYour task:\n{task}"
         );
     }
     format!(

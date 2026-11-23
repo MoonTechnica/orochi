@@ -397,17 +397,24 @@ fn wake_text(
         Ok(Some(resident)) => {
             crate::resident::brief(activity, config, &resident, routine, due_at, zone)
         }
-        _ => brief(routine, due_at, zone),
+        _ => brief(routine, due_at, zone, &config.residents.access),
     }
 }
 
 /// What the agent is told a routine's turn is. It says what the turn is, because the model
 /// has no other way to know nobody is at the keyboard.
-pub fn brief(routine: &Routine, due_at: i64, zone: Zone) -> String {
+pub fn brief(routine: &Routine, due_at: i64, zone: Zone, access: &str) -> String {
     let p = zone.parts(due_at);
     format!(
-        "This turn was started by a routine, \"{}\" (due {:04}-{:02}-{:02} {:02}:{:02}). Nobody is at the keyboard: you can read, but you cannot change anything, and anything that needs the user's approval will be declined if they do not answer in time. Say what you found as you would to the person, and mention them with @you only for what needs them. A helper you start with start_agent only reads too, and its answer arrives in a follow-up of this same routine: say only that you are waiting for it, and make your report then.\n\n{}",
-        routine.name, p.year, p.month, p.day, p.hour, p.minute, routine.instruction
+        "This turn was started by a routine, \"{}\" (due {:04}-{:02}-{:02} {:02}:{:02}). Nobody is at the keyboard: {} Say what you found as you would to the person, and mention them with @you only for what needs them. You lead this team as always: start_agent works as it does in a conversation, with any role, but whoever you start only reads, whatever the role says, and its answer arrives in a follow-up of this same routine. Until it does, say only that you are waiting for it; then make your report, which answers this routine's instruction and ends with no question.\n\n{}",
+        routine.name,
+        p.year,
+        p.month,
+        p.day,
+        p.hour,
+        p.minute,
+        crate::resident::reach(access),
+        routine.instruction
     )
 }
 

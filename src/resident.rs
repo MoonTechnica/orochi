@@ -160,6 +160,23 @@ fn lines_changed(old: &str, new: &str) -> (usize, usize) {
     (added, removed)
 }
 
+/// What a routine's turn is told it may change, from `residents.access`. Asking is the same
+/// question as in a conversation; nobody answers it in the middle of the night, so it is
+/// declined after `routines.ask_secs` unless the person does.
+pub fn reach(access: &str) -> &'static str {
+    match access {
+        "home" => {
+            "you can read, and change only what is inside your own folder; anything else, and anything that needs the user's approval, is asked of them and declined if they do not answer in time."
+        }
+        "full" => {
+            "you can read and change what you need to, each change asked of the user as in a conversation and declined if they do not answer in time."
+        }
+        _ => {
+            "you can read, but you cannot change anything, and anything that needs the user's approval is declined if they do not answer in time."
+        }
+    }
+}
+
 /// What a wake is told (§12.2): the standing instruction, the resident's own notes, what it
 /// said last time, and the routine's instruction. A fresh session each wake, so this is the
 /// whole of what it carries over.
@@ -172,11 +189,12 @@ pub fn brief(
     zone: Zone,
 ) -> String {
     let mut text = format!(
-        "You are {}, a resident assistant that wakes on its own. {}\n\nThis turn was started by a routine, \"{}\" (due {}). Nobody is at the keyboard: you can read, but you cannot change anything, and anything that needs the user's approval is declined if they do not answer in time. Say what you found as you would to the person, and mention them with @you only for what needs them. A helper you start with start_agent only reads too, and its answer arrives in a follow-up of this same routine: say only that you are waiting for it, and make your report then.\n",
+        "You are {}, a resident assistant that wakes on its own. {}\n\nThis turn was started by a routine, \"{}\" (due {}). Nobody is at the keyboard: {} Say what you found as you would to the person, and mention them with @you only for what needs them. You lead this team as always: start_agent works as it does in a conversation, with any role, but whoever you start only reads, whatever the role says, and its answer arrives in a follow-up of this same routine. Until it does, say only that you are waiting for it; then make your report, which answers this routine's instruction and ends with no question.\n",
         resident.name,
         resident.instruction,
         routine.name,
         stamp(zone, due_at),
+        reach(&config.residents.access),
     );
     let notes = notes(Path::new(&resident.home), config.residents.notes_chars);
     if !notes.trim().is_empty() {

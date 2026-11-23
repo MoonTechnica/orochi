@@ -3265,6 +3265,54 @@ fn a_due_routine_runs_in_its_thread_reading_only_and_the_keeper_leaves_when_none
     success(&workspace.run(&["threads", "stop", &thread]));
 }
 
+/// `residents.access = "full"` is OpenClaw's and Hermes' shape: a routine's turn may change what
+/// the thread's approval allows, so the same turn that read only writes here.
+#[test]
+fn a_routine_may_change_what_the_threads_approval_allows_when_residents_access_is_full() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "permission".into());
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.residents.access = "full".into();
+    let data = workspace.dir.path().join("data");
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let added = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Say good morning",
+        ],
+    );
+    let routine = added["routine"].as_str().unwrap().to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    moved.set(MORNING + 2 * 3600 + 30);
+    until("the due routine did not run", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT t.state FROM firings f JOIN turns t ON t.id=f.turn_id",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .is_ok_and(|state| state != "queued" && state != "running")
+    });
+    assert!(
+        workspace.dir.path().join("repo/completed.txt").exists(),
+        "with full access a routine's turn writes what the thread allows"
+    );
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
 /// A laptop that slept through three mornings does not run three briefs on waking.
 #[test]
 fn a_machine_that_slept_runs_one_firing_if_the_latest_time_is_recent_and_records_a_late_one_otherwise()
@@ -3899,6 +3947,137 @@ fn a_question_on_a_routines_turn_that_nobody_answers_is_declined_when_its_time_r
     );
     assert!(!workspace.dir.path().join("repo/completed.txt").exists());
 
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
+/// What a routine's question is answered by under `routines.approval`: the row's `answered_by`.
+fn routine_question_answered_by(approval: &str) -> String {
+    let mut workspace = Workspace::new();
+    let env = &mut workspace.config.agents[0].env;
+    env.insert("MOCK_BEHAVIOR".into(), "permission".into());
+    env.insert("MOCK_PERMISSION_KIND".into(), "execute".into());
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.routines.ask_secs = 2;
+    workspace.config.routines.approval = approval.into();
+    workspace.config.residents.access = "full".into();
+    let data = workspace.dir.path().join("data");
+    let moved = Moved::new(&workspace, MORNING);
+    let new = workspace.run(&["--permission", "ask", "threads", "new", "--json"]);
+    success(&new);
+    let thread = serde_json::from_slice::<serde_json::Value>(&new.stdout).unwrap()["thread"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Look around",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    moved.set(MORNING + 2 * 3600 + 30);
+    let mut by = String::new();
+    until("the question was never answered", || {
+        orochi::activity::Activity::attach(&data, 30)
+            .unwrap()
+            .connection()
+            .query_row("SELECT answered_by FROM prompts", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .ok()
+            .flatten()
+            .map(|answer| by = answer)
+            .is_some()
+    });
+    success(&moved.run(&workspace, &["routines", "rm", &routine]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+    by
+}
+
+/// Hermes' `off` and OpenClaw's `security=full`: nothing is asked of nobody.
+#[test]
+fn a_routine_whose_approval_is_off_has_its_questions_allowed_at_once() {
+    assert_eq!(routine_question_answered_by("off"), "policy");
+}
+
+/// `smart` allows a change inside the resident's folder and asks about the rest, so a command
+/// is still left to the person and declined when its time runs out.
+#[test]
+fn a_routine_whose_approval_is_smart_still_asks_about_what_is_not_a_change_in_its_folder() {
+    assert_eq!(routine_question_answered_by("smart"), "expired");
+}
+
+/// A helper on a routine's turn writes in the lead's own folder when `residents.access` allows,
+/// with no worktree: an assistant's folder is not a repository, and the person asked for it.
+#[test]
+fn a_routines_helper_writes_in_the_leads_folder_without_a_worktree_when_access_allows() {
+    let mut workspace = Workspace::new();
+    workspace.config.mailbox.enabled = true;
+    workspace.config.residents.access = "full".into();
+    for (key, value) in [
+        ("MOCK_BEHAVIOR", "delegate"),
+        ("MOCK_HELPERS", "spec:Write the note"),
+        ("MOCK_WRITERS", "spec"),
+        ("MOCK_MERGE", "1"),
+    ] {
+        workspace.config.agents[0]
+            .env
+            .insert(key.into(), value.into());
+    }
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.scheduler.prompt_timeout_secs = 60;
+    let data = workspace.dir.path().join("data");
+    let repo = workspace.dir.path().join("repo");
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let routine = moved.json(
+        &workspace,
+        &[
+            "--json",
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 08:00",
+            "--",
+            "Write the note",
+        ],
+    )["routine"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "run", &routine]));
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    until("the routine's report was never settled", || {
+        activity
+            .connection()
+            .query_row(
+                "SELECT settled FROM firings ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .is_ok_and(|n| n == 1)
+    });
+    let started: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(repo.join("started.txt")).unwrap()).unwrap();
+    assert!(started[0]["workspace"].is_null(), "{started}");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("feature.txt")).unwrap_or_default(),
+        "written by spec\n",
+        "the helper did not write in the lead's folder"
+    );
     success(&moved.run(&workspace, &["routines", "rm", &routine]));
     success(&workspace.run(&["threads", "stop", &thread]));
 }

@@ -1050,6 +1050,10 @@ pub struct RoutinesConfig {
     pub ask_secs: i64,
     /// A watch's command is stopped after this long.
     pub watch_timeout_secs: u64,
+    /// How a question on a routine's turn is answered: `ask` (declined after `ask_secs`),
+    /// `smart` (a change inside the resident's folder is allowed, the rest asked) or `off`
+    /// (everything allowed — set only knowing the turn runs with nobody there).
+    pub approval: String,
 }
 impl Default for RoutinesConfig {
     fn default() -> Self {
@@ -1064,6 +1068,7 @@ impl Default for RoutinesConfig {
             daily_tokens: 300_000,
             ask_secs: 1800,
             watch_timeout_secs: 60,
+            approval: "ask".into(),
         }
     }
 }
@@ -1079,6 +1084,11 @@ pub struct ResidentsConfig {
     pub notes_chars: usize,
     /// How many of a routine's earlier reports a wake is shown.
     pub brief_reports: usize,
+    /// What a routine's turn may change with nobody at the keyboard: `read` (nothing), `home`
+    /// (its own folder) or `full` (anywhere its agent can). Whatever it asks to change goes
+    /// through the same approval as in a conversation, and an unanswered one is declined after
+    /// `routines.ask_secs` (OpenClaw's `ask`, Hermes' `manual`).
+    pub access: String,
 }
 impl Default for ResidentsConfig {
     fn default() -> Self {
@@ -1086,6 +1096,7 @@ impl Default for ResidentsConfig {
             root: "{data}/residents".into(),
             notes_chars: 6000,
             brief_reports: 3,
+            access: "read".into(),
         }
     }
 }
@@ -1467,6 +1478,14 @@ impl Config {
             self.residents.root.starts_with("{data}")
                 || Path::new(&self.residents.root).is_absolute(),
             "residents.root must be an absolute path, or start with {{data}}"
+        );
+        ensure!(
+            matches!(self.routines.approval.as_str(), "ask" | "smart" | "off"),
+            "routines.approval is ask, smart or off"
+        );
+        ensure!(
+            matches!(self.residents.access.as_str(), "read" | "home" | "full"),
+            "residents.access is read, home or full"
         );
         ensure!(
             matches!(self.notify.level.as_str(), "title" | "summary" | "full"),
