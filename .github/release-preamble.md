@@ -14,9 +14,9 @@ puts `orochi` in `~/.local/bin`. The archives below can also be unpacked by hand
 
 | | |
 |---|---|
-| macOS | the `.dmg` — one bundle, Apple Silicon and Intel |
-| Linux | the `.AppImage`, or the `.deb` |
-| Windows | the `-setup.exe`, or the `.msi` |
+| macOS | `Orochi-macos-universal.dmg` — one bundle, Apple Silicon and Intel |
+| Linux | `Orochi-linux-x86_64.AppImage`, or `Orochi-linux-amd64.deb` |
+| Windows | `Orochi-windows-x64-setup.exe`, or `Orochi-windows-x64.msi` |
 
 ## Before it can do anything
 

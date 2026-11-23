@@ -1,78 +1,244 @@
 # Orochi
 
-**Adaptive Agent & Model Scheduler** — a Rust CLI that chooses an ACP Coding Agent based on the task, usage limits, Provider Policy and local track record.
+**Adaptive agent & model scheduler for coding-agent CLIs.**
+
+[![Latest release](https://img.shields.io/github/v/release/MoonTechnica/orochi?display_name=tag&sort=semver)](https://github.com/MoonTechnica/orochi/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.96](https://img.shields.io/badge/rust-1.96-orange.svg)](rust-toolchain.toml)
+[![ACP v1](https://img.shields.io/badge/protocol-ACP%20v1-6f42c1.svg)](https://agentclientprotocol.com)
+
+You already pay for Claude Code, Codex, Antigravity or OpenCode — maybe several of them. Orochi
+sits in front of them. For each request it decides **which agent, which model, how much
+reasoning and which session** to use, drives that CLI over the
+[Agent Client Protocol](https://agentclientprotocol.com) (ACP), checks the result with your
+project's own tests, and learns from what happened. When an account hits its usage limit, the
+work moves to the next one instead of stopping.
 
 ```sh
-orochi "Switch the authentication logic to refresh tokens"
-orochi   # started on a terminal, it opens an interactive session (orochi -c resumes the most recent conversation)
+orochi "Switch the authentication logic to refresh tokens"   # one task, routed and verified
+orochi                                                       # an interactive conversation
+orochi -c                                                    # continue the last one here
 ```
 
-## Current implementation scope
+It is a single Rust binary for the terminal, a desktop window for the same conversations, and an
+ACP agent in its own right (`orochi serve`), so editors such as Zed can use it as their agent.
 
-The [Original Draft Specification](docs/design-draft.md) is being implemented incrementally. A normal run delegates to one Agent; `collaborate` produces, reviews and combines deliverables in multiple independent sessions. Tasks can include research, analysis, writing, planning, creative work and software implementation.
+---
 
-- CLI detection for Claude / Codex / Gemini / Antigravity, plus configuration of any ACP stdio adapter
-- Detection of the Claude/Codex CLIs themselves, and automatic installation of missing ACP adapters into a dedicated cache
-- Stable protocol v1 connection, streaming and cancellation via the official Rust ACP SDK 2.0.0
-- Retrieval of models, reasoning and modes from `configOptions`. After a model change, the returned configuration is re-read and validated
-- Compatibility handling for the legacy `models` / `session/set_model` and `modes`. For an Agent with no configuration, the Agent's own defaults are used
-- Local Task Profiler, deterministic routing, a lower bound on success probability, Provider hard constraints
-- Optional adviser (an ACP agent). It recommends only candidate IDs, and the Scheduler re-validates them
-- Agent-wide / per-model cooldown, reset time, 5 min → 15 min → 30 min → 60 min backoff
-- When remaining usage can be obtained, estimation of a quota shadow price, history statistics and cache affinity
-- Fallback via TaskEnvelope. Files being changed are kept, and the full conversation is not forwarded
-- Evaluation by tests, typecheck, lint, build and git diff; local SQLite telemetry
-- Session listing, explicit `--resume`, Policy validation and atomic updates
-- Exclusive execution per repository, waiting for child processes to exit, process-group termination on Unix
+## Download
 
-Added: EWMA and a constrained Bandit, prediction calibration and candidate comparison, direct retrieval of Codex quota, ingestion of Claude statusline quota, a Frontier routing Judge, a two-round routing Council, and exposing Orochi over ACP with `orochi serve`. For details, configuration and unverified parts, see [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md).
+### Desktop app
 
-Added on 2026-09-18/19 (automated tests only; not yet verified with real agents): a task classifier that asks an agent instead of matching keywords (on by default), team escalation from the console for work that splits across workspaces, `collaborate` without a hand-written plan, memory across sessions and agents, route preferences, weak labels from what you do after an answer, and tier pooling (off by default). See [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md) and [Personalization Design](docs/personalization-design.md).
+The window carries its own `orochi`, so nothing else needs to be installed first. On first launch
+it checks what this machine has and offers to set up whatever is missing.
 
-[Measurement and Session Collaboration Validation (2026-09-16)](docs/real-validation-20260916.md): confirmed measurement of 8 identical-task pairs on Claude/Codex, holdout validation of the learning coefficients, on-demand quota retrieval for Claude, implementation, review and integration by 3 independent sessions of the same Claude Haiku, and task execution from the exposed ACP gateway to the real Codex. This small data set did not show an advantage for EWMA/Bandit, so the default coefficients are kept.
+| Platform | Download |
+|---|---|
+| **macOS** (Apple Silicon and Intel, 10.15+) | [**Orochi-macos-universal.dmg**](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-macos-universal.dmg) |
+| **Windows** (x64) | [**Orochi-windows-x64-setup.exe**](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-windows-x64-setup.exe) · [.msi](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-windows-x64.msi) |
+| **Linux** (x86_64, glibc 2.35+) | [**Orochi-linux-x86_64.AppImage**](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-linux-x86_64.AppImage) · [.deb](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-linux-amd64.deb) |
 
-[Session Collaboration](docs/session-collaboration.md) is used through `orochi collaborate`. Even with the same Agent and model, a different session is a different worker. In every role — coordinator, implementation, review and integration — a usage limit makes the role switch to another available Agent/model. Plans, decisions, intermediate answers and progress are saved to `report.json`, and if no candidate is usable the run can be resumed later with `collaborate-resume`. It supports up to 4 parallel implementers with merging, addressed messages to any participant, and discussion rounds. With `--apply`, a result that passed verification is merged into the original working tree, and conflicts are resolved by a dedicated resolution session. Without `--plan`, the team is derived from the task; `--dry-run` prints it as a plan file that can be edited and passed back with `--plan`.
+Every build, checksum and older version is on the [releases page](https://github.com/MoonTechnica/orochi/releases).
+If a macOS build was published without notarization, macOS asks you to allow it the first time:
+right-click the app and choose **Open**.
 
-With the [Agent Mailbox](docs/agent-mailbox.md), `orochi` agents running at the same time in multiple terminals can exchange messages about work on the same repository (including worktrees). `scheduler.shared_workspace = true` also allows concurrent runs in the same directory. Confirmed between real Codex instances: one communicated a function's specification and the other matched its implementation to it.
+### Command-line tool
 
-Agents are started through a supervisor process. Even if Orochi is force-killed, the Agent and its descendant processes are terminated. If the supervisor itself also stops, they are reclaimed at the next start.
-
-The Router / Judge / Council advisers also use `[[agents]]` agents over ACP (the HTTP endpoint version has been removed). Orochi does not handle credentials; it follows each CLI's own authentication (a subscription login or an API key). If an ACP-capable CLI supports local models, they can be used both for execution and as advisers.
-
-The [Live Validation of Remaining Tasks (2026-09-16, part 2)](docs/real-validation-20260916-2.md) confirmed the following.
-
-- Switching from the real Codex's usage limit to the real Claude
-- Parallel implementation, discussion and conflict resolution against the working tree by real Claude / Codex
-- Recovery and resumption after a forced kill
-- Switching between advisers in all 3 ACP adviser modes
-- Execution from Zed's agent panel
-- Measurement of 6 tasks differing in language and difficulty
-
-Switching from the real Claude's usage limit to the real Codex has not been confirmed. Live E2E for Antigravity is waiting on a Google login. Additional validation of the Gemini CLI was made out of scope at the user's instruction. Verification against the real CLI with local models has not been done yet.
-
-## Install
-
-The CLI, on macOS and Linux:
+macOS and Linux (x86_64 and arm64):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/MoonTechnica/orochi/main/install.sh | sh
 ```
 
-It picks the archive for the machine from the [latest release](https://github.com/MoonTechnica/orochi/releases/latest), checks it against the `.sha256` published beside it, and puts `orochi` in `~/.local/bin` (`OROCHI_BIN_DIR` moves it, `OROCHI_VERSION` pins the release). The archives can also be unpacked by hand.
+The script picks the archive for this machine from the
+[latest release](https://github.com/MoonTechnica/orochi/releases/latest), checks it against the
+`.sha256` published beside it, and puts `orochi` in `~/.local/bin` (`OROCHI_BIN_DIR` moves it,
+`OROCHI_VERSION` pins a release). The archives can also be unpacked by hand, or
+[built from source](#build-from-source).
 
-The desktop window is a separate download from the same release — `.dmg` on macOS, `.AppImage` or `.deb` on Linux, `-setup.exe` or `.msi` on Windows. It carries its own `orochi`, so the CLI need not be installed first.
-
-What each platform does **not** get:
+### What each platform gets
 
 | | |
 |---|---|
-| Windows | **The window only.** The interactive console is not ported: `chat/term.rs` reads keys through termios, so `orochi` in a Windows terminal refuses to open a console rather than open one that accepts nothing. A task given on the command line still runs. Process supervision is weaker too — a lease whose owner died is not reclaimed (`process.rs`). No CLI archive is published for Windows; the installer carries the binary the window runs |
-| Linux | Built against glibc 2.35 (Ubuntu 22.04). An older distribution will not run it |
-| macOS | Nothing is withheld |
+| macOS | Everything: the window, the CLI and its interactive console |
+| Linux | Everything. Built against glibc 2.35 (Ubuntu 22.04), so an older distribution will not run it. The desktop bundle is x86_64 only |
+| Windows | **The window only.** The terminal console is not ported: `chat/term.rs` reads keys through termios, so `orochi` in a Windows terminal refuses to open a console rather than open one that accepts nothing. A task given on the command line still runs. Process supervision is weaker too — a lease whose owner died is not reclaimed (`process.rs`). No CLI archive is published for Windows; the installer carries the binary the window runs |
 
-Orochi does not talk to a model. It chooses among the coding-agent CLIs **you** have installed and authenticated, so at least one of them has to be there first — see [Preparing Agents](#preparing-agents) below. `orochi setup` puts in what is missing, and the desktop window asks the same thing when it opens.
+---
 
-## Build
+## Quick start
+
+Orochi does not talk to a model itself. It chooses among the coding-agent CLIs **you** have
+installed and signed in to, so at least one has to be there.
+
+```sh
+orochi setup --check            # what this machine has: Node.js, each agent CLI, whether it is signed in
+orochi setup --install claude   # put in a CLI Orochi can install (claude, codex or antigravity)
+claude                          # sign in with the CLI's own login (codex login, agy, …)
+orochi agents --discover        # connect to each agent and list its models
+
+orochi --dry-run "Add input validation to the signup form"   # see the route and why, without running it
+orochi "Add input validation to the signup form"             # run it
+```
+
+`orochi setup` installs nothing outside Orochi's own data directory and never asks for an
+administrator. In the desktop app, the same steps are the **Setup** dialog that opens on first
+launch. Details: [Preparing agents](#preparing-agents).
+
+---
+
+## What it does
+
+**Routes every request to the right seat.**
+Each request is profiled — kind of work, language, complexity, scope, whether it needs a browser,
+the web or an image — optionally by a small local *decision model* that answers in a few hundred
+milliseconds. Every (agent × model × reasoning level × mode) the installed agents advertise is
+then scored by expected cost against a minimum success probability, provider policy, usage
+quotas and what each route has actually achieved on this machine.
+
+**Never stops at a usage limit.**
+A rate limit, an expired sign-in or an outage cools that agent (or just that model) down with
+backoff, and the attempt is retried on the next candidate with a compact hand-over of the task
+and the files in progress. Remaining quota is read from the CLIs where they expose it.
+
+**Checks the work instead of trusting it.**
+After a run Orochi runs the project's own tests, type checks, lint and build. Only a run whose
+real checks passed counts as a success; "the agent said it was done" is recorded as unverified.
+
+**Learns from this machine's history.**
+Outcomes, token usage and latency go into a local SQLite store. An EWMA / constrained bandit
+learns which routes work here for which kind of work, and predictions are frozen before each
+run so they can be calibrated afterwards.
+
+**Works as a team when the work calls for it.**
+Design → implement → review phases for complex work, a read-only reviewer seated beside the
+writer, helpers that a lead agent starts in their own Git worktrees and merges back after a
+trial merge passes the checks, and `orochi collaborate` for planned multi-session work. Agents in
+one repository talk to each other over a built-in mailbox.
+
+**Remembers what you tell it.**
+Preferences ("small edits go to the local model") and repository notes are kept as plain
+Markdown under Orochi's data directory and open every fresh agent session.
+
+**Stays out of your system.**
+Agents can run in a per-project sandbox (an Incus container in a Lima VM, Docker inside). MCP
+servers from your configuration and from a repository's `.mcp.json` are passed to whichever agent
+runs, with Orochi as the OAuth client so one sign-in covers every CLI. Agents get a built-in
+headless browser, each session in its own context.
+
+### Supported agents
+
+| Agent | How Orochi connects |
+|---|---|
+| [Claude Code](https://github.com/agentclientprotocol/claude-agent-acp) | the `claude` CLI through Claude Agent ACP (installed automatically) |
+| [Codex](https://github.com/agentclientprotocol/codex-acp) | the `codex` CLI through Codex ACP (installed automatically) |
+| [Antigravity](https://zed.dev/acp/agent/antigravity-acp) | its own ACP server |
+| [OpenCode](https://opencode.ai/docs/) | `opencode acp` — also the way to run **local models** (LM Studio, Ollama, llama.cpp) |
+| Anything else that speaks ACP | an `[[agents]]` entry with its command |
+
+---
+
+## How it works
+
+```text
+ request ─▶ profile ─▶ discover ─▶ score ─▶ (advise) ─▶ select ─▶ execute ─▶ evaluate ─▶ record
+            kind,      agents,     cost vs   router /    bandit    over ACP   tests,      SQLite,
+            difficulty models,     success,  judge /     over the  stdio,     lint,       cooldowns,
+            needs      reasoning   quota,    council     survivors streaming  build,      learning
+                       levels      policy                                     diff
+                                                       ▲                                    │
+                                                       └──────── retry on the next ◀────────┘
+                                                                 candidate if it failed
+```
+
+Smart layers — advisers, the bandit, your preferences — may only **reorder** candidates that
+already passed every hard gate (quota, policy, capability, minimum success), and stay within
+1.25× of the cheapest. The full design is in
+[Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md).
+
+### Privacy by construction
+
+- **Telemetry is content-free.** `telemetry.sqlite3` holds routes, outcomes, token counts and
+  timings — never task text, conversation, source, diffs or agent output. Byte-level tests pin
+  this.
+- **Content lives in one file you control.** Conversations are in `activity.sqlite3` (`0600`,
+  secure delete, bounded by `activity.retention_days`, or switched off entirely).
+- **Nothing is sent anywhere by Orochi.** Advisers see classification attributes and opaque
+  candidate summaries, never the task. A cloud decision model is only ever your explicit choice.
+- **The target repository is never trusted as configuration.** The single, guarded exception is
+  its `.mcp.json`, approved the way Claude Code approves it.
+
+---
+
+## The desktop app
+
+The window is a second view onto the same conversations the terminal records, so a conversation
+started in one can be continued, answered or stopped in the other.
+
+- Threads grouped by the folder they work in, each turn's timeline, the agents seated at it and
+  the files it changed
+- Permission questions and plan approvals waiting for an answer
+- The **Work** pane: helpers, their worktrees and merge trials
+- Settings for agents and their model rosters, the decision model, storage locations and sandboxes
+- A built-in browser tab, and an optional phone view over loopback or Tailscale (off by default)
+- First-launch **Setup**: what is missing, one-click installs, and a Sign in… button for each CLI
+
+More under [Desktop window](#desktop-window).
+
+---
+
+## Documentation
+
+| Topic | Document |
+|---|---|
+| Routing, learning, advisers, `orochi serve` | [Adaptive Routing and the ACP Gateway](docs/adaptive-routing.md) |
+| Multi-session work with `orochi collaborate` | [Session Collaboration](docs/session-collaboration.md) |
+| Agents talking to each other | [Agent Mailbox](docs/agent-mailbox.md) · [Team channel](docs/team-channel-design.md) |
+| Helpers in their own worktrees | [Session workspaces](docs/session-workspaces.md) · [Manager](docs/manager-design.md) |
+| Sandboxed agents | [Sandbox design](docs/sandbox-design.md) |
+| Memory and preferences | [Personalization design](docs/personalization-design.md) |
+| The desktop app | [Desktop app design](docs/desktop-app-design.md) |
+| Platform notes | [Platform setup](docs/platform-setup.md) |
+| What has been run against real agents | `docs/real-validation-*.md` |
+
+---
+
+## Project status
+
+Orochi is under active development and implements the [original draft specification](docs/design-draft.md)
+incrementally. Tasks can be research, analysis, writing, planning or software implementation; a
+normal run delegates to one agent, and `collaborate` produces, reviews and combines deliverables
+across independent sessions.
+
+Confirmed against real agents ([2026-09-16](docs/real-validation-20260916.md),
+[2026-09-16 part 2](docs/real-validation-20260916-2.md) and later `docs/real-validation-*.md`):
+
+- Switching from a real Codex usage limit to a real Claude
+- Parallel implementation, discussion and conflict resolution against the working tree by real Claude and Codex
+- Recovery and resumption after a forced kill
+- All three ACP adviser modes (router, judge, council)
+- Running Orochi from Zed's agent panel through `orochi serve`
+- Two real Codex instances coordinating a function's specification over the mailbox
+- A 27B local model through OpenCode and LM Studio
+
+Not yet confirmed: switching from a real Claude usage limit to Codex, a live Antigravity run, and
+several newer features that are covered by automated tests only — each section below says which.
+On the small data set measured so far, EWMA and the bandit showed no advantage, so the default
+coefficients are kept.
+
+[Session Collaboration](docs/session-collaboration.md) is used through `orochi collaborate`. Even with the same agent and model, a different session is a different worker, and in every role — coordinator, implementation, review and integration — a usage limit switches that role to another available agent or model. Plans, decisions, intermediate answers and progress are saved to `report.json`, so a run with no usable candidate can be picked up later with `collaborate-resume`. It supports up to four parallel implementers with merging, addressed messages to any participant, and discussion rounds. With `--apply`, a result that passed verification is merged into the original working tree, and conflicts are resolved by a dedicated resolution session. Without `--plan` the team is derived from the task; `--dry-run` prints it as a plan file that can be edited and passed back with `--plan`.
+
+With the [Agent Mailbox](docs/agent-mailbox.md), agents Orochi runs at the same time — in one process or in several terminals — exchange messages about work on the same repository, worktrees included. `scheduler.shared_workspace = true` also allows concurrent runs in the same directory.
+
+The router, judge and council advisers are `[[agents]]` agents driven over ACP like any other, so a CLI that runs local models can serve both for execution and as an adviser.
+
+Agents are started through a supervisor process: if Orochi is force-killed, the agent and its
+descendants are terminated, and if the supervisor dies too they are reclaimed at the next start.
+Orochi never handles credentials; each CLI keeps its own sign-in (a subscription or an API key).
+
+---
+
+## Build from source
 
 Requires Rust **1.96.0** and C/C++ build tools. SQLite is built from the bundled source.
 
@@ -84,9 +250,13 @@ orochi --help
 
 Rust is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mise install` sets up the same Rust plus the Node and Python the tests need (`mise.toml`) and `mise run setup` turns on the pre-push hook (fmt and clippy). `mise run quick` is the loop while working, `mise run check` runs every check, the desktop crate included, and is run before pushing to main: CI runs only when started by hand from the Actions tab. `mise tasks` lists the rest.
 
-A release is cut by tagging: `scripts/version.sh <x.y.z>` sets the one version the CLI, the window and the bundle all carry, and `git push origin v<x.y.z>` builds and publishes it (`.github/workflows/release.yml`; running that workflow by hand builds everything and publishes nothing, which is how to find out whether a release would succeed before cutting one). The workflow refuses a tag that does not name the version in the manifests.
+A release is cut by tagging: `scripts/version.sh <x.y.z>` sets the one version the CLI, the window and the bundle all carry, and `git push origin v<x.y.z>` builds and publishes it (`.github/workflows/release.yml`; running that workflow by hand builds everything and publishes nothing, which is how to find out whether a release would succeed before cutting one). The workflow refuses a tag that does not name the version in the manifests. The desktop bundles are published under fixed names (`Orochi-macos-universal.dmg` and so on) so the [download links](#download) always point at the latest release.
 
 The macOS bundle is signed and notarized when six repository secrets are set, and builds unsigned without them — in which case macOS asks the user to allow the app by hand. They are `APPLE_CERTIFICATE` (a Developer ID Application `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (the certificate's full name), and `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID` for notarization.
+
+---
+
+# Reference
 
 ## Preparing Agents
 
@@ -132,7 +302,7 @@ setup_timeout_secs = 120 # separate from the ACP connection timeout
 
 Which of each agent's models the scheduler may use is the **roster**: `[[agents]] models`, a list of model IDs as the agent advertises them (case-insensitive, whole) or globs with `*` for a family (`claude-opus-*`), empty for every model it has. Never a bare fragment: Claude advertises `opus` beside `claude-opus-5`, and a fragment that admits one would admit the other. It is a hard gate before scoring, so nothing off it is brought back by a preference, an adviser or the bandit; a model named with `--model` for one run is taken whether it is on the roster or not. `orochi roster show` lists every agent with what it last advertised here (kept in `<data>/discovered.json` by every full discovery) and marks what is on, `orochi roster set claude opus 'claude-sonnet-*'` writes one by hand (`--off` takes an agent out; no models puts every one back), and `orochi roster suggest` asks an agent to propose one from what each model is for, its price and what each route has measured here, **writes it down as the decision**, and leaves its reasons on the screen; adjust it with `set` afterwards, or look first with `--dry-run`. A proposal names only models the agent advertised, never switches an agent off, and may add up to three preferences to memory as lines Orochi wrote (so they fade unless they hold); what asking cost is recorded as a `roster` run. Both `set` and `suggest` rewrite the configuration file as `orochi config show` prints it, presets included, which is what the window has always done when it saves. Beside each model a **note** says what you want it for, in your words (`[[agents]] notes`, `orochi roster note claude opus design and review`, the field beside the model in the window): the classifier is shown it with the provider's description of the model and names that model as suited to work that fits — and because the note is your word, a model so named goes **before price**, where a mere tilt could never reach past a local model that costs nothing (measured 2026-10-16: a design question read as suited to Opus still ran locally at a tenth of the cost). It stays within the roster and the gates, and the other candidates stay behind it for a retry. A fit read from the provider's description alone remains a tilt (0.35×). The window's Settings page holds the same roster as checkboxes with the note fields, and `/roster`, `/roster set`, `/roster note` and `/roster suggest` are the same from the console, applying when an agent is next chosen (`/reroute`, or a new conversation): a conversation under way keeps the session it is in.
 
-Preferences are memory (§[Memory](#memory)): `orochi memory --add "Small edits go to the local model"` writes a line of your own, which never expires, and the classifier reads it into `prefer` and `avoid` — a matching candidate costs 0.8× or 1.25×, and neither opens or closes a gate. A rule that must hold, such as a model that may never see this code, is a roster entry and not a sentence.
+Preferences are memory ([Personalization design](docs/personalization-design.md)): `orochi memory --add "Small edits go to the local model"` writes a line of your own, which never expires, and the classifier reads it into `prefer` and `avoid` — a matching candidate costs 0.8× or 1.25×, and neither opens or closes a gate. A rule that must hold, such as a model that may never see this code, is a roster entry and not a sentence.
 
 `orochi agents` / `status` do not download anything. `ready` means ready to connect, and `adapter_required` means the CLI itself was detected and first-time setup is pending. `setup_unavailable` means Node/npm is missing, and `setup_disabled` means automatic installation is disabled. Authentication and ACP connection failures are shown separately by `agents --discover` and at routing time.
 
@@ -739,11 +909,7 @@ tests over fixture stores and recorded view output.
 
 ACP specification references: [Rust SDK](https://github.com/agentclientprotocol/rust-sdk), [Session Config Options](https://agentclientprotocol.com/protocol/v1/session-config-options).
 
-## License
-
-MIT
-
-### Worktrees for helpers
+## Worktrees for helpers
 
 A console or headless conversation can start writable background agents with the mailbox
 `start_agent` tool (`write: true`). Each gets a Git worktree of its own under the
@@ -773,3 +939,7 @@ worktrees on another disk, a template such as `/Volumes/Big/worktrees/{name}` (s
 and merge pipeline. **Automated tests only** (`tests/workspaces.rs`, `tests/cli_e2e.rs`):
 whether a real lead closes its worktrees sensibly is unverified. See
 [Session workspaces](docs/session-workspaces.md).
+
+## License
+
+[MIT](LICENSE)

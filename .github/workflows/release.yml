@@ -176,9 +176,28 @@ jobs:
         run: |
           set -eu
           mkdir -p dist
-          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle \
-            -type f \( -name '*.dmg' -o -name '*.AppImage' -o -name '*.deb' \
-            -o -name '*.msi' -o -name '*-setup.exe' \) -exec cp {} dist/ \;
+          # Fixed names, without the version: the README links to
+          # releases/latest/download/<name>, which must not break on the next release.
+          bundle=desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          take() {
+            found=$(find "$bundle" -type f -name "$1")
+            [ "$(printf '%s\n' "$found" | grep -c .)" = 1 ] || {
+              echo "expected one $1 under $bundle, found: $found" >&2
+              exit 1
+            }
+            cp "$found" "dist/$2"
+          }
+          case "${{ runner.os }}" in
+          macOS) take '*.dmg' Orochi-macos-universal.dmg ;;
+          Linux)
+            take '*.AppImage' Orochi-linux-x86_64.AppImage
+            take '*.deb' Orochi-linux-amd64.deb
+            ;;
+          Windows)
+            take '*-setup.exe' Orochi-windows-x64-setup.exe
+            take '*.msi' Orochi-windows-x64.msi
+            ;;
+          esac
           ls -l dist
       - if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
