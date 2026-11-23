@@ -55,9 +55,14 @@
       item(ms - 110000, { turn: "a3", text: "I proposed watching `gh release list` every 15 minutes; it starts once you allow it below." }),
     ],
   };
+  const crew = [
+    { thread_id: "r1", name: "scout", role: "researcher", org_role: "researcher", state: "working", live: true, agent: "claude", provider: "anthropic", model: "haiku", doing: "Read city.kita.tokyo.jp", reported: false, started_at: now * 1000 - 120000, replies: 1, last_reply_at: now - 60, workspace_state: null, trial_state: null, needs: null, read_only: true },
+    { thread_id: "r1", name: "bookkeeper", role: "engineer", org_role: "engineer", state: "done", live: false, agent: "codex", provider: "openai", model: "gpt-5.6", doing: null, reported: true, started_at: now * 1000 - 86400000, replies: 3, last_reply_at: now - 5400, workspace_state: null, trial_state: null, needs: null, read_only: false },
+  ];
   const base = window.__TAURI__.core.invoke;
   window.__TAURI__.core.invoke = (name, args = {}) => {
     if (name === "thread" && args.id === "r1") return Promise.resolve(residentThread);
+    if (name === "members" && args.thread === "r1") return Promise.resolve(crew);
     return name in answers ? Promise.resolve(answers[name]) : base(name, args);
   };
 })();

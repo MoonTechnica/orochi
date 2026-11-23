@@ -11,14 +11,7 @@ import {
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
-import {
-  buildChat,
-  chatWithDays,
-  routineRows,
-  scheduleWords,
-  whenOf,
-  type ChatLine,
-} from '@orochi/core';
+import { buildChat, chatWithDays, type ChatLine } from '@orochi/core';
 import type { ResidentRow, RoutineRow } from '@orochi/protocol';
 import { useData } from '../../src/state/data';
 import { usePrefs } from '../../src/state/prefs';
@@ -36,7 +29,6 @@ import {
   MeBubble,
   ProposalCard,
   Typing,
-  WokeLine,
   openSource,
 } from '../../src/ui/assistant/Bubbles';
 
@@ -141,12 +133,11 @@ function ChatBody({
 }) {
   const { api } = useSession();
   const { prompts, refresh } = useData();
-  const { colors, t, lang } = usePrefs();
+  const { colors, t } = usePrefs();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [routines, setRoutines] = useState<RoutineRow[]>([]);
   const [menu, setMenu] = useState(false);
-  const [scheduled, setScheduled] = useState(false);
   const [copy, setCopy] = useState<string | null>(null);
   const { thread, said, members } = data;
   const me = residents.find((r) => r.thread_id === id);
@@ -183,8 +174,6 @@ function ChatBody({
   );
   const ctx = useMemo(() => ({ thread: id, cwd: thread?.thread.cwd }), [id, thread?.thread.cwd]);
   const working = thread?.thread.status === 'working';
-  const next = me?.next_at ? whenOf(me.next_at) : null;
-  const rows = useMemo(() => routineRows(routines, id), [routines, id]);
 
   const answer = useCallback(
     async (prompt: string, option: string | null) => {
@@ -218,8 +207,6 @@ function ChatBody({
             onLongPress={() => setCopy(item.text)}
           />
         );
-      case 'woke':
-        return <WokeLine routine={item.routine} at={item.at} />;
       case 'typing':
         return <Typing />;
       case 'ask':
@@ -265,13 +252,7 @@ function ChatBody({
           numberOfLines={1}
           style={{ color: colors.sub, fontSize: 12, textAlign: 'center', paddingBottom: 8 }}
         >
-          {working
-            ? t('Working…')
-            : me?.paused
-              ? t('paused')
-              : next
-                ? t('Next wakes at {when}').replace('{when}', next)
-                : t('Nothing scheduled — ask it to keep you up with something')}
+          {working ? t('Working…') : me?.paused ? t('paused') : ''}
         </Text>
       </View>
       {!thread && !data.loading ? <Empty text={data.error ?? t('Nothing here.')} /> : null}
@@ -310,17 +291,7 @@ function ChatBody({
         title={name}
         onClose={() => setMenu(false)}
         actions={[
-          // The list only shows: the person asks the assistant to pause or stop one. The switch
-          // below is for when that is not enough.
-          ...(rows.length
-            ? [
-                {
-                  id: 'scheduled',
-                  label: t('Scheduled · {n}').replace('{n}', String(rows.length)),
-                  onPress: () => setScheduled(true),
-                },
-              ]
-            : []),
+          // Pausing is the one switch; anything finer is asked of the assistant.
           ...(me
             ? [
                 {
@@ -346,18 +317,6 @@ function ChatBody({
               onPress: () => onSwitch(r.thread_id),
             })),
         ]}
-      />
-      <Sheet
-        visible={scheduled}
-        title={t('To pause, resume or stop one, ask the assistant.')}
-        onClose={() => setScheduled(false)}
-        actions={rows.map((r) => ({
-          id: `routine-${r.id}`,
-          label: `${r.name} · ${scheduleWords(r.when, lang)} · ${
-            r.paused ? t('paused') : r.next_at ? whenOf(r.next_at) : ''
-          }`,
-          onPress: () => setScheduled(false),
-        }))}
       />
       <Sheet
         visible={copy !== null}

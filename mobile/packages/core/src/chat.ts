@@ -18,7 +18,6 @@ export interface Source {
 export type ChatLine =
   | { type: 'me'; key: string; text: string; at: number | null }
   | { type: 'agent'; key: string; text: string; at: number | null; sources: Source[] }
-  | { type: 'woke'; key: string; routine: string | null; at: number | null }
   | { type: 'proposal'; key: string; routine: RoutineRow }
   | { type: 'ask'; key: string; prompt: Prompt }
   | { type: 'typing'; key: string }
@@ -51,12 +50,6 @@ export function sourcesOf(item: ItemRow): Source[] {
   return paths.map((p) => ({ kind: 'file', target: p, label: baseName(p) }));
 }
 
-/** The routine a wake's text names: `…started by a routine, "Morning brief" (due …`. */
-export function wokenBy(text: string): string | null {
-  const m = /started by a routine, "([^"]+)"/.exec(text);
-  return m ? m[1]! : null;
-}
-
 export interface ChatInput extends TimelineInput {
   /** The routines on this conversation; those still proposed become cards. */
   routines?: RoutineRow[];
@@ -87,9 +80,8 @@ export function buildChat(input: ChatInput): ChatLine[] {
         if (v.mine) {
           const item = items.get(e.key);
           read = [];
-          if (item?.turn_origin === 'routine') {
-            out.push({ type: 'woke', key: e.key, routine: wokenBy(item.text), at: v.at });
-          } else {
+          // A routine's wake is not something the person said, and is not shown.
+          if (item?.turn_origin !== 'routine') {
             out.push({ type: 'me', key: e.key, text: v.text, at: v.at });
           }
           break;
@@ -156,35 +148,6 @@ export function proposalWords(r: RoutineRow): { when: string; command: string | 
     return { when: `every ${every}`, command: r.watch };
   }
   return { when: r.schedule ?? '', command: null };
-}
-
-export interface ScheduledRow {
-  id: string;
-  name: string;
-  when: string;
-  command: string | null;
-  paused: boolean;
-  next_at: number | null;
-}
-
-/**
- * What an assistant has scheduled, for the read-only list: its running routines (a proposal
- * waiting for an answer is a card in the conversation), soonest first, paused ones last.
- */
-export function routineRows(routines: RoutineRow[], thread: string): ScheduledRow[] {
-  return routines
-    .filter((r) => r.thread_id === thread && !r.proposed)
-    .map((r) => ({
-      id: r.id,
-      name: r.name,
-      ...proposalWords(r),
-      paused: r.paused,
-      next_at: r.next_at ?? null,
-    }))
-    .sort(
-      (a, b) =>
-        Number(a.paused) - Number(b.paused) || (a.next_at ?? Infinity) - (b.next_at ?? Infinity),
-    );
 }
 
 /** A line with the day before the first bubble of each day. */

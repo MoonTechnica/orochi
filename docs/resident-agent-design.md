@@ -897,12 +897,7 @@ hour (the host went away) is settled as it stands. The prompt tells the lead to 
 waits. Tested (`a_routine_may_start_a_helper_that_only_reads_and_its_report_waits_for_the_answer`);
 not with a real agent.
 
-**The window lists the assistant's routines, read only** (`routineRows`, a folded "Scheduled · n"
-under its name: when, next wake, paused ones last; proposals stay cards in the conversation).
-Nothing in it changes anything: pausing, resuming and stopping are said to the assistant.
-
-The phone has the same list (`routineRows` in `@orochi/core`, a "Scheduled · n" entry in the
-assistant's menu that opens a sheet; unit-tested, not looked at on a device or in the web build).
+**The assistant does not show how it is scheduled** (2026-11-23, the user's decision: OpenClaw, Hermes Agent and Orca Bots talk like a colleague, and none of them puts "next wakes at 14:33", "woke for Morning brief" or a list of routines in front of the person). The list of routines on the desktop and the phone, the status line with the next wake, and the line that said a routine woke the assistant are gone; what a routine produced is the assistant's own message. Schedules are asked about, paused and stopped by talking to the assistant (`list_schedules`, `pause_schedule`, `cancel_schedule`), and `orochi routines` lists them from a terminal. Notifications never announce a wake: only a report, something that needs the person, a mention or a failure.
 
 Not done: a real agent deciding between pausing and removing.
 

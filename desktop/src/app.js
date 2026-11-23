@@ -663,16 +663,11 @@ const WORDS = {
     "It runs this command here with nobody present, reading only.": "誰もいないときに、このコマンドをこの Mac で読み取り専用で実行します。",
     "Make my assistant": "アシスタントを作る",
     "Message {name}": "{name} にメッセージを送信",
-    "Next wakes at {when}": "次は {when} に起きます",
-    "Nothing scheduled — ask it to keep you up with something": "予定はありません — 定期的に知りたいことを頼んでください",
-    "Scheduled · {n}": "予定 · {n}件",
-    "To pause, resume or stop one, ask the assistant.": "止める・再開する・やめるときは、アシスタントに頼んでください。",
+    "Write to {name}": "{name} に書く",
     "Proposed routine": "予定の提案",
     "Proposed watch": "監視の提案",
     "Show less": "折りたたむ",
     "Who is it, and what is it for?": "どんなアシスタントで、何をしてほしいですか？",
-    "Woke by a routine": "予定で起きました",
-    "Woke for “{name}”": "「{name}」で起きました",
     "Working…": "作業中…",
     "That did not open.": "開けませんでした。",
     "proposed by an agent": "エージェントの提案",
@@ -1577,6 +1572,44 @@ const toBottom = (host) => {
   });
 };
 
+/// What only an assistant's conversation has: the pause switch, and what its agents proposed
+/// for the person to allow. Everything else is the conversation as it is for any thread.
+async function drawResident(thread) {
+  const host = el("timeline");
+  const id = thread.thread.id;
+  const [residents, routines] = await Promise.all([call("residents", {}), call("routines", {})]);
+  if (state.timelineThread !== id) return;
+  for (const child of [...host.children]) if (/\bresident-(bar|proposals)\b/.test(child.className || "")) child.remove();
+  const me = (residents || []).find((r) => r.thread_id === id);
+  // Work, changes, plan and files are for work on code: an assistant's conversation has none
+  // of them, and its team is in the conversation itself, as threads.
+  const app = el("app");
+  if (app) app.dataset.resident = String(Boolean(me));
+  if (!me) return;
+  const api = assistantApi();
+  const again = () => drawResident(state.view || thread);
+  const bar = text("div", "resident-bar");
+  bar.append(text("strong", null, me.name));
+  if (me.paused) bar.append(text("span", "state", t("paused")));
+  const pause = text("button", "pause", t(me.paused ? "Resume" : "Pause"));
+  pause.type = "button";
+  pause.title = t("Stops everything it has scheduled until you resume it");
+  pause.addEventListener("click", async () => {
+    if ((await call("resident_action", { name: me.name, action: me.paused ? "resume" : "pause" })) === null) report(t("That did not work."));
+    await again();
+  });
+  bar.append(pause);
+  if (host.prepend) host.prepend(bar);
+  else host.append(bar);
+  const asked = (routines || []).filter((r) => r.thread_id === id && r.proposed);
+  if (api?.proposalCard && asked.length) {
+    const box = text("div", "resident-proposals");
+    const ctx = { ...assistantContext(), refresh: again };
+    for (const routine of asked) box.append(api.proposalCard(routine, ctx));
+    host.append(box);
+  }
+}
+
 function drawTimeline(thread, said = []) {
   const host = el("timeline");
   const opened = state.timelineThread !== thread.thread.id;
@@ -1669,6 +1702,13 @@ function drawTimeline(thread, said = []) {
       // A turn Orochi wrote to hand the helpers' results back is not the person's: one line
       // naming whose reports it carries, each a way into that thread.
       const origin = item.turn_origin;
+      // A routine's wake is Orochi's text, not something anyone said, and nobody needs to be
+      // told it woke: what it produced is the reply under it.
+      if (origin === "routine") {
+        host.append(turn);
+        voice = null;
+        continue;
+      }
       if (origin === "background" || origin === "merge" || origin === "mail") {
         turn.append(reportsLine(origin, item.text, thread, said));
         host.append(turn);
@@ -1949,7 +1989,7 @@ function post(voice, run) {
   } else {
     const who = text("div", "who");
     // An agent is drawn as the agent it is, as in the list; a person keeps their own mark.
-    who.append(voice.agent ? face(voice.agent, voice.provider, voice.model) : mark(voice.who));
+    who.append(voice.agent ? person({ role: voice.who, agent: voice.agent, provider: voice.provider, model: voice.model, lead: voice.who === "lead" }) : mark(voice.who));
     who.append(text("span", "name", voice.who));
     if (voice.to) who.append(text("span", "to", voice.to));
     if (voice.model) who.append(text("span", "model", voice.model));
@@ -4243,13 +4283,13 @@ function threadBar(thread, name, said = state.said || []) {
   node.dataset.member = name;
   if (m?.needs) node.dataset.needs = m.needs;
   const faces = text("span", "stack");
-  faces.append(face(m?.agent, m?.provider, m?.model));
+  faces.append(person({ role: name, agent: m?.agent, provider: m?.provider, model: m?.model }));
   const seen = new Set([`${m?.agent}/${m?.provider}`]);
   for (const row of rows) {
     const id = `${row.agent}/${row.provider}`;
     if (!row.agent || seen.has(id)) continue;
     seen.add(id);
-    faces.append(face(row.agent, row.provider, row.model));
+    faces.append(person({ role: row.role || row.who || name, agent: row.agent, provider: row.provider, model: row.model }));
   }
   node.append(faces);
   node.append(text("span", "name", name));
@@ -5265,9 +5305,11 @@ const assistantContext = () => ({
   markdown,
   askCard,
   drawn: (name) => drawn(name),
+  face: (agent, provider, model) => face(agent, provider, model),
+  memberState: (m) => memberState(m),
   openThread: (id) => select(id),
   close: closeAssistant,
-  refresh: () => drawAssistantAgain(),
+  refresh: async () => {},
   openSource: async (source) => {
     const { thread, home = "" } = el("assistant-page").dataset || {};
     if (!thread) return;
@@ -5283,6 +5325,16 @@ const assistantContext = () => ({
 });
 
 async function openAssistant() {
+  // An assistant is a conversation like any other: its channel, its members and their threads
+  // are the window's own. The assistant page is left for making the first one.
+  const residents = (await call("residents", {})) || [];
+  if (residents.length) {
+    const last = remembered("orochi.assistant")[0];
+    const mine = residents.find((r) => r.thread_id === last) || residents[0];
+    remember("orochi.assistant", [mine.thread_id]);
+    await select(mine.thread_id);
+    return;
+  }
   closeActivity();
   closeSettings();
   leaveOffice();
@@ -5290,13 +5342,9 @@ async function openAssistant() {
   el("thread").hidden = true;
   el("side").hidden = true;
   el("assistant-page").hidden = false;
-  await assistantApi()?.drawAssistant(el("assistant-page"), assistantContext());
-}
-
-/// What the assistant said since: only the list and the head, never the composer.
-async function drawAssistantAgain() {
-  if (state.panel !== "assistant") return;
-  await assistantApi()?.update(el("assistant-page"), assistantContext());
+  const page = el("assistant-page");
+  page.replaceChildren();
+  assistantApi()?.drawStart(page, assistantContext());
 }
 
 function closeAssistant() {
@@ -5425,7 +5473,7 @@ async function drawSettings() {
 
 async function drawScreen() {
   if (state.settings) return drawSettings();
-  if (state.panel === "assistant") return drawAssistantAgain();
+  if (state.panel === "assistant") return;
   const host = el(state.panel === "activity" ? "activity-page-body" : "panel-body");
   // The palette is typed into; redrawing it on every refresh would take the typing away.
   if (state.panel === "search" && host.children?.length) return;
@@ -8512,6 +8560,21 @@ function character(m, mood) {
 
 /// Someone in a room: a round avatar whose ring says what it is doing (solid and pulsing while it
 /// works, dashed while idle, raised for the person), with what it is saying beside it.
+/// The person the Office draws for an agent, small, wherever the conversation names one: the
+/// same face every time, with the vendor's mark as a badge. A message from a member is from
+/// *someone*, not from a logo.
+function person(m) {
+  const avatar = text("span", "avatar sm");
+  avatar.style.setProperty("--hue", String(hueOf(m)));
+  const frame = text("span", "frame");
+  frame.append(character(m, "idle"));
+  avatar.append(frame);
+  const badge = face(m.agent, m.provider, m.model);
+  badge.classList?.add?.("badge");
+  avatar.append(badge);
+  return avatar;
+}
+
 function desk(thread, m) {
   const seat = state.live.find((s) => s.thread_id === thread.id && s.role === m.role);
   const working = m.live > 0;
@@ -9303,6 +9366,7 @@ async function refresh(full) {
   state.members = (await call("members", { thread: thread.thread.id })) || [];
   state.view = thread;
   drawTimeline(thread, said);
+  drawResident(thread);
   drawThreadsControl();
   if (state.member) await drawMember(thread);
   drawTeam(thread);

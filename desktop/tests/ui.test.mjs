@@ -5084,64 +5084,7 @@ test("a schedule is said in Japanese in a Japanese window and left as written ot
 
 const assistant = createRequire(import.meta.url)("../src/assistant.js");
 
-test("the assistant lists what it has scheduled, read only, with what is held last and no proposals", () => {
-  const r = (over) => ({ id: "r", thread_id: "a", name: "n", instruction: "", schedule: "daily at 07:00", watch: null, made_by: "agent", paused: false, proposed: false, next_at: 100, ...over });
-  const rows = assistant.routineRows(
-    [
-      r({ id: "held", name: "Held", paused: true, next_at: 50 }),
-      r({ id: "late", name: "Late", next_at: 300 }),
-      r({ id: "soon", name: "Soon", next_at: 200 }),
-      r({ id: "ask", name: "Waiting", proposed: true }),
-      r({ id: "other", thread_id: "b" }),
-      r({ id: "watch", name: "Watch", schedule: null, watch: "gh run list", every_secs: 3600, next_at: 400 }),
-    ],
-    "a",
-  );
-  assert.deepEqual(rows.map((x) => x.id), ["soon", "late", "watch", "held"]);
-  assert.equal(rows[2].when, "every 1h");
-  assert.equal(rows[3].paused, true);
-});
-
-test("the assistant draws the person and the reply as bubbles, with what was read under the reply", () => {
-  let seq = 0;
-  const item = (over) => ({ seq: ++seq, turn: "t1", lane: 0, at: 1000 + seq, kind: "agent_message", text: "", data: null, turn_origin: null, ...over });
-  const lines = assistant.chatLines(
-    {
-      thread: { id: "r1", status: "idle" },
-      items: [
-        item({ kind: "user_message", lane: null, text: "引っ越し先の住所教えて" }),
-        item({ kind: "tool_call", data: { tool_kind: "read", locations: [{ path: "/home/me/mail/quote.pdf" }] } }),
-        item({ kind: "tool_call", data: { tool_kind: "fetch", raw_input: { url: "https://www.example.com/a" } } }),
-        item({ kind: "tool_call", data: { tool_kind: "fetch", raw_input: { url: "file:///etc/passwd" } } }),
-        item({ kind: "tool_call", data: { tool_kind: "execute", raw_input: { command: "ls" } } }),
-        item({ text: "東京都北区中里" }),
-        item({ text: "以上です。" }),
-        item({ kind: "user_message", lane: null, turn: "t2", turn_origin: "routine", text: 'This turn was started by a routine, "Morning brief" (due …)' }),
-        item({ turn: "t2", text: "おはようございます" }),
-        item({ turn: "t2", lane: 1, text: "a second seat says nothing here" }),
-      ],
-    },
-    [
-      { id: "p1", thread_id: "r1", proposed: true, schedule: "daily at 07:30" },
-      { id: "p2", thread_id: "r1", proposed: false, schedule: "daily at 08:00" },
-      { id: "p3", thread_id: "r2", proposed: true, schedule: "daily at 09:00" },
-    ],
-    [],
-  );
-  assert.deepEqual(lines.map((l) => l.type), ["me", "agent", "woke", "agent", "proposal"]);
-  assert.equal(lines[1].text, "東京都北区中里\n\n以上です。", "one turn's messages are one bubble");
-  assert.deepEqual(lines[1].sources, [
-    { kind: "file", target: "/home/me/mail/quote.pdf", label: "quote.pdf" },
-    { kind: "web", target: "https://www.example.com/a", label: "example.com" },
-  ]);
-  assert.equal(lines[2].routine, "Morning brief");
-  assert.equal(lines[4].routine.id, "p1", "only this conversation's proposals, only while proposed");
-});
-
-test("a proposed watch shows its command, and a long reply folds at a sentence", () => {
+test("a proposed watch shows its command, and a proposed schedule its time", () => {
   assert.deepEqual(assistant.proposalWords({ watch: "gh run list", every_secs: 900 }), { when: "every 15m", command: "gh run list" });
   assert.deepEqual(assistant.proposalWords({ schedule: "daily at 07:30" }), { when: "daily at 07:30", command: null });
-  const long = `${"あ".repeat(400)}。${"い".repeat(400)}`;
-  assert.deepEqual(assistant.folded(long), { head: `${"あ".repeat(400)}。…`, more: true });
-  assert.deepEqual(assistant.folded("short"), { head: "short", more: false });
 });

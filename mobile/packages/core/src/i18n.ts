@@ -377,12 +377,6 @@ const ja: Record<string, string> = {
     'デスクトップとペアリングすると、そのアシスタントと話せます。',
   Menu: 'メニュー',
   'Working…': '作業中…',
-  'Next wakes at {when}': '次は {when} に起きます',
-  'Scheduled · {n}': '予定 · {n}件',
-  'To pause, resume or stop one, ask the assistant.':
-    '止める・再開する・やめるときは、アシスタントに頼んでください。',
-  'Nothing scheduled — ask it to keep you up with something':
-    '予定はありません — 定期的に見てほしいことを頼んでください',
   'Ask it anything, or for something every morning: it proposes, you allow.':
     '何でも聞いてください。「毎朝〜して」と頼むと、アシスタントが提案し、あなたが許可します。',
   'Message {name}': '{name} にメッセージを送信',
@@ -403,8 +397,6 @@ const ja: Record<string, string> = {
   'Show less': '折りたたむ',
   'Show more': 'もっと表示する',
   Source: '参照元',
-  'Woke for “{name}”': '「{name}」で起きました',
-  'Woke by a routine': 'ルーティンで起きました',
   'Proposed watch': '監視の提案',
   'Proposed routine': '予定の提案',
   'It runs this command here with nobody present, reading only.':

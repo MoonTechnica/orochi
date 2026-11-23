@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Linking, Pressable, Text, View } from 'react-native';
-import { folded, proposalWords, scheduleWords, whenOf, type Source } from '@orochi/core';
+import { folded, proposalWords, scheduleWords, type Source } from '@orochi/core';
 import type { RoutineRow } from '@orochi/protocol';
 import { usePrefs } from '../../state/prefs';
 import { Icon } from '../Icon';
@@ -98,28 +98,6 @@ export function AgentBubble({
           </View>
         ) : null}
       </Pressable>
-    </View>
-  );
-}
-
-/** Where a routine woke the assistant: a quiet line, not something the person said. */
-export function WokeLine({ routine, at }: { routine: string | null; at: number | null }) {
-  const { colors, t } = usePrefs();
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        justifyContent: 'center',
-        alignItems: 'center',
-        gap: 6,
-        paddingVertical: 10,
-      }}
-    >
-      <Icon name="alarm-outline" size={14} color={colors.sub} />
-      <Text style={{ color: colors.sub, fontSize: 12 }}>
-        {routine ? t('Woke for “{name}”').replace('{name}', routine) : t('Woke by a routine')}
-        {at ? ` · ${whenOf(Math.floor(at / 1000))}` : ''}
-      </Text>
     </View>
   );
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemRow, RoutineRow, Thread } from '@orochi/protocol';
-import { buildChat, folded, proposalWords, routineRows, sourcesOf, wokenBy } from '../src';
+import { buildChat, folded, proposalWords, sourcesOf } from '../src';
 
 let seq = 0;
 const item = (over: Partial<ItemRow>): ItemRow => ({
@@ -90,7 +90,7 @@ describe('a resident conversation as a messenger', () => {
     ]);
   });
 
-  it('draws a routine wake as a line naming the routine, not as something the person said', () => {
+  it('does not draw a routine wake as something the person said, or as a line of its own', () => {
     const chat = buildChat({
       thread: thread([
         item({
@@ -104,9 +104,8 @@ describe('a resident conversation as a messenger', () => {
       said: [],
       members: [],
     });
-    const woke = chat.find((b) => b.type === 'woke');
-    expect(woke).toMatchObject({ type: 'woke', routine: 'Morning brief' });
     expect(chat.some((b) => b.type === 'me')).toBe(false);
+    expect(chat.filter((b) => b.type !== 'day').map((b) => b.type)).toEqual(['agent']);
   });
 
   it('joins a reply streamed as several messages into one bubble', () => {
@@ -166,24 +165,5 @@ describe('the pieces of a bubble', () => {
         }),
       ),
     ).toEqual([]);
-    expect(wokenBy('nothing here')).toBeNull();
-  });
-});
-
-describe('the list of what an assistant has scheduled', () => {
-  it('is its running routines, soonest first, held ones last, and never a proposal', () => {
-    const r = (over: Partial<RoutineRow>) =>
-      routine({ next_at: 100, proposed: false, paused: false, ...over });
-    const rows = routineRows(
-      [
-        r({ id: 'held', paused: true, next_at: 50 }),
-        r({ id: 'late', next_at: 300 }),
-        r({ id: 'soon', next_at: 200 }),
-        r({ id: 'ask', proposed: true }),
-        r({ id: 'other', thread_id: 'elsewhere' }),
-      ],
-      routine({}).thread_id,
-    );
-    expect(rows.map((x) => x.id)).toEqual(['soon', 'late', 'held']);
   });
 });

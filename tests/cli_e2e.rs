@@ -4082,6 +4082,50 @@ fn a_routines_helper_writes_in_the_leads_folder_without_a_worktree_when_access_a
     success(&workspace.run(&["threads", "stop", &thread]));
 }
 
+/// The person talks to a member directly: one that has finished is continued, in its own thread,
+/// by a message that names it, without the lead being asked to start it again.
+#[test]
+fn a_member_that_has_finished_is_continued_when_the_person_mentions_it_by_name() {
+    let mut workspace = Workspace::new();
+    workspace.config.mailbox.enabled = true;
+    for (key, value) in [
+        ("MOCK_BEHAVIOR", "delegate"),
+        ("MOCK_HELPERS", "spec:Research the API"),
+    ] {
+        workspace.config.agents[0]
+            .env
+            .insert(key.into(), value.into());
+    }
+    workspace.config.activity.host_idle_secs = 60;
+    workspace.config.scheduler.prompt_timeout_secs = 60;
+    let repo = workspace.dir.path().join("repo");
+    let thread = thread_in(&workspace);
+    success(&workspace.run(&["threads", "send", &thread, "Find out how the API is wired"]));
+    until("the helper never ran", || {
+        repo.join("helper-spec.txt").exists()
+    });
+    until("the helper's answer never came back", || {
+        repo.join("completions.txt").exists()
+    });
+    std::fs::remove_file(repo.join("helper-spec.txt")).unwrap();
+
+    success(&workspace.run(&[
+        "threads",
+        "send",
+        &thread,
+        "@spec also check the error codes",
+    ]));
+    until("the member was not continued by its name", || {
+        repo.join("helper-spec.txt").exists()
+    });
+    let said = std::fs::read_to_string(repo.join("helper-spec.txt")).unwrap();
+    assert!(
+        said.contains("also check the error codes"),
+        "the member was not given what the person said: {said}"
+    );
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
 /// A resident remembers nothing between wakes but what it wrote down: its notes come back to
 /// it, in the next wake's brief, from a file in its own folder that the person can read.
 #[test]
