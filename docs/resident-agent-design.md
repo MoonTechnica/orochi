@@ -913,3 +913,4 @@ device, not in the real desktop window, the first-run screen of the desktop page
 and not with a real agent deciding when to propose or what to stop. The phone's pause switch was
 not looked at in the web build.
 
+**The assistant is an organization** (2026-11-23, the user's decision): the single-assistant reading of this page is superseded by `docs/resident-organization-design.md` — a team of members hired by role, released when unused, each reachable by the person and by each other, a routine run by the member it is assigned to, and authority per member. Nothing in that document is built yet; the `residents.access` and `routines.approval` settings above are its interim.
