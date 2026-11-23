@@ -18,6 +18,8 @@ export interface MdContext {
   cwd: string | null | undefined;
   known?: Set<string>;
   mentions?: string[];
+  /** What a name is shown as: an assistant's lead is shown by the assistant's own name. */
+  rename?: Record<string, string>;
 }
 
 export function Markdown({

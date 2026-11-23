@@ -86,8 +86,10 @@ export function ProposalCard({
       <Text style={{ color: colors.sub, fontSize: 14 }}>{routine.instruction}</Text>
       <Text style={{ color: colors.sub, fontSize: 12 }}>
         {command
-          ? t('It runs this command here with nobody present, reading only.')
-          : t('It runs reading only, with nobody present.')}
+          ? t(
+              'This command runs here with nobody present. The agent it wakes reads, and asks you before it changes anything.',
+            )
+          : t('Nobody is there when it runs: it reads, and asks you before it changes anything.')}
       </Text>
       <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
         {button(t('Decline'), false)}

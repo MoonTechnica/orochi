@@ -4211,6 +4211,125 @@ fn a_routine_given_to_a_member_tells_the_lead_to_hand_it_to_them() {
     success(&workspace.run(&["threads", "stop", &thread]));
 }
 
+/// What a routine's turn may change is the resident's own setting, as with Orca's bots, and
+/// the default follows `residents.access`: one resident can write in its folder while another
+/// on the same machine only reads.
+#[test]
+fn what_a_routine_may_change_is_the_residents_own_setting() {
+    let mut workspace = Workspace::new();
+    workspace.config.agents[0]
+        .env
+        .insert("MOCK_BEHAVIOR".into(), "permission".into());
+    workspace.config.activity.host_idle_secs = 60;
+    // Nobody answers a question on a routine's turn, so what is under test is the reach alone.
+    workspace.config.routines.approval = "off".into();
+    let moved = Moved::new(&workspace, MORNING);
+    let make = |name: &str| {
+        let made = moved.json(
+            &workspace,
+            &[
+                "--json",
+                "resident",
+                "new",
+                name,
+                "--instruction",
+                "You help.",
+            ],
+        );
+        (
+            made["thread"].as_str().unwrap().to_owned(),
+            std::path::PathBuf::from(made["home"].as_str().unwrap()),
+        )
+    };
+    let (writer, writer_home) = make("writer");
+    let (reader, reader_home) = make("reader");
+    success(&moved.run(&workspace, &["resident", "reach", "writer", "full"]));
+    assert!(
+        !moved
+            .run(&workspace, &["resident", "reach", "writer", "everything"])
+            .status
+            .success(),
+        "a reach is read, home, full or default"
+    );
+    let run = |thread: &str| {
+        moved.json(
+            &workspace,
+            &[
+                "--json",
+                "routines",
+                "add",
+                thread,
+                "--when",
+                "daily at 08:00",
+                "--",
+                "Say good morning",
+            ],
+        )["routine"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (a, b) = (run(&writer), run(&reader));
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "run", &a]));
+    success(&moved.run(&workspace, &["routines", "run", &b]));
+    until("the writer's routine did not write", || {
+        writer_home.join("completed.txt").exists()
+    });
+    until("both routines did not finish", || {
+        let seen = |id: &str| {
+            moved.json(&workspace, &["--json", "routines", "show", id])["firings"]
+                .as_array()
+                .is_some_and(|f| {
+                    !f.is_empty()
+                        && f.iter().all(|x| {
+                            x["turn_state"]
+                                .as_str()
+                                .is_some_and(|s| s != "queued" && s != "running")
+                        })
+                })
+        };
+        seen(&a) && seen(&b)
+    });
+    assert!(
+        !reader_home.join("completed.txt").exists(),
+        "a resident whose reach is the default (read) must not write"
+    );
+    success(&moved.run(&workspace, &["routines", "rm", &a]));
+    success(&moved.run(&workspace, &["routines", "rm", &b]));
+    success(&workspace.run(&["threads", "stop", &writer]));
+    success(&workspace.run(&["threads", "stop", &reader]));
+}
+
+/// A wake starts from who is on the team, so a member is used again by its name and one the work
+/// no longer needs is released, instead of the lead hiring afresh every morning.
+#[test]
+fn a_wake_is_told_who_is_on_the_team() {
+    let workspace = Workspace::new();
+    success(&workspace.run(&["Add a helper to src/lib.rs"]));
+    let listing: serde_json::Value =
+        serde_json::from_slice(&workspace.run(&["threads", "--json"]).stdout).unwrap();
+    let id = listing["projects"][0]["threads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let data = workspace.dir.path().join("data");
+    let activity = orochi::activity::Activity::attach(&data, 30).unwrap();
+    assert_eq!(
+        orochi::resident::team_of(&activity, &id),
+        "",
+        "nobody hired: nothing said"
+    );
+    let seat: String = activity
+        .connection()
+        .query_row("SELECT id FROM seats LIMIT 1", [], |r| r.get(0))
+        .unwrap();
+    activity.seat_member(&seat, "scout", None).unwrap();
+    let told = orochi::resident::team_of(&activity, &id);
+    assert!(told.contains("- scout ("), "{told}");
+    assert!(told.contains("stop_agent"), "{told}");
+}
+
 /// A resident remembers nothing between wakes but what it wrote down: its notes come back to
 /// it, in the next wake's brief, from a file in its own folder that the person can read.
 #[test]

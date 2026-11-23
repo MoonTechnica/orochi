@@ -26,6 +26,12 @@ pub enum ResidentCommand {
     Show {
         name: String,
     },
+    /// What its routine turns may change with nobody there: `read`, `home` (its own folder) or
+    /// `full`, each change still asked as in a conversation; `default` follows `residents.access`.
+    Reach {
+        name: String,
+        reach: String,
+    },
     /// Stop its routines waking it, without deleting anything.
     Pause {
         name: String,
@@ -129,6 +135,15 @@ pub fn run_resident(
                     );
                 }
             }
+        }
+        ResidentCommand::Reach { name, reach } => {
+            let r = named(&name)?;
+            ensure!(
+                matches!(reach.as_str(), "read" | "home" | "full" | "default"),
+                "reach is read, home, full or default"
+            );
+            activity.set_reach(&r.name, (reach != "default").then_some(reach.as_str()))?;
+            println!("{}: {reach}", r.name);
         }
         ResidentCommand::Show { name } => {
             let r = named(&name)?;

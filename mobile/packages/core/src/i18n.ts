@@ -400,9 +400,10 @@ const ja: Record<string, string> = {
   Source: '参照元',
   'Proposed watch': '監視の提案',
   'Proposed routine': '予定の提案',
-  'It runs this command here with nobody present, reading only.':
-    '誰もいないときに、このコマンドを読み取り専用で実行します。',
-  'It runs reading only, with nobody present.': '誰もいないときに、読み取り専用で実行します。',
+  'This command runs here with nobody present. The agent it wakes reads, and asks you before it changes anything.':
+    'このコマンドは、誰もいないときにこの Mac で動きます。起こされたエージェントは読み取りだけを行い、何かを変えるときは先にあなたに確認します。',
+  'Nobody is there when it runs: it reads, and asks you before it changes anything.':
+    '誰もいないときに動きます。読み取りだけを行い、何かを変えるときは先にあなたに確認します。',
   'waiting for your answer': '承認待ち',
 };
 

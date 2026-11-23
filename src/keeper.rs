@@ -397,7 +397,12 @@ fn wake_text(
         Ok(Some(resident)) => {
             crate::resident::brief(activity, config, &resident, routine, due_at, zone)
         }
-        _ => brief(routine, due_at, zone, &config.residents.access),
+        _ => brief(
+            routine,
+            due_at,
+            zone,
+            &activity.reach_of(&routine.thread_id, &config.residents.access),
+        ),
     }
 }
 

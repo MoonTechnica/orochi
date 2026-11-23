@@ -1426,6 +1426,12 @@ impl<'a> Session<'a> {
     /// A note the person wrote to a member that had finished starts it again in its own thread:
     /// one continuation request, decided by the same gates as any start. The lead hears of it
     /// with the member's report, as it would of anything a helper does.
+    /// What this conversation's routine turns may change: its resident's setting, else the
+    /// default.
+    fn routine_reach(&self) -> String {
+        routine_reach(self.recorded.as_ref(), self.config)
+    }
+
     fn continue_mentioned(&mut self) {
         let (Some(feed), Some(recorded)) = (self.feed.as_ref(), self.recorded.as_ref()) else {
             return;
@@ -4199,7 +4205,7 @@ impl Session<'_> {
         // user's decision, 2026-11-21: that is what Orochi is for) — the same seats a message
         // would get, each read-only, held back by the same cost gate and by the routine budget
         // before it started, and all of it inside the one turn the keeper reports on.
-        if message.origin == Some("routine") && self.config.residents.access == "read" {
+        if message.origin == Some("routine") && self.routine_reach() == "read" {
             for seat in &mut seats {
                 seat.writes = false;
             }
@@ -5586,7 +5592,7 @@ fn grant<'a>(
         };
         let named = !hired.name.is_empty();
         // A role says whether its holder writes; without one the lead says.
-        let write = (!unattended || env.config.residents.access != "read")
+        let write = (!unattended || routine_reach(recorded, env.config) != "read")
             && if named { hired.writes } else { request.write };
         // What the person asked for outright is never held back for being small.
         let by_user = request.payload["user"].as_bool().unwrap_or(false);
@@ -6803,6 +6809,15 @@ async fn next_aside(
         }
     })
     .await
+}
+
+/// What a conversation's routine turns may change: its resident's own setting, else the
+/// default in `residents.access`.
+fn routine_reach(recorded: Option<&Recorded>, config: &Config) -> String {
+    recorded
+        .and_then(|r| Some((r, r.thread.clone()?)))
+        .map(|(r, thread)| r.store().reach_of(&thread, &config.residents.access))
+        .unwrap_or_else(|| config.residents.access.clone())
 }
 
 /// What the lead is told about the seats beside it.

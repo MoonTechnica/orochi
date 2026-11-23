@@ -136,8 +136,13 @@ function ConversationBody({
     [members],
   );
   const ctx = useMemo(
-    () => ({ thread: id, cwd: thread?.thread.cwd, known }),
-    [id, thread?.thread.cwd, known],
+    () => ({
+      thread: id,
+      cwd: thread?.thread.cwd,
+      known,
+      rename: me ? { lead: me.name } : undefined,
+    }),
+    [id, thread?.thread.cwd, known, me],
   );
   const gallery = useMemo(
     () => (thread ? galleryOf(thread.items, { thread: id, cwd: thread.thread.cwd }) : []),

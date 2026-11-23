@@ -46,7 +46,7 @@
       node(
         "p",
         "as-note",
-        command ? t("It runs this command here with nobody present, reading only.") : t("It runs reading only, with nobody present."),
+        command ? t("This command runs here with nobody present. The agent it wakes reads, and asks you before it changes anything.") : t("Nobody is there when it runs: it reads, and asks you before it changes anything."),
       ),
     );
     const row = node("div", "as-answer");

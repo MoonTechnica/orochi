@@ -14,6 +14,8 @@ pub struct Resident {
     pub access: String,
     pub paused: bool,
     pub created_at: i64,
+    /// What its routine turns may change; none: the default in `residents.access`.
+    pub reach: Option<String>,
 }
 
 fn resident_of(r: &rusqlite::Row) -> rusqlite::Result<Resident> {
@@ -25,9 +27,10 @@ fn resident_of(r: &rusqlite::Row) -> rusqlite::Result<Resident> {
         access: r.get(4)?,
         paused: r.get::<_, i64>(5)? != 0,
         created_at: r.get(6)?,
+        reach: r.get(7)?,
     })
 }
-const RESIDENT: &str = "thread_id, name, home, instruction, access, paused, created_at";
+const RESIDENT: &str = "thread_id, name, home, instruction, access, paused, created_at, reach";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Notice {
@@ -62,6 +65,24 @@ pub struct Finished {
 const WAIT_FOR_HELPERS: i64 = 3600;
 
 impl Activity {
+    /// What a thread's routine turns may change: its resident's own setting, else the default.
+    pub fn reach_of(&self, thread: &str, default: &str) -> String {
+        self.resident_for(thread)
+            .ok()
+            .flatten()
+            .and_then(|r| r.reach)
+            .unwrap_or_else(|| default.to_owned())
+    }
+
+    /// Sets what a resident's routine turns may change (`read`, `home`, `full`).
+    pub fn set_reach(&self, name: &str, reach: Option<&str>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE residents SET reach=?2 WHERE name=?1",
+            params![name, reach],
+        )?;
+        Ok(())
+    }
+
     pub fn add_resident(
         &self,
         thread: &str,

@@ -3054,6 +3054,8 @@ impl Activity {
 const ADDED: &[(&str, &str, &str)] = &[
     ("firings", "waiting", "INTEGER NOT NULL DEFAULT 0"),
     ("routines", "member", "TEXT"),
+    // What a resident's routine turns may change (`read`, `home`, `full`); none: `residents.access`.
+    ("residents", "reach", "TEXT"),
     // What a seat was started for, in a few words (a background seat's title), whether it
     // outlives its turn, who started it, and what it reported back. Content, so here only.
     ("seats", "title", "TEXT"),
@@ -3186,7 +3188,8 @@ CREATE TABLE IF NOT EXISTS residents (
   thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
   name TEXT NOT NULL UNIQUE, home TEXT NOT NULL,
   instruction TEXT NOT NULL, access TEXT NOT NULL CHECK (access IN ('read','home')),
-  paused INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+  paused INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+  reach TEXT);
 CREATE TRIGGER IF NOT EXISTS ch_residents_i AFTER INSERT ON residents BEGIN
   INSERT INTO changes (tbl,row,thread_id,at)
     VALUES ('residents',new.thread_id,new.thread_id,CAST(strftime('%s','now') AS INTEGER)*1000); END;

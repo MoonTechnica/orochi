@@ -659,8 +659,8 @@ const WORDS = {
     "Conversation": "会話",
     "Full conversation": "会話の詳細",
     "Stops everything it has scheduled until you resume it": "再開するまで、予定したことをすべて止めます",
-    "It runs reading only, with nobody present.": "誰もいないときに、読み取り専用で実行します。",
-    "It runs this command here with nobody present, reading only.": "誰もいないときに、このコマンドをこの Mac で読み取り専用で実行します。",
+    "Nobody is there when it runs: it reads, and asks you before it changes anything.": "誰もいないときに動きます。読み取りだけを行い、何かを変えるときは先にあなたに確認します。",
+    "This command runs here with nobody present. The agent it wakes reads, and asks you before it changes anything.": "このコマンドは、誰もいないときにこの Mac で動きます。起こされたエージェントは読み取りだけを行い、何かを変えるときは先にあなたに確認します。",
     "Make my assistant": "アシスタントを作る",
     "Message {name}": "{name} にメッセージを送信",
     "Write to {name}": "{name} に書く",
@@ -1991,7 +1991,7 @@ function post(voice, run) {
     const who = text("div", "who");
     // An agent is drawn as the agent it is, as in the list; a person keeps their own mark.
     who.append(voice.agent ? person({ role: voice.who, agent: voice.agent, provider: voice.provider, model: voice.model, lead: voice.who === "lead" }) : mark(voice.who));
-    who.append(text("span", "name", voice.who));
+    who.append(text("span", "name", voice.who === "lead" && state.resident ? state.resident.name : voice.who));
     if (voice.to) who.append(text("span", "to", voice.to));
     if (voice.model) who.append(text("span", "model", voice.model));
     if (voice.at) who.append(text("span", "at", clock(voice.at)));
@@ -9365,6 +9365,7 @@ async function refresh(full) {
   const said = (await call("room", { thread: thread.thread.id })) || [];
   state.said = said;
   state.members = (await call("members", { thread: thread.thread.id })) || [];
+  state.resident = ((await call("residents", {})) || []).find((r) => r.thread_id === thread.thread.id) || null;
   state.view = thread;
   drawTimeline(thread, said);
   drawResident(thread);

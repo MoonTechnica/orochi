@@ -160,6 +160,26 @@ fn lines_changed(old: &str, new: &str) -> (usize, usize) {
     (added, removed)
 }
 
+/// Who is on the team, so a wake starts from it: a member is used again by its name, and one
+/// the work no longer needs is released with stop_agent. Nothing idles: a member that is not
+/// working costs nothing until it is asked.
+pub fn team_of(activity: &Activity, thread: &str) -> String {
+    let members = activity.members(thread).unwrap_or_default();
+    if members.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from(
+        "\nYour team, members you hired before. start_agent with a name continues that member; use them again rather than hiring another, and release one the work no longer needs with stop_agent:\n",
+    );
+    for m in members.iter().take(12) {
+        let role = m.org_role.as_deref().unwrap_or(&m.role);
+        let duty = m.title.as_deref().unwrap_or("");
+        let state = if m.live { "working now" } else { "idle" };
+        text.push_str(&format!("- {} ({role}, {state}) {duty}\n", m.name));
+    }
+    text
+}
+
 /// What the lead is told of a routine that belongs to one of its members.
 pub fn assigned(member: &str) -> String {
     format!(
@@ -201,11 +221,12 @@ pub fn brief(
         resident.instruction,
         routine.name,
         stamp(zone, due_at),
-        reach(&config.residents.access),
+        reach(&activity.reach_of(&resident.thread_id, &config.residents.access)),
     );
     if let Some(member) = &routine.member {
         text.push_str(&assigned(member));
     }
+    text.push_str(&team_of(activity, &resident.thread_id));
     let notes = notes(Path::new(&resident.home), config.residents.notes_chars);
     if !notes.trim().is_empty() {
         text.push_str(&format!(

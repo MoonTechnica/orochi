@@ -105,7 +105,9 @@ export function PostView({
               marginBottom: 2,
             }}
           >
-            <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15 }}>{voice.who}</Text>
+            <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15 }}>
+              {ctx.rename?.[voice.who] ?? voice.who}
+            </Text>
             {voice.to ? (
               <Text style={{ color: colors.sub, fontSize: 12 }}>
                 → {voice.to === 'everyone' ? t('everyone') : voice.to}
