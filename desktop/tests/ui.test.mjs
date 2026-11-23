@@ -4200,6 +4200,20 @@ test("a shell that ended says so, and Enter starts another in the same tab", asy
   assert.equal(calls.filter(([name]) => name === "term_open").length, 2);
 });
 
+test("a shell that cannot start says why in its own tab, not on the window's notice line", async () => {
+  const { el, calls, window } = await open({
+    term_open: new Error("/private/tmp/gone no longer exists (moved or deleted)"),
+  });
+  const terms = fakeXterm(window);
+  fakeChannelAndEvents(window);
+  await newTerminal(el);
+  assert.match(terms[0].text, /no shell could start: .*\/private\/tmp\/gone no longer exists/);
+  assert.doesNotMatch(el("notice").textContent || "", /no longer exists/);
+  terms[0].type("\r");
+  await settle();
+  assert.equal(calls.filter(([name]) => name === "term_open").length, 2, "Enter tries again");
+});
+
 test("closing a terminal tab closes its shell, and a conversation keeps at most six", async () => {
   const { el, calls, window } = await open({ term_open: { id: "term-1", shell: "zsh" }, term_close: null });
   const terms = fakeXterm(window);

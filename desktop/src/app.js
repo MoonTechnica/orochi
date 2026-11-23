@@ -563,6 +563,8 @@ const WORDS = {
     "File…": "ファイル…",
     "restored — the shell was started again": "復元しました — シェルを新しく起動しました",
     "press Enter to start another": "Enter で新しく起動",
+    "no shell could start": "シェルを起動できません",
+    "press Enter to try again": "Enter でもう一度",
     "the shell ended": "シェルが終了しました",
     "Only this many terminals per conversation": "ターミナルは会話ごとにこの数までです",
     "no longer kept": "もう保存されていません",
@@ -7198,9 +7200,14 @@ async function connectShell(entry) {
   const Channel = window.__TAURI__?.core?.Channel;
   const channel = Channel ? new Channel() : { onmessage: null };
   channel.onmessage = (bytes) => entry.term.write(new Uint8Array(bytes));
-  const opened = await call("term_open", { thread: entry.thread, cols: entry.term.cols, rows: entry.term.rows, onData: channel });
-  if (!opened) {
+  let opened;
+  try {
+    opened = await invoke("term_open", { thread: entry.thread, cols: entry.term.cols, rows: entry.term.rows, onData: channel });
+  } catch (error) {
+    // Said in the tab it belongs to: on the window's notice line a restored tab's failure reads
+    // as the window's own, with nothing to say which tab or conversation it came from.
     entry.exited = true;
+    entry.term.write(`\x1b[2m[${t("no shell could start")}: ${String(error)} — ${t("press Enter to try again")}]\x1b[0m\r\n`);
     return;
   }
   entry.sid = opened.id;

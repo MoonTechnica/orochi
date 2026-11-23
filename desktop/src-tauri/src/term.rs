@@ -65,6 +65,11 @@ impl Terminals {
         data: impl Fn(Vec<u8>) + Send + 'static,
         exit: impl FnOnce(String, Option<i32>) + Send + 'static,
     ) -> Result<Opened> {
+        ensure!(
+            cwd.exists(),
+            "{} no longer exists (moved or deleted)",
+            cwd.display()
+        );
         ensure!(cwd.is_dir(), "{} is not a directory", cwd.display());
         ensure!(
             self.sessions.lock().unwrap().len() < LIMIT,
