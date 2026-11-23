@@ -235,6 +235,12 @@ export function buildTimeline(input: TimelineInput): Entry[] {
       flush();
       turnFirst.set(item.turn, item);
       const origin = item.turn_origin;
+      // A routine's wake is Orochi's text, not something anyone said, and nobody needs to be
+      // told it woke: what it produced is the reply under it.
+      if (origin === 'routine') {
+        voice = null;
+        continue;
+      }
       if (origin === 'background' || origin === 'merge' || origin === 'mail') {
         push({
           type: 'reports',

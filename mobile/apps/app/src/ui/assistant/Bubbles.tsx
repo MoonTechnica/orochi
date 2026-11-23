@@ -1,120 +1,10 @@
 import React, { useState } from 'react';
-import { Linking, Pressable, Text, View } from 'react-native';
-import { folded, proposalWords, scheduleWords, type Source } from '@orochi/core';
+import { Pressable, Text, View } from 'react-native';
+import { proposalWords, scheduleWords } from '@orochi/core';
 import type { RoutineRow } from '@orochi/protocol';
 import { usePrefs } from '../../state/prefs';
 import { Icon } from '../Icon';
-import { Markdown, type MdContext } from '../Markdown';
 import { mono, radius } from '../theme';
-
-/**
- * The pieces of a resident's conversation as a messenger draws them. The person's bubbles are
- * the app's main-action inversion, the assistant's the raised grey, so nothing here carries a
- * colour of its own.
- */
-const BUBBLE = {
-  maxWidth: '84%' as const,
-  borderRadius: 20,
-  paddingHorizontal: 16,
-  paddingVertical: 12,
-};
-
-export function MeBubble({ text }: { text: string }) {
-  const { colors } = usePrefs();
-  return (
-    <View style={{ paddingHorizontal: 12, paddingVertical: 3, alignItems: 'flex-end' }}>
-      <View style={{ ...BUBBLE, backgroundColor: colors.primary }}>
-        <Text style={{ color: colors.onPrimary, fontSize: 16, lineHeight: 23 }} selectable>
-          {text}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-export function AgentBubble({
-  text,
-  sources,
-  ctx,
-  onSource,
-  onLongPress,
-}: {
-  text: string;
-  sources: Source[];
-  ctx: MdContext;
-  onSource: (s: Source) => void;
-  onLongPress?: () => void;
-}) {
-  const { colors, t } = usePrefs();
-  const [open, setOpen] = useState(false);
-  const { head, more } = folded(text);
-  return (
-    <View style={{ paddingHorizontal: 12, paddingVertical: 3, alignItems: 'flex-start' }}>
-      <Pressable
-        onLongPress={onLongPress}
-        style={{ ...BUBBLE, backgroundColor: colors.raised, gap: 8 }}
-      >
-        <Markdown text={open || !more ? text : head} ctx={ctx} size={16} />
-        {more ? (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => setOpen(!open)}
-            hitSlop={8}
-            style={{ minHeight: 32, justifyContent: 'center' }}
-          >
-            <Text style={{ color: colors.sub, fontSize: 14, fontWeight: '600' }}>
-              {open ? t('Show less') : t('Show more')}
-            </Text>
-          </Pressable>
-        ) : null}
-        {sources.length ? (
-          <View style={{ gap: 4, borderTopWidth: 1, borderTopColor: colors.line, paddingTop: 8 }}>
-            {sources.map((s) => (
-              <Pressable
-                key={s.target}
-                accessibilityRole="link"
-                accessibilityLabel={`${t('Source')}: ${s.label}`}
-                onPress={() => onSource(s)}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 32 }}
-              >
-                <Icon
-                  name={s.kind === 'web' ? 'globe-outline' : 'document-text-outline'}
-                  size={16}
-                  color={colors.sub}
-                />
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    color: colors.text,
-                    fontSize: 14,
-                    textDecorationLine: 'underline',
-                    flex: 1,
-                  }}
-                >
-                  {s.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
-      </Pressable>
-    </View>
-  );
-}
-
-export function Typing() {
-  const { colors, t } = usePrefs();
-  return (
-    <View style={{ paddingHorizontal: 12, paddingVertical: 3, alignItems: 'flex-start' }}>
-      <View
-        accessibilityLabel={t('Working…')}
-        style={{ ...BUBBLE, backgroundColor: colors.raised, paddingVertical: 10 }}
-      >
-        <Text style={{ color: colors.sub, fontSize: 18, letterSpacing: 2 }}>•••</Text>
-      </View>
-    </View>
-  );
-}
 
 /**
  * What the assistant proposed: when it would run (or the command it would run unattended,
@@ -200,10 +90,4 @@ export function ProposalCard({
       </View>
     </View>
   );
-}
-
-/** A page it read opens in the browser; a file opens in the app's own viewer. */
-export function openSource(s: Source, openFile: (path: string) => void) {
-  if (s.kind === 'web') Linking.openURL(s.target).catch(() => {});
-  else openFile(s.target);
 }
