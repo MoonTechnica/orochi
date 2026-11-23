@@ -40,6 +40,7 @@
     card.append(node("h4", "", command ? t("Proposed watch") : t("Proposed routine")));
     card.append(node("div", "as-when", words(when, ctx.lang)));
     if (command) card.append(node("code", "as-command", command));
+    if (routine.member) card.append(node("div", "as-by", t("Run by {name}").replace("{name}", routine.member)));
     card.append(node("p", "as-what", routine.instruction));
     card.append(
       node(

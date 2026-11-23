@@ -405,8 +405,13 @@ fn wake_text(
 /// has no other way to know nobody is at the keyboard.
 pub fn brief(routine: &Routine, due_at: i64, zone: Zone, access: &str) -> String {
     let p = zone.parts(due_at);
+    let assigned = routine
+        .member
+        .as_deref()
+        .map(crate::resident::assigned)
+        .unwrap_or_default();
     format!(
-        "This turn was started by a routine, \"{}\" (due {:04}-{:02}-{:02} {:02}:{:02}). Nobody is at the keyboard: {} Say what you found as you would to the person, and mention them with @you only for what needs them. You lead this team as always: start_agent works as it does in a conversation, with any role, but whoever you start only reads, whatever the role says, and its answer arrives in a follow-up of this same routine. Until it does, say only that you are waiting for it; then make your report, which answers this routine's instruction and ends with no question.\n\n{}",
+        "This turn was started by a routine, \"{}\" (due {:04}-{:02}-{:02} {:02}:{:02}). Nobody is at the keyboard: {} Say what you found as you would to the person, and mention them with @you only for what needs them. You lead this team as always: start_agent works as it does in a conversation, with any role, but whoever you start only reads, whatever the role says, and its answer arrives in a follow-up of this same routine. Until it does, say only that you are waiting for it; then make your report, which answers this routine's instruction and ends with no question.{}\n\n{}",
         routine.name,
         p.year,
         p.month,
@@ -414,6 +419,7 @@ pub fn brief(routine: &Routine, due_at: i64, zone: Zone, access: &str) -> String
         p.hour,
         p.minute,
         crate::resident::reach(access),
+        assigned,
         routine.instruction
     )
 }

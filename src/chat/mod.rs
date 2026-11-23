@@ -5985,6 +5985,13 @@ fn decide_request<'a>(
                         .unwrap_or_else(|| "mention".into());
                     let name = Some(text("name")).filter(|n| !n.is_empty());
                     let watch = text("watch");
+                    let member = text("member");
+                    if !member.is_empty()
+                        && let Err(error) = crate::routines::api::member_name(&member)
+                    {
+                        refuse(&format!("{error:#}"));
+                        return;
+                    }
                     // An agent proposes; nothing runs until the person allows it in the
                     // conversation, the window or the phone.
                     let made = if watch.is_empty() {
@@ -6015,6 +6022,12 @@ fn decide_request<'a>(
                             at,
                         )
                     };
+                    let made = made.and_then(|made| {
+                        if !member.is_empty() {
+                            crate::routines::api::assign(activity, &made.id, &member)?;
+                        }
+                        Ok(made)
+                    });
                     match made {
                         Ok(made) => {
                             let _ = activity.add_notice(
@@ -6054,6 +6067,7 @@ fn decide_request<'a>(
                                 "made_by": r.made_by,
                                 "paused": r.paused,
                                 "waiting_for_approval": r.proposed,
+                                "member": r.member,
                             })
                         })
                         .collect();

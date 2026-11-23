@@ -1997,6 +1997,7 @@ fn tools(offer: Offer) -> Value {
                        "every": {"type": "string", "maxLength": 20, "description": "How often a watch looks: `15m`, `2h`."},
                        "instruction": {"type": "string", "maxLength": 2000, "description": "What to do when it wakes, as if told it fresh: it will not remember this conversation, only its notes."},
                        "name": {"type": "string", "maxLength": 60},
+                       "member": {"type": "string", "maxLength": 24, "description": "Who on your team runs it: the name of a member you hired (or will hire for this duty), as start_agent names one. Leave it out and you run it yourself. Give each routine to the member it suits."},
                        "notify": {"type": "string", "enum": ["always", "mention", "never"], "description": "When to tell the person. Default: only when you mention them."}},
                      "required": ["instruction"], "additionalProperties": false}}),
             json!({"name": "list_schedules", "description": "The routines on this conversation: who made each, when it is next due, and how the last one went.",

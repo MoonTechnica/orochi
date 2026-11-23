@@ -160,6 +160,13 @@ fn lines_changed(old: &str, new: &str) -> (usize, usize) {
     (added, removed)
 }
 
+/// What the lead is told of a routine that belongs to one of its members.
+pub fn assigned(member: &str) -> String {
+    format!(
+        "\nThis routine is `{member}`'s: hand it to them with start_agent (name `{member}`, the role that suits the work; a member already on the team is continued) and do not do it yourself. Their answer arrives in a follow-up of this routine, and your report then is theirs, in their name.\n"
+    )
+}
+
 /// What a routine's turn is told it may change, from `residents.access`. Asking is the same
 /// question as in a conversation; nobody answers it in the middle of the night, so it is
 /// declined after `routines.ask_secs` unless the person does.
@@ -196,6 +203,9 @@ pub fn brief(
         stamp(zone, due_at),
         reach(&config.residents.access),
     );
+    if let Some(member) = &routine.member {
+        text.push_str(&assigned(member));
+    }
     let notes = notes(Path::new(&resident.home), config.residents.notes_chars);
     if !notes.trim().is_empty() {
         text.push_str(&format!(

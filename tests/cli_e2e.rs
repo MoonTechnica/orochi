@@ -4126,6 +4126,91 @@ fn a_member_that_has_finished_is_continued_when_the_person_mentions_it_by_name()
     success(&workspace.run(&["threads", "stop", &thread]));
 }
 
+/// A routine belongs to one member of the team: its turn tells the lead to hand it to that
+/// member and not to do it, and one nobody was named for is the lead's own.
+#[test]
+fn a_routine_given_to_a_member_tells_the_lead_to_hand_it_to_them() {
+    let mut workspace = Workspace::new();
+    workspace.config.activity.host_idle_secs = 60;
+    let moved = Moved::new(&workspace, MORNING);
+    let thread = thread_in(&workspace);
+    let add = |member: Option<&str>, words: &str| {
+        let mut args = vec![
+            "--json",
+            "routines",
+            "add",
+            thread.as_str(),
+            "--when",
+            "daily at 08:00",
+        ];
+        if let Some(member) = member {
+            args.extend(["--member", member]);
+        }
+        args.extend(["--", words]);
+        moved.json(&workspace, &args)["routine"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let own = add(None, "Say good morning");
+    until("no keeper", || moved.keeper_running(&workspace));
+    success(&moved.run(&workspace, &["routines", "run", &own]));
+    until("the lead's own routine never ran", || {
+        workspace.log().contains("Say good morning")
+    });
+    assert!(
+        !workspace.log().contains("hand it to them with start_agent"),
+        "a routine nobody was named for is the lead's"
+    );
+
+    let given = add(Some("scout"), "Check the release page");
+    let listed = moved.json(&workspace, &["--json", "routines", "list"]);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == given && r["member"] == "scout"),
+        "{listed}"
+    );
+    success(&moved.run(&workspace, &["routines", "run", &given]));
+    until("the member's routine never ran", || {
+        workspace.log().contains("Check the release page")
+    });
+    let log = workspace.log();
+    assert!(
+        log.contains("This routine is `scout`'s: hand it to them with start_agent"),
+        "the lead was not told whose it is"
+    );
+    let bad = moved.run(
+        &workspace,
+        &[
+            "routines",
+            "add",
+            &thread,
+            "--when",
+            "daily at 09:00",
+            "--member",
+            "Not A Name",
+            "--",
+            "x",
+        ],
+    );
+    assert!(!bad.status.success(), "a member's name is checked");
+    assert_eq!(
+        moved
+            .json(&workspace, &["--json", "routines", "list"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "a refused name makes nothing"
+    );
+    success(&moved.run(&workspace, &["routines", "rm", &own]));
+    success(&moved.run(&workspace, &["routines", "rm", &given]));
+    success(&workspace.run(&["threads", "stop", &thread]));
+}
+
 /// A resident remembers nothing between wakes but what it wrote down: its notes come back to
 /// it, in the next wake's brief, from a file in its own folder that the person can read.
 #[test]

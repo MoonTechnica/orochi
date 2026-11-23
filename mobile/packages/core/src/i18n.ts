@@ -383,6 +383,7 @@ const ja: Record<string, string> = {
   'Pause everything it has scheduled': '予定したことをすべて一時停止',
   'Conversation details': '会話の詳細',
   'Talk to {name}': '{name} と話す',
+  'Run by {name}': '担当: {name}',
   'Your assistant': 'あなたのアシスタント',
   'An assistant lives on your desktop with a folder and notes of its own. Talk to it here; ask it to check something every morning and it proposes a routine for you to allow.':
     'アシスタントはデスクトップに住み、専用のフォルダとメモを持っています。ここで話しかけてください。「毎朝〜を確認して」と頼むと、予定を提案するので、あなたが許可します。',

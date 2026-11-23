@@ -58,6 +58,27 @@ fn proposal_expiry(config: &Config, by_agent: bool, now: i64) -> Option<i64> {
     by_agent.then(|| now + config.routines.proposal_days * 86_400)
 }
 
+/// Names who runs a routine: a member of the conversation's team, by the name `start_agent`
+/// gives one. The lead hires it when the routine is due if it is not there, and only reads, as
+/// every routine turn does unless `residents.access` says more.
+pub fn assign(activity: &Activity, routine: &str, member: &str) -> Result<()> {
+    activity.set_routine_member(routine, Some(&member_name(member)?))
+}
+
+/// A member's name as `start_agent` gives one, checked before anything is made for it.
+pub fn member_name(member: &str) -> Result<String> {
+    let name = member.trim().trim_start_matches('@');
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 24
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "a member's name is lowercase letters, digits and dashes, at most 24"
+    );
+    Ok(name.to_owned())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     config: &Config,

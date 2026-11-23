@@ -3053,6 +3053,7 @@ impl Activity {
 /// moves, so these are added on open, each at most once (`added`).
 const ADDED: &[(&str, &str, &str)] = &[
     ("firings", "waiting", "INTEGER NOT NULL DEFAULT 0"),
+    ("routines", "member", "TEXT"),
     // What a seat was started for, in a few words (a background seat's title), whether it
     // outlives its turn, who started it, and what it reported back. Content, so here only.
     ("seats", "title", "TEXT"),
@@ -3149,6 +3150,8 @@ CREATE TABLE IF NOT EXISTS routines (
   next_at INTEGER, last_at INTEGER, created_at INTEGER NOT NULL,
   -- An agent's proposal: held paused, and run only once the person allows it.
   proposed INTEGER NOT NULL DEFAULT 0,
+  -- The member of the conversation's team that runs it; none: the lead does.
+  member TEXT,
   CHECK ((schedule IS NULL) <> (watch IS NULL)));
 CREATE INDEX IF NOT EXISTS routines_due ON routines(next_at) WHERE paused = 0;
 CREATE INDEX IF NOT EXISTS routines_thread ON routines(thread_id);
@@ -3920,7 +3923,7 @@ DROP VIEW IF EXISTS v_routines;
 CREATE VIEW v_routines AS
 SELECT r.id AS routine_id, r.thread_id, t.title AS thread_title, r.name, r.instruction,
        r.schedule, r.watch, r.every_secs, r.access, r.notify, r.catch_up, r.made_by,
-       r.expires_at, r.paused, r.next_at, r.last_at, r.created_at, r.proposed,
+       r.expires_at, r.paused, r.next_at, r.last_at, r.created_at, r.proposed, r.member,
        (SELECT f.skipped FROM firings f WHERE f.routine_id=r.id ORDER BY f.id DESC LIMIT 1)
          AS last_skipped,
        (SELECT tn.state FROM firings f JOIN turns tn ON tn.id=f.turn_id

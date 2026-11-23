@@ -35,6 +35,8 @@ pub struct Routine {
     pub created_at: i64,
     /// An agent proposed it and the person has not allowed it yet; it does not run.
     pub proposed: bool,
+    /// The member of the team that runs it, by name; none: the lead runs it.
+    pub member: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,7 +71,7 @@ pub struct NewRoutine<'a> {
 
 const COLUMNS: &str = "id, thread_id, name, instruction, schedule, schedule_parsed, watch,
     every_secs, watch_hash, watch_failures, access, notify, catch_up, descriptor, made_by,
-    expires_at, paused, next_at, last_at, created_at, proposed";
+    expires_at, paused, next_at, last_at, created_at, proposed, member";
 
 fn routine_of(r: &rusqlite::Row) -> rusqlite::Result<Routine> {
     Ok(Routine {
@@ -94,6 +96,7 @@ fn routine_of(r: &rusqlite::Row) -> rusqlite::Result<Routine> {
         last_at: r.get(18)?,
         created_at: r.get(19)?,
         proposed: r.get::<_, i64>(20)? != 0,
+        member: r.get(21)?,
     })
 }
 
@@ -130,6 +133,15 @@ impl Activity {
             ],
         )?;
         Ok(id)
+    }
+
+    /// Names the member that runs a routine (none: the lead).
+    pub fn set_routine_member(&self, id: &str, member: Option<&str>) -> Result<()> {
+        self.connection.execute(
+            "UPDATE routines SET member=?2 WHERE id=?1",
+            params![id, member],
+        )?;
+        Ok(())
     }
 
     /// A routine by its id or by the start of it, as long as the start names one.

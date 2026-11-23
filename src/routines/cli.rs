@@ -38,6 +38,9 @@ pub enum RoutinesCommand {
         /// What to do when the machine was asleep at its time: run once, or skip it.
         #[arg(long, default_value = "once")]
         catch_up: String,
+        /// The member of the team that runs it (the lead hires it if it is not there).
+        #[arg(long)]
+        member: Option<String>,
         /// What the instruction asks the agent to do.
         #[arg(last = true, required = true)]
         instruction: Vec<String>,
@@ -151,8 +154,12 @@ pub fn run_routines(
             name,
             notify,
             catch_up,
+            member,
             instruction,
         } => {
+            if let Some(member) = &member {
+                api::member_name(member)?;
+            }
             let thread = activity
                 .resolve_thread(&thread)?
                 .with_context(|| format!("no thread {thread}"))?;
@@ -184,6 +191,9 @@ pub fn run_routines(
                 )?,
                 (None, None) => bail!("give --when, or --watch with --every"),
             };
+            if let Some(member) = &member {
+                api::assign(&activity, &made.id, member)?;
+            }
             let (id, next) = (made.id.clone(), made.next_at);
             let kept = crate::keeper::ensure(config, &paths.config, &paths.data)?;
             if json {

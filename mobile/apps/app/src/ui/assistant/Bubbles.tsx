@@ -71,6 +71,11 @@ export function ProposalCard({
         </Text>
       </View>
       <Text style={{ color: colors.text, fontSize: 15 }}>{scheduleWords(when, lang)}</Text>
+      {routine.member ? (
+        <Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }}>
+          {t('Run by {name}').replace('{name}', routine.member)}
+        </Text>
+      ) : null}
       {command ? (
         <View style={{ backgroundColor: colors.code, borderRadius: 8, padding: 10 }}>
           <Text selectable style={{ color: colors.text, fontFamily: mono, fontSize: 13 }}>

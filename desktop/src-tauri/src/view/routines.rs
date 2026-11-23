@@ -67,7 +67,7 @@ impl Client {
                     last_skipped, last_state,
                     (SELECT COALESCE(sum(f.tokens),0) FROM firings f
                       WHERE f.routine_id=v_routines.routine_id AND f.started_at>=?1),
-                    proposed, every_secs
+                    proposed, every_secs, member
              FROM v_routines ORDER BY created_at, name",
         )?;
         let today = day_start(now());
@@ -86,6 +86,7 @@ impl Client {
                 "tokens_today": r.get::<_, i64>(17)?,
                 "proposed": r.get::<_, i64>(18)? != 0,
                 "every_secs": r.get::<_, Option<i64>>(19)?,
+                "member": r.get::<_, Option<String>>(20)?,
             }))
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

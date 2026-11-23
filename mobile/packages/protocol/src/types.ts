@@ -506,6 +506,8 @@ export interface RoutineRow {
   paused: boolean;
   /** An agent proposed it in the conversation; it runs only once the person allows it. */
   proposed: boolean;
+  /** The member of the team that runs it, by name; none: the lead. */
+  member?: string | null;
   next_at: number | null;
   last_at: number | null;
   last_skipped: string | null;

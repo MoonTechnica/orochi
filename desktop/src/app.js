@@ -664,6 +664,7 @@ const WORDS = {
     "Make my assistant": "アシスタントを作る",
     "Message {name}": "{name} にメッセージを送信",
     "Write to {name}": "{name} に書く",
+    "Run by {name}": "担当: {name}",
     "Proposed routine": "予定の提案",
     "Proposed watch": "監視の提案",
     "Show less": "折りたたむ",
