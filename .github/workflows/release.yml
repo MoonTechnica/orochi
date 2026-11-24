@@ -212,6 +212,25 @@ jobs:
             target/aarch64-apple-darwin/release/orochi-remote \
             target/x86_64-apple-darwin/release/orochi-remote
           lipo -info target/universal-apple-darwin/release/orochi-remote
+          # The bundler signs the main binary and the sidecar but not another [[bin]], and an
+          # unsigned one inside the app fails the app's signature ("In subcomponent:
+          # …/orochi-remote"). It is signed here, as the bundler signs, from a keychain of its own.
+          if [ -n "${APPLE_CERTIFICATE:-}" ]; then
+            keychain="$RUNNER_TEMP/orochi-remote.keychain-db"
+            keypass=$(openssl rand -hex 16)
+            security create-keychain -p "$keypass" "$keychain"
+            trap 'security delete-keychain "$keychain" || true' EXIT
+            security set-keychain-settings -lut 3600 "$keychain"
+            security unlock-keychain -p "$keypass" "$keychain"
+            printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+              -P "${APPLE_CERTIFICATE_PASSWORD:-}" -T /usr/bin/codesign
+            rm -f "$RUNNER_TEMP/cert.p12"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keypass" "$keychain" >/dev/null
+            codesign --force --options runtime --timestamp --keychain "$keychain" \
+              --sign "$APPLE_SIGNING_IDENTITY" target/universal-apple-darwin/release/orochi-remote
+            codesign --verify --verbose target/universal-apple-darwin/release/orochi-remote
+          fi
           npx --yes "$TAURI_CLI" bundle --target universal-apple-darwin
         working-directory: desktop/src-tauri
       - name: Gather what was bundled
