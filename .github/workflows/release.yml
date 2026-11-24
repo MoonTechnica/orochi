@@ -175,6 +175,12 @@ jobs:
         # built (the same build, so the same features), and only then bundled.
         run: |
           set -eu
+          # An unset secret arrives as an empty string, and the bundler reads a variable that is
+          # present as one to use: it tried to import an empty certificate and stopped.
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+            APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name:-}" ] || unset "$name"
+          done
           if [ "${{ matrix.target }}" != universal-apple-darwin ]; then
             npx --yes "$TAURI_CLI" build --target ${{ matrix.target }}
             exit 0
