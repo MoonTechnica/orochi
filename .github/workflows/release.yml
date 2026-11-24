@@ -227,8 +227,14 @@ jobs:
               -P "${APPLE_CERTIFICATE_PASSWORD:-}" -T /usr/bin/codesign
             rm -f "$RUNNER_TEMP/cert.p12"
             security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keypass" "$keychain" >/dev/null
+            # codesign finds an identity only in a keychain on the search list, as the bundler's.
+            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+            security find-identity -v -p codesigning "$keychain"
+            identity=$(security find-identity -v -p codesigning "$keychain" |
+              awk '/Developer ID Application/ { print $2; exit }')
+            [ -n "$identity" ] || { echo "no Developer ID Application identity in the certificate" >&2; exit 1; }
             codesign --force --options runtime --timestamp --keychain "$keychain" \
-              --sign "$APPLE_SIGNING_IDENTITY" target/universal-apple-darwin/release/orochi-remote
+              --sign "$identity" target/universal-apple-darwin/release/orochi-remote
             codesign --verify --verbose target/universal-apple-darwin/release/orochi-remote
           fi
           npx --yes "$TAURI_CLI" bundle --target universal-apple-darwin
