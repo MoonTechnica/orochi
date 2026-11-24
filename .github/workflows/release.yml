@@ -169,7 +169,27 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx --yes "$TAURI_CLI" build --target ${{ matrix.target }}
+        # A universal build lipos only the main binary, yet bundles every [[bin]] of the crate, so
+        # it stopped at `orochi-remote` missing from target/universal-apple-darwin. There it is
+        # built without bundling, `orochi-remote` is joined by hand from the two slices just
+        # built (the same build, so the same features), and only then bundled.
+        run: |
+          set -eu
+          if [ "${{ matrix.target }}" != universal-apple-darwin ]; then
+            npx --yes "$TAURI_CLI" build --target ${{ matrix.target }}
+            exit 0
+          fi
+          npx --yes "$TAURI_CLI" build --target universal-apple-darwin --no-bundle
+          for slice in aarch64-apple-darwin x86_64-apple-darwin; do
+            [ -x "target/$slice/release/orochi-remote" ] ||
+              cargo build --release --locked --bin orochi-remote --target "$slice"
+          done
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/orochi-remote \
+            target/aarch64-apple-darwin/release/orochi-remote \
+            target/x86_64-apple-darwin/release/orochi-remote
+          lipo -info target/universal-apple-darwin/release/orochi-remote
+          npx --yes "$TAURI_CLI" bundle --target universal-apple-darwin
         working-directory: desktop/src-tauri
       - name: Gather what was bundled
         shell: bash
