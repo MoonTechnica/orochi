@@ -57,7 +57,12 @@ export type Entry =
   | { type: 'media'; key: string; media: MediaData; at: number }
   | { type: 'reports'; key: string; origin: string; names: string[] }
   | { type: 'foot'; key: string; ms: number; endedAt: number; files: number }
-  | { type: 'live'; key: string; seats: { role: string; what: string }[]; starting: boolean }
+  | {
+      type: 'live';
+      key: string;
+      seats: { role: string; member?: string | null; what: string }[];
+      starting: boolean;
+    }
   | { type: 'ask'; key: string; prompt: Prompt }
   | { type: 'day'; key: string; at: number };
 
@@ -171,6 +176,9 @@ export function buildTimeline(input: TimelineInput): Entry[] {
     (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
   );
 
+  const repliesInChannel = new Set(
+    thread.seats.filter((s) => s.origin === 'user-channel').map((s) => `${s.turn}/${s.ordinal}`),
+  );
   let voice: string | null = null;
   const post = (v: Voice, run: boolean, key: string) =>
     push({ type: 'post', key, voice: v, run, turn: tagNow });
@@ -229,8 +237,11 @@ export function buildTimeline(input: TimelineInput): Entry[] {
       }
       continue;
     }
-    // A member's own working notes are its thread's.
-    if (item.member || (item.lane !== null && item.lane !== undefined && item.lane > 0)) continue;
+    const directReply =
+      item.kind === 'agent_message' &&
+      item.member &&
+      repliesInChannel.has(`${item.turn}/${item.lane}`);
+    if (!directReply && (item.member || (item.lane != null && item.lane > 0))) continue;
     if (item.kind === 'user_message') {
       flush();
       turnFirst.set(item.turn, item);
@@ -300,12 +311,13 @@ export function buildTimeline(input: TimelineInput): Entry[] {
         resumed: !!d.resumed,
       });
     } else if (item.kind === 'agent_message') {
-      const who = item.role || item.agent || 'agent';
+      const relay = ['background', 'merge', 'mail'].includes(item.turn_origin ?? '');
+      const who = (directReply ? item.member : relay ? 'lead' : item.role) || item.agent || 'agent';
       post(
         {
           who,
           to: null,
-          role: item.role,
+          role: directReply || relay ? who : item.role,
           agent: item.agent,
           provider: item.provider,
           model: item.model,
@@ -314,6 +326,7 @@ export function buildTimeline(input: TimelineInput): Entry[] {
           mine: false,
           mentions: [],
           mentionsYou: false,
+          thread: directReply ? item.member : null,
         },
         voice === who,
         `m${item.seq}`,
@@ -340,7 +353,12 @@ export function buildTimeline(input: TimelineInput): Entry[] {
   const order: (string | null)[] = [];
   for (const t of eff) if (!order.includes(t)) order.push(t);
   const grouped: Entry[] = [];
-  const running = thread.thread.status === 'working' ? thread.items.at(-1)?.turn : null;
+  const running =
+    thread.running_turn !== undefined
+      ? thread.running_turn
+      : thread.thread.status === 'working'
+        ? thread.items.at(-1)?.turn
+        : null;
   for (const id of order) {
     out.forEach((e, i) => {
       if (eff[i] === id) grouped.push(e);
@@ -361,15 +379,22 @@ export function buildTimeline(input: TimelineInput): Entry[] {
   out.push(...grouped);
 
   if (thread.thread.status === 'working') {
-    const lastTurn = thread.seats.at(-1)?.turn;
-    const room = thread.seats.filter((s) => s.turn === lastTurn);
+    const room = thread.seats.filter(
+      (s) => s.turn === running && !['done', 'failed', 'cancelled'].includes(s.state),
+    );
     const seat = room.length ? room.find((s) => !s.background) || room[0] : null;
     out.push({
       type: 'live',
       key: 'live',
       starting: !seat,
       seats: seat
-        ? [{ role: seat.role, what: seat.peer_status || seat.doing?.split('\n')[0] || seat.state }]
+        ? [
+            {
+              role: seat.role,
+              member: seat.member,
+              what: seat.peer_status || seat.doing?.split('\n')[0] || seat.state,
+            },
+          ]
         : [],
     });
   }

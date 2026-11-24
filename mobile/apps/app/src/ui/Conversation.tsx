@@ -128,7 +128,13 @@ function ConversationBody({
   );
   const unread = unreadThreads(summaries, seen) > 0;
   const known = useMemo(
-    () => new Set(['lead', ...members.map((m) => m.name.toLowerCase())]),
+    () =>
+      new Set([
+        'lead',
+        ...members.flatMap((m) =>
+          [m.name, m.display_name || m.name].map((name) => name.toLowerCase()),
+        ),
+      ]),
     [members],
   );
   const ctx = useMemo(
@@ -288,8 +294,7 @@ function ConversationBody({
         onInterrupt={() => api?.interrupt(id)}
         onSend={async (text) => {
           await api!.send(id, text);
-          await api!.ensureHost(id).catch(() => {});
-          await data.reload();
+          await Promise.all([api!.ensureHost(id).catch(() => {}), data.reload()]);
         }}
       />
       <EdgeOpen onOpen={() => setMenu(true)} />

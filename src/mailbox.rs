@@ -41,37 +41,63 @@ pub const MESSAGE_COLUMNS: [(&str, &str); 4] = [
 /// address, `a@b`) is not one. A name nobody has mentions nobody: a typo is never a broadcast.
 pub fn mentions_in(text: &str, known: &[String]) -> Vec<String> {
     let mut found: Vec<String> = vec![];
-    let bytes = text.as_bytes();
     let mut at = 0;
     while let Some(offset) = text[at..].find('@') {
         let start = at + offset;
         at = start + 1;
-        if start > 0 {
-            let before = bytes[start - 1] as char;
-            if before.is_ascii_alphanumeric() || matches!(before, '_' | '.' | '-') {
-                continue;
-            }
+        if text[..start].chars().next_back().is_some_and(|before| {
+            before.is_alphanumeric() || matches!(before, '@' | '_' | '.' | '-')
+        }) {
+            continue;
         }
         let name: String = text[at..]
             .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .take_while(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
             .collect();
         let name = name.trim_end_matches(['.', '-', '_']);
         if name.is_empty() {
             continue;
         }
-        let spelled = match name.to_ascii_lowercase().as_str() {
+        let spelled = match name.to_lowercase().as_str() {
             "you" => Some("you".to_owned()),
             "channel" | "all" | "everyone" => Some("channel".to_owned()),
-            lower => known
-                .iter()
-                .find(|k| k.to_ascii_lowercase() == lower)
-                .cloned(),
+            lower => known.iter().find(|k| k.to_lowercase() == lower).cloned(),
         };
         if let Some(spelled) = spelled
             && !found.contains(&spelled)
         {
             found.push(spelled);
+        }
+    }
+    found
+}
+
+/// Resolve display names in a person's message to the stable member names used by the mailbox.
+pub(crate) fn member_mentions(
+    text: &str,
+    known: &[String],
+    aliases: &[(String, String)],
+) -> Vec<String> {
+    let mut names = known.to_vec();
+    names.extend(aliases.iter().map(|(_, label)| label.clone()));
+    let mut found = Vec::new();
+    for name in mentions_in(text, &names) {
+        let canonical = if known.contains(&name) {
+            name
+        } else if let Some((key, _)) = aliases.iter().find(|(_, label)| *label == name) {
+            known
+                .iter()
+                .find(|n| n.eq_ignore_ascii_case(key))
+                .unwrap_or(key)
+                .clone()
+        } else {
+            name
+        };
+        if !found
+            .iter()
+            .any(|n: &String| n.eq_ignore_ascii_case(&canonical))
+        {
+            found.push(canonical);
         }
     }
     found
@@ -332,11 +358,15 @@ impl Mailbox {
         title: &str,
         task: &str,
         write: bool,
+        reply_in_channel: bool,
     ) -> Result<String> {
         let id = self.request_agent_workspace(peer, name, title, task, write)?;
         self.connection.execute(
             "UPDATE agent_requests SET payload=?2 WHERE id=?1",
-            params![id, json!({"user": true}).to_string()],
+            params![
+                id,
+                json!({"user": true, "reply_in_channel": reply_in_channel}).to_string()
+            ],
         )?;
         Ok(id)
     }
@@ -1094,7 +1124,20 @@ impl Mailbox {
             "message body must be 1-{MAX_BODY} bytes"
         );
         let known = self.known_names(channel, thread);
-        let mentions = mentions_in(body, &known);
+        let aliases = thread.map_or_else(Vec::new, |thread| {
+            self.connection
+                .prepare(
+                    "SELECT a.key,a.value FROM ui_state u,json_each(u.member_names) a
+                 WHERE u.thread_id=?1",
+                )
+                .and_then(|mut statement| {
+                    statement
+                        .query_map([thread], |r| Ok((r.get(0)?, r.get(1)?)))?
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        let mentions = member_mentions(body, &known, &aliases);
         // A reply in a member's thread is for that member, whoever else it mentions.
         let target = to
             .map(str::to_owned)
@@ -1749,6 +1792,17 @@ pub fn join(
     salt: &str,
     name: Option<&str>,
 ) -> Result<Membership> {
+    join_channel(executable, data, config, root, channel(root, salt), name)
+}
+
+pub(crate) fn join_channel(
+    executable: PathBuf,
+    data: &Path,
+    config: &MailboxConfig,
+    root: &Path,
+    channel: String,
+    name: Option<&str>,
+) -> Result<Membership> {
     Mailbox::open(data, config)?;
     // The MCP server runs as a child of the *agent* and inherits the agent's working
     // directory, so a relative data directory would send it looking somewhere else — where it
@@ -1756,7 +1810,6 @@ pub fn join(
     let data = data
         .canonicalize()
         .with_context(|| format!("cannot resolve the data directory {}", data.display()))?;
-    let channel = channel(root, salt);
     let default_name = format!(
         "{}-{}",
         root.file_name()

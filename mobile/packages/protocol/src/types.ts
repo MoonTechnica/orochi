@@ -115,6 +115,7 @@ export interface SeatRow {
   title: string | null;
   background: boolean;
   reported: boolean;
+  origin?: string | null;
   member?: string | null;
 }
 
@@ -129,6 +130,7 @@ export interface FileRow {
 
 export interface Thread {
   thread: ThreadRow;
+  running_turn?: string | null;
   items: ItemRow[];
   seats: SeatRow[];
   files: FileRow[];
@@ -156,6 +158,7 @@ export interface Said {
 export interface Member {
   thread_id: string;
   name: string;
+  display_name?: string | null;
   seat_id: string;
   role: string;
   read_only: boolean;

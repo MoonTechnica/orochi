@@ -335,6 +335,28 @@ async fn rpc_answers_with_the_views_the_window_reads_and_writes_what_it_writes()
     assert_eq!(sidebar.status, 200);
     let rows = sidebar.json();
     assert_eq!(rows[0]["threads"][0]["id"], door.thread);
+    let activity = orochi::activity::Activity::attach(&door.data, 30).unwrap();
+    let turn = activity
+        .queue_turn(&door.thread, "Review this", &[], "auto", "desktop")
+        .unwrap();
+    let seat = activity
+        .create_seat(&turn, 0, "reviewer", false, true, None, None)
+        .unwrap();
+    activity.seat_member(&seat, "reviewer", None).unwrap();
+    let renamed = rpc(
+        &door,
+        &token,
+        "rename_member",
+        json!({"thread": door.thread, "member": "reviewer", "name": "ミナ"}),
+    )
+    .await;
+    assert_eq!(renamed.status, 200);
+    let roster = rpc(&door, &token, "members", json!({"thread": door.thread})).await;
+    assert_eq!(roster.status, 200);
+    let member = &roster.json()[0];
+    assert_eq!(member["name"], "reviewer");
+    assert_eq!(member["display_name"], "ミナ");
+    assert_eq!(member["role"], "reviewer");
     let sent = rpc(
         &door,
         &token,

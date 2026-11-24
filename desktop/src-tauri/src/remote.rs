@@ -85,6 +85,7 @@ const WRITES: &[&str] = &[
     "new_thread",
     "ensure_host",
     "rename_thread",
+    "rename_member",
     "pin_thread",
     "archive_thread",
     "set_route",
@@ -1081,6 +1082,9 @@ fn call(
         "room" => value(client.room(&thread()?)),
         "chatter" => value(client.chatter(number(args, "since").unwrap_or(0), 60)),
         "members" => value(client.members(&thread()?)),
+        "rename_member" => {
+            value(client.rename_member(&thread()?, &text(args, "member")?, &text(args, "name")?))
+        }
         "mentions" => value(client.mentions()),
         "team" => value(client.team(&thread()?)),
         "board" => value(client.board(&thread()?)),

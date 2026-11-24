@@ -37,6 +37,8 @@ export const api = (c: RemoteClient) => ({
   room: (thread: string) => c.rpc<Said[]>('room', { thread }),
   chatter: (since: number) => c.rpc<Talk[]>('chatter', { since }),
   members: (thread: string) => c.rpc<Member[]>('members', { thread }),
+  renameMember: (thread: string, member: string, name: string) =>
+    c.rpc<null>('rename_member', { thread, member, name }),
   mentions: () => c.rpc<Mention[]>('mentions'),
   team: (thread: string) => c.rpc<Team>('team', { thread }),
   openPrompts: () => c.rpc<Prompt[]>('open_prompts'),

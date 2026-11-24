@@ -2655,7 +2655,7 @@ fn threads_reads_a_members_thread_and_sends_to_it_and_lists_what_mentions_the_us
         .unheard_notes(&id)
         .unwrap()
         .into_iter()
-        .map(|(_, member, body)| format!("{member}: {body}"))
+        .map(|(_, member, body, _)| format!("{member}: {body}"))
         .collect();
     assert_eq!(
         notes,
@@ -3078,6 +3078,169 @@ fn a_headless_host_runs_queued_turns_and_leaves_its_questions_for_a_client() {
         .query_row("SELECT count(*) FROM hosts", [], |r| r.get(0))
         .unwrap();
     assert_eq!(left, 0, "a host that ends releases its thread");
+}
+
+#[test]
+fn a_queued_member_mention_restarts_the_member_in_a_new_host() {
+    use orochi::activity::{Activity, SeatState, TurnState};
+
+    let mut workspace = Workspace::new();
+    workspace.config.mailbox.enabled = true;
+    workspace.config.manager.enabled = true;
+    workspace.config.activity.host_idle_secs = 60;
+    let thread = thread_in(&workspace);
+    let data = workspace.dir.path().join("data");
+    let activity = Activity::attach(&data, 30).unwrap();
+    let prior = activity
+        .queue_turn(&thread, "Review the project", &[], "auto", "desktop")
+        .unwrap();
+    let design = activity
+        .create_seat(&prior, 0, "design", true, true, None, None)
+        .unwrap();
+    activity.seat_state(&design, SeatState::Done).unwrap();
+    let seat = activity
+        .create_seat(&prior, 1, "reviewer", false, true, None, None)
+        .unwrap();
+    activity.seat_member(&seat, "reviewer", None).unwrap();
+    activity.seat_state(&seat, SeatState::Done).unwrap();
+    let other = activity
+        .create_seat(&prior, 2, "reviewer", false, true, None, None)
+        .unwrap();
+    activity.seat_member(&other, "reviewer-2", None).unwrap();
+    activity.seat_state(&other, SeatState::Done).unwrap();
+    activity.turn_state(&prior, TurnState::Completed).unwrap();
+    activity.rename_member(&thread, "reviewer", "ミナ").unwrap();
+    assert!(
+        activity
+            .rename_member(&thread, "reviewer-2", "ミナ")
+            .is_err()
+    );
+    activity
+        .rename_member(&thread, "reviewer-2", "レン")
+        .unwrap();
+    let members = activity.members(&thread).unwrap();
+    assert!(members.iter().any(|m| m.name == "reviewer"
+        && m.role == "reviewer"
+        && m.display_name.as_deref() == Some("ミナ")));
+    assert!(members.iter().any(|m| m.name == "reviewer-2"
+        && m.role == "reviewer"
+        && m.display_name.as_deref() == Some("レン")));
+    let delivery = activity
+        .queue_turn(&thread, "@ミナ Please check again", &[], "auto", "desktop")
+        .unwrap();
+
+    let mut host = Command::new(env!("CARGO_BIN_EXE_orochi"))
+        .arg("--config")
+        .arg(workspace.dir.path().join("config.toml"))
+        .arg("--data-dir")
+        .arg(&data)
+        .current_dir(workspace.dir.path())
+        .args(["host", "--thread", &thread])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    until("the reviewer did not get a continuation", || {
+        activity
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE member='reviewer' AND continues=?1)",
+                [&seat],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    });
+    until("the reviewer did not receive the note", || {
+        workspace.log().lines().any(|line| {
+            let Ok(request) = serde_json::from_str::<serde_json::Value>(line) else {
+                return false;
+            };
+            request["method"] == "session/prompt"
+                && request["params"]["prompt"]
+                    .as_array()
+                    .is_some_and(|prompt| {
+                        prompt.iter().any(|part| {
+                            part["text"].as_str().is_some_and(|text| {
+                                text.contains(
+                                    "A new request in your thread: @ミナ Please check again",
+                                ) && text.contains("A message addressed to `@ミナ` is for you.")
+                                    && text.contains("Address the user in your final reply")
+                            })
+                        })
+                    })
+        })
+    });
+    until(
+        "the reviewer's reply was not saved in the conversation",
+        || {
+            activity
+                .connection()
+                .query_row(
+                    "SELECT EXISTS(
+                    SELECT 1 FROM items i JOIN attempts a ON a.id=i.attempt_id
+                    JOIN seats s ON s.id=a.seat_id
+                    WHERE i.thread_id=?1 AND i.kind='agent_message'
+                    AND s.member='reviewer' AND s.continues=?2 AND s.origin='user-channel'
+                )",
+                    [&thread, &seat],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        },
+    );
+    let state: String = activity
+        .connection()
+        .query_row("SELECT state FROM turns WHERE id=?1", [&delivery], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(state, "completed");
+    let room: String = activity
+        .connection()
+        .query_row(
+            "SELECT project_id FROM messages WHERE thread_id=?1 AND via='user' AND member='reviewer'",
+            [&thread],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(room, activity.thread_project(&thread).unwrap());
+    until("the reviewer did not finish", || {
+        activity
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE continues=?1 AND result IS NOT NULL)",
+                [&seat],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap()
+    });
+    success(&workspace.run(&["threads", "stop", &thread]));
+    assert!(host.wait().unwrap().success());
+    let turns: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM turns WHERE thread_id=?1",
+            [&thread],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(turns, 2, "the lead did not run to relay the direct reply");
+    let other_seats: i64 = activity
+        .connection()
+        .query_row(
+            "SELECT count(*) FROM seats WHERE continues=?1",
+            [&other],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(other_seats, 0);
+    activity.rename_member(&thread, "reviewer", "").unwrap();
+    assert!(
+        activity
+            .members(&thread)
+            .unwrap()
+            .iter()
+            .any(|m| m.name == "reviewer" && m.display_name.is_none())
+    );
 }
 
 /// `orochi threads send` says a host is started when there is none. Nothing else will start

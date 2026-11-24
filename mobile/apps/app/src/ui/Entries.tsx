@@ -47,7 +47,9 @@ export function PostView({
   onOpenThread?: (member: string) => void;
 }) {
   const { colors, t } = usePrefs();
-  const who = usePeople().voice(voice);
+  const people = usePeople();
+  const who = people.voice(voice);
+  const name = ctx.rename?.[voice.who] ?? people.label(voice.who);
   // A tap shows the time on every message (a run of one speaker has it only here).
   const [timed, setTimed] = useState(false);
   const replied = !inThread ? repliedToThread(voice) : null;
@@ -57,7 +59,7 @@ export function PostView({
       onPress={() => setTimed(!timed)}
       onLongPress={onLongPress ? () => onLongPress(voice) : undefined}
       delayLongPress={350}
-      accessibilityLabel={`${replied ? `${t('Replied to a thread')}, ` : ''}${voice.who}: ${voice.text}`}
+      accessibilityLabel={`${replied ? `${t('Replied to a thread')}, ` : ''}${name}: ${voice.text}`}
       style={{
         flexDirection: 'row',
         gap: 10,
@@ -105,9 +107,7 @@ export function PostView({
               marginBottom: 2,
             }}
           >
-            <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15 }}>
-              {ctx.rename?.[voice.who] ?? voice.who}
-            </Text>
+            <Text style={{ color: colors.text, fontWeight: '700', fontSize: 15 }}>{name}</Text>
             {voice.to ? (
               <Text style={{ color: colors.sub, fontSize: 12 }}>
                 → {voice.to === 'everyone' ? t('everyone') : voice.to}
@@ -316,7 +316,9 @@ export function ReportsLine({
       ) : null}
       {entry.names.map((n) => (
         <Pressable key={n} onPress={() => onMember(n)} hitSlop={8}>
-          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>{n}</Text>
+          <Text style={{ color: colors.text, fontSize: 13, fontWeight: '600' }}>
+            {people.label(n)}
+          </Text>
         </Pressable>
       ))}
     </View>
@@ -379,9 +381,11 @@ export function LiveView({ entry }: { entry: Extract<Entry, { type: 'live' }> })
             key={i}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}
           >
-            <WhoFace who={people.who(s.role)} size={20} badge={false} state="working" />
+            <WhoFace who={people.who(s.member || s.role)} size={20} badge={false} state="working" />
             <Text style={{ color: colors.sub, flexShrink: 1 }} numberOfLines={1}>
-              <Text style={{ fontWeight: '700', color: colors.text }}>{s.role}</Text>{' '}
+              <Text style={{ fontWeight: '700', color: colors.text }}>
+                {s.member ? people.label(s.member) : s.role}
+              </Text>{' '}
               {AT[s.what] ? t(AT[s.what]!) : s.what}
             </Text>
           </View>

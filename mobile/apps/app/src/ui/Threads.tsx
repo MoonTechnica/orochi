@@ -153,11 +153,12 @@ export const ThreadCard = memo(function ThreadCard({
   const { colors, t, lang } = usePrefs();
   const f = footerOf(s, seenAt);
   const hot = f.unread || f.needsYou;
+  const label = usePeople().label(s.name);
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={footerLabel(s, f, now, lang, t)}
+      accessibilityLabel={footerLabel({ ...s, name: label }, f, now, lang, t)}
       testID={`thread-card-${s.name}`}
       style={{
         marginHorizontal: 12,
@@ -182,7 +183,7 @@ export const ThreadCard = memo(function ThreadCard({
           }}
           numberOfLines={1}
         >
-          {s.name}
+          {label}
         </Text>
         <View style={{ flex: 1 }} />
         {f.needsYou ? <NeedsChip label={t('Needs you')} /> : null}

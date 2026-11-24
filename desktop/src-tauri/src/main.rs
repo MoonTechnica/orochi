@@ -355,6 +355,20 @@ fn members(open: State<'_, Open>, thread: String) -> Result<Vec<orochi::activity
     open.0.lock().unwrap().members(&thread).map_err(fail)
 }
 
+#[tauri::command]
+fn rename_member(
+    open: State<'_, Open>,
+    thread: String,
+    member: String,
+    name: String,
+) -> Result<(), String> {
+    open.0
+        .lock()
+        .unwrap()
+        .rename_member(&thread, &member, &name)
+        .map_err(fail)
+}
+
 /// What the agents have said to the user that they have not seen yet.
 #[tauri::command]
 fn mentions(open: State<'_, Open>) -> Result<Vec<orochi::activity::Mention>, String> {
@@ -1323,6 +1337,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             add_project,
             members,
+            rename_member,
             mentions,
             see_mentions,
             folders,

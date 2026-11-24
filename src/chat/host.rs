@@ -27,7 +27,13 @@ use std::{
 /// within a blink; nothing else here is time-critical.
 const POLL: Duration = Duration::from_millis(100);
 
-pub async fn run(config: &Config, config_path: &Path, data: &Path, thread: &str) -> Result<u8> {
+pub async fn run(
+    config: &Config,
+    config_path: &Path,
+    data: &Path,
+    thread: &str,
+    peer_name: Option<&str>,
+) -> Result<u8> {
     crate::keeper::remember_config(config_path);
     let store = Store::open(data)?;
     crate::activity::recorder::ASK_SECS.store(
@@ -82,6 +88,24 @@ pub async fn run(config: &Config, config_path: &Path, data: &Path, thread: &str)
     let _guard = Release {
         activity: activity.clone(),
         host: host.clone(),
+    };
+    // A desktop launches the host in its own directory. Use the conversation's room for
+    // member notes and replies, even when the host starts outside that project.
+    let _membership = if config.mailbox.enabled {
+        let channel = activity
+            .lock()
+            .expect("activity store")
+            .thread_project(thread)?;
+        Some(crate::mailbox::join_channel(
+            std::env::current_exe()?,
+            data,
+            &config.mailbox,
+            &cwd,
+            channel,
+            peer_name,
+        )?)
+    } else {
+        None
     };
 
     let (keys, keyboard) = crate::chat::term::Keyboard::channel();

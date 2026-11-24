@@ -66,6 +66,8 @@ pub struct Post {
     /// Writes in the lead's own folder, with no worktree of its own: a routine's helper, where
     /// the folder is an assistant's and not a repository (the user's rule 2026-11-23).
     pub in_place: bool,
+    /// A direct, read-only reply to a person needs no follow-up from the lead.
+    pub reply_to_user: bool,
 }
 
 pub struct Helper {
@@ -636,6 +638,11 @@ fn prompt(
     if post.in_place {
         return format!(
             "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\n{role}{brief}You work in the same folder as `{lead}`, with no copy of your own, so change only what your task names and leave the rest alone. Each change is asked of the user as in a conversation. Your final reply is what `{lead}` receives: say what you changed and what you found. {others}\n\nYour task:\n{task}"
+        );
+    }
+    if post.reply_to_user {
+        return format!(
+            "You are `{name}`. The user sent this request directly to you. Address the user in your final reply and answer the request yourself. You have read-only access.\n\n{role}{brief}{others}\n\nYour task:\n{task}"
         );
     }
     format!(

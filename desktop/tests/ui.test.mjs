@@ -3064,6 +3064,29 @@ test("typing @ offers the lead, the members and @channel: running first, then re
   assert.equal(calls.some(([name]) => name === "send"), true, "Cmd-Enter sends");
 });
 
+test("a named reviewer shows their role in suggestions and is mentioned by name", async () => {
+  const answers = channel();
+  const reviewer = answers.members.find((m) => m.name === "reviewer");
+  reviewer.display_name = "ミナ";
+  answers.members.push({ ...reviewer, name: "reviewer-2", display_name: "レン" });
+  const { el, calls } = await open(answers);
+  const box = el("message");
+  box.value = "@reviewer";
+  box.dispatch("input");
+  const choices = el("mention-list").querySelectorAll(".mention-row");
+  assert.deepEqual(choices.map((choice) => choice.dataset.name), ["ミナ", "レン"]);
+  assert.equal(choices[0].querySelectorAll(".mention-role")[0].textContent, "reviewer");
+  box.value = "@ミ";
+  box.dispatch("input");
+  box.dispatch("keydown", { key: "Tab" });
+  assert.equal(box.value, "@ミナ ");
+  box.value += "返事して";
+  el("composer").dispatch("submit");
+  await wait();
+  assert.equal(calls.findLast(([name]) => name === "say")[1].text, "@ミナ 返事して");
+  assert.equal(calls.some(([name]) => name === "send"), false);
+});
+
 test("the thread's composer offers the same list, and a post naming a member reaches it directly", async () => {
   const { el, calls } = await open(channel());
   el("timeline").querySelectorAll(".thread-bar")[0].dispatch("click");
