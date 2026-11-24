@@ -43,6 +43,12 @@ class Node {
       this.children.push(child);
     }
   }
+  prepend(...nodes) {
+    const kept = this.children.filter((c) => !nodes.includes(c));
+    this.children = [];
+    this.append(...nodes);
+    this.children.push(...kept);
+  }
   replaceChildren(...nodes) { this.children = []; this._text = ""; this.append(...nodes); }
   remove() {
     if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);

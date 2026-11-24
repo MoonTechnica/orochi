@@ -208,7 +208,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": null,
-        "member": null
+        "member": null,
+        "seat_id": null
       },
       {
         "seq": 2,
@@ -234,7 +235,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "anthropic",
-        "member": null
+        "member": null,
+        "seat_id": "s1"
       },
       {
         "seq": 3,
@@ -254,7 +256,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "anthropic",
-        "member": null
+        "member": null,
+        "seat_id": "s1"
       },
       {
         "seq": 4,
@@ -280,7 +283,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s2"
       },
       {
         "seq": 5,
@@ -309,7 +313,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s2"
       },
       {
         "seq": 6,
@@ -332,7 +337,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s2"
       },
       {
         "seq": 7,
@@ -352,7 +358,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s2"
       },
       {
         "seq": 8,
@@ -372,7 +379,8 @@
         "failed": false,
         "turn_origin": "background",
         "provider": null,
-        "member": null
+        "member": null,
+        "seat_id": null
       },
       {
         "seq": 9,
@@ -392,7 +400,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "anthropic",
-        "member": null
+        "member": null,
+        "seat_id": null
       },
       {
         "seq": 10,
@@ -418,7 +427,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s4"
       },
       {
         "seq": 11,
@@ -441,7 +451,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s4"
       },
       {
         "seq": 12,
@@ -461,7 +472,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "opencode",
-        "member": "implementer"
+        "member": "implementer",
+        "seat_id": "s4"
       },
       {
         "seq": 13,
@@ -487,7 +499,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "openai",
-        "member": "reviewer"
+        "member": "reviewer",
+        "seat_id": "s3"
       },
       {
         "seq": 14,
@@ -510,7 +523,8 @@
         "failed": false,
         "turn_origin": null,
         "provider": "openai",
-        "member": "reviewer"
+        "member": "reviewer",
+        "seat_id": "s3"
       }
     ],
     "seats": [

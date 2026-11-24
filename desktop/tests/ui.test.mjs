@@ -1319,6 +1319,19 @@ async function select_(el) {
   await new Promise((resolve) => setTimeout(resolve, 20));
 }
 
+test("the sidebar's pages are rows with a picture each, and the open one says so", async () => {
+  const { el } = await open({});
+  const icons = ["assistant-btn", "office-btn", "activity", "new-thread"]
+    .map((id) => el(id).querySelectorAll(".icon")[0]?.dataset.icon);
+  assert.deepEqual(icons, ["sparkles", "building", "activity", "square-pen"]);
+  el("office-btn").dispatch("click");
+  assert.equal(el("office-btn").getAttribute("aria-current"), "page", "the office is where the window is");
+  assert.notEqual(el("activity").getAttribute("aria-current"), "page");
+  el("activity").dispatch("click");
+  assert.equal(el("activity").getAttribute("aria-current"), "page", "the activity page is drawn over the office");
+  assert.notEqual(el("office-btn").getAttribute("aria-current"), "page");
+});
+
 test("a project with no conversation still has its primary checkout, named by its branch", async () => {
   const project = structuredClone(recorded.sidebar[0]);
   project.threads = [];
@@ -1753,10 +1766,13 @@ test("while the window is away, a new question and a finished conversation are n
 
 test("a project's conversations sit on the card of the checkout they work in, and fold to one mark each", async () => {
   const projects = structuredClone(recorded.sidebar);
+  projects[0].branch = "main";
+  projects[0].root = "/work/orochi";
   const threads = projects[0].threads;
   for (const th of threads) {
     th.cwd = "/work/orochi";
-    th.branch = "main";
+    // Begun on another branch: the card says the one the checkout is on now.
+    th.branch = "earlier";
     th.worktree = false;
   }
   threads[0].status = "working";
@@ -1765,12 +1781,14 @@ test("a project's conversations sit on the card of the checkout they work in, an
   const cards = () => el("projects").querySelectorAll(".place");
   assert.equal(cards().length, 1, "one checkout, one card");
   const drawn = cards()[0].render();
-  assert.match(drawn, /main[\s\S]*primary/, "known by its branch, marked as the original");
+  assert.match(drawn, /main[\s\S]*primary/, "known by its current branch, marked as the original");
+  assert.doesNotMatch(drawn, /earlier/, "not by the branch its conversations began on");
   assert.doesNotMatch(drawn, /span\.name orochi/, "the project's name is not said again under it");
   assert.equal(cards()[0].querySelectorAll(".face")[0].dataset.provider, "openai", "and who is working in it");
   assert.match(drawn, /- \$ cargo test/, "a row says what its lead is doing, on its own line");
   assert.equal(el("projects").querySelectorAll(".thread").length, threads.length);
-  cards()[0].querySelectorAll(".place-head")[0].dispatch("click");
+  // The primary checkout's card opens the checkout; its arrow folds it.
+  cards()[0].querySelectorAll(".place-head")[0].querySelectorAll(".fold")[0].dispatch("click");
   assert.equal(el("projects").querySelectorAll(".thread").length, 0, "folded, the rows go");
   const folded = cards()[0].querySelectorAll(".marks")[0];
   assert.match(folded.render(), new RegExp(`${threads.length} conversations`), "and one line says how many");

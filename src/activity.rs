@@ -713,6 +713,17 @@ pub struct Thread {
 /// ever opened or closed while agents are running.
 pub type Shared = std::sync::Arc<std::sync::Mutex<Activity>>;
 
+/// The branch a project's own checkout is on now, as `git` says it; none when the folder is
+/// gone or HEAD is detached.
+fn checkout_branch(root: &str) -> Option<String> {
+    Path::new(root)
+        .is_dir()
+        .then(|| crate::context::git(Path::new(root), &["rev-parse", "--abbrev-ref", "HEAD"]))
+        .flatten()
+        .map(|b| b.trim().to_owned())
+        .filter(|b| !b.is_empty() && b != "HEAD")
+}
+
 pub fn share(activity: Activity) -> Shared {
     std::sync::Arc::new(std::sync::Mutex::new(activity))
 }
@@ -1232,10 +1243,10 @@ impl Activity {
                         id,
                         name,
                         missing: !Path::new(&root).is_dir(),
+                        branch: checkout_branch(&root),
                         root,
                         pinned,
                         collapsed,
-                        branch: None,
                         threads: vec![],
                     });
                     projects.last_mut().expect("just pushed")
@@ -1252,14 +1263,7 @@ impl Activity {
         )?;
         let empty = statement.query_map(params![hidden], |r| {
             let root: String = r.get(2)?;
-            let branch = Path::new(&root)
-                .is_dir()
-                .then(|| {
-                    crate::context::git(Path::new(&root), &["rev-parse", "--abbrev-ref", "HEAD"])
-                })
-                .flatten()
-                .map(|b| b.trim().to_owned())
-                .filter(|b| !b.is_empty() && b != "HEAD");
+            let branch = checkout_branch(&root);
             Ok(ProjectRow {
                 id: r.get(0)?,
                 name: r.get(1)?,

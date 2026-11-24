@@ -703,7 +703,22 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .checks div.pass:first-child { color: var(--muted); }
 
 /* Supervising -------------------------------------------------------------- */
-#sidebar header { display: flex; flex-direction: column; gap: 6px; }
+/* The sidebar's pages: rows with a picture, as a mail client lists its folders, not boxes. */
+#sidebar header { display: flex; flex-direction: column; gap: 1px; padding-left: 8px; padding-right: 8px; }
+#sidebar header > button {
+  display: flex; align-items: center; gap: 10px;
+  border: 0; border-radius: 8px; padding: 6px 8px;
+  color: var(--text); text-align: left;
+  transition: background-color .12s ease;
+}
+#sidebar header > button:hover { background: var(--raised); }
+#sidebar header > button:active:not(:disabled) { background: var(--line); }
+#sidebar header > button[aria-current="page"] { background: var(--raised); font-weight: 600; }
+#sidebar header .nav-icon { display: inline-flex; flex: none; color: var(--muted); }
+#sidebar header .nav-icon svg { width: 16px; height: 16px; }
+#sidebar header > button:hover .nav-icon,
+#sidebar header > button[aria-current="page"] .nav-icon { color: var(--text); }
+#sidebar header .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #activity { display: flex; align-items: center; justify-content: space-between; }
 #activity-count:not(:empty) {
   background: var(--brand); color: var(--on-brand); border-radius: 9px; padding: 0 7px; font-size: 11px;

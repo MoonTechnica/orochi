@@ -1383,10 +1383,10 @@ fn the_memory_note_and_a_leads_brief_never_name_a_thread_either() {
     );
 }
 
-/// A project that has lost every conversation still has its primary checkout, and the list names
-/// it by its branch, which no conversation is left to say.
+/// A project's primary checkout is drawn by its current branch whether or not any conversation
+/// works there: none may be left to say it, or every one may be in a worktree of its own.
 #[test]
-fn a_project_without_conversations_reports_the_branch_of_its_own_checkout() {
+fn a_project_reports_the_current_branch_of_its_own_checkout_with_or_without_conversations() {
     let dir = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
     let root = repo.path().canonicalize().unwrap();
@@ -1414,6 +1414,26 @@ fn a_project_without_conversations_reports_the_branch_of_its_own_checkout() {
     assert_eq!(projects.len(), 1);
     assert!(projects[0].threads.is_empty());
     assert_eq!(projects[0].branch.as_deref(), Some("trunk"));
+
+    // A conversation in a worktree of its own says that worktree's branch, never the primary
+    // checkout's, so the project still reads its own checkout's current branch.
+    let project = activity.project_for(&root, "salt").unwrap();
+    let elsewhere = root.join(".orochi/worktrees/t-1");
+    activity
+        .create_thread(
+            &project,
+            &elsewhere,
+            Some("orochi/t-1"),
+            "repo-hash",
+            Origin::Console,
+            &Overrides::default(),
+            "ask",
+        )
+        .unwrap();
+    git(&["checkout", "-b", "feature"]);
+    let projects = activity.sidebar(20, false).unwrap();
+    assert_eq!(projects[0].threads.len(), 1);
+    assert_eq!(projects[0].branch.as_deref(), Some("feature"));
 }
 
 /// The sidebar's context menus write rows, and the rows mean what they say: a hidden project

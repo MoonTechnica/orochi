@@ -928,7 +928,12 @@ function drawSidebar() {
     for (const [cwd, threads] of places) ordered.set(cwd, threads);
     const branchCounts = new Map();
     const checkouts = Array.from(ordered, ([cwd, threads]) => {
-      const branch = (threads[0] ? threads[0].branch : project.branch) || "";
+      // The primary checkout is named by the branch it is on now, which `git` reads each time;
+      // a conversation's branch is only what it was when that conversation began, and is all
+      // there is to say once the folder is gone.
+      const primary = cwd === project.root && !threads.some((th) => th.worktree);
+      const now = (primary && !project.missing) || !threads[0];
+      const branch = (now ? project.branch : threads[0].branch) || "";
       branchCounts.set(branch, (branchCounts.get(branch) ?? 0) + 1);
       return { cwd, threads, branch };
     });
@@ -2014,6 +2019,10 @@ const ICONS = {
   "folder-open": ["m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"],
   box: ["M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z", "m3.3 7 8.7 5 8.7-5", "M12 22V12"],
   square: ["rect:5,5,14,14"],
+  // The sidebar's own pages.
+  sparkles: ["M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z", "M20 3v4", "M22 5h-4", "M4 17v2", "M5 18H3"],
+  building: ["M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z", "M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2", "M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2", "M10 6h4", "M10 10h4", "M10 14h4", "M10 18h4"],
+  "square-pen": ["M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7", "M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"],
 };
 
 /// One drawing, wherever the window shows a picture. A character standing in for an icon is
@@ -5416,12 +5425,14 @@ async function openActivity() {
   el("side").hidden = true;
   el("office").hidden = true;
   el("activity-page").hidden = false;
+  markPages();
   await drawScreen();
 }
 
 function closeActivity() {
   if (state.panel !== "activity") return;
   state.panel = null;
+  markPages();
   el("activity-page").hidden = true;
   // Leaving returns to where it was opened from: the office, or the conversation.
   el("office").hidden = !state.office;
@@ -5486,6 +5497,7 @@ async function openAssistant() {
   el("thread").hidden = true;
   el("side").hidden = true;
   el("assistant-page").hidden = false;
+  markPages();
   const page = el("assistant-page");
   page.replaceChildren();
   assistantApi()?.drawStart(page, assistantContext());
@@ -5494,6 +5506,7 @@ async function openAssistant() {
 function closeAssistant() {
   if (state.panel !== "assistant") return;
   state.panel = null;
+  markPages();
   el("assistant-page").hidden = true;
   el("office").hidden = !state.office;
   el("thread").hidden = state.office;
@@ -8560,12 +8573,25 @@ for (const g of [0, 1]) {
 // it costs no query of its own.
 const ROOM_ORDER = { needs_you: 0, working: 1, queued: 2, background: 3, held: 4 };
 
+/// Which of the sidebar's pages is open, said on its row so the row reads as the place the
+/// window is: the activity page and the assistant's first page over the office.
+function markPages() {
+  const open = state.panel === "activity" ? "activity"
+    : state.panel === "assistant" ? "assistant-btn"
+    : state.office ? "office-btn" : null;
+  for (const id of ["assistant-btn", "office-btn", "activity"]) {
+    const row = el(id);
+    row.setAttribute("aria-current", id === open ? "page" : "false");
+  }
+}
+
 function leaveOffice() {
   if (!state.office) return;
   state.office = false;
   el("office").hidden = true;
   el("thread").hidden = false;
   el("side").hidden = false;
+  markPages();
 }
 
 function enterOffice() {
@@ -8579,6 +8605,7 @@ function enterOffice() {
   el("side").hidden = true;
   el("office").hidden = false;
   state.officeSig = "";
+  markPages();
   drawOffice();
 }
 
@@ -9620,6 +9647,18 @@ for (const [id, word] of Object.entries(LABELS)) {
 for (const tab of document.querySelectorAll(".tab")) {
   tab.textContent = t(tab.textContent);
 }
+
+// The sidebar's pages, each known by a picture as well as its word, drawn after
+// the words, which are written over whatever a row holds where it has no label of its own.
+for (const [id, icon] of Object.entries({
+  "assistant-btn": "sparkles",
+  "office-btn": "building",
+  activity: "activity",
+  "new-thread": "square-pen",
+})) {
+  el(id).prepend(drawn(icon, "icon nav-icon"));
+}
+
 for (const button of document.querySelectorAll(".by")) {
   button.textContent = t(button.textContent);
 }
