@@ -1304,6 +1304,34 @@ test("a project with no conversation still has its primary checkout, named by it
   assert.equal(again.el("projects").querySelectorAll(".place").length, 1);
 });
 
+test("checkout headings show folder names only when the branch needs context", async () => {
+  const project = structuredClone(recorded.sidebar[0]);
+  project.branch = "main";
+  project.threads = [
+    ["one", "orochi/one"],
+    ["review-a", "review"],
+    ["review-b", "review"],
+    ["detached", null],
+  ].map(([folder, branch]) => ({
+    ...project.threads[0],
+    id: folder,
+    cwd: `${project.root}/worktrees/${folder}`,
+    branch,
+    worktree: true,
+  }));
+  const { el } = await open({ sidebar: [project] });
+  const side = el("projects");
+  const heads = side.querySelectorAll(".place-head");
+  assert.deepEqual(heads.map((head) => head.querySelectorAll(".name")[0].textContent),
+    ["main", "orochi/one", "review", "review", "detached"]);
+  assert.equal(heads[1].querySelectorAll(".checkout-folder").length, 0);
+  assert.equal(heads[1].getAttribute("title"), `orochi/one\n${project.threads[0].cwd}`);
+  assert.equal(heads[4].getAttribute("title"), `no branch\n${project.threads[3].cwd}`);
+  assert.deepEqual(side.querySelectorAll(".checkout-folder").map((hint) => hint.textContent),
+    ["review-a", "review-b"]);
+  assert.equal(side.querySelectorAll(".place .branch").length, 0);
+});
+
 test("a conversation opens at its newest end, and one being read further up is left where it is", async () => {
   const project = structuredClone(recorded.sidebar[0]);
   const answers = { sidebar: [project], thread: recorded.thread, changed: [] };
