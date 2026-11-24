@@ -573,6 +573,17 @@ const rpc = {
       failures: 0,
       windows: [['five_hour', 0.7, null, true]],
     },
+    {
+      agent: 'codex',
+      model: '*',
+      status: 'ready',
+      cooling: 0,
+      reset_at: null,
+      quota_estimate: null,
+      failures: 0,
+      windows: [['codex/primary', 0.42, Math.floor(Date.now() / 1000) + 1200, true]],
+      credits: [['codex/credits', '12.50']],
+    },
   ],
   insights: () => [
     {

@@ -721,6 +721,10 @@ details[open] > summary .icon { transform: rotate(90deg); }
   text-align: left;
 }
 .place-head .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-head .checkout-folder {
+  max-width: 38%; color: var(--muted); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .place-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
 .place-head .dot.live { background: var(--ok); }
 .place-head .badge {
@@ -841,11 +845,6 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .face[data-provider="google"] { background: var(--google); }
 .face[data-provider="qwen"] { background: #615ced; }
 .face[data-provider="none"] { background: transparent; border: 1px dashed var(--line); }
-.place .branch {
-  display: flex; align-items: center; gap: 5px; padding: 0 10px 3px 25px;
-  color: var(--muted); font-size: 11px; overflow: hidden; white-space: nowrap;
-}
-.place .branch svg { width: 11px; height: 11px; }
 .mark-pair { display: inline-flex; align-items: center; gap: 2px; }
 .face[data-icon="vendor"] { background: transparent; overflow: hidden; }
 .face[data-icon="vendor"] img { width: 16px; height: 16px; object-fit: contain; display: block; }
@@ -889,7 +888,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .project > summary .hint { color: var(--muted); font-weight: 400; font-size: 11px; }
 .place-head .icon svg { width: 12px; height: 12px; }
 .place-head .icon { color: var(--muted); }
-.place-head .tally { margin-left: auto; color: var(--muted); font-size: 11px; }
+.place-head .tally { flex: none; margin-left: auto; color: var(--muted); font-size: 11px; }
 .place-head .tally + .fold { margin-left: 4px; }
 .place .thread { padding-left: 16px; }
 .marks .faces { display: inline-flex; }
@@ -1600,7 +1599,7 @@ button:disabled { opacity: .5; cursor: default; }
 .room-head:hover { background: var(--raised); }
 .floor { display: flex; flex-wrap: wrap; gap: 136px 12px; padding: 150px 12px 18px; min-height: 150px; align-items: flex-start; justify-content: safe center; overflow-x: auto; }
 .tree { display: flex; width: max-content; align-items: flex-start; gap: 12px; }
-.branch { display: flex; flex-direction: column; align-items: center; }
+.floor .branch { display: flex; flex-direction: column; align-items: center; }
 .kids { display: flex; align-items: flex-start; justify-content: center; gap: 12px; margin-top: 136px; }
 .desk { position: relative; display: flex; flex-direction: column; align-items: center; width: 172px; }
 .avatar { --hue: 210; --tint: hsl(var(--hue) 62% 62%); --deep: hsl(var(--hue) 45% 34%); position: relative; width: 56px; height: 56px; border-radius: 50%; background: hsl(var(--hue, 210) 40% 22% / .55); border: 2px dashed var(--line); }

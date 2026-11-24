@@ -78,7 +78,8 @@ SELECT q.agent,
        json_extract(w.value,'$.remaining') AS remaining,
        json_extract(w.value,'$.reset_at') AS reset_at,
        json_extract(w.value,'$.model') AS model,
-       json_extract(w.value,'$.affects_routing') AS affects_routing
+       json_extract(w.value,'$.affects_routing') AS affects_routing,
+       json_extract(w.value,'$.balance') AS balance
 FROM quota_snapshots q, json_each(q.record,'$.windows') w;
 COMMIT;
 "#;

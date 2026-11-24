@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   STATE_LABELS,
-  STATUS_TONE,
   buildTimeline,
   galleryOf,
   mentionCandidates,
@@ -18,7 +16,6 @@ import type { ResidentRow, RoutineRow } from '@orochi/protocol';
 import * as Clipboard from 'expo-clipboard';
 import { useData } from '../state/data';
 import { usePrefs } from '../state/prefs';
-import { toneFill } from './theme';
 import { useSession } from '../state/session';
 import { useThreadData, type ThreadData } from '../state/thread';
 import { Composer } from './Composer';
@@ -39,7 +36,7 @@ import { Empty, Header, HeaderButton } from './Screen';
 import { EdgeOpen } from './Drawer';
 import { PeopleProvider } from './people/People';
 import { Sheet } from './Sheet';
-import { ThreadFooter, ThreadsPill } from './Threads';
+import { ThreadFooter } from './Threads';
 import { useNow } from '../state/now';
 import { useThreadSeen } from '../state/threadSeen';
 import { ThreadMenu } from './ThreadMenu';
@@ -79,11 +76,10 @@ function ConversationBody({
   data: ThreadData;
   switchable?: { residents: ResidentRow[]; onSwitch: (thread: string) => void };
 }) {
-  const { api } = useSession();
+  const { api, active, titleOf } = useSession();
   const { prompts, refresh } = useData();
   const { colors, t, lang } = usePrefs();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
   const [menu, setMenu] = useState(false);
   const [pressed, setPressed] = useState<Voice | null>(null);
   const { thread, said, members } = data;
@@ -91,7 +87,7 @@ function ConversationBody({
   const { seen } = useThreadSeen(id);
   const [me, setMe] = useState<ResidentRow | null>(null);
   const [routines, setRoutines] = useState<RoutineRow[]>([]);
-  const assistant = me !== null;
+  const assistant = Boolean(switchable || me);
   const loadResident = useCallback(async () => {
     if (!api) return;
     const [all, rows] = await Promise.all([
@@ -215,7 +211,6 @@ function ConversationBody({
     }
   };
 
-  const tone = thread ? toneFill(colors, STATUS_TONE[thread.thread.status]) : colors.sub;
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: colors.bg }}
@@ -223,7 +218,7 @@ function ConversationBody({
       keyboardVerticalOffset={0}
     >
       <Header
-        // In the Assistant tab there is nowhere to go back to.
+        safeArea={!switchable}
         back={!switchable}
         title={me?.name ?? (thread?.thread.title || t('New conversation'))}
         subtitle={
@@ -234,41 +229,24 @@ function ConversationBody({
                 ? t('paused')
                 : undefined
             : thread
-              ? `${thread.thread.project} · ${t(STATE_LABELS[thread.thread.status])}`
+              ? [
+                  active ? titleOf(active) : null,
+                  thread.thread.project,
+                  t(STATE_LABELS[thread.thread.status]),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
               : undefined
         }
         right={
-          <>
-            {assistant ? null : (
-              <>
-                <HeaderButton
-                  icon="images"
-                  label={t('Gallery')}
-                  badge={gallery.length || undefined}
-                  onPress={() => router.push({ pathname: '/thread/[id]/gallery', params: { id } })}
-                />
-                <HeaderButton
-                  icon="git-compare"
-                  label={t('Changes')}
-                  onPress={() => router.push({ pathname: '/thread/[id]/changes', params: { id } })}
-                />
-              </>
-            )}
-            <HeaderButton
-              icon="ellipsis-horizontal"
-              label={t('More')}
-              onPress={() => setMenu(true)}
-            />
-          </>
+          <HeaderButton
+            icon="ellipsis-horizontal"
+            label={t('More')}
+            testID="conversation-menu"
+            onPress={() => setMenu(true)}
+          />
         }
       />
-      {summaries.length > 0 ? (
-        <ThreadsPill
-          count={summaries.length}
-          unread={unread}
-          onPress={() => router.push({ pathname: '/thread/[id]/threads', params: { id } })}
-        />
-      ) : null}
       {!thread && !data.loading ? <Empty text={data.error ?? t('Nothing here.')} /> : null}
       <FlatList
         style={{ flex: 1 }}
@@ -301,6 +279,7 @@ function ConversationBody({
         }
       />
       <Composer
+        safeArea={!switchable}
         placeholder={t('Message…')}
         focus={Boolean(reply)}
         initial={reply && reply !== '-' ? `@${reply} ` : undefined}
@@ -313,7 +292,6 @@ function ConversationBody({
           await data.reload();
         }}
       />
-      <View style={{ height: 0, backgroundColor: tone }} />
       <EdgeOpen onOpen={() => setMenu(true)} />
       <Sheet
         visible={pressed !== null}
@@ -370,6 +348,11 @@ function ConversationBody({
                   {
                     label: t('Files'),
                     onPress: () => router.push({ pathname: '/thread/[id]/files', params: { id } }),
+                  },
+                  {
+                    label: t('Changes'),
+                    onPress: () =>
+                      router.push({ pathname: '/thread/[id]/changes', params: { id } }),
                   },
                   {
                     label: 'Git',

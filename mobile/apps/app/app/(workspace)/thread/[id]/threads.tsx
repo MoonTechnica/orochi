@@ -2,13 +2,13 @@ import React, { useMemo } from 'react';
 import { FlatList, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { orderThreads, summarizeThreads } from '@orochi/core';
-import { useNow } from '../../../src/state/now';
-import { usePrefs } from '../../../src/state/prefs';
-import { useThreadData } from '../../../src/state/thread';
-import { useThreadSeen } from '../../../src/state/threadSeen';
-import { PeopleProvider } from '../../../src/ui/people/People';
-import { Empty, Header } from '../../../src/ui/Screen';
-import { ThreadCard } from '../../../src/ui/Threads';
+import { useNow } from '../../../../src/state/now';
+import { usePrefs } from '../../../../src/state/prefs';
+import { useThreadData } from '../../../../src/state/thread';
+import { useThreadSeen } from '../../../../src/state/threadSeen';
+import { PeopleProvider } from '../../../../src/ui/people/People';
+import { Empty, Header } from '../../../../src/ui/Screen';
+import { ThreadCard } from '../../../../src/ui/Threads';
 
 /** Slack's Threads view for one conversation: every member thread, what needs you and what is unread first. */
 export default function Threads() {

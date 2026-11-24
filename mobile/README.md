@@ -71,20 +71,15 @@ work (matched by host:port).
 - Scoping: everything below the session (`DataProvider`, its WebSocket, thread caches) is keyed by
   the active machine and rebuilt on a switch; media/file/event URLs come from that machine's
   `RemoteClient`. A 401 marks only that machine "needs pairing again".
-- Home (first tab, `app/(tabs)/index.tsx`, pieces in `src/ui/home/`): a "serpent line" across the
-  top whose eight slots are the live conversations across all desktops (a white head with a pulsing white halo = waits
-  for you, a smaller white head with a flowing white line = working, grey = background; tap one to open it) with a
-  one-sentence status under it; open questions and @you mentions as action cards (Allow once /
-  Deny straight from Home through the `answer` RPC; Reply opens the conversation with the composer
-  focused and `@sender ` typed; swipe or Dismiss hides **that one mention card** on the phone and
-  calls `see_mentions` (which is per thread on the desktop) only when no other mention of that
-  thread is left here, so nothing is marked read that you did not dismiss or open; two cards then
-  "N more waiting"). The cards come first, above the Office card, so the first card's buttons are
-  on the first screen of a small phone; desktops as a horizontal strip of nests (state colour, six
-  bars of **conversations touched** in the last hour, captioned and labelled so, "add" tile; an
-  offline or needs-re-pair nest shows its reason, Retry or "Re-pair" on tap); recent work as a trail: projects are branches of a rail,
-  conversations nodes on it. Without any desktop it is the three-step guide. Desktop names are
-  shown only with more than one desktop. Reduced motion stops the animation.
+- Home (`app/(overview)/index.tsx`) is the global workspace directory and inbox. Each workspace
+  shows its connection and activity count. Approvals and mentions identify the originating
+  workspace and open its conversation. The overview’s Chats, Activity and Assistant tabs
+  show the corresponding status grouped by workspace, with links into each workspace.
+  Assistant status and agent quotas are polled while their overview tabs are in the foreground.
+  Activity shows provider-reported credit balances separately from remaining quota percentages. The workspace stack (`app/(workspace)/`) owns the
+  Conversations, Assistant and Activity tabs, plus conversation details and Office. A shared
+  header identifies the active workspace, switches workspaces and returns to Home. Activity
+  links to the workspace’s Office and contains its recent conversations and connection details.
 - Look (2026-11-17, restyled after the icon, then red narrowed to errors): one theme
   (`src/ui/theme.ts`) in the icon's world, a black tile and a white eight-headed serpent. Near-black
   `#121212` with neutral `#1a1a1b` panels in dark (the main mode), paper `#f4f4f2` with black text in
@@ -96,17 +91,15 @@ work (matched by host:port).
   red; it is used for failures, an unreachable desktop, failed checks and destructive buttons:
   Remove, Stop). A desktop that must pair again is not an error: white border and an inverted
   "Re-pair" button. `brandAccent` (the same red for a few pixels of brand) exists but is **unused**
-  on purpose, because a red dot in a serpent head read as an error. No amber, yellow or green, no
+  on purpose, because a red dot in a serpent head read as an error. Connection badges use green for online and amber for connecting. The interface has no
   shadows, 1 px hard borders, corners of 6-12, heavy tightly set headings and small uppercase labels.
-  **Colour appears in exactly one place**: the Office's people (minimal flat vector people in the style of a product team page, `react-native-svg`: a round head, a plain mass of hair or headwear without outlines, a shirt, two dots for eyes and one thin line for a mouth, no gradients and no shadows, earthy-pastel low-saturation colours and varied skin tones; a name picks one of ten hair and headwear shapes (half-round, sleek, bun, bob, curly, ponytail, beanie, hijab, turban, buzz), colours, shirt and ground, and a quiet role mark (a blazer with a collar and a pin for the lead, headphones or a cap for an implementer, thin round glasses for a reviewer, nothing on the small sub-agent drawn beside a seat; a scarf, collar or earring for the others), so the same agent is the same face everywhere; the state picks the face: eyes cast down and a blink while working, raised brows and a small round mouth while asking, a deeper smile when done, short lines for closed eyes when idle, a moving mouth while talking, still under reduced motion; the selection logic is pure and tested in `packages/core/src/avatar.ts`; every look is on one page, the address `/avatars`, drawn at Home's Office card) and the provider badge on them (the vendor's colour, or `agent_icons`' image on white). Those colours live in `src/ui/office/avatarPalette.ts`, the one file the palette test allows colour literals in besides `theme.ts`; the test also fixes who may read it (`Avatar`, `Character`, `parts/Accessory`) and that every avatar is drawn inside a solid rim in the text colour, so a person whose hue is red-ish is a picture in a frame and not a state. The ring (white pulse while working, thick white while asking), bubbles, names and everything else around them stay black, white and grey. `apps/app/test/theme.test.ts` checks the
-  palette is greys plus red, that primary and attention are the inversion, that the red tokens are
+  **The Office illustrations also use colour**: the Office's people (minimal flat vector people in the style of a product team page, `react-native-svg`: a round head, a plain mass of hair or headwear without outlines, a shirt, two dots for eyes and one thin line for a mouth, no gradients and no shadows, earthy-pastel low-saturation colours and varied skin tones; a name picks one of ten hair and headwear shapes (half-round, sleek, bun, bob, curly, ponytail, beanie, hijab, turban, buzz), colours, shirt and ground, and a quiet role mark (a blazer with a collar and a pin for the lead, headphones or a cap for an implementer, thin round glasses for a reviewer, nothing on the small sub-agent drawn beside a seat; a scarf, collar or earring for the others), so the same agent is the same face everywhere; the state picks the face: eyes cast down and a blink while working, raised brows and a small round mouth while asking, a deeper smile when done, short lines for closed eyes when idle, a moving mouth while talking, still under reduced motion; the selection logic is pure and tested in `packages/core/src/avatar.ts`; every look is on one page, the address `/avatars`, drawn on Activity's Office card) and the provider badge on them (the vendor's colour, or `agent_icons`' image on white). Those colours live in `src/ui/office/avatarPalette.ts`, the one file the palette test allows colour literals in besides `theme.ts`; the test also fixes who may read it (`Avatar`, `Character`, `parts/Accessory`) and that every avatar is drawn inside a solid rim in the text colour, so a person whose hue is red-ish is a picture in a frame and not a state. The ring (white pulse while working, thick white while asking), bubbles, names and everything else around them stay black, white and grey. `apps/app/test/theme.test.ts` checks the
+  palette reserves colour for errors, brand accents and connection badges, that primary and attention are the inversion, that the red tokens are
   read only in an allowlist of files (errors and destructive actions), that no screen has a hex
   colour, and WCAG AA (4.5:1) for every text colour on every surface. **The desktop window uses the same
-  palette since 2026-11-19** (`desktop/src/app.css`, tokens only). A floating bar with a thin
-  border and the inverted + in the middle (`src/ui/TabBar.tsx`), the logo (`src/ui/Logo.tsx`, a PNG).
-  Other screens only inherit colours, the header title and the big tab titles. The bar sits
-  below the screens (not over them); `useTabBarHeight()` has its measured height, and the repair
-  cover below uses it.
+  palette since 2026-11-19** (`desktop/src/app.css`, tokens only). Workspace tabs use equal-width slots and a short selection marker (`src/ui/TabBar.tsx`).
+  Home shows the global directory. The Conversations tab has the new-conversation button.
+  Filters and project groups can expand inline.
 - Icons: the art is the desktop's own icon (white eight-headed serpent, red eyes, black tile):
   `apps/app/assets/icon/source/source.png` is a copy of `desktop/src-tauri/icons/orochi/source.png`
   and is never redrawn. `node tools/make-icons.mjs` (needs `npm install`; `@resvg/resvg-js` and
@@ -115,10 +108,10 @@ work (matched by host:port).
   splash, favicon, the 96px notification icon and `logo.png` (the in-app logo, the emblem on its own
   black tile, used by Home, the guide and Settings). It also writes `e2e/screenshots/icon-sheet.png`.
   Changing icons or splash needs `expo prebuild` and a new dev build.
-- Switcher: the machine name with a status dot at the top of Conversations opens a sheet to
-  switch, rename (a local label), remove, pair again, add, and "Needs you on all desktops".
-  Settings has the same list. Two desktops with one name are told apart everywhere (switcher,
-  Settings, Home, Office chips, alerts) as `name (host:port)`.
+- Switcher: tap the workspace name at the top of the workspace tabs to open a left-hand drawer.
+  Its list shows the current selection, connection status and address. Switch, rename, remove,
+  pair again or add a desktop from the list. Settings has the same list. Close the drawer with
+  its close button, by tapping outside or by swiping it to the left.
 - The conversation's "..." opens a right-hand drawer (`src/ui/Drawer.tsx`, reusable: 80% width,
   dimmed backdrop, close by tap, swipe right or back; a strip on the right edge opens it).
 - A desktop that needs pairing again covers the screens with a "Pair again" panel (switcher, Pair again
@@ -445,8 +438,8 @@ Pure logic is `packages/core/src/threads.ts` (tests: `packages/core/test/threads
   and resets after sending. The draft is kept per thread while the app runs (`src/state/drafts.ts`). Opening lands on the first unread
   reply (or the bottom; or the top when almost everything is unread); a "New replies" pill appears when replies arrive while scrolled up.
 - Threads view (full screen): cards with the repliers' faces, the parent's first line, the latest reply and its time, the unread dot and
-  "Needs you"; unread or needing you first, then by latest reply. Opened from a single "Threads N" pill (with a dot when something is
-  unread) under the channel header, from the drawer's "Threads (N)" entry, and from a long press's "Reply in thread". The horizontal chip
+  "Needs you"; unread or needing you first, then by latest reply. Opened from the conversation menu’s "Threads (N)" entry (with a dot when something is
+  unread), and from a long press’s "Reply in thread". The horizontal chip
   strip and the drawer's member list are gone.
 - Messages: day dividers; a tap shows the time on each message (in the face column for a message that continues a run); a long press
   opens "Copy text" and, only on a message that belongs to a member thread, "Reply in thread".

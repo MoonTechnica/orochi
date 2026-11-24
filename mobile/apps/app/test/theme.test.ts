@@ -16,7 +16,13 @@ export const contrast = (a: string, b: string) => {
 };
 
 /** Every colour that is drawn as text, and the surfaces it is drawn on. */
-const TEXT: (keyof Colors)[] = ['text', 'sub', 'dangerInk'];
+const TEXT: (keyof Colors)[] = [
+  'text',
+  'sub',
+  'dangerInk',
+  'connectionOnline',
+  'connectionPending',
+];
 const SURFACES: (keyof Colors)[] = ['bg', 'card', 'raised', 'mine', 'code', 'mark'];
 
 describe('WCAG AA (4.5:1) for text colours on every surface, in both modes', () => {
@@ -46,12 +52,18 @@ describe('one meaning for red', () => {
     const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
     return Math.max(r!, g!, b!) - Math.min(r!, g!, b!) > 8;
   };
-  it('only danger, dangerInk and brandAccent are coloured; everything else is grey', () => {
+  it('chromatic tokens are reserved for brand, errors and connection status', () => {
     for (const mode of ['light', 'dark'] as const) {
       const coloured = (Object.keys(palette[mode]) as (keyof Colors)[]).filter((k) =>
         red(palette[mode][k]),
       );
-      expect(coloured.sort()).toEqual(['brandAccent', 'danger', 'dangerInk']);
+      expect(coloured.sort()).toEqual([
+        'brandAccent',
+        'connectionOnline',
+        'connectionPending',
+        'danger',
+        'dangerInk',
+      ]);
     }
   });
   it('the main action and what waits for you are the inverted black/white, not red', () => {
@@ -76,11 +88,10 @@ describe('one meaning for red', () => {
   // Where the red tokens may appear: error text, failed checks, destructive buttons and the
   // stop button, and nowhere else. Adding a file here is a decision about what red means.
   const DANGER = [
-    'app/(tabs)/assistant.tsx',
-    'app/(tabs)/settings.tsx',
+    'app/(workspace)/(sections)/assistant.tsx',
     'app/pair.tsx',
-    'app/thread/[id]/files.tsx',
-    'app/thread/[id]/work.tsx',
+    'app/(workspace)/thread/[id]/files.tsx',
+    'app/(workspace)/thread/[id]/work.tsx',
     'src/ui/Composer.tsx',
     'src/ui/Drawer.tsx',
     'src/ui/Entries.tsx',
@@ -92,6 +103,11 @@ describe('one meaning for red', () => {
   ];
   it('the danger tokens are read only where an error or a destructive action is drawn', () => {
     expect(usedIn(/colors\.(danger|dangerInk|onDanger)\b/)).toEqual([...DANGER].sort());
+  });
+  it('only connection indicators read the green and amber tokens', () => {
+    expect(usedIn(/colors\.(connectionOnline|connectionPending)\b/)).toEqual([
+      'src/ui/Machines.tsx',
+    ]);
   });
   it('the brand red is reserved for a few pixels of the icon, and no screen uses it yet', () => {
     // A red dot in a serpent head read as an error in review, so it was left out: red means error.

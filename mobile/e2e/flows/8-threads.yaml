@@ -1,5 +1,4 @@
-# Threads as Slack draws them: footers under the messages that have a thread, the Threads pill and
-# list, a thread screen (parent, "N replies", replies, the "Also send to the channel" checkbox), the
+# Thread footers and the Threads list in the conversation menu, a thread screen (parent, "N replies", replies, the "Also send to the channel" checkbox), the
 # unread marker clearing. run-ios.sh paired the app with tools/mock-threads.mjs by deep link first
 # (a team channel with implementer, reviewer and docs; docs needs you; nothing seen yet).
 appId: dev.orochi.mobile
@@ -19,7 +18,6 @@ appId: dev.orochi.mobile
 - tapOn: 'Allow once'
 - waitForAnimationToEnd
 # The footers: faces, "N replies", last reply, unread; needs-you on the docs thread.
-- assertVisible: 'Threads \(3\).*'
 - assertVisible: 'Thread docs.*Needs you.*'
 - assertVisible: 'Thread reviewer.*unread'
 - takeScreenshot: ios-threads-01-channel-footers
@@ -60,7 +58,9 @@ appId: dev.orochi.mobile
 - assertNotVisible: 'Thread docs.*unread'
 - assertVisible: 'Thread docs.*Needs you.*'
 - takeScreenshot: ios-threads-06-channel-seen
-# The Threads view, from the pill: unread first.
+# The Threads list, from the conversation menu.
+- tapOn:
+    id: conversation-menu
 - tapOn: 'Threads \(3\).*'
 - extendedWaitUntil:
     visible: 'Thread implementer.*unread'
@@ -75,19 +75,6 @@ appId: dev.orochi.mobile
 - waitForAnimationToEnd
 - assertNotVisible: 'Thread reviewer.*unread'
 - takeScreenshot: ios-threads-09-list-reviewer-seen
-- tapOn: 'Back'
-# The drawer's entry opens the same view.
-- tapOn: 'More'
-- extendedWaitUntil:
-    visible: 'Threads \(3\)'
-    timeout: 10000
-- takeScreenshot: ios-threads-10-drawer-entry
-- tapOn: 'Threads \(3\)'
-- extendedWaitUntil:
-    visible: 'Thread implementer.*'
-    timeout: 15000
-- takeScreenshot: ios-threads-11-threads-from-drawer
-# A long press on a message with a thread: copy, or reply in the thread.
 - tapOn: 'Back'
 - waitForAnimationToEnd
 - longPressOn: 'lead: @docs readme.*'

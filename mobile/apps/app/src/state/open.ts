@@ -13,14 +13,17 @@ export function useOpenThread() {
       if (machineKey && machineKey !== active?.key) {
         await switchTo(machineKey);
         router.replace('/');
-        setTimeout(() => router.push({ pathname: '/thread/[id]', params }), 120);
-      } else router.push({ pathname: '/thread/[id]', params });
+        setTimeout(
+          () => router.push({ pathname: '/thread/[id]', params }, { withAnchor: true }),
+          120,
+        );
+      } else router.push({ pathname: '/thread/[id]', params }, { withAnchor: true });
     },
     [active?.key, switchTo, router],
   );
 }
 
-/** Opens a conversation as the assistant tab shows it, switching machine first when needed. */
+/** Opens a conversation as the assistant screen shows it, switching machine first when needed. */
 export function useOpenAssistant() {
   const router = useRouter();
   const { active, switchTo } = useSession();
@@ -30,8 +33,8 @@ export function useOpenAssistant() {
       if (machineKey && machineKey !== active?.key) {
         await switchTo(machineKey);
         router.replace('/');
-        setTimeout(() => router.navigate(target), 120);
-      } else router.navigate(target);
+        setTimeout(() => router.navigate(target, { withAnchor: true }), 120);
+      } else router.navigate(target, { withAnchor: true });
     },
     [active?.key, switchTo, router],
   );

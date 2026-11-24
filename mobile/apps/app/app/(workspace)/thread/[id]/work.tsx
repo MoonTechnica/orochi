@@ -2,10 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import type { BoardPart, Team } from '@orochi/protocol';
-import { usePrefs } from '../../../src/state/prefs';
-import { useSession } from '../../../src/state/session';
-import { useData } from '../../../src/state/data';
-import { Empty, Header } from '../../../src/ui/Screen';
+import { usePrefs } from '../../../../src/state/prefs';
+import { useSession } from '../../../../src/state/session';
+import { useData } from '../../../../src/state/data';
+import { Empty, Header } from '../../../../src/ui/Screen';
 
 /** The team: helpers' worktrees, trials and the plan. Approvals show up as prompts. */
 export default function Work() {

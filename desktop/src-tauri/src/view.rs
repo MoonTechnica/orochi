@@ -605,6 +605,8 @@ pub struct AgentRow {
     pub quota_estimate: Option<f64>,
     pub failures: i64,
     pub windows: Vec<QuotaWindow>,
+    /// (Pool, provider-reported remaining credit balance).
+    pub credits: Vec<(String, String)>,
 }
 
 /// What a route has actually done. Verified evidence and weak signals are separate columns
@@ -1176,11 +1178,13 @@ impl Client {
     pub fn agents(&self) -> Result<Vec<AgentRow>> {
         let connection = self.store.connection();
         let mut windows: std::collections::BTreeMap<String, Vec<QuotaWindow>> = Default::default();
+        let mut credits: std::collections::BTreeMap<String, Vec<(String, String)>> =
+            Default::default();
         // A snapshot past its validity says what an account had, not what it has: the core
         // stops routing by it, and the window stops showing it. The last column says whether
         // the bucket is the account's (routing) or one model's allowance (Claude's Fable week).
         let mut statement = connection.prepare(
-            "SELECT agent, bucket, remaining, reset_at, COALESCE(affects_routing, 0)
+            "SELECT agent, bucket, remaining, reset_at, COALESCE(affects_routing, 0), balance
              FROM v_quota WHERE valid_until > unixepoch()",
         )?;
         for row in statement.query_map([], |r| {
@@ -1190,23 +1194,35 @@ impl Client {
                 r.get::<_, f64>(2)?,
                 r.get::<_, Option<i64>>(3)?,
                 r.get::<_, bool>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })? {
-            let (agent, bucket, remaining, reset, routes) = row?;
-            windows
-                .entry(agent)
-                .or_default()
-                .push((bucket, remaining, reset, routes));
+            let (agent, bucket, remaining, reset, routes, balance) = row?;
+            if let Some(balance) = balance {
+                credits.entry(agent).or_default().push((bucket, balance));
+            } else {
+                windows
+                    .entry(agent)
+                    .or_default()
+                    .push((bucket, remaining, reset, routes));
+            }
         }
         let mut statement = connection.prepare(
             "SELECT agent, model, status, cooling, reset_at, quota_estimate,
                     consecutive_failures
-             FROM v_runtime ORDER BY agent, model",
+             FROM v_runtime
+             UNION ALL
+             SELECT DISTINCT quota.agent, '*', 'unknown', 0, NULL, NULL, 0
+             FROM v_quota quota
+             WHERE quota.valid_until > unixepoch()
+               AND NOT EXISTS (SELECT 1 FROM v_runtime runtime WHERE runtime.agent = quota.agent)
+             ORDER BY agent, model",
         )?;
         let rows = statement.query_map([], |r| {
             let agent: String = r.get(0)?;
             Ok(AgentRow {
                 windows: windows.get(&agent).cloned().unwrap_or_default(),
+                credits: credits.get(&agent).cloned().unwrap_or_default(),
                 agent,
                 model: r.get(1)?,
                 status: r.get(2)?,

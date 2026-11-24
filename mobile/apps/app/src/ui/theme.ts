@@ -23,6 +23,8 @@ export interface Colors {
   mine: string;
   code: string;
   mark: string;
+  connectionOnline: string;
+  connectionPending: string;
 }
 
 /**
@@ -53,6 +55,8 @@ export const palette: { light: Colors; dark: Colors } = {
     mine: '#e1e1dd',
     code: '#e9e9e6',
     mark: '#d9d9d4',
+    connectionOnline: '#1f623e',
+    connectionPending: '#755018',
   },
   dark: {
     bg: '#121212',
@@ -73,6 +77,8 @@ export const palette: { light: Colors; dark: Colors } = {
     mine: '#262627',
     code: '#222223',
     mark: '#2e2e30',
+    connectionOnline: '#79d7a6',
+    connectionPending: '#f4c778',
   },
 };
 

@@ -1,9 +1,9 @@
 import React from 'react';
 import { FlatList, Pressable, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { usePrefs } from '../../../src/state/prefs';
-import { useThreadData } from '../../../src/state/thread';
-import { Empty, Header } from '../../../src/ui/Screen';
+import { usePrefs } from '../../../../src/state/prefs';
+import { useThreadData } from '../../../../src/state/thread';
+import { Empty, Header } from '../../../../src/ui/Screen';
 
 export default function Changes() {
   const { id } = useLocalSearchParams<{ id: string }>();

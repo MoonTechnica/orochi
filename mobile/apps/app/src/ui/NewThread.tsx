@@ -7,6 +7,35 @@ import { usePrefs } from '../state/prefs';
 import { useAttention } from '../state/attention';
 import { useOpenThread } from '../state/open';
 import { useSession } from '../state/session';
+import { Icon } from './Icon';
+import { radius } from './theme';
+
+export function NewThreadButton() {
+  const { colors, t } = usePrefs();
+  const [visible, setVisible] = useState(false);
+  return (
+    <>
+      <Pressable
+        testID="new-thread"
+        accessibilityRole="button"
+        accessibilityLabel={t('New conversation')}
+        onPress={() => setVisible(true)}
+        style={({ pressed }) => ({
+          width: 44,
+          height: 44,
+          borderRadius: radius.tile,
+          backgroundColor: colors.primary,
+          alignItems: 'center',
+          justifyContent: 'center',
+          opacity: pressed ? 0.75 : 1,
+        })}
+      >
+        <Icon name="add" size={24} color={colors.onPrimary} />
+      </Pressable>
+      <NewThreadSheet visible={visible} onClose={() => setVisible(false)} />
+    </>
+  );
+}
 
 type View_ =
   | { kind: 'list' }
@@ -14,23 +43,23 @@ type View_ =
   | { kind: 'clone'; machineKey: string };
 
 /**
- * Pick a desktop and a project, then `new_thread` on that desktop and open it. A project the
+ * Pick a project in the active workspace, then `new_thread` and open it. A project the
  * desktop does not have yet is added from one of its folders or cloned from an address.
  */
 export function NewThreadSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { colors, t } = usePrefs();
-  const { machines } = useSession();
+  const { active } = useSession();
   const { snapshots } = useAttention();
   const open = useOpenThread();
   const insets = useSafeAreaInsets();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const online = snapshots.filter((s) => s.state === 'online');
+  const online = snapshots.filter((s) => s.key === active?.key && s.state === 'online');
   const [view, setView] = useState<View_>({ kind: 'list' });
   const [address, setAddress] = useState('');
 
   const clientOf = (machineKey: string) => {
-    const m = machines.find((x) => x.key === machineKey);
+    const m = active?.key === machineKey ? active : null;
     return m ? api(new RemoteClient({ base: baseUrl(m.host, m.port), token: m.token })) : null;
   };
   const close = () => {
@@ -73,7 +102,7 @@ export function NewThreadSheet({ visible, onClose }: { visible: boolean; onClose
   };
 
   const start = async (machineKey: string, root: string) => {
-    const m = machines.find((x) => x.key === machineKey);
+    const m = active?.key === machineKey ? active : null;
     if (!m) return;
     setBusy(`${machineKey}:${root}`);
     setError(null);
@@ -184,31 +213,18 @@ export function NewThreadSheet({ visible, onClose }: { visible: boolean; onClose
             <ScrollView>
               {online.length === 0 ? (
                 <Text style={{ color: colors.sub, padding: 16 }}>
-                  {t('No desktop is connected.')}
+                  {t('This desktop does not answer.')}
                 </Text>
               ) : null}
               {online.map((s) => (
                 <View key={s.key}>
-                  {snapshots.length > 1 ? (
-                    <Text
-                      style={{
-                        color: colors.sub,
-                        fontSize: 12,
-                        fontWeight: '700',
-                        paddingHorizontal: 16,
-                        paddingTop: 12,
-                      }}
-                    >
-                      {s.name}
-                    </Text>
-                  ) : null}
                   {s.projects
                     .filter((p) => !p.missing)
                     .map((p) => (
                       <Pressable
                         key={p.id}
                         accessibilityRole="button"
-                        accessibilityLabel={`${p.name}${snapshots.length > 1 ? ` · ${s.name}` : ''}`}
+                        accessibilityLabel={p.name}
                         disabled={!!busy}
                         onPress={() => start(s.key, p.root)}
                         style={{

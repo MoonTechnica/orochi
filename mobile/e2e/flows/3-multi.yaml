@@ -7,8 +7,6 @@ appId: dev.orochi.mobile
 - takeScreenshot: ios-35-add-desktop-offer
 - tapOn: 'Stay here'
 - waitForAnimationToEnd
-- tapOn: 'Home, tab.*'
-- waitForAnimationToEnd
 - takeScreenshot: ios-36-home-two-desktops
 - takeScreenshot: ios-home3-03-two-desktops
 # Both desktops run the same demo, so each has its own "Allow once"; answer them all.
@@ -23,12 +21,30 @@ appId: dev.orochi.mobile
     notVisible: 'Allow once'
     timeout: 10000
 - takeScreenshot: ios-home3-04-answered-on-home
-- tapOn: 'Conversations, tab.*'
+- scrollUntilVisible:
+    element:
+      id: 'workspace-row-.*'
+- tapOn:
+    id: 'workspace-row-.*'
+    index: 0
 - waitForAnimationToEnd
-- tapOn: 'Switch desktop.*'
+- tapOn: 'Switch workspace.*'
 - extendedWaitUntil:
     visible: '.*Add a desktop'
 - takeScreenshot: ios-37-switcher
+- waitForAnimationToEnd
+- swipe:
+    start: 65%,60%
+    end: 12%,60%
+    duration: 350
+- extendedWaitUntil:
+    notVisible: 'Close panel'
+    timeout: 10000
+- waitForAnimationToEnd
+- tapOn: 'Switch workspace.*'
+- extendedWaitUntil:
+    visible: 'Close panel'
+    timeout: 10000
 # Both desktops are called the same: the list tells them apart by address.
 - assertVisible: '.*TakanorinoMac-Studio \(127.0.0.1:47821\).*'
 - tapOn: 'More: TakanorinoMac-Studio \(127.0.0.1:47822\)'

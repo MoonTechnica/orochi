@@ -3,12 +3,12 @@ import { FlatList, Pressable, Text, View, useWindowDimensions } from 'react-nati
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Image } from 'expo-image';
 import { galleryOf } from '@orochi/core';
-import { sourceUrl } from '../../../src/lib/media';
-import { usePrefs } from '../../../src/state/prefs';
-import { useSession } from '../../../src/state/session';
-import { useThreadData } from '../../../src/state/thread';
-import { Icon } from '../../../src/ui/Icon';
-import { Empty, Header } from '../../../src/ui/Screen';
+import { sourceUrl } from '../../../../src/lib/media';
+import { usePrefs } from '../../../../src/state/prefs';
+import { useSession } from '../../../../src/state/session';
+import { useThreadData } from '../../../../src/state/thread';
+import { Icon } from '../../../../src/ui/Icon';
+import { Empty, Header } from '../../../../src/ui/Screen';
 
 export default function Gallery() {
   const { id } = useLocalSearchParams<{ id: string }>();

@@ -435,6 +435,8 @@ export interface AgentRow {
   quota_estimate: number | null;
   failures: number;
   windows: [string, number, number | null, boolean][];
+  /** Pool and provider-reported balance. Absent on older desktops. */
+  credits?: [string, string][];
 }
 
 export interface Health {

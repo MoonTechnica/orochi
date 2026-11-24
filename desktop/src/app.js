@@ -924,7 +924,17 @@ function drawSidebar() {
       ordered.set(project.root, []);
     }
     for (const [cwd, threads] of places) ordered.set(cwd, threads);
-    for (const [cwd, threads] of ordered) section.append(place(project, cwd, threads));
+    const branchCounts = new Map();
+    const checkouts = Array.from(ordered, ([cwd, threads]) => {
+      const branch = (threads[0] ? threads[0].branch : project.branch) || "";
+      branchCounts.set(branch, (branchCounts.get(branch) ?? 0) + 1);
+      return { cwd, threads, branch };
+    });
+    for (const checkout of checkouts) {
+      const showFolder = checkout.cwd !== project.root &&
+        (!checkout.branch || branchCounts.get(checkout.branch) > 1);
+      section.append(place(project, checkout, showFolder));
+    }
     host.append(section);
   }
 }
@@ -1036,7 +1046,7 @@ function task(item) {
 
 /// One checkout's card: its branch, and the conversations working in it — or, folded, one
 /// mark each.
-function place(project, cwd, threads) {
+function place(project, { cwd, threads, branch }, showFolder) {
   const key = `fold:${project.id}:${cwd}`;
   const folded = state.open.has(key);
   const card = text("div", "place");
@@ -1049,14 +1059,12 @@ function place(project, cwd, threads) {
   head.className = "place-head";
   const live = threads.some((t) => ["working", "background", "needs_you"].includes(t.status));
   head.append(text("span", live ? "dot live" : "dot", ""));
-  // With no conversation yet, the card is the project's own checkout and its branch is read from
-  // the folder.
-  const first = threads[0] || { branch: project.branch, worktree: null };
-  // A checkout is known by its branch; the original clone says so, and an extra worktree
-  // also names its folder, the one thing that tells two of them apart.
+  const folder = showFolder ? cwd.split(/[\\/]/).filter(Boolean).pop() || cwd : "";
+  head.setAttribute("title", `${branch || t("no branch")}\n${cwd}`);
   head.append(drawn("git-branch", "icon"));
-  head.append(text("span", "name", first.branch || t("no branch")));
-  if (!first.worktree) head.append(text("span", "badge", t("primary")));
+  head.append(text("span", "name", branch || folder || t("no branch")));
+  if (!threads[0]?.worktree) head.append(text("span", "badge", t("primary")));
+  if (branch && folder) head.append(text("span", "checkout-folder", folder));
   head.append(text("span", "tally", String(threads.length)));
   const fold = drawn(folded ? "chevron-right" : "chevron-down", "fold");
   head.append(fold);
@@ -1076,12 +1084,6 @@ function place(project, cwd, threads) {
     head.addEventListener("click", toggle);
   }
   card.append(head);
-  if (first.worktree) {
-    const folder = text("div", "branch");
-    folder.append(drawn("folder", "icon"));
-    folder.append(text("span", null, cwd.split("/").filter(Boolean).pop() || ""));
-    card.append(folder);
-  }
   if (folded) {
     // Folded, one line: who has worked here, and only what needs looking at.
     const marks = text("button", "marks");

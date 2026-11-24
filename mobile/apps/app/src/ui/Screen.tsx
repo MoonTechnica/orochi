@@ -13,11 +13,13 @@ export function Header({
   subtitle,
   right,
   back = true,
+  safeArea = true,
 }: {
   title: string;
   subtitle?: string;
   right?: React.ReactNode;
   back?: boolean;
+  safeArea?: boolean;
 }) {
   const { colors, t } = usePrefs();
   const router = useRouter();
@@ -25,7 +27,7 @@ export function Header({
   return (
     <View
       style={{
-        paddingTop: insets.top,
+        paddingTop: safeArea ? insets.top : 0,
         backgroundColor: colors.card,
         borderBottomWidth: 1,
         borderBottomColor: colors.line,
@@ -47,7 +49,11 @@ export function Header({
           <View style={{ width: 12 }} />
         )}
         <View style={{ flex: 1 }}>
-          <Text numberOfLines={1} style={{ color: colors.text, fontSize: 18, fontWeight: '700' }}>
+          <Text
+            accessibilityRole="header"
+            numberOfLines={1}
+            style={{ color: colors.text, fontSize: 18, fontWeight: '700' }}
+          >
             {title}
           </Text>
           {subtitle ? (
@@ -67,15 +73,18 @@ export function HeaderButton({
   label,
   onPress,
   badge,
+  testID,
 }: {
   icon: React.ComponentProps<typeof Icon>['name'];
   label: string;
   onPress: () => void;
   badge?: number;
+  testID?: string;
 }) {
   const { colors } = usePrefs();
   return (
     <Pressable
+      testID={testID}
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
