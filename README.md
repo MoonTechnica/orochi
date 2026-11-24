@@ -39,8 +39,10 @@ it checks what this machine has and offers to set up whatever is missing.
 | **Linux** (x86_64, glibc 2.35+) | [**Orochi-linux-x86_64.AppImage**](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-linux-x86_64.AppImage) · [.deb](https://github.com/MoonTechnica/orochi/releases/latest/download/Orochi-linux-amd64.deb) |
 
 Every build, checksum and older version is on the [releases page](https://github.com/MoonTechnica/orochi/releases).
-If a macOS build was published without notarization, macOS asks you to allow it the first time:
-right-click the app and choose **Open**.
+The macOS app is signed with a Developer ID and notarized by Apple when the release workflow has
+the signing secrets. A build that was not notarized is stopped by macOS the first time it opens:
+allow it under **System Settings → Privacy & Security → Open Anyway** (on macOS 14 and earlier,
+right-clicking the app and choosing **Open** also works).
 
 ### Command-line tool
 
@@ -252,7 +254,7 @@ Rust is pinned in `rust-toolchain.toml`. With [mise](https://mise.jdx.dev), `mis
 
 A release is cut by tagging: `scripts/version.sh <x.y.z>` sets the one version the CLI, the window and the bundle all carry, and `git push origin v<x.y.z>` builds and publishes it (`.github/workflows/release.yml`; running that workflow by hand builds everything and publishes nothing, which is how to find out whether a release would succeed before cutting one). The workflow refuses a tag that does not name the version in the manifests. The desktop bundles are published under fixed names (`Orochi-macos-universal.dmg` and so on) so the [download links](#download) always point at the latest release.
 
-The macOS bundle is signed and notarized when six repository secrets are set, and builds unsigned without them — in which case macOS asks the user to allow the app by hand. They are `APPLE_CERTIFICATE` (a Developer ID Application `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` (the certificate's full name), and `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID` for notarization.
+The macOS bundle is signed and notarized when the signing secrets are set, and builds unsigned without them — in which case macOS makes the user allow the app by hand. Signing takes `APPLE_CERTIFICATE` (a Developer ID Application `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD` and `APPLE_SIGNING_IDENTITY` (the certificate's full name). Notarization takes an App Store Connect API key — `APPLE_API_KEY` (its key ID), `APPLE_API_ISSUER` and `APPLE_API_KEY_P8` (the `.p8`, as PEM or base64) — or, in its place, `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`.
 
 ---
 
