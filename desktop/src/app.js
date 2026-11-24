@@ -389,6 +389,7 @@ const WORDS = {
     "an attempt that failed, and what it said": "失敗した試行と、その内容",
     "all models": "全体",
     "Primary checkout": "プライマリ",
+    "Member name for @mentions": "メンションに使う名前",
     Git: "Git",
     Worktrees: "worktree",
     Branches: "ブランチ",
@@ -1650,6 +1651,9 @@ function drawTimeline(thread, said = []) {
   const stream = [...thread.items, ...spoken].sort(
     (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
   );
+  const repliesInChannel = new Set(
+    thread.seats.filter((s) => s.origin === "user-channel").map((s) => `${s.turn}/${s.ordinal}`),
+  );
   let voice = null;
   const turns = new Map();
   for (const item of stream) {
@@ -1698,7 +1702,9 @@ function drawTimeline(thread, said = []) {
     }
     // A member's own working notes are its thread's; what it had to say reached the channel
     // as a post or stands in its thread.
-    if (item.member || (item.lane !== null && item.lane !== undefined && item.lane > 0)) continue;
+    const directReply = item.kind === "agent_message" && item.member &&
+      repliesInChannel.has(`${item.turn}/${item.lane}`);
+    if (!directReply && (item.member || (item.lane != null && item.lane > 0))) continue;
     if (item.kind === "user_message") {
       flush();
       turn = text("div", "turn");
@@ -1755,7 +1761,8 @@ function drawTimeline(thread, said = []) {
     flush();
     if (item.kind === "route") turn.append(chip(item));
     else if (item.kind === "agent_message") {
-      const who = item.role || item.agent || "agent";
+      const relay = ["background", "merge", "mail"].includes(item.turn_origin);
+      const who = (directReply ? item.member : relay ? "lead" : item.role) || item.agent || "agent";
       turn.append(
         post(
           { who, model: item.model, at: item.at, text: item.text, agent: item.agent, provider: item.provider },
@@ -1771,7 +1778,9 @@ function drawTimeline(thread, said = []) {
   flush();
   // Under each finished turn: how long it took and when it ended, what it changed, and how
   // much of the agent's context it left in use.
-  const running = thread.thread.status === "working" ? thread.items.at(-1)?.turn : null;
+  const running = thread.running_turn === undefined
+    ? (thread.thread.status === "working" ? thread.items.at(-1)?.turn : null)
+    : thread.running_turn;
   for (const [id, node] of turns) {
     if (id === running) continue;
     const own = thread.items.filter((i) => i.turn === id);
@@ -1804,7 +1813,7 @@ function drawTimeline(thread, said = []) {
   if (thread.thread.status === "working") {
     // The one doing the work is the line that says the turn is under way; everyone else in the
     // room is in the team pane, and a team of a dozen is not a dozen lines above the composer.
-    const room = thread.seats.filter((s) => s.turn === thread.seats.at(-1)?.turn);
+    const room = thread.seats.filter((s) => s.turn === running && !["done", "failed", "cancelled"].includes(s.state));
     const seats = room.length ? [room.find((s) => !s.background) || room[0]] : [];
     const live = text("div", "live-turn");
     if (!seats.length) {
@@ -1814,7 +1823,7 @@ function drawTimeline(thread, said = []) {
       for (const seat of seats) {
         const row = text("div", "at-work");
         row.append(mark(seat.role));
-        row.append(text("span", "name", seat.role));
+        row.append(text("span", "name", memberLabel(seat.member || seat.role)));
         row.append(
           text("span", "what", seat.peer_status || seat.doing?.split("\n")[0] || t(AT[seat.state] || seat.state)),
         );
@@ -1995,14 +2004,14 @@ function post(voice, run) {
     const who = text("div", "who");
     // An agent is drawn as the agent it is, as in the list; a person keeps their own mark.
     who.append(voice.agent ? person({ role: voice.who, agent: voice.agent, provider: voice.provider, model: voice.model, lead: voice.who === "lead" }) : mark(voice.who));
-    who.append(text("span", "name", voice.who === "lead" && state.resident ? state.resident.name : voice.who));
+    who.append(text("span", "name", voice.who === "lead" && state.resident ? state.resident.name : memberLabel(voice.who)));
     if (voice.to) who.append(text("span", "to", voice.to));
     if (voice.model) who.append(text("span", "model", voice.model));
     if (voice.at) who.append(text("span", "at", clock(voice.at)));
     node.append(who);
   }
   const body = text("div", "body");
-  chipped = new Set((voice.mentions || []).map(lowered));
+  chipped = new Set((voice.mentions || []).flatMap((name) => [name, memberOf(name)?.display_name].filter(Boolean).map(lowered)));
   body.append(markdown(voice.text));
   chipped = new Set();
   node.append(body);
@@ -3624,13 +3633,14 @@ let chipped = new Set();
 function plain(host, value) {
   if (!chipped.size) return host.append(document.createTextNode(value));
   let at = 0;
-  for (const match of value.matchAll(/(?<![\w@])@([\w][\w.-]*)/g)) {
-    if (!chipped.has(lowered(match[1]))) continue;
+  for (const match of value.matchAll(/(?<![\p{L}\p{N}_.@-])@([\p{L}\p{N}_.-]+)/gu)) {
+    const name = match[1].replace(/[_.-]+$/, "");
+    if (!chipped.has(lowered(name))) continue;
     if (match.index > at) host.append(document.createTextNode(value.slice(at, match.index)));
-    const chip = text("span", "mention-chip", `@${match[1]}`);
-    if (lowered(match[1]) === "you") chip.dataset.you = "true";
+    const chip = text("span", "mention-chip", `@${name}`);
+    if (lowered(name) === "you") chip.dataset.you = "true";
     host.append(chip);
-    at = match.index + match[0].length;
+    at = match.index + name.length + 1;
   }
   if (at < value.length) host.append(document.createTextNode(value.slice(at)));
 }
@@ -4245,6 +4255,10 @@ function leadOf(thread) {
 }
 
 const memberOf = (name) => (state.members || []).find((m) => lowered(m.name) === lowered(name));
+function memberLabel(name) {
+  const member = memberOf(name);
+  return member?.display_name ? `${member.display_name} · ${member.org_role || member.role}` : name;
+}
 
 /// What waits on the person, in a few words.
 const NEEDS = {
@@ -4297,7 +4311,7 @@ function threadBar(thread, name, said = state.said || []) {
     faces.append(person({ role: row.role || row.who || name, agent: row.agent, provider: row.provider, model: row.model }));
   }
   node.append(faces);
-  node.append(text("span", "name", name));
+  node.append(text("span", "name", memberLabel(name)));
   node.append(text("span", "replies", `${replies} ${t(replies === 1 ? "reply" : "replies")}`));
   if (last) node.append(text("span", "last", `${t("last reply")} ${since(last)}`));
   const status = memberState(m);
@@ -4324,7 +4338,7 @@ function reportsLine(origin, body, thread, said) {
   if (!named_.length && origin === "background") line.append(text("span", null, ` ${t("the helpers")}`));
   named_.forEach((name, index) => {
     line.append(text("span", null, index ? ", " : " "));
-    const link = text("button", "link", name);
+    const link = text("button", "link", memberLabel(name));
     link.type = "button";
     link.addEventListener("click", () => showMember(name));
     line.append(link);
@@ -4359,7 +4373,18 @@ async function drawMember(thread) {
   const head = el("member-title");
   head.replaceChildren();
   head.append(face(m?.agent, m?.provider, m?.model));
-  head.append(text("span", "name", name));
+  head.append(text("span", "name", memberLabel(name)));
+  if (m) {
+    const rename = text("button", null, t("Rename"));
+    rename.type = "button";
+    rename.addEventListener("click", async () => {
+      const next = window.prompt(t("Member name for @mentions"), m.display_name ?? m.name);
+      if (next === null) return;
+      await call("rename_member", { thread: thread.thread.id, member: m.name, name: next });
+      await refresh(true);
+    });
+    head.append(rename);
+  }
   const route = [m?.agent, m?.model].filter(Boolean).join(" · ");
   if (route) head.append(text("span", "route-name", route));
   const status = memberState(m);
@@ -4488,8 +4513,8 @@ el("member-form").addEventListener("submit", async (event) => {
   await call("say", { thread: state.thread, to: null, text: value, member });
   if (also) {
     await call("send", { thread: state.thread, text: `${member}: ${value}` });
-    await call("ensure_host", { thread: state.thread });
   }
+  await call("ensure_host", { thread: state.thread });
   await call("see_mentions", { thread: state.thread });
   await refresh(true);
 });
@@ -4523,7 +4548,7 @@ function drawThreadsControl() {
     row.dataset.member = m.name;
     if (m.needs) row.dataset.needs = m.needs;
     row.append(face(m.agent, m.provider, m.model));
-    row.append(text("span", "name", m.name));
+    row.append(text("span", "name", memberLabel(m.name)));
     row.append(text("span", "state", memberState(m).label));
     if (m.needs) row.append(text("span", "needs", t(NEEDS[m.needs] || m.needs)));
     row.addEventListener("click", () => showMember(m.name));
@@ -4552,7 +4577,7 @@ function mentionCandidates(query) {
   const q = lowered(query);
   const last = (m) => Math.max((m.last_reply_at || 0) * 1000, m.ended_at || 0, m.started_at || 0);
   const all = (state.members || []).map((m) => ({
-    name: m.name, agent: m.agent, provider: m.provider, model: m.model, role: m.role,
+    name: m.display_name || m.name, member: m.name, agent: m.agent, provider: m.provider, model: m.model, role: m.org_role || m.role,
     live: m.live, at: last(m), state: memberState(m).label, finished: !m.live && m.state !== "asking",
   }));
   if (thread) {
@@ -4561,7 +4586,7 @@ function mentionCandidates(query) {
     all.push({ name: lead.name, agent: lead.agent, provider: lead.provider, model: lead.model, role: "lead", live: false, at, state: thread.thread.status === "working" ? t("working") : t("lead"), finished: false });
   }
   const hits = all
-    .filter((c) => [c.name, c.agent, c.role].some((word) => lowered(word).startsWith(q)))
+    .filter((c) => [c.name, c.member, c.agent, c.role].some((word) => lowered(word).startsWith(q)))
     .sort((a, b) => Number(b.live) - Number(a.live) || b.at - a.at);
   if ("channel".startsWith(q)) hits.push({ name: "channel", channel: true, state: t("everyone in the conversation") });
   return hits;
@@ -4578,7 +4603,7 @@ function closeMentions() {
 /// The `@word` being typed at the caret, if that is what is being typed.
 function mentionQuery(box) {
   const caret = Math.min(box.selectionStart ?? box.value.length, box.value.length);
-  const found = box.value.slice(0, caret).match(/(^|\s)@([\w.-]*)$/);
+  const found = box.value.slice(0, caret).match(/(^|\s)@([\p{L}\p{N}_.-]*)$/u);
   return found ? { query: found[2], start: caret - found[2].length - 1, caret } : null;
 }
 
@@ -4594,6 +4619,9 @@ function drawMentions() {
     if (c.channel) row.append(text("span", "face channel", "#"));
     else row.append(face(c.agent, c.provider, c.model));
     row.append(text("span", "name", `@${c.name}`));
+    if (c.member && lowered(c.name) !== lowered(c.role)) {
+      row.append(text("span", "mention-role", c.role));
+    }
     const route = [c.agent, c.model].filter(Boolean).join(" · ");
     if (route) row.append(text("span", "route-name", route));
     row.append(text("span", "state", c.finished ? `${t("done")} · ${t("mention to continue")}` : c.state));
@@ -4650,10 +4678,12 @@ watchMentions(el("member-reply"), el("member-mentions"));
 
 /// The members a message names, for a post that is for them and not for the lead.
 function mentionedIn(value) {
-  const names = [...value.matchAll(/(?<![\w@])@([\w][\w.-]*)/g)].map((m) => lowered(m[1]));
+  const names = [...value.matchAll(/(?<![\p{L}\p{N}_.@-])@([\p{L}\p{N}_.-]+)/gu)]
+    .map((m) => lowered(m[1].replace(/[_.-]+$/, "")));
   return {
-    members: (state.members || []).filter((m) => names.includes(lowered(m.name))).map((m) => m.name),
-    lead: names.includes("lead") || names.includes("channel"),
+    members: (state.members || []).filter((m) =>
+      names.includes(lowered(m.name)) || (m.display_name && names.includes(lowered(m.display_name)))).map((m) => m.name),
+    lead: names.some((name) => ["lead", "channel", "all", "everyone"].includes(name)),
   };
 }
 

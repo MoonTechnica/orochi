@@ -896,6 +896,14 @@ impl<'a> Session<'a> {
         let Some((command, argument)) = command(&message.text) else {
             // A message that mentions a member is a note to it, not a turn for the lead.
             if self.note_to_members(&message.text) {
+                if let Some(turn) = &message.queued
+                    && let Some(recorded) = &self.recorded
+                    && let Err(error) = recorded
+                        .store()
+                        .turn_state(turn, crate::activity::TurnState::Completed)
+                {
+                    tracing::warn!(%error, "could not close a turn delivered as a member note");
+                }
                 self.view.term.prompt.clear();
                 return None;
             }
@@ -1442,9 +1450,18 @@ impl<'a> Session<'a> {
         let Ok(notes) = recorded.store().unheard_notes(&thread) else {
             return;
         };
-        let Some(descriptor) = self.descriptor.clone() else {
+        let Some((_, _, first, _)) = notes.first() else {
             return;
         };
+        let descriptor = self
+            .descriptor
+            .clone()
+            .unwrap_or_else(|| crate::router::profiler::profile(first, self.root));
+        // A host started just to deliver a note has not run a lead session yet.
+        let lead = self
+            .lead_name
+            .get_or_insert_with(|| crate::mailbox::name_prefix().unwrap_or_else(|| "lead".into()));
+        self.manager.hold_inbox(lead, self.root);
         let requester = self
             .manager
             .inbox_id()
@@ -1454,8 +1471,7 @@ impl<'a> Session<'a> {
             return;
         };
         let mut asked = false;
-        for (id, member, body) in notes {
-            let _ = recorded.store().heard_note(id);
+        for (id, member, body, in_channel) in notes {
             let Ok(Some((seat, _))) = recorded.store().member_seat(&thread, &member) else {
                 continue;
             };
@@ -1468,13 +1484,16 @@ impl<'a> Session<'a> {
                 .unwrap_or((member.clone(), false));
             if feed
                 .mailbox
-                .request_continuation(&requester, &member, &title, &body, write)
+                .request_continuation(&requester, &member, &title, &body, write, in_channel)
                 .is_ok()
             {
+                let _ = recorded.store().heard_note(id);
                 asked = true;
-                self.manager.later_note(format!(
-                    "The user told `{member}` directly, in its thread, and it is continuing: {body}"
-                ));
+                if write || !self.headless {
+                    self.manager.later_note(format!(
+                        "The user told `{member}` directly, in its thread, and it is continuing: {body}"
+                    ));
+                }
             }
         }
         if !asked {
@@ -1627,8 +1646,18 @@ impl<'a> Session<'a> {
             .collect();
         let mut known = members.clone();
         known.push(lead.clone());
-        let mentions = crate::mailbox::mentions_in(text, &known);
-        if mentions.iter().any(|m| !lead.is_empty() && *m == lead)
+        known.push("lead".into());
+        let aliases = recorded
+            .store()
+            .members(&thread)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|member| Some((member.name, member.display_name?)))
+            .collect::<Vec<_>>();
+        let mentions = crate::mailbox::member_mentions(text, &known, &aliases);
+        if mentions
+            .iter()
+            .any(|m| matches!(m.as_str(), "lead" | "channel") || *m == lead)
             || !mentions.iter().any(|m| members.contains(m))
         {
             return false;
@@ -5622,10 +5651,20 @@ fn grant<'a>(
             .and_then(|r| Some((r, r.thread.clone()?)))
             .and_then(|(r, thread)| r.store().member_seat(&thread, &request.name).ok().flatten());
         let taken = crate::mailbox::our_names();
+        let members = recorded
+            .and_then(|r| r.store().members(r.thread.as_deref()?).ok())
+            .unwrap_or_default();
         let name = if previous.is_some() {
             request.name.clone()
         } else {
-            background.free_name(&request.name, &|name| taken.contains(name))
+            background.free_name(&request.name, &|name| {
+                taken.contains(name)
+                    || members.iter().any(|m| {
+                        m.display_name
+                            .as_deref()
+                            .is_some_and(|label| label.eq_ignore_ascii_case(name))
+                    })
+            })
         };
         let continued = previous.as_ref().and_then(|(_, c)| c.as_ref());
         let resume = continued
@@ -5715,6 +5754,18 @@ fn grant<'a>(
             sub.as_ref().and_then(|(.., seat)| seat.as_deref()),
         );
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
+        let reply_to_user = by_user && headless && !write;
+        if reply_to_user
+            && request.payload["reply_in_channel"].as_bool() == Some(true)
+            && let Some(seat) = &seat
+        {
+            let _ = seat.store.lock().expect("activity store").seat_details(
+                &seat.seat,
+                Some(&request.title),
+                true,
+                "user-channel",
+            );
+        }
         // The worktree is a row from the moment it exists: a helper that never starts leaves
         // one the sweep closes, and the row has to be there for the sweep to close it.
         if let (Some(entry), Some(recorded)) = (&opened, recorded)
@@ -5770,7 +5821,7 @@ fn grant<'a>(
             lead: role.as_ref().is_some_and(|r| r.lead),
             writes: write,
         });
-        let brief = role
+        let mut brief = role
             .as_ref()
             .map(|r| {
                 background.org.brief(
@@ -5781,6 +5832,18 @@ fn grant<'a>(
                 )
             })
             .unwrap_or_default();
+        if let Some(label) = members
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| m.display_name.as_deref())
+        {
+            if !brief.is_empty() {
+                brief.push_str("\n\n");
+            }
+            brief.push_str(&format!(
+                "The user calls you `{label}` in this conversation. A message addressed to `@{label}` is for you."
+            ));
+        }
         let post = background::Post {
             lead: role.as_ref().is_some_and(|r| r.lead),
             // The merge tools are the lead in the user's tree's: a lead below it integrates
@@ -5789,6 +5852,7 @@ fn grant<'a>(
             team: role.as_ref().is_some_and(|r| r.lead),
             link: role.as_ref().is_some_and(|r| r.lead) && !env.config.org.links.is_empty(),
             in_place: write && unattended,
+            reply_to_user,
             parent: manager_name,
             role,
             brief,
@@ -6674,7 +6738,7 @@ fn on_helper(
                     // user's tree is woken by a turn of its own.
                     if finished.post.parent.is_some() {
                         background.reports.push(finished);
-                    } else {
+                    } else if !finished.post.reply_to_user {
                         results.push(finished);
                     }
                 }

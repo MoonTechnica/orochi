@@ -191,6 +191,11 @@ const ja: Record<string, string> = {
   // management, files, notifications
   Archived: 'アーカイブ',
   Rename: '名前を変更',
+  'Rename member': 'メンバーの名前を変更',
+  'Member name for @mentions': 'メンションに使う名前',
+  'Use up to 32 letters, numbers, periods, underscores or hyphens, without spaces.':
+    '名前は32文字までです。先頭と末尾は文字または数字にし、途中にはピリオド・アンダースコア・ハイフンも使えます。',
+  'That name is already used in this conversation.': 'この会話ではその名前を使えません。',
   Pin: 'ピン留め',
   Unpin: 'ピン留め解除',
   Archive: 'アーカイブ',

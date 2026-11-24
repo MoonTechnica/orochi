@@ -16,7 +16,7 @@ pub mod recorder;
 pub mod residents;
 pub mod routines;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
@@ -450,6 +450,8 @@ pub struct SeatRow {
     pub doing: Option<String>,
     pub title: Option<String>,
     pub background: bool,
+    pub origin: Option<String>,
+    pub member: Option<String>,
     /// A background seat's result has been handed back to the lead.
     pub reported: bool,
 }
@@ -573,6 +575,7 @@ pub struct SearchHit {
 pub struct Member {
     pub thread_id: String,
     pub name: String,
+    pub display_name: Option<String>,
     pub seat_id: String,
     pub role: String,
     pub read_only: bool,
@@ -686,6 +689,7 @@ pub struct FileRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct Thread {
     pub thread: ThreadRow,
+    pub running_turn: Option<String>,
     pub items: Vec<ItemRow>,
     pub seats: Vec<SeatRow>,
     pub files: Vec<FileRow>,
@@ -1382,7 +1386,7 @@ impl Activity {
             .prepare(
                 "SELECT seat_id, turn_id, ordinal, role, lead, read_only, phase, state,
                         agent, model, reasoning, outcome, peer, peer_status, doing,
-                        title, background, reported
+                        title, background, reported, seat_origin, member
                  FROM v_roster WHERE thread_id=?1 ORDER BY turn_id, ordinal",
             )?
             .query_map([id], |r| {
@@ -1405,6 +1409,8 @@ impl Activity {
                     title: r.get(15)?,
                     background: r.get::<_, i64>(16)? != 0,
                     reported: r.get::<_, i64>(17)? != 0,
+                    origin: r.get(18)?,
+                    member: r.get(19)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -1425,8 +1431,14 @@ impl Activity {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
+        let running_turn = self.connection.query_row(
+            "SELECT id FROM turns WHERE thread_id=?1 AND state='running' ORDER BY ordinal LIMIT 1",
+            [id],
+            |row| row.get(0),
+        ).optional()?;
         Ok(Some(Thread {
             thread,
+            running_turn,
             items,
             seats,
             files,
@@ -2122,13 +2134,16 @@ impl Activity {
         let mut statement = self.connection.prepare(
             "SELECT thread_id, name, seat_id, role, read_only, state, live, agent, provider, model,
                     reasoning, doing, reported, title, started_at, ended_at, seats, replies,
-                    last_reply_at, workspace_state, trial_state, needs, manager, org_role
+                    last_reply_at, workspace_state, trial_state, needs, manager, org_role,
+                    (SELECT a.value FROM ui_state u, json_each(u.member_names) a
+                     WHERE u.thread_id=v_members.thread_id AND a.key=lower(v_members.name))
              FROM v_members WHERE thread_id=?1 ORDER BY live DESC, started_at",
         )?;
         let rows = statement.query_map([thread], |r| {
             Ok(Member {
                 thread_id: r.get(0)?,
                 name: r.get(1)?,
+                display_name: r.get(24)?,
                 seat_id: r.get(2)?,
                 role: r.get(3)?,
                 read_only: r.get::<_, i64>(4)? != 0,
@@ -2154,6 +2169,65 @@ impl Activity {
             })
         })?;
         rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// A name the person can mention, stored against the member's stable conversation key.
+    /// An empty value restores the member's original name.
+    pub fn rename_member(&self, thread: &str, member: &str, name: &str) -> Result<()> {
+        let name = name.trim();
+        anyhow::ensure!(
+            name.chars().count() <= 32
+                && (name.is_empty()
+                    || name.chars().next().is_some_and(char::is_alphanumeric)
+                        && name.chars().last().is_some_and(char::is_alphanumeric)
+                        && name
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))),
+            "Use up to 32 letters, numbers, periods, underscores or hyphens, without spaces.",
+        );
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let roster = self.members(thread)?;
+        let key = roster
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(member))
+            .context("No such member in this conversation.")?
+            .name
+            .to_ascii_lowercase();
+        let name = if name.eq_ignore_ascii_case(member) {
+            ""
+        } else {
+            name
+        };
+        if !name.is_empty() {
+            let folded = name.to_lowercase();
+            anyhow::ensure!(
+                !matches!(
+                    folded.as_str(),
+                    "lead" | "you" | "all" | "channel" | "everyone"
+                ) && !roster.iter().any(|m| !m.name.eq_ignore_ascii_case(member)
+                    && (m.name.eq_ignore_ascii_case(name)
+                        || m.display_name
+                            .as_deref()
+                            .is_some_and(|n| n.to_lowercase() == folded))),
+                "That name is already used in this conversation.",
+            );
+        }
+        tx.execute(
+            "INSERT INTO ui_state (thread_id, member_names)
+             VALUES (?1,json_patch('{}',json_object(?2,NULLIF(?3,''))))
+             ON CONFLICT(thread_id) DO UPDATE SET
+                 member_names=json_patch(ui_state.member_names,json_object(?2,NULLIF(?3,'')))",
+            params![thread, key, name],
+        )?;
+        tx.execute(
+            "INSERT INTO changes(tbl,row,thread_id,at) VALUES ('ui_state',?1,?1,?2)",
+            params![thread, millis()],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Mentions of the user nobody has seen yet, for one conversation or for all.
@@ -2339,13 +2413,15 @@ impl Activity {
 
     /// Notes the person wrote to a member that was not there to hear them, oldest first: what
     /// continues a finished member (`docs/team-channel-design.md` §5).
-    pub fn unheard_notes(&self, thread: &str) -> Result<Vec<(i64, String, String)>> {
+    pub fn unheard_notes(&self, thread: &str) -> Result<Vec<(i64, String, String, bool)>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, member, body FROM messages
+            "SELECT id, member, body, recipient_name='channel' FROM messages
              WHERE thread_id=?1 AND via='user' AND recipient='-' AND member IS NOT NULL
              ORDER BY id",
         )?;
-        let rows = statement.query_map([thread], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows = statement.query_map([thread], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?;
         rows.map(|row| Ok(row?)).collect()
     }
 
@@ -3080,6 +3156,7 @@ const ADDED: &[(&str, &str, &str)] = &[
     ("messages", "mentions", "TEXT"),
     ("messages", "broadcast", "INTEGER NOT NULL DEFAULT 0"),
     ("ui_state", "seen_mention", "INTEGER NOT NULL DEFAULT 0"),
+    ("ui_state", "member_names", "TEXT NOT NULL DEFAULT '{}'"),
     // Where a member sits in the agent organization (`docs/org-design.md`): the lead above it
     // (NULL for a report of the lead in the user's tree) and the role it was hired in.
     ("seats", "manager", "TEXT"),

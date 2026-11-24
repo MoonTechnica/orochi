@@ -103,16 +103,25 @@ export function Composer({
                 <Icon name="people" size={26} color={colors.sub} />
               ) : (
                 <WhoFace
-                  who={people.who(c.name)}
+                  who={people.who(c.member ?? c.name)}
                   size={30}
                   state={c.live ? 'working' : undefined}
                 />
               )}
-              <Text style={{ color: colors.text, fontWeight: '700' }}>@{c.name}</Text>
-              <Text style={{ color: colors.sub, flex: 1 }} numberOfLines={1}>
-                {c.channel ? t('everyone') : [c.agent, c.model].filter(Boolean).join(' · ')}
-              </Text>
-              <Text style={{ color: c.live ? colors.text : colors.sub, fontSize: 12 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: colors.text, fontWeight: '700' }} numberOfLines={1}>
+                  @{c.name}
+                </Text>
+                {!c.channel ? (
+                  <Text style={{ color: colors.sub, fontSize: 12 }} numberOfLines={1}>
+                    {[c.role, c.agent, c.model].filter(Boolean).join(' · ')}
+                  </Text>
+                ) : null}
+              </View>
+              <Text
+                style={{ color: c.live ? colors.text : colors.sub, fontSize: 12 }}
+                numberOfLines={1}
+              >
                 {c.state}
               </Text>
             </Pressable>

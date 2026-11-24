@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Member } from '@orochi/protocol';
 import {
   applyMention,
   fileTarget,
@@ -179,6 +180,33 @@ describe('mentions', () => {
   });
   it('only names that exist count as mentions', () => {
     expect(mentionsIn('@lead and @ghost and @you', ['lead'])).toEqual(['lead', 'you']);
+  });
+  it('finds named members by role and inserts and displays their Unicode names', () => {
+    const reviewer = (channel.members as Member[]).find((member) => member.name === 'reviewer')!;
+    const members = [
+      { ...reviewer, display_name: 'ミナ' },
+      { ...reviewer, name: 'reviewer-2', display_name: 'レン' },
+    ];
+    expect(mentionCandidates('reviewer', members, null)).toMatchObject([
+      { name: 'ミナ', member: 'reviewer', role: 'reviewer' },
+      { name: 'レン', member: 'reviewer-2', role: 'reviewer' },
+    ]);
+    const input = '@ミ';
+    const [candidate] = mentionCandidates(mentionQuery(input)!.query, members, null);
+    const { value } = applyMention(input, mentionQuery(input)!, candidate!.name);
+    expect(value).toBe('@ミナ ');
+    expect(mentionsIn(value, ['ミナ', 'レン'])).toEqual(['ミナ']);
+    expect(parseMarkdown('@ミナ。', new Set(['ミナ']))).toEqual([
+      {
+        t: 'p',
+        lines: [
+          [
+            { t: 'mention', name: 'ミナ', text: '@ミナ' },
+            { t: 'text', text: '。' },
+          ],
+        ],
+      },
+    ]);
   });
 });
 

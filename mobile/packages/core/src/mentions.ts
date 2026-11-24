@@ -8,6 +8,7 @@ export interface Candidate {
   provider?: string | null;
   model?: string | null;
   role?: string;
+  member?: string;
   live: boolean;
   at: number;
   state: string;
@@ -26,11 +27,12 @@ export function mentionCandidates(
   const last = (m: Member) =>
     Math.max(toMs(m.last_reply_at) ?? 0, m.ended_at ?? 0, m.started_at ?? 0);
   const all: Candidate[] = members.map((m) => ({
-    name: m.name,
+    name: m.display_name || m.name,
+    member: m.name,
     agent: m.agent,
     provider: m.provider,
     model: m.model,
-    role: m.role,
+    role: m.org_role || m.role,
     live: m.live,
     at: last(m),
     state: memberState(m).label,
@@ -50,7 +52,7 @@ export function mentionCandidates(
     });
   }
   const hits = all
-    .filter((c) => [c.name, c.agent, c.role].some((w) => lowered(w).startsWith(q)))
+    .filter((c) => [c.name, c.member, c.agent, c.role].some((w) => lowered(w).startsWith(q)))
     .sort((a, b) => Number(b.live) - Number(a.live) || b.at - a.at);
   if ('channel'.startsWith(q))
     hits.push({ name: 'channel', channel: true, live: false, at: 0, state: 'everyone' });
@@ -63,7 +65,7 @@ export function mentionQuery(
   caret: number = value.length,
 ): { query: string; start: number; caret: number } | null {
   const at = Math.min(caret, value.length);
-  const found = value.slice(0, at).match(/(^|\s)@([\w.-]*)$/);
+  const found = value.slice(0, at).match(/(^|\s)@([\p{L}\p{N}_.-]*)$/u);
   return found ? { query: found[2]!, start: at - found[2]!.length - 1, caret: at } : null;
 }
 
@@ -82,8 +84,8 @@ export function applyMention(
 export function mentionsIn(text: string, names: string[]): string[] {
   const known = new Set([...names.map(lowered), 'you', 'channel']);
   const out: string[] = [];
-  for (const m of text.matchAll(/(^|[^\w@])@([A-Za-z][\w.-]*)/g)) {
-    const n = lowered(m[2]);
+  for (const m of text.matchAll(/(?<![\p{L}\p{N}_.@-])@([\p{L}\p{N}_.-]+)/gu)) {
+    const n = lowered(m[1]?.replace(/[_.-]+$/, ''));
     if (known.has(n) && !out.includes(n)) out.push(n);
   }
   return out;

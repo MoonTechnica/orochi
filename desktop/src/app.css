@@ -728,6 +728,7 @@ details[open] > summary .icon { transform: rotate(90deg); }
 .place-head .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
 .place-head .dot.live { background: var(--ok); }
 .place-head .badge {
+  flex: none; white-space: nowrap;
   font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px;
 }
 .place-head .fold { margin-left: auto; color: var(--muted); }
@@ -1486,7 +1487,8 @@ details[open] > summary .icon { transform: rotate(90deg); }
 }
 .mention-row { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 5px 8px; font-size: 12px; color: var(--text); text-align: left; }
 .mention-row[aria-selected="true"], .mention-row:hover { background: var(--line); }
-.mention-row .name { font-weight: 600; }
+.mention-row .name { font-weight: 600; overflow-wrap: anywhere; }
+.mention-row .mention-role { color: var(--muted); flex-shrink: 0; }
 .mention-row .route-name, .mention-row .state { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mention-row .state { margin-left: auto; }
 .face.channel { background: var(--muted); }

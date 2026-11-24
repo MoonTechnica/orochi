@@ -1132,6 +1132,10 @@ impl Client {
         self.activity.members(thread)
     }
 
+    pub fn rename_member(&self, thread: &str, member: &str, name: &str) -> Result<()> {
+        self.activity.rename_member(thread, member, name)
+    }
+
     /// What the agents have said to the user that they have not seen, across conversations.
     pub fn mentions(&self) -> Result<Vec<orochi::activity::Mention>> {
         self.activity.mentions(None)

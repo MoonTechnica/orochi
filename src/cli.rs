@@ -957,24 +957,25 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             tracing::debug!("no browser for the agents (build orochi-servo with `mise run servo`)");
         }
     }
-    let _membership = if joins && config.mailbox.enabled {
-        let membership = crate::mailbox::join(
-            std::env::current_exe()?,
-            &paths.data,
-            &config.mailbox,
-            &root,
-            &store.salt()?,
-            cli.peer_name.as_deref(),
-        )?;
-        if !matches!(cli.command, Some(Command::Chat | Command::Host { .. }))
-            && let Some(name) = crate::mailbox::name_prefix()
-        {
-            eprintln!("Mailbox peer: {name}");
-        }
-        Some(membership)
-    } else {
-        None
-    };
+    let _membership =
+        if joins && config.mailbox.enabled && !matches!(cli.command, Some(Command::Host { .. })) {
+            let membership = crate::mailbox::join(
+                std::env::current_exe()?,
+                &paths.data,
+                &config.mailbox,
+                &root,
+                &store.salt()?,
+                cli.peer_name.as_deref(),
+            )?;
+            if !matches!(cli.command, Some(Command::Chat))
+                && let Some(name) = crate::mailbox::name_prefix()
+            {
+                eprintln!("Mailbox peer: {name}");
+            }
+            Some(membership)
+        } else {
+            None
+        };
     match cli.command {
         Some(Command::Chat) => {
             console_available()?;
@@ -1489,7 +1490,14 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
             if config.sandbox.force.is_none() {
                 config.sandbox.force = sandbox.as_deref().and_then(crate::sandbox::Mode::parse);
             }
-            return crate::chat::host::run(&config, &paths.config, &paths.data, &named).await;
+            return crate::chat::host::run(
+                &config,
+                &paths.config,
+                &paths.data,
+                &named,
+                cli.peer_name.as_deref(),
+            )
+            .await;
         }
         Some(Command::Threads {
             command,

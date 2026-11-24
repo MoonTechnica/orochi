@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -32,8 +33,8 @@ import { Composer } from '../../../../../src/ui/Composer';
 import { DayRow, DividerView, PostView, WorkView } from '../../../../../src/ui/Entries';
 import { LiveFace } from '../../../../../src/ui/people/LiveFace';
 import { PeopleProvider, usePeople } from '../../../../../src/ui/people/People';
-import { Empty, Header } from '../../../../../src/ui/Screen';
-import { Sheet } from '../../../../../src/ui/Sheet';
+import { Empty, Header, HeaderButton } from '../../../../../src/ui/Screen';
+import { Sheet, TextPrompt } from '../../../../../src/ui/Sheet';
 
 export default function MemberThread() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -51,8 +52,11 @@ function MemberBody({ data }: { data: ThreadData }) {
   const { colors, t, lang } = usePrefs();
   const now = useNow();
   const [also, setAlso] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [pressed, setPressed] = useState<Voice | null>(null);
   const { thread, said, members } = data;
+  const people = usePeople();
+  const member = people.member(name);
   const { seen, ready, mark } = useThreadSeen(id);
   const built = useMemo(
     () => (thread ? buildMemberThread({ thread, said, members, name }) : null),
@@ -60,7 +64,13 @@ function MemberBody({ data }: { data: ThreadData }) {
   );
   const view = useMemo(() => (built ? threadView(built.lines) : null), [built]);
   const known = useMemo(
-    () => new Set(['lead', ...members.map((m) => m.name.toLowerCase())]),
+    () =>
+      new Set([
+        'lead',
+        ...members.flatMap((m) =>
+          [m.name, m.display_name || m.name].map((name) => name.toLowerCase()),
+        ),
+      ]),
     [members],
   );
   const ctx = useMemo(
@@ -202,7 +212,39 @@ function MemberBody({ data }: { data: ThreadData }) {
       style={{ flex: 1, backgroundColor: colors.bg }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <Header title={t('Thread')} subtitle={thread?.thread.title || t('New conversation')} />
+      <Header
+        title={member?.display_name || name}
+        subtitle={[member?.org_role || member?.role, thread?.thread.title || t('New conversation')]
+          .filter(Boolean)
+          .join(' · ')}
+        right={
+          member ? (
+            <HeaderButton
+              icon="create-outline"
+              label={t('Rename member')}
+              onPress={() => setRenaming(true)}
+            />
+          ) : undefined
+        }
+      />
+      <TextPrompt
+        visible={renaming}
+        title={t('Member name for @mentions')}
+        initial={member?.display_name ?? member?.name}
+        confirm={t('Save')}
+        onClose={() => setRenaming(false)}
+        onSubmit={async (value) => {
+          if (!api || !member) return;
+          try {
+            await api.renameMember(id, member.name, value);
+            await data.reload();
+          } catch (error) {
+            const message = t(error instanceof Error ? error.message : String(error));
+            if (Platform.OS === 'web') globalThis.alert(message);
+            else Alert.alert(t('Rename member'), message);
+          }
+        }}
+      />
       {needs ? (
         <View style={{ backgroundColor: colors.code, padding: 8, paddingHorizontal: 12 }}>
           <Text style={{ color: colors.text, fontWeight: '700', fontSize: 13 }}>
@@ -273,12 +315,13 @@ function MemberBody({ data }: { data: ThreadData }) {
           await api!.say(id, text, null, name);
           if (also) {
             await api!.send(id, `${name}: ${text}`);
-            await api!.ensureHost(id).catch(() => {});
           }
           setAlso(false);
-          await api!.seeMentions(id);
           stick.current = true;
-          await data.reload();
+          await Promise.all([
+            api!.ensureHost(id).catch(() => {}),
+            api!.seeMentions(id).then(() => data.reload()),
+          ]);
         }}
       />
       <Sheet
@@ -316,7 +359,7 @@ function LiveLine({ name }: { name: string }) {
     >
       <LiveFace who={people.who(name)} state={people.state(name)} size={20} />
       <Text style={{ color: colors.sub, fontSize: 12, flexShrink: 1 }} numberOfLines={1}>
-        {name} {t('working')}
+        {people.label(name)} {t('working')}
         {doing ? ` — ${doing}` : '…'}
       </Text>
     </View>

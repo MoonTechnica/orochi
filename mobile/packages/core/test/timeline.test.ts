@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SeatRow } from '@orochi/protocol';
 import {
   buildMemberThread,
   buildTimeline,
@@ -73,6 +74,44 @@ describe('timeline from the channel fixture', () => {
     expect(line && line.type === 'reports' && line.names).toEqual(['implementer']);
   });
 
+  it('shows the member’s direct reply and attributes any lead relay to the lead', () => {
+    const data = input();
+    const thread = {
+      ...data.thread,
+      seats: [{ ...data.thread.seats[0], turn: 'previous', ordinal: 100, origin: 'user-channel' }],
+      items: [
+        {
+          ...data.thread.items[0],
+          seq: 9001,
+          kind: 'agent_message',
+          turn: 'previous',
+          lane: 100,
+          member: 'reviewer',
+          role: 'reviewer',
+          text: 'Here is my answer.',
+          failed: false,
+        },
+        {
+          ...data.thread.items[0],
+          seq: 9002,
+          kind: 'agent_message',
+          turn: 'handover',
+          lane: 0,
+          member: null,
+          role: 'reviewer',
+          turn_origin: 'background',
+          text: 'I asked for a reply.',
+          failed: false,
+        },
+      ],
+    };
+    const posts = buildTimeline({ ...data, said: [], thread }).filter((e) => e.type === 'post');
+    expect(posts.map((post) => [post.voice.who, post.voice.text])).toEqual([
+      ['reviewer', 'Here is my answer.'],
+      ['lead', 'I asked for a reply.'],
+    ]);
+  });
+
   it('shows the live line while working and open prompts for this thread', () => {
     const live = entries.find((e) => e.type === 'live');
     expect(live).toBeTruthy();
@@ -98,6 +137,24 @@ describe('timeline from the channel fixture', () => {
       prompts: [prompt as any, { ...prompt, id: 'p2', thread_id: 'other' } as any],
     });
     expect(withAsk.filter((e) => e.type === 'ask')).toHaveLength(1);
+  });
+
+  it('shows startup while the current turn has no active seat', () => {
+    const data = input();
+    const thread = {
+      ...data.thread,
+      running_turn: 'new-turn',
+      seats: data.thread.seats.map((seat: SeatRow) => ({ ...seat, role: 'design', state: 'done' })),
+    };
+    const live = () => buildTimeline({ ...data, thread }).find((e) => e.type === 'live');
+    expect(live()).toMatchObject({ starting: true, seats: [] });
+    thread.seats.push({
+      ...thread.seats[0]!,
+      turn: 'new-turn',
+      role: 'reviewer',
+      state: 'working',
+    });
+    expect(live()).toMatchObject({ starting: false, seats: [{ role: 'reviewer' }] });
   });
 });
 

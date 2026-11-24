@@ -28,15 +28,16 @@ const DIVIDER = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 const INLINE =
   /(`+)([\s\S]*?[^`])\1(?!`)|!?\[([^\]]*)\]\((<[^>]+>|[^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*\s][^*]*?)\*|(?<![\w])_([^_\s][^_]*?)_(?![\w])|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
-const MENTION = /(^|[^\w@])@([A-Za-z][\w.-]*)/g;
+const MENTION = /(?<![\p{L}\p{N}_.@-])@([\p{L}\p{N}_.-]+)/gu;
 
 function plain(out: Inline[], value: string, known?: Set<string>) {
   let at = 0;
   for (const m of value.matchAll(MENTION)) {
-    const name = m[2]!;
+    const name = m[1]!.replace(/[_.-]+$/, '');
+    if (!name) continue;
     const lower = name.toLowerCase();
     if (known && !known.has(lower) && lower !== 'you' && lower !== 'channel') continue;
-    const start = (m.index ?? 0) + m[1]!.length;
+    const start = m.index ?? 0;
     if (start > at) out.push({ t: 'text', text: value.slice(at, start) });
     out.push({ t: 'mention', name, text: `@${name}` });
     at = start + name.length + 1;

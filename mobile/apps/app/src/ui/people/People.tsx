@@ -13,6 +13,7 @@ import {
 
 interface Roster {
   who: (name: string) => Who;
+  label: (name: string) => string;
   member: (name: string) => Member | undefined;
   voice: (v: Voice) => Who;
   state: (name: string) => PersonState;
@@ -20,6 +21,7 @@ interface Roster {
 
 const fallback: Roster = {
   who: (name) => whoOf({ name }, null),
+  label: (name) => name,
   member: () => undefined,
   voice: (v) =>
     whoOf({ name: v.who, role: v.role, agent: v.agent, provider: v.provider, mine: v.mine }, null),
@@ -44,6 +46,12 @@ export function PeopleProvider({
     const find = (name: string) => members.find((m) => m.name.toLowerCase() === name.toLowerCase());
     return {
       who: (name) => whoNamed(name, members, row),
+      label: (name) => {
+        const member = find(name);
+        return member?.display_name
+          ? `${member.display_name} · ${member.org_role || member.role}`
+          : name;
+      },
       member: find,
       voice: (v) => {
         const w = whoOf(
