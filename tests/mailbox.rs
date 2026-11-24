@@ -1869,12 +1869,15 @@ fn a_members_post_is_a_reply_in_its_thread_that_only_the_lead_and_those_it_menti
     assert_eq!(heard(&team.helper), ["@channel stand-up in five"]);
     assert_eq!(heard(&team.reviewer), ["@channel stand-up in five"]);
 
-    team.mailbox
-        .post(&team.lead, "Planning the apply", None, false)
-        .unwrap();
+    assert!(
+        team.mailbox
+            .post(&team.lead, "Planning the apply", None, false)
+            .is_err(),
+        "a channel post says whom it is for"
+    );
     assert!(
         heard(&team.helper).is_empty() && heard(&team.reviewer).is_empty(),
-        "the lead's channel post pushes nobody"
+        "a refused post reaches nobody"
     );
     assert!(
         team.mailbox
@@ -1894,7 +1897,7 @@ fn an_agent_looks_at_the_channel_and_a_thread_when_it_needs_to() {
         .post(&team.helper, "Done: 6/6 pass", None, true)
         .unwrap();
     team.mailbox
-        .post(&team.lead, "Thanks, reviewing", None, false)
+        .post(&team.lead, "@you Thanks, reviewing", None, false)
         .unwrap();
     let channel: Vec<String> = team
         .mailbox
@@ -1905,7 +1908,7 @@ fn an_agent_looks_at_the_channel_and_a_thread_when_it_needs_to() {
         .collect();
     assert_eq!(
         channel,
-        ["Done: 6/6 pass", "Thanks, reviewing"],
+        ["Done: 6/6 pass", "@you Thanks, reviewing"],
         "a thread's replies stay out of the channel unless sent to it"
     );
     let thread: Vec<String> = team

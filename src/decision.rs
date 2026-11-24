@@ -290,6 +290,7 @@ pub fn questions(models: &Value, agents: &[String], remembered: bool) -> Value {
         "requires_browser": {"type": "noul", "instructions": "Does the task itself say a real web browser must be driven?"},
         "requires_web": {"type": "noul", "instructions": "Does the task itself say the open internet must be searched?"},
         "requires_image": {"type": "noul", "instructions": "Must an image be generated, not just read?"},
+        "collaborative": {"type": "noul", "instructions": "Does the user ask for several agents, a team or everyone, to take this on or talk it over together, rather than for one answer?"},
     });
     if let Some(described) = models.as_object().filter(|m| !m.is_empty()) {
         let mut criteria: serde_json::Map<String, Value> = described.clone();
@@ -392,6 +393,7 @@ pub fn interpret(
     c.requires_browser = noul("requires_browser");
     c.requires_web = noul("requires_web");
     c.requires_image = noul("requires_image");
+    c.collaborative = noul("collaborative");
     c.suited = named("suited");
     c.prefer = named("prefer");
     c.avoid = named("avoid");

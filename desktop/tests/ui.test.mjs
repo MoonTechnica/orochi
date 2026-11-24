@@ -802,7 +802,7 @@ test("what a failed attempt said is kept, folded, and not read as the agent's ow
   const posts = timeline.querySelectorAll(".post");
   assert.deepEqual(
     posts.map((p) => p.dataset.who),
-    ["you", "facilitator"],
+    ["you", "lead"],
     "the provider explaining itself is not one of the voices",
   );
 
@@ -898,7 +898,7 @@ test("what the window draws as an icon is drawn, not typed", async () => {
   assert.doesNotMatch(css, glyphs, "nor the stylesheet, through `content`");
 });
 
-test("every voice is drawn the same way, and named by what it is doing", async () => {
+test("every voice is drawn the same way, and the lead is the lead whatever role it took", async () => {
   const thread = structuredClone(recorded.thread);
   thread.items = [
     { seq: 1, turn: "t1", turn_ordinal: 1, lane: 0, role: "implementer", agent: "claude", model: "sonnet", kind: "user_message", status: null, text: "split the parser", data: null, truncated: false, patches: 0, at: 1000 },
@@ -915,8 +915,8 @@ test("every voice is drawn the same way, and named by what it is doing", async (
   // A session's code is not a name anyone can use.
   assert.doesNotMatch(drawn, /src-tauri-5e6a/, `no session codes: ${drawn}`);
   assert.doesNotMatch(drawn, /orochi-8a60/, "nor in the reply to one");
-  assert.match(drawn, /implementer/, "what it is doing is its name");
-  assert.match(drawn, /to implementer/, "and that is what it is called when spoken to");
+  assert.match(drawn, /span\.name lead/, "the one leading is the lead, not its role this turn");
+  assert.match(drawn, /to lead/, "and that is what it is called when spoken to");
   assert.match(drawn, /reviewer/);
 
   // One shape for every voice: the person is a speaker like any other.
@@ -924,7 +924,7 @@ test("every voice is drawn the same way, and named by what it is doing", async (
   assert.equal(posts.length, 4, `you, two agents and the reply: ${drawn}`);
   assert.deepEqual(
     posts.map((p) => p.dataset.who),
-    ["you", "implementer", "reviewer", "implementer"],
+    ["you", "lead", "reviewer", "lead"],
     "in the order they spoke",
   );
   // Everyone is marked, including you; an agent as the agent it is, as the list draws it.
@@ -941,6 +941,40 @@ test("every voice is drawn the same way, and named by what it is doing", async (
     0,
     "and nobody is drawn a second way",
   );
+});
+
+// A chat shows the message, not the machinery: how a reply came about is one line above it.
+test("the route, its notes, the tools and the thinking behind a reply are one line that opens", async () => {
+  const thread = structuredClone(recorded.thread);
+  const item = (seq, kind, over = {}) => ({
+    seq, turn: "t1", turn_ordinal: 1, lane: 0, role: "facilitator", agent: "codex", model: "gpt-6-luna",
+    kind, status: "completed", text: "", data: null, truncated: false, patches: 0, at: 1000 + seq, ...over,
+  });
+  thread.items = [
+    item(1, "user_message", { text: "talk it over", role: null }),
+    item(2, "note", { text: "classified as discussion / normal" }),
+    item(3, "route", { data: { agent: "codex", model: "gpt-6-luna", reasoning: "medium" } }),
+    item(4, "thought", { text: "Locating the channel" }),
+    item(5, "tool_call", { data: { title: "mcp__figma__startup" }, text: "not logged in" }),
+    item(6, "tool_call", { data: { title: "read_messages" } }),
+    item(7, "agent_message", { text: "Here is where it should go next." }),
+  ];
+  const { el } = await open({ thread, room: [] });
+  const timeline = el("timeline");
+  const traces = timeline.querySelectorAll("details").filter((d) => d.className === "trace");
+  assert.equal(traces.length, 1, `one line: ${timeline.render()}`);
+  const head = traces[0].children[0].render();
+  assert.match(head, /codex · gpt-6-luna · medium/, "the line names the route");
+  assert.match(head, /Thought, 2 tool calls/, "and what it holds");
+  assert.match(head, /1 routing note/);
+  assert.match(traces[0].render(), /not logged in/, "which is all still there when it is opened");
+  const turn = timeline.querySelectorAll(".turn")[0];
+  assert.deepEqual(
+    turn.children.map((c) => c.className).filter((c) => c !== "turn-foot" && c !== "checks"),
+    ["post", "trace", "post"],
+    "the person, one line, the reply",
+  );
+  assert.equal(timeline.querySelectorAll(".post").at(-1).dataset.who, "lead", "spoken by the lead, not its role");
 });
 
 test("the routing notes are folded away, and the route itself is not", async () => {

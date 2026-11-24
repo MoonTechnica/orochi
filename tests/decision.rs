@@ -5,7 +5,7 @@ use orochi::{
     config::{Config, DecisionBackend},
     decision::{self, Gguf, Model, key, local},
     policy::Registry,
-    router::profiler,
+    router::{classifier, profiler},
     storage::Store,
     types::Complexity,
 };
@@ -181,6 +181,26 @@ fn an_unsure_general_never_replaces_a_specific_heuristic_label_and_flags_need_co
     assert_eq!(c.prefer, None, "a name it is unsure of is not a preference");
     let invented = json!({"task_type": {"choice": "astrology"}});
     assert!(decision::interpret(&invented, &cuts, &heuristic).is_none());
+}
+
+#[test]
+fn a_team_the_user_asked_for_in_words_no_keyword_knows_is_read_from_the_decision_model_only_when_sure()
+ {
+    let root = tempfile::tempdir().unwrap();
+    let heuristic = profiler::profile("いろんな視点から将来を検討してほしい", root.path());
+    assert!(!heuristic.collaborative);
+    let cuts = decision::model("kev-4b").unwrap().cuts;
+    let sure = json!({"task_type": {"choice": "discussion"}, "collaborative": {"noul": 0.9}});
+    let c = decision::interpret(&sure, &cuts, &heuristic).unwrap();
+    let mut descriptor = heuristic.clone();
+    classifier::apply(&mut descriptor, &c);
+    assert!(descriptor.collaborative);
+    let unsure = json!({"task_type": {"choice": "discussion"}, "collaborative": {"noul": 0.6}});
+    assert!(
+        !decision::interpret(&unsure, &cuts, &heuristic)
+            .unwrap()
+            .collaborative
+    );
 }
 
 #[tokio::test]

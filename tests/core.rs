@@ -40,6 +40,24 @@ fn supporting_readme_and_tests_do_not_downgrade_application_work() {
 }
 
 #[test]
+fn asking_everyone_to_talk_it_over_asks_for_a_team_and_one_answer_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    for task in [
+        "みんなで将来のことを議論してみて。",
+        "全員で設計を相談して",
+        "チームで方針を話し合って",
+        "Everyone, discuss where this should go next",
+    ] {
+        let descriptor = profiler::profile(task, dir.path());
+        assert!(descriptor.collaborative, "{task}");
+        assert_eq!(descriptor.task_type, "discussion", "{task}");
+    }
+    for task in ["将来のことを相談したい", "みんなが使う関数を直して"] {
+        assert!(!profiler::profile(task, dir.path()).collaborative, "{task}");
+    }
+}
+
+#[test]
 fn non_software_tasks_keep_their_kind_and_can_receive_a_second_opinion() {
     let root = tempfile::tempdir().unwrap();
     for (text, kind, lead) in [

@@ -144,7 +144,20 @@ pub fn profile(task: &str, root: &Path) -> TaskDescriptor {
         "agents talk",
         "between agents",
         "with another agent",
-    ]) || (has(&["エージェント", "agent", "モデル"]) && together);
+    ]) || (has(&[
+        "エージェント",
+        "agent",
+        "モデル",
+        "みんな",
+        "皆で",
+        "全員",
+        "チームで",
+        "メンバー",
+        "everyone",
+        "all of you",
+        "as a team",
+        "the team",
+    ]) && together);
     // Talking it through is the whole request when nothing is asked to be built.
     let builds = has(&[
         "実装",

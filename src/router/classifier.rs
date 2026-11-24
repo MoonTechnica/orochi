@@ -73,6 +73,9 @@ pub struct Classification {
     pub requires_web: bool,
     #[serde(default)]
     pub requires_image: bool,
+    /// The user asked for the agents themselves to take it on together; it only ever raises.
+    #[serde(default)]
+    pub collaborative: bool,
     #[serde(default)]
     pub ambiguity: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -226,6 +229,9 @@ pub fn apply(descriptor: &mut TaskDescriptor, classification: &Classification) {
     descriptor.requires_browser |= classification.requires_browser;
     descriptor.requires_web |= classification.requires_web;
     descriptor.requires_image |= classification.requires_image;
+    // Whether the user asked for a team is read from what they said, which the keyword list
+    // cannot cover ("みんなで…"); how many seats it gets stays theirs and the roles' to say.
+    descriptor.collaborative |= classification.collaborative;
     if let Some(ambiguity) = classification.ambiguity.filter(|a| a.is_finite()) {
         descriptor.ambiguity = descriptor.ambiguity.max(ambiguity.clamp(0.0, 1.0));
     }

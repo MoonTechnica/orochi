@@ -206,8 +206,7 @@ answers it themselves, there.**
   cached. The console then writes the post in the channel for that member
   (`Session::hand_to_member`) instead of running a turn.
 - **Who answers.** The member, as itself, where the person wrote. A running member reads it
-  on its next `read_messages` and is told, in the mailbox's note, to answer a message from
-  `user` where it was written (`post` with thread `channel` for one in the channel). An ended
+  on its next `read_messages`. An ended
   member is continued (D7) on the mail tick (`Session::continue_mentioned`, from
   `Activity::unheard_notes`, which reads a channel post's mentions and whom it was for), with
   a prompt that says the person wrote to it directly and its final reply is its answer to
@@ -221,6 +220,22 @@ answers it themselves, there.**
 - **While it works** the window shows *name is replying…* where the answer will appear (the
   channel, or the thread panel), not a background-agent row; Orochi's own detail (routing
   notes, tool calls, the route) is not drawn between the messages.
+- **A reply is said once.** Every agent's final reply already reaches whoever gave it its work
+  (the lead's, the person), so the mailbox's note tells each never to `post` it as well — the
+  sentence that once told every agent to answer `user` with a channel post had the lead say
+  each reply twice. How a reply came about (the route, routing notes, tool calls, thinking) is
+  one folded line above it, naming the route and what it holds; the agent leading the
+  conversation is drawn as *lead* whatever role or phase it took that turn.
+- **What agents say says whom it is for.** A post in the channel must mention someone —
+  `@name`, `@you` or `@channel` — or `post` refuses it with the reason; a reply in a thread has
+  two parties and needs none. `@you` is how an agent reaches the person: it is a mention of
+  them (`v_mentions`), so the window notifies them, counts it on the dock and marks the
+  conversation until it is seen, wherever the agent wrote it.
+- **Asking for a team in plain words.** "みんなで…議論して" ("everyone, talk it over") is a
+  request for a team as much as "エージェント同士で…" is: the profiler reads a group word
+  (みんな, 全員, チームで, everyone, all of you…) with a word for talking it over as
+  `collaborative`, and the decision model is asked the same as one more typed question
+  (`collaborative`, a `noul` taken at 0.8 like the others), which only ever raises it.
 
 A finished member named in the same post as a running one is not continued: the post was
 delivered to the running one, and `unheard_notes` reads only undelivered posts. Known, not

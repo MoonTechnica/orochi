@@ -1626,11 +1626,46 @@ function drawTimeline(thread, said = []) {
   let turn = null;
   let pending = [];
   let notes = [];
+  // How a reply came about — the route, how it was chosen, the tools and the thinking — is one
+  // line above it, as a chat shows a message and not the machinery behind it; it opens on a click.
+  let trace = null;
+  const traced = (node, counted) => {
+    if (!turn) return;
+    if (!trace || trace.parentNode !== turn) {
+      trace = document.createElement("details");
+      trace.className = "trace";
+      const head = text("summary", null);
+      head.append(drawn("chevron-right"));
+      trace.label = text("span", null, "");
+      head.append(trace.label);
+      trace.append(head);
+      trace.counts = { route: null, thought: false, tools: 0, notes: 0 };
+      turn.append(trace);
+    }
+    trace.append(node);
+    const c = Object.assign(trace.counts, { ...counted, route: counted.route ?? trace.counts.route,
+      thought: trace.counts.thought || Boolean(counted.thought),
+      tools: trace.counts.tools + (counted.tools || 0), notes: trace.counts.notes + (counted.notes || 0) });
+    trace.label.textContent = [
+      c.route,
+      [c.thought ? t("Thought") : null, c.tools ? `${c.tools} tool call${c.tools > 1 ? "s" : ""}` : null].filter(Boolean).join(", "),
+      c.notes ? `${c.notes} routing note${c.notes > 1 ? "s" : ""}` : null,
+    ].filter(Boolean).join(" · ");
+  };
   const flush = () => {
-    if (pending.length && turn) turn.append(work(pending));
+    if (pending.length) {
+      traced(work(pending), {
+        tools: pending.filter((i) => i.kind === "tool_call").length,
+        thought: pending.some((i) => i.kind === "thought"),
+      });
+    }
     pending = [];
-    if (notes.length && turn) turn.append(aside(notes));
+    if (notes.length) traced(aside(notes), { notes: notes.length });
     notes = [];
+  };
+  // What the reply is spoken by: the lead is the lead whatever phase or role it took this turn.
+  const end = () => {
+    trace = null;
   };
   // The channel: the person, the lead and what members posted to it. What a member and the lead
   // say about the work is a reply in that member's thread, which the side pane opens; only the
@@ -1641,8 +1676,24 @@ function drawTimeline(thread, said = []) {
   const handedOff = new Set(
     spoken.filter((l) => l.via === "handoff" && l.member).map((l) => lowered(l.member)),
   );
-  // Who each peer is, so the one it is speaking to is named the same way it is.
+  // Who each peer is, so the one it is speaking to is named the same way it is: a member by
+  // its name, Orochi as itself, and the agent leading the conversation as the lead, whatever
+  // role or phase it took that turn.
+  const memberNames = new Set(
+    [...thread.seats.map((s) => s.member), ...said.map((l) => l.member)].filter(Boolean).map(lowered),
+  );
   const roles = new Map(said.map((line) => [line.who, line.role]).filter(([, r]) => r));
+  const leadRoles = new Set([
+    ...thread.seats.filter((s) => s.lead).map((s) => s.role),
+    ...thread.items.filter((i) => !i.member && !(i.lane > 0) && i.role).map((i) => i.role),
+  ]);
+  for (const s of thread.seats) if (!s.lead) leadRoles.delete(s.role);
+  const speaker = (name) => {
+    if (!name) return "lead";
+    if (memberNames.has(lowered(name)) || name === "orochi") return name;
+    const role = roles.get(name);
+    return role && leadRoles.has(role) ? "lead" : role || name;
+  };
   const barred = new Set();
   const bar = (name) => {
     if (barred.has(lowered(name))) return;
@@ -1685,6 +1736,7 @@ function drawTimeline(thread, said = []) {
         continue;
       }
       flush();
+      end();
       // What the person writes starts a block of its own, as a message they typed starts a
       // turn: what answers it follows it, not the end of whatever came before.
       if (!turn || item.via === "user") {
@@ -1693,11 +1745,13 @@ function drawTimeline(thread, said = []) {
         voice = null;
       }
       // The person's own post is theirs, drawn as what they typed is.
-      const who = item.via === "user" ? "you" : named(item);
+      const who = item.via === "user" ? "you" : speaker(item.who);
       // Who it was for, in words: a post to the channel that names no one is for everyone.
       // The person's post in the channel names whom it is for with its mentions.
       const to = item.via === "handoff" || (item.via === "user" && item.whom === "channel") ? null
-        : !item.whom || item.whom === "all" ? t("everyone") : `to ${roles.get(item.whom) || item.whom}`;
+        : !item.whom || item.whom === "all" ? t("everyone")
+        : item.whom === "you" ? `to ${t("you")}`
+        : item.whom === "channel" ? null : `to ${speaker(item.whom)}`;
       turn.append(
         post(
           {
@@ -1766,6 +1820,7 @@ function drawTimeline(thread, said = []) {
     // limit came to look like something an agent had decided to say.
     if (item.failed && item.text) {
       flush();
+      end();
       if (!turn) {
         turn = text("div", "turn loose");
         host.append(turn);
@@ -1775,10 +1830,12 @@ function drawTimeline(thread, said = []) {
       continue;
     }
     flush();
-    if (item.kind === "route") turn.append(chip(item));
-    else if (item.kind === "agent_message") {
-      const relay = ["background", "merge", "mail"].includes(item.turn_origin);
-      const who = (directReply ? item.member : relay ? "lead" : item.role) || item.agent || "agent";
+    if (item.kind === "route") {
+      const d = item.data || {};
+      traced(chip(item), { route: [d.agent, d.model, d.reasoning].filter(Boolean).join(" · ") });
+    } else if (item.kind === "agent_message") {
+      end();
+      const who = directReply ? item.member : "lead";
       turn.append(
         post(
           { who, model: item.model, at: item.at, text: item.text, agent: item.agent, provider: item.provider },
@@ -1787,8 +1844,13 @@ function drawTimeline(thread, said = []) {
       );
       voice = who;
     }
-    else if (item.kind === "checks") turn.append(checks(item));
-    else if (item.kind === "media") turn.append(mediaFigure(item, thread.thread.id));
+    else if (item.kind === "checks") {
+      end();
+      turn.append(checks(item));
+    } else if (item.kind === "media") {
+      end();
+      turn.append(mediaFigure(item, thread.thread.id));
+    }
 
   }
   flush();
