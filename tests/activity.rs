@@ -1926,6 +1926,31 @@ fn a_channel_post_to_finished_members_continues_them_without_joining_their_threa
         .map(|(_, member, _, in_channel)| (member, in_channel))
         .collect();
     assert_eq!(notes, [("reviewer".to_owned(), true)]);
+    // What the window reads carries whose each item is, a note from before the seat's first
+    // attempt included, so a member's words are drawn as its own and not as the turn's.
+    let reviewer = activity
+        .member_seat(&thread, "reviewer")
+        .unwrap()
+        .unwrap()
+        .0;
+    let note = activity
+        .item(
+            &thread,
+            &turn,
+            None,
+            ItemKind::Note,
+            None,
+            None,
+            "routing",
+            None,
+        )
+        .unwrap();
+    activity.item_seat(note, &reviewer).unwrap();
+    let drawn = activity.thread(&thread).unwrap().unwrap();
+    let row = drawn.items.iter().find(|i| i.seq == note).unwrap();
+    assert_eq!(row.member.as_deref(), Some("reviewer"));
+    assert_eq!(row.seat_id.as_deref(), Some(reviewer.as_str()));
+    assert_eq!(row.lane, Some(100));
     let said = activity.recent_said(&thread, 10).unwrap();
     assert!(
         said.iter()

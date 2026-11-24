@@ -61,7 +61,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": null,
-      "member": null
+      "member": null,
+      "seat_id": null
     },
     {
       "seq": 2,
@@ -87,7 +88,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": "openai",
-      "member": null
+      "member": null,
+      "seat_id": "ae334189-a953-4fd5-85b5-5d1a4bd414ff"
     },
     {
       "seq": 3,
@@ -107,7 +109,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": "openai",
-      "member": null
+      "member": null,
+      "seat_id": "ae334189-a953-4fd5-85b5-5d1a4bd414ff"
     },
     {
       "seq": 4,
@@ -138,7 +141,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": "openai",
-      "member": null
+      "member": null,
+      "seat_id": "ae334189-a953-4fd5-85b5-5d1a4bd414ff"
     },
     {
       "seq": 5,
@@ -158,7 +162,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": null,
-      "member": null
+      "member": null,
+      "seat_id": null
     },
     {
       "seq": 6,
@@ -184,7 +189,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": "openai",
-      "member": null
+      "member": null,
+      "seat_id": "1a7ff9e9-dbb1-402e-97a0-bc6e2f5695a0"
     },
     {
       "seq": 7,
@@ -204,7 +210,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": "openai",
-      "member": null
+      "member": null,
+      "seat_id": "1a7ff9e9-dbb1-402e-97a0-bc6e2f5695a0"
     },
     {
       "seq": 8,
@@ -235,7 +242,8 @@
       "failed": false,
       "turn_origin": null,
       "provider": "openai",
-      "member": null
+      "member": null,
+      "seat_id": "1a7ff9e9-dbb1-402e-97a0-bc6e2f5695a0"
     }
   ],
   "seats": [

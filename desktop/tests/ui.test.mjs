@@ -199,7 +199,7 @@ test("the fixtures carry the fields the core actually sends", async () => {
   const item = recorded.thread.items[0];
   for (const [what, row, fields] of [
     ["seat", seat, ["seat_id", "turn", "ordinal", "role", "lead", "read_only", "state"]],
-    ["item", item, ["seq", "turn", "lane", "kind", "text", "at", "member"]],
+    ["item", item, ["seq", "turn", "lane", "kind", "text", "at", "member", "seat_id"]],
   ]) {
     for (const field of fields) {
       assert.ok(field in row, `${what} has no ${field}: ${Object.keys(row)}`);
@@ -2904,6 +2904,41 @@ test("thread replies stay out of the body; assignments, posts to the channel and
   assert.doesNotMatch(drawn, /Background agent/, "not a large post");
   const bars = el("timeline").querySelectorAll(".thread-bar");
   assert.deepEqual(bars.map((b) => b.dataset.member), ["implementer", "reviewer"], "one bar per member, under its assignment");
+});
+
+// Talking to a member is a chat (docs/team-channel-design.md §5): what the person writes in the
+// channel is theirs, in a block of its own, and the member answers right under it. A member
+// continued later sits under the turn it first ran in, at the same ordinal each time, so only the
+// seat tells the answer to the person from the reports it gave before.
+test("a member the person speaks to in the channel answers under their post, and its earlier seats stay in its thread", async () => {
+  const base = channel();
+  const at = 1790000900000;
+  const lead = base.thread.seats.find((s) => s.lead);
+  const seat = (id, origin) => ({ ...lead, seat_id: id, turn: lead.turn, ordinal: 100, role: "reviewer", lead: false,
+    read_only: true, state: "done", agent: "codex", model: "gpt-6-luna", member: "reviewer", origin, background: true });
+  const item = (seq, seatId, kind, text, when, lane = 100) => ({ seq, turn: lead.turn, turn_ordinal: 1, lane, role: lane ? "reviewer" : null,
+    agent: lane ? "codex" : null, model: lane ? "gpt-6-luna" : null, kind, status: "completed", text, data: null, truncated: false,
+    patches: 0, at: when, failed: false, turn_origin: null, provider: lane ? "openai" : null, member: lane ? "reviewer" : null, seat_id: seatId, key: null });
+  base.thread.seats.push(seat("r-old", "lead"), seat("r-now", "user-channel"));
+  base.thread.items.push(
+    item(900, "r-old", "agent_message", "An earlier report, for the lead", at),
+    // Written before notes named their seat: no lane, an old turn's, long after it ended.
+    item(901, null, "note", "using servers from .mcp.json", at + 60000, null),
+    item(902, "r-now", "agent_message", "The redirect loops on /ja, nowhere else", at + 61000),
+  );
+  base.room.push({ seq: 900, kind: "message", who: "user", whom: "channel", via: "user", text: "@reviewer which URL loops?",
+    at: at + 59000, role: null, model: null, agent: null, provider: null, parent: null, member: null, mentions: ["reviewer"], broadcast: false });
+  const { el } = await open(base);
+  const drawn = el("timeline").render();
+  assert.match(drawn, /span\.name you[\s\S]*which URL loops\?[\s\S]*span\.name reviewer[\s\S]*The redirect loops on \/ja/,
+    "the person's post, then the member's answer under it");
+  assert.doesNotMatch(drawn, /span\.name user\b/, "the person is drawn as themselves, not as a mailbox sender");
+  assert.doesNotMatch(drawn, /An earlier report, for the lead/, "an earlier seat of the member was not an answer to the person");
+  assert.doesNotMatch(drawn, /using servers from \.mcp\.json/, "an old turn's note does not land under a later post");
+  const blocks = el("timeline").querySelectorAll(".turn").filter((b) => /which URL loops/.test(b.render()));
+  assert.equal(blocks.length, 1);
+  assert.match(blocks[0].render(), /The redirect loops/, "the answer is in the post's own block");
+  assert.doesNotMatch(drawn, /Worked for \d+d/, "a member continued later does not stretch the turn it sits under");
 });
 
 test("a thread's bar says how many replies, the last one, and where the member stands; what waits on the person marks it", async () => {

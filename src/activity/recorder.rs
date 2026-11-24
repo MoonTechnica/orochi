@@ -409,16 +409,21 @@ impl Recorder {
         text: &str,
         data: Option<&serde_json::Value>,
     ) -> anyhow::Result<i64> {
-        db.item(
+        let attempt = self.place.attempt.as_deref();
+        let id = db.item(
             &self.place.thread,
             &self.place.turn,
-            self.place.attempt.as_deref(),
+            attempt,
             kind,
             status,
             key,
             text,
             data.map(|d| d.to_string()).as_deref(),
-        )
+        )?;
+        if attempt.is_none() {
+            db.item_seat(id, &self.place.seat)?;
+        }
+        Ok(id)
     }
 
     fn seat_state(&self, db: &Activity, state: SeatState) -> anyhow::Result<()> {

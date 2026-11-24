@@ -1652,8 +1652,10 @@ function drawTimeline(thread, said = []) {
   const stream = [...thread.items, ...spoken].sort(
     (a, b) => (a.at ?? 0) - (b.at ?? 0) || (a.seq ?? 0) - (b.seq ?? 0),
   );
+  // The seats that answered the person in the channel, by seat: a member continued later sits
+  // under its first turn at the same ordinal, so turn and lane cannot tell its seats apart.
   const repliesInChannel = new Set(
-    thread.seats.filter((s) => s.origin === "user-channel").map((s) => `${s.turn}/${s.ordinal}`),
+    thread.seats.filter((s) => s.origin === "user-channel").map((s) => s.seat_id),
   );
   // A post of the person's that also became a turn (it named the lead too, or the host took
   // it as a note after it was queued) is drawn once, as the turn.
@@ -1683,11 +1685,15 @@ function drawTimeline(thread, said = []) {
         continue;
       }
       flush();
-      if (!turn) {
+      // What the person writes starts a block of its own, as a message they typed starts a
+      // turn: what answers it follows it, not the end of whatever came before.
+      if (!turn || item.via === "user") {
         turn = text("div", "turn loose");
         host.append(turn);
+        voice = null;
       }
-      const who = named(item);
+      // The person's own post is theirs, drawn as what they typed is.
+      const who = item.via === "user" ? "you" : named(item);
       // Who it was for, in words: a post to the channel that names no one is for everyone.
       // The person's post in the channel names whom it is for with its mentions.
       const to = item.via === "handoff" || (item.via === "user" && item.whom === "channel") ? null
@@ -1710,8 +1716,7 @@ function drawTimeline(thread, said = []) {
     }
     // A member's own working notes are its thread's; what it had to say reached the channel
     // as a post or stands in its thread.
-    const directReply = item.kind === "agent_message" && item.member &&
-      repliesInChannel.has(`${item.turn}/${item.lane}`);
+    const directReply = item.kind === "agent_message" && item.member && repliesInChannel.has(item.seat_id);
     if (!directReply && (item.member || (item.lane != null && item.lane > 0))) continue;
     if (item.kind === "user_message") {
       flush();
@@ -1750,6 +1755,9 @@ function drawTimeline(thread, said = []) {
       continue;
     }
     if (item.kind === "note" || item.kind === "unavailable") {
+      // One with no seat that belongs to an older turn than the block it would land in was a
+      // member's, continued later, recorded before notes named their seat: not this block's.
+      if (item.lane == null && turn?.dataset?.turn !== item.turn) continue;
       notes.push(item);
       continue;
     }
@@ -1792,7 +1800,8 @@ function drawTimeline(thread, said = []) {
   for (const [id, node] of turns) {
     if (id === running) continue;
     // A member continued later sits under the turn it first ran in; its work is not that turn's.
-    const own = thread.items.filter((i) => i.turn === id && !i.member);
+    const own = thread.items.filter((i) => i.turn === id && !i.member && !(i.lane > 0) &&
+      !(i.lane == null && (i.kind === "note" || i.kind === "unavailable")));
     if (own.length < 2) continue;
     const foot = text("div", "turn-foot");
     const first = own[0].at;

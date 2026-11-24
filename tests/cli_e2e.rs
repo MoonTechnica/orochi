@@ -3161,9 +3161,9 @@ fn a_queued_member_mention_restarts_the_member_in_a_new_host() {
                         prompt.iter().any(|part| {
                             part["text"].as_str().is_some_and(|text| {
                                 text.contains(
-                                    "A new request in your thread: @ミナ Please check again",
+                                    "The user wrote to you in the conversation's channel: @ミナ Please check again",
                                 ) && text.contains("A message addressed to `@ミナ` is for you.")
-                                    && text.contains("Address the user in your final reply")
+                                    && text.contains("The user wrote this to you directly")
                             })
                         })
                     })
@@ -3197,7 +3197,9 @@ fn a_queued_member_mention_restarts_the_member_in_a_new_host() {
     let room: String = activity
         .connection()
         .query_row(
-            "SELECT project_id FROM messages WHERE thread_id=?1 AND via='user' AND member='reviewer'",
+            // Written in the channel, so it stays there: no member's thread is named.
+            "SELECT project_id FROM messages WHERE thread_id=?1 AND via='user' AND member IS NULL
+               AND mentions LIKE '%\"reviewer\"%'",
             [&thread],
             |row| row.get(0),
         )

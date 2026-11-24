@@ -425,6 +425,12 @@ pub struct ItemRow {
     pub failed: bool,
     /// `background` when Orochi wrote the turn to hand helpers' results back.
     pub turn_origin: Option<String>,
+    /// The conversation member whose seat this is, so a client draws its words in its thread,
+    /// or in the channel where it answered the person there.
+    pub member: Option<String>,
+    /// The seat it came from: two seats of one member can sit under one turn at one ordinal (a
+    /// member continued later), and only the seat says which of them answered where.
+    pub seat_id: Option<String>,
     /// Whose it is, for drawing the speaker as the agent it is.
     pub provider: Option<String>,
     /// A tool call's own id, which the calls made inside it (`data.parent`) name.
@@ -1350,7 +1356,7 @@ impl Activity {
                 "SELECT seq, turn_id, turn_ordinal, lane, role, agent, model, kind, status,
                         text, data, truncated, patches, created_at,
                         (SELECT a.outcome FROM attempts a WHERE a.id=attempt_id), turn_origin,
-                        provider, key
+                        provider, key, member, seat_id
                  FROM v_timeline WHERE thread_id=?1 ORDER BY seq",
             )?
             .query_map([id], |r| {
@@ -1378,6 +1384,8 @@ impl Activity {
                     turn_origin: r.get(15)?,
                     provider: r.get(16)?,
                     key: r.get(17)?,
+                    member: r.get(18)?,
+                    seat_id: r.get(19)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -2468,6 +2476,15 @@ impl Activity {
         Ok(said)
     }
 
+    /// Ties an item written before its seat's first attempt to that seat.
+    pub fn item_seat(&self, item: i64, seat: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE items SET seat_id=?2 WHERE id=?1",
+            params![item, seat],
+        )?;
+        Ok(())
+    }
+
     /// The turn a seat sits under, for a member continued between turns.
     pub fn seat_turn(&self, seat: &str) -> Result<String> {
         Ok(self
@@ -3207,6 +3224,9 @@ const ADDED: &[(&str, &str, &str)] = &[
     // When an unanswered question is declined by itself (a routine's turn has nobody to ask),
     // in milliseconds; NULL waits for an answer as a person's question does.
     ("prompts", "expires_at", "INTEGER"),
+    // The seat an item was written for when it came before the seat's first attempt (a routing
+    // note, say), so it is drawn with that seat and not as the turn's own.
+    ("items", "seat_id", "TEXT"),
 ];
 
 /// Tables added since `USER_VERSION` 2, each created (and filled from what is already there)
@@ -3931,7 +3951,7 @@ SELECT i.thread_id, i.id AS seq, i.turn_id, tn.ordinal AS turn_ordinal,
 FROM items i
 JOIN turns tn ON tn.id=i.turn_id
 LEFT JOIN attempts a ON a.id=i.attempt_id
-LEFT JOIN seats s ON s.id=a.seat_id;
+LEFT JOIN seats s ON s.id=COALESCE(a.seat_id, i.seat_id);
 
 DROP VIEW IF EXISTS v_media;
 CREATE VIEW v_media AS
