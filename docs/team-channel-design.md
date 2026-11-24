@@ -186,19 +186,45 @@ channel only when you need to.
 
 ## 5. How the user speaks
 
-The composer is the channel's. A post with no mention, or mentioning the lead, is a turn for the
-lead as today. A post mentioning a member is a `messages` row from the user with that mention,
-shown in the channel and **only** there: it names no thread (`messages.member` is NULL), so the
-member's thread panel does not repeat it. Only a reply written in a thread (or a note sent to one
-seat) belongs to that thread.
+The composer is the channel's, and talking to an agent works as it does in a chat app (the
+user's requirement, 2026-11-25): **a message stays where it was written, and whoever it is for
+answers it themselves, there.**
 
-- a running member reads it on its next `read_messages`;
-- an ended member is continued (D7): the host's mail tick (the console's, without a host)
-  finds a user mention of a member with no live peer and opens a continuation request,
-  `requester = 'user'`, the post as its task;
-- the lead is not woken by it, but its next session note carries one line per such post
-  ("you told implementer: …"), so it can plan around it; the member's report comes back to
-  the lead as any report does.
+- **Where a message is.** A post in the channel is in the channel and only there, whoever it
+  mentions or is for: it names no thread (`messages.member` is NULL), so a member's thread
+  panel never repeats it. A reply written in a thread is that thread's. *Also send to the
+  channel* is the one way a thread reply is shown in both.
+- **Who it is for.** A post mentioning the lead or `@channel` is a turn for the lead. A post
+  mentioning members is for each of them. A post that names nobody is for whoever the
+  conversation says it is for: when a decision model is chosen and the conversation has
+  members, `decision::addressee` is asked one typed choice — the lead or one member, each
+  described by what it was asked and whether it is working — with the newest things said
+  (`Activity::recent_said`, sixteen lines, the person's and the agents', not Orochi's own
+  hand-back text) as its state, and a member is taken only at the same 0.6 a name is taken
+  at elsewhere (Orochi's threshold, not measured). Unsure, `lead`, a name it was not offered,
+  no members, no decision model or any failure: the lead's turn, as before. Nothing is
+  cached. The console then writes the post in the channel for that member
+  (`Session::hand_to_member`) instead of running a turn.
+- **Who answers.** The member, as itself, where the person wrote. A running member reads it
+  on its next `read_messages` and is told, in the mailbox's note, to answer a message from
+  `user` where it was written (`post` with thread `channel` for one in the channel). An ended
+  member is continued (D7) on the mail tick (`Session::continue_mentioned`, from
+  `Activity::unheard_notes`, which reads a channel post's mentions and whom it was for), with
+  a prompt that says the person wrote to it directly and its final reply is its answer to
+  them; its seat is marked `user-channel` or `user-thread`, which is where the window draws
+  that answer, and the console prints it. This holds for a member that writes too: it goes on
+  in the worktree it still has open, or else works in the user's own tree as the lead does
+  (`Post::in_place`), each change asked under the conversation's approval mode.
+- **The lead is not a relay.** It is not woken, writes no assignment for it and hands nothing
+  back; its next session note carries one line for what the person told the member and one
+  for what the member answered (`answered_note`), so it can plan around both.
+- **While it works** the window shows *name is replying…* where the answer will appear (the
+  channel, or the thread panel), not a background-agent row; Orochi's own detail (routing
+  notes, tool calls, the route) is not drawn between the messages.
+
+A finished member named in the same post as a running one is not continued: the post was
+delivered to the running one, and `unheard_notes` reads only undelivered posts. Known, not
+yet addressed.
 
 **Typing `@` offers the members** (the user's request, 2026-11-09), in the channel's composer
 and a thread's alike: a list above the caret of the lead, every member of this conversation

@@ -64,9 +64,11 @@ pub struct Post {
     /// May message the leads of linked projects.
     pub link: bool,
     /// Writes in the lead's own folder, with no worktree of its own: a routine's helper, where
-    /// the folder is an assistant's and not a repository (the user's rule 2026-11-23).
+    /// the folder is an assistant's and not a repository (the user's rule 2026-11-23), or a
+    /// member the person told directly to change something (the user's rule 2026-11-25).
     pub in_place: bool,
-    /// A direct, read-only reply to a person needs no follow-up from the lead.
+    /// The person spoke to this member directly: it answers them where they wrote, and the
+    /// lead is neither woken nor a relay (`docs/team-channel-design.md` §5).
     pub reply_to_user: bool,
 }
 
@@ -181,6 +183,9 @@ pub struct Background<'a> {
     pub waiting: Vec<Waiting>,
     /// Times each lead has been resumed, so one that never settles is let go.
     pub resumes: std::collections::BTreeMap<String, usize>,
+    /// What members the user spoke to directly answered them, for the lead's next session:
+    /// the lead is not woken by it, but it should not be the last to know.
+    pub answered: Vec<(String, String)>,
 }
 
 impl<'a> Background<'a> {
@@ -629,6 +634,19 @@ fn prompt(
     } else {
         "Never start another agent or another Orochi."
     };
+    if post.reply_to_user {
+        let access = match (workspace, post.in_place) {
+            (Some(root), _) => format!(
+                "You work in your own Git worktree at {}; keep edits there and do not commit, merge or push — `{lead}` closes it when the user asks.",
+                root.display()
+            ),
+            (None, true) => "You work in the user's own folder, as the agent leading this conversation does: each change you make is asked of the user under their approval mode, so make the changes the request needs and nothing else.".to_owned(),
+            (None, false) => "You have read-only access.".to_owned(),
+        };
+        return format!(
+            "You are `{name}`. The user wrote this to you directly, as in a chat: answer it yourself, speaking to the user, and do what it asks. Your final reply is your answer and the user reads it where they wrote to you; `{lead}` does not relay it, so do not write about yourself in the third person or report to anyone else. {access}\n\n{role}{brief}{others}\n\nThe message:\n{task}"
+        );
+    }
     if let Some(root) = workspace {
         return format!(
             "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\n{role}{brief}Implement your task in your dedicated Git worktree at {}. Other agents work concurrently in their own directories. Keep edits inside this worktree; do not commit, merge or push — `{lead}` closes the worktree when your report is in, merging your changes. Report changed files, checks and remaining issues. {others}\n\nYour task:\n{task}",
@@ -638,11 +656,6 @@ fn prompt(
     if post.in_place {
         return format!(
             "You are `{name}`, working in the background for `{lead}` on one part of what the user asked: {title}.\n\n{role}{brief}You work in the same folder as `{lead}`, with no copy of your own, so change only what your task names and leave the rest alone. Each change is asked of the user as in a conversation. Your final reply is what `{lead}` receives: say what you changed and what you found. {others}\n\nYour task:\n{task}"
-        );
-    }
-    if post.reply_to_user {
-        return format!(
-            "You are `{name}`. The user sent this request directly to you. Address the user in your final reply and answer the request yourself. You have read-only access.\n\n{role}{brief}{others}\n\nYour task:\n{task}"
         );
     }
     format!(

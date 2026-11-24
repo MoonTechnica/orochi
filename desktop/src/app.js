@@ -441,6 +441,7 @@ const WORDS = {
     "background agent": "件のバックグラウンドエージェント",
     "background agents": "件のバックグラウンドエージェント",
     "Stop all": "すべて停止",
+    "is replying…": "が返信中…",
     "No worktrees in this conversation.": "この会話に worktree はありません。",
     "This conversation works in its own worktree.": "この会話は自分の worktree で作業しています。",
     "No helper worktrees in this conversation.": "この会話にヘルパーの worktree はありません。",
@@ -1790,7 +1791,8 @@ function drawTimeline(thread, said = []) {
     : thread.running_turn;
   for (const [id, node] of turns) {
     if (id === running) continue;
-    const own = thread.items.filter((i) => i.turn === id);
+    // A member continued later sits under the turn it first ran in; its work is not that turn's.
+    const own = thread.items.filter((i) => i.turn === id && !i.member);
     if (own.length < 2) continue;
     const foot = text("div", "turn-foot");
     const first = own[0].at;
@@ -1843,8 +1845,17 @@ function drawTimeline(thread, said = []) {
     }
     turn.append(live);
   }
+  // A member the person is talking to directly answers like anyone in a chat: a line saying it
+  // is replying, where its answer will appear, and not a background job.
+  const direct = new Map(
+    thread.seats.filter((s) => s.origin === "user-channel" || s.origin === "user-thread").map((s) => [s.seat_id, s]),
+  );
+  const mine = state.live.filter((live) => live.thread_id === thread.thread.id);
+  for (const live of mine.filter((l) => direct.get(l.seat_id)?.origin === "user-channel")) {
+    host.append(replying(direct.get(live.seat_id), live, thread));
+  }
   // Helpers still working for this conversation, each with a way to stop it.
-  const helpers = state.live.filter((live) => live.thread_id === thread.thread.id && live.background);
+  const helpers = mine.filter((live) => live.background && !direct.has(live.seat_id));
   if (helpers.length) {
     const block = text("div", "seats-block");
     const head = text("div", "head");
@@ -4296,6 +4307,21 @@ function memberState(m) {
   return { tone: "muted", label: t("done") };
 }
 
+/// "reviewer is replying…": a member answering the person directly, while it works. Its face
+/// and name as its answer will carry them, and a quiet way to stop it.
+function replying(seat, live, thread) {
+  const row = text("div", "replying");
+  const name = seat.member || seat.role;
+  row.append(person({ role: name, agent: live.agent, provider: live.provider, model: live.model }));
+  row.append(text("span", "name", memberLabel(name)));
+  row.append(text("span", "what", t("is replying…")));
+  const stop = text("button", "link", t("Stop"));
+  stop.type = "button";
+  stop.addEventListener("click", () => call("stop_seat", { thread: thread.thread.id, seat: live.seat_id }));
+  row.append(stop);
+  return row;
+}
+
 /// The bar under a member's assignment: who spoke in its thread, how many replies, when the
 /// last one came and where the member stands. Marked where something waits on the person.
 function threadBar(thread, name, said = state.said || []) {
@@ -4492,6 +4518,11 @@ async function drawMember(thread) {
   }
   flush();
   if (!lines.length) body.append(text("p", "empty", t("Nothing said in this thread yet.")));
+  // Answering what the person wrote in this thread: said here, as in the channel.
+  for (const live of (state.live || []).filter((l) => l.thread_id === thread.thread.id)) {
+    const seat = thread.seats.find((s) => s.seat_id === live.seat_id);
+    if (seat?.origin === "user-thread" && lowered(seat.member) === key) body.append(replying(seat, live, thread));
+  }
   host.append(body);
 
   // Its worktree and trials, as the Work pane draws one lane.

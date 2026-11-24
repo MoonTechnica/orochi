@@ -1302,7 +1302,7 @@ class BackgroundAgents(unittest.TestCase):
         finally:
             c.close()
 
-    def test_mentioning_a_member_that_finished_continues_it_in_its_thread(self):
+    def test_mentioning_a_member_that_finished_continues_it_and_it_answers_the_person_itself(self):
         c = Console(behavior="delegate", mailbox=True, env={
             "MOCK_HELPERS": "spec:Research the API",
         })
@@ -1312,22 +1312,32 @@ class BackgroundAgents(unittest.TestCase):
             c.wait("spec's thread")
             c.wait("handing back what spec reported")
             c.pump(10)
+            before = len([p for p in c.prompts() if "Background agent `" in p])
             c.type("@spec also check the cache")
             c.key(b"\r")
-            c.wait("continuing spec in its thread")
-            # The member is asked again in its own thread; the lead is not asked at all.
+            c.wait("spec is replying")
+            # The member is asked as the person spoke to it, in the channel; the lead is not asked.
             c.pump(60, until=lambda s: any(
-                "A new request in your thread: also check the cache" in p for p in c.prompts()
+                "The user wrote to you in the conversation's channel: @spec also check the cache" in p
+                for p in c.prompts()
             ))
-            asked = [p for p in c.prompts() if "A new request in your thread" in p]
+            asked = [p for p in c.prompts() if "wrote this to you directly" in p]
             self.assertEqual(len(asked), 1, [p[-200:] for p in c.prompts()])
             self.assertIn('you are peer "spec"', asked[0])
-            # The lead was never asked it as a request, and is told of it when spec reports.
-            c.pump(60, until=lambda s: any("The user told `spec` directly" in p for p in c.prompts()))
-            lead = [p for p in c.prompts() if "The user told `spec` directly" in p]
+            # It answers the person itself, in the transcript, and nobody relays it.
+            c.wait("ANSWER spec: the cache is fine.")
+            c.pump(5)
+            self.assertEqual(
+                len([p for p in c.prompts() if "Background agent `" in p]), before,
+                "the lead is not woken to hand the answer back",
+            )
+            # The lead hears of it when it is next asked something.
+            c.type("thanks, carry on")
+            c.key(b"\r")
+            c.pump(60, until=lambda s: any("answered the user directly" in p for p in c.prompts()))
+            lead = [p for p in c.prompts() if "answered the user directly" in p]
             self.assertEqual(len(lead), 1, [p[-200:] for p in c.prompts()])
-            self.assertNotIn("A new request in your thread", lead[0])
-            # Between turns, and still one member with a second seat that continues the first.
+            self.assertIn("The user told `spec` directly, in the channel", lead[0])
             import sqlite3
             db = sqlite3.connect(str(c.dir / "data" / "activity.sqlite3"))
             self.assertEqual(
@@ -1335,9 +1345,16 @@ class BackgroundAgents(unittest.TestCase):
             )
             self.assertEqual(
                 db.execute(
-                    "SELECT count(*) FROM seats WHERE member='spec' AND continues IS NOT NULL"
-                ).fetchone(),
-                (1,),
+                    "SELECT origin FROM seats WHERE member='spec' AND continues IS NOT NULL"
+                ).fetchall(),
+                [("user-channel",)],
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT member FROM messages WHERE body='@spec also check the cache'"
+                ).fetchall(),
+                [(None,)],
+                "what was said in the channel stays in the channel",
             )
         finally:
             c.close()
@@ -1386,7 +1403,7 @@ class BackgroundAgents(unittest.TestCase):
             c.key(b"\r")
             c.esc()
             c.esc()
-            c.wait("continuing spec in its thread")
+            c.wait("spec is replying")
         finally:
             c.close()
 

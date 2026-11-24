@@ -2419,16 +2419,53 @@ impl Activity {
         let mut statement = self.connection.prepare(
             "SELECT id, member, body, recipient_name='channel' FROM messages
              WHERE thread_id=?1 AND via='user' AND recipient='-' AND member IS NOT NULL
-             UNION ALL
+             UNION
              SELECT m.id, j.value, m.body, 1 FROM messages m, json_each(m.mentions) j
              WHERE m.thread_id=?1 AND m.via='user' AND m.recipient='-' AND m.member IS NULL
                AND m.mentions IS NOT NULL AND j.value NOT IN ('you','channel')
+             UNION
+             SELECT id, recipient_name, body, 1 FROM messages
+             WHERE thread_id=?1 AND via='user' AND recipient='-' AND member IS NULL
+               AND recipient_name NOT IN ('channel','you','all')
              ORDER BY 1",
         )?;
         let rows = statement.query_map([thread], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?;
         rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// The newest `limit` things said in a conversation, oldest first, each as `who: text`
+    /// on one bounded line: what the person and the agents said, in the channel and in the
+    /// members' threads, without the text Orochi wrote to hand results back. What a decision
+    /// model reads to tell who an unaddressed message is for.
+    pub fn recent_said(&self, thread: &str, limit: usize) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT at, who, text FROM (
+               SELECT created_at AS at,
+                      CASE WHEN kind='user_message' THEN 'user'
+                           WHEN member IS NOT NULL THEN member ELSE 'lead' END AS who, text
+               FROM v_timeline
+               WHERE thread_id=?1 AND kind IN ('user_message','agent_message')
+                 AND (kind='agent_message' OR turn_origin IS NULL)
+                 AND (lead=1 OR member IS NOT NULL OR kind='user_message')
+               UNION ALL
+               SELECT sent_at * 1000, sender_name, body FROM messages
+               WHERE thread_id=?1 AND via<>'handoff')
+             ORDER BY at DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![thread, limit as i64], |r| {
+            Ok((r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut said = vec![];
+        for row in rows {
+            let (who, text) = row?;
+            let line: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let line: String = line.chars().take(300).collect();
+            said.push(format!("{who}: {line}"));
+        }
+        said.reverse();
+        Ok(said)
     }
 
     /// The turn a seat sits under, for a member continued between turns.

@@ -1881,18 +1881,19 @@ fn a_channel_post_to_finished_members_continues_them_without_joining_their_threa
         )
         .unwrap();
 
-    let notes: Vec<(String, bool)> = activity
+    let mut notes: Vec<(String, bool)> = activity
         .unheard_notes(&thread)
         .unwrap()
         .into_iter()
         .map(|(_, member, _, in_channel)| (member, in_channel))
         .collect();
+    notes.sort();
     assert_eq!(
         notes,
         [
-            ("reviewer".to_owned(), true),
             ("implementer".to_owned(), true),
-            ("reviewer".to_owned(), false)
+            ("reviewer".to_owned(), false),
+            ("reviewer".to_owned(), true)
         ],
         "each member named in the channel, then the reply in a thread"
     );
@@ -1903,6 +1904,38 @@ fn a_channel_post_to_finished_members_continues_them_without_joining_their_threa
         .map(|line| line.text)
         .collect();
     assert_eq!(thread_lines, ["and the float case"]);
+    for (id, ..) in activity.unheard_notes(&thread).unwrap() {
+        activity.heard_note(id).unwrap();
+    }
+
+    // A message the decision model handed to a member: for it, written in the channel.
+    let handed = mailbox
+        .speak_in(
+            "proj",
+            Some("reviewer"),
+            "which URL loops?",
+            Some(&thread),
+            None,
+        )
+        .unwrap();
+    assert_eq!(handed.thread, None);
+    let notes: Vec<(String, bool)> = activity
+        .unheard_notes(&thread)
+        .unwrap()
+        .into_iter()
+        .map(|(_, member, _, in_channel)| (member, in_channel))
+        .collect();
+    assert_eq!(notes, [("reviewer".to_owned(), true)]);
+    let said = activity.recent_said(&thread, 10).unwrap();
+    assert!(
+        said.iter()
+            .any(|l| l == "user: @reviewer @implementer reply please"),
+        "{said:?}"
+    );
+    assert!(
+        said.iter().any(|l| l == "user: which URL loops?"),
+        "{said:?}"
+    );
 }
 
 /// A request held for an agent's limit shows in the sidebar as held, until when, and is no

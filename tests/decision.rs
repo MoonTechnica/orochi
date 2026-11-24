@@ -620,3 +620,98 @@ async fn the_real_decision_model_picks_a_handover_only_among_the_agents_offered(
     let picked = picked.expect("the real decision model answers and names one of the agents");
     assert!(offered.contains(&picked), "{picked}");
 }
+
+/// A message the person addressed to nobody is for whoever the conversation says it is for:
+/// the decision model reads the conversation and the members, and a member is taken only where
+/// it is sure; unsure, or a name it was not offered, is the lead's.
+#[tokio::test]
+async fn an_unaddressed_message_goes_to_the_member_the_conversation_is_with_only_when_sure() {
+    let members = vec![
+        (
+            "reviewer".to_owned(),
+            "reviewer: Review the login fix; finished".to_owned(),
+        ),
+        (
+            "implementer".to_owned(),
+            "implementer: Fix the login; working now".to_owned(),
+        ),
+    ];
+    let conversation = vec![
+        "user: ログインを直して".to_owned(),
+        "reviewer: The redirect still loops on /ja".to_owned(),
+    ];
+    let data = tempfile::tempdir().unwrap();
+
+    let sure = Server::start(json!({"addressee": "reviewer"}), &[]);
+    let picked = decision::addressee(
+        &config(DecisionBackend::Local, &sure.url).decision,
+        data.path(),
+        "どのURLでループするの？",
+        &conversation,
+        &members,
+    )
+    .await
+    .unwrap();
+    assert_eq!(picked.as_deref(), Some("reviewer"));
+    let asked = &sure.requests()[0]["request"];
+    let criteria = asked["questions"]["addressee"]["criteria"]
+        .as_object()
+        .unwrap();
+    assert!(criteria.contains_key("lead") && criteria.contains_key("implementer"));
+    let state = asked["state"].to_string();
+    assert!(
+        state.contains("The redirect still loops") && state.contains("どのURLでループするの"),
+        "{state}"
+    );
+
+    let unsure = Server::start(json!({"addressee": "reviewer", "addressee.p": 0.5}), &[]);
+    let picked = decision::addressee(
+        &config(DecisionBackend::Local, &unsure.url).decision,
+        data.path(),
+        "次は？",
+        &conversation,
+        &members,
+    )
+    .await
+    .unwrap();
+    assert_eq!(picked, None, "an unsure answer is the lead's");
+
+    let lead = Server::start(json!({"addressee": "lead"}), &[]);
+    let picked = decision::addressee(
+        &config(DecisionBackend::Local, &lead.url).decision,
+        data.path(),
+        "新しい機能を作って",
+        &conversation,
+        &members,
+    )
+    .await
+    .unwrap();
+    assert_eq!(picked, None);
+
+    let invented = Server::start(json!({"addressee": "nobody"}), &[]);
+    let picked = decision::addressee(
+        &config(DecisionBackend::Local, &invented.url).decision,
+        data.path(),
+        "どう？",
+        &conversation,
+        &members,
+    )
+    .await
+    .unwrap();
+    assert_eq!(picked, None, "a name it was not offered is nobody's");
+
+    let nobody_to_pick = decision::addressee(
+        &config(DecisionBackend::Local, &lead.url).decision,
+        data.path(),
+        "どう？",
+        &conversation,
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        nobody_to_pick, None,
+        "with no members the lead is not asked about"
+    );
+    assert_eq!(lead.requests().len(), 1);
+}

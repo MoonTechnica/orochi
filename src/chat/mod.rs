@@ -365,6 +365,9 @@ struct Session<'a> {
     /// What the host's pane was saying before an agent mentioned the user: it waits on them
     /// until they next type.
     mentioned: Option<crate::pane::State>,
+    /// Notes this console wrote for the person's own message, which it has already shown as
+    /// what they typed: the room feed does not show them twice.
+    echoed: BTreeSet<i64>,
     /// The last turn's run, waiting for the only verdict an unverified turn gets: what the user
     /// does next.
     awaiting: Option<Awaiting>,
@@ -606,6 +609,7 @@ pub async fn run_with(
         said: VecDeque::new(),
         threads: BTreeMap::new(),
         mentioned: None,
+        echoed: BTreeSet::new(),
         awaiting: None,
         feed: Feed::open(),
         approval,
@@ -1134,6 +1138,11 @@ impl<'a> Session<'a> {
         let mut changed = false;
         for event in events {
             if let Mail::Message(message) = &event
+                && self.echoed.remove(&message.id)
+            {
+                continue;
+            }
+            if let Mail::Message(message) = &event
                 && let Some(member) = &message.thread
             {
                 let stat = self.threads.entry(member.clone()).or_default();
@@ -1257,6 +1266,9 @@ impl<'a> Session<'a> {
             &mut self.announced,
             &mut self.view,
         );
+        for (name, answer) in std::mem::take(&mut self.background.answered) {
+            self.manager.later_note(answered_note(&name, &answer));
+        }
         for line in lines {
             self.view.line(&line);
         }
@@ -1489,7 +1501,7 @@ impl<'a> Session<'a> {
             {
                 let _ = recorded.store().heard_note(id);
                 asked = true;
-                if write || !self.headless {
+                {
                     let place = if in_channel {
                         "in the channel"
                     } else {
@@ -1525,7 +1537,7 @@ impl<'a> Session<'a> {
             decide,
         );
         for (name, _) in started {
-            self.view.note(&format!("continuing {name} in its thread"));
+            self.view.note(&format!("{name} is replying"));
         }
     }
 
@@ -1670,6 +1682,93 @@ impl<'a> Session<'a> {
         feed.mailbox
             .speak_in(&feed.channel, None, text, Some(&thread), None)
             .is_ok()
+    }
+
+    /// Which member, if any, a message the person addressed to nobody is for: asked of the
+    /// decision model with the conversation so far, only where there are members to pick and
+    /// the message names neither one nor the lead. `None` is the lead's turn, as it always was.
+    async fn addressee(&mut self, text: &str) -> Option<String> {
+        if !crate::decision::chosen(&self.config.decision)
+            || text.trim().is_empty()
+            || command(text).is_some()
+            || is_bare_continuation(text)
+            || text.contains('@')
+        {
+            return None;
+        }
+        let recorded = self.recorded.as_ref()?;
+        let thread = recorded.thread.clone()?;
+        let lead = self.lead_name.clone().unwrap_or_default();
+        let members: Vec<(String, String)> = recorded
+            .store()
+            .members(&thread)
+            .ok()?
+            .into_iter()
+            .filter(|m| m.name != lead)
+            .map(|m| {
+                let about = [
+                    m.title.clone().or_else(|| Some(m.role.clone())),
+                    m.doing
+                        .as_deref()
+                        .and_then(|d| d.lines().next())
+                        .map(str::to_owned),
+                    Some(if m.live { "working now" } else { "finished" }.to_owned()),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("; ");
+                let name = m.display_name.clone().unwrap_or(m.name.clone());
+                (m.name, format!("{name}: {about}"))
+            })
+            .collect();
+        if members.is_empty() {
+            return None;
+        }
+        let said = recorded
+            .store()
+            .recent_said(&thread, 16)
+            .unwrap_or_default();
+        let data = self.store.data_dir().to_path_buf();
+        match crate::decision::addressee(&self.config.decision, &data, text, &said, &members).await
+        {
+            Ok(picked) => picked,
+            Err(error) => {
+                tracing::debug!(%error, "no addressee; the lead takes the message");
+                None
+            }
+        }
+    }
+
+    /// Writes the person's message in the channel for `member`, which answers it there itself
+    /// (continued on the next mail tick if it had finished). Whether it was handed over.
+    fn hand_to_member(&mut self, member: &str, message: &Message) -> bool {
+        let (Some(feed), Some(recorded)) = (self.feed.as_ref(), self.recorded.as_ref()) else {
+            return false;
+        };
+        let Some(thread) = recorded.thread.clone() else {
+            return false;
+        };
+        let Ok(said) = feed.mailbox.speak_in(
+            &feed.channel,
+            Some(member),
+            &message.text,
+            Some(&thread),
+            None,
+        ) else {
+            return false;
+        };
+        self.echoed.insert(said.id);
+        if let Some(turn) = &message.queued
+            && let Err(error) = recorded
+                .store()
+                .turn_state(turn, crate::activity::TurnState::Completed)
+        {
+            tracing::warn!(%error, "could not close a turn handed to a member");
+        }
+        self.view.note(&format!("for {member}"));
+        self.continue_mentioned();
+        true
     }
 
     /// One member's thread as lines for the transcript: what `/thread <member>` prints.
@@ -2707,6 +2806,15 @@ impl Session<'_> {
         // A server added to `.mcp.json` since the last turn is asked about before this one uses
         // it, so nothing reaches a console turn undecided.
         self.review_repository_servers().await;
+        // A message that names nobody is for whoever the conversation says it is for, as in a
+        // group chat; the decision model reads it, and anything it is unsure of is the lead's.
+        if !message.from_helpers
+            && message.origin.is_none()
+            && let Some(member) = self.addressee(&message.text).await
+            && self.hand_to_member(&member, &message)
+        {
+            return Ok(());
+        }
         // A bare "continue" is not a new small task. Restore the most recent substantive user
         // request before routing and prompting, including when the preceding turn was interrupted.
         if !message.from_helpers
@@ -4772,6 +4880,9 @@ impl Session<'_> {
                         for line in on_helper(event, helpers, results, asks, trusted, announced, screen.view) {
                             screen.interject(line);
                         }
+                        for (name, answer) in std::mem::take(&mut helpers.answered) {
+                            manager.later_note(answered_note(&name, &answer));
+                        }
                         if pending.is_none() {
                             show_ask(screen.view, asks);
                         }
@@ -5630,6 +5741,10 @@ fn grant<'a>(
             && if named { hired.writes } else { request.write };
         // What the person asked for outright is never held back for being small.
         let by_user = request.payload["user"].as_bool().unwrap_or(false);
+        // What the person said to a member is answered by that member, to them, where they
+        // wrote it; the lead is not a relay, and is not woken by it.
+        let reply_to_user = by_user;
+        let in_channel = request.payload["reply_in_channel"].as_bool() == Some(true);
         if !by_user
             && env.config.org.cost_gate
             && !crate::router::roles::worth_seating(env.config, env.store, descriptor)
@@ -5637,7 +5752,7 @@ fn grant<'a>(
             refuse("work like this has cost less than a helper session costs here; do it yourself");
             continue;
         }
-        if write && !unattended && !env.worktrees {
+        if write && !unattended && !by_user && !env.worktrees {
             refuse(
                 "worktrees are off for this conversation (/worktrees on), so do the work yourself",
             );
@@ -5676,9 +5791,19 @@ fn grant<'a>(
             .filter(|c| c["loadable"].as_bool().unwrap_or(false))
             .and_then(|c| c["session_id"].as_str().map(str::to_owned));
         // An agent that cannot load its session is told its own thread instead.
+        let asked = if !reply_to_user {
+            format!("A new request in your thread: {}", request.task)
+        } else if in_channel {
+            format!(
+                "The user wrote to you in the conversation's channel: {}",
+                request.task
+            )
+        } else {
+            format!("The user wrote to you in your thread: {}", request.task)
+        };
         let task = match (&previous, &resume) {
             (None, _) => request.task.clone(),
-            (Some(_), Some(_)) => format!("A new request in your thread: {}", request.task),
+            (Some(_), Some(_)) => asked,
             (Some(_), None) => {
                 let history = recorded
                     .and_then(|r| {
@@ -5688,13 +5813,21 @@ fn grant<'a>(
                     })
                     .unwrap_or_default();
                 format!(
-                    "You are continuing earlier work in your thread; your session is gone, so this is what was said:\n{history}\n\nA new request in your thread: {}",
-                    request.task
+                    "You are continuing earlier work in your thread; your session is gone, so this is what was said:\n{history}\n\n{asked}"
                 )
             }
         };
         let mut opened = None;
-        let workspace = if write && !unattended {
+        // A member the person tells to change something works where they are talking to it,
+        // as the lead does: in the worktree it still has open, else in the user's own tree,
+        // each change asked under the conversation's approval mode.
+        let beside_user = write
+            && !unattended
+            && by_user
+            && crate::workspaces::Workspaces::open(env.root, &env.workspace)
+                .map(|work| !work.workspaces.iter().any(|w| w.name == name))
+                .unwrap_or(true);
+        let workspace = if write && !unattended && !beside_user {
             if let Err(error) = hold_live(&env) {
                 refuse(&format!("cannot hold the session directory: {error:#}"));
                 continue;
@@ -5759,16 +5892,17 @@ fn grant<'a>(
             sub.as_ref().and_then(|(.., seat)| seat.as_deref()),
         );
         let seat_id = seat.as_ref().map(|s| s.seat.clone());
-        let reply_to_user = by_user && headless && !write;
-        if reply_to_user
-            && request.payload["reply_in_channel"].as_bool() == Some(true)
-            && let Some(seat) = &seat
-        {
+        // Where its answer is drawn: in the channel, or in its thread, where the person wrote.
+        if reply_to_user && let Some(seat) = &seat {
             let _ = seat.store.lock().expect("activity store").seat_details(
                 &seat.seat,
                 Some(&request.title),
                 true,
-                "user-channel",
+                if in_channel {
+                    "user-channel"
+                } else {
+                    "user-thread"
+                },
             );
         }
         // The worktree is a row from the moment it exists: a helper that never starts leaves
@@ -5803,8 +5937,9 @@ fn grant<'a>(
             continue;
         }
         // The lead's assignment is the first post of the member's thread, and the one it hangs
-        // from; a member asked again gets another under the same thread.
-        if let Some(recorded) = recorded {
+        // from; a member asked again gets another under the same thread. What the person said
+        // to it themselves is already written where they said it, and is not the lead's words.
+        if !reply_to_user && let Some(recorded) = recorded {
             let _ = feed.mailbox.assign(
                 &feed.channel,
                 recorded.thread.as_deref(),
@@ -5856,7 +5991,7 @@ fn grant<'a>(
             manager: false,
             team: role.as_ref().is_some_and(|r| r.lead),
             link: role.as_ref().is_some_and(|r| r.lead) && !env.config.org.links.is_empty(),
-            in_place: write && unattended,
+            in_place: write && (unattended || beside_user),
             reply_to_user,
             parent: manager_name,
             role,
@@ -6641,6 +6776,14 @@ fn finish(
 /// What happened to a helper, as the transcript lines to show; its results are kept for the
 /// lead, and the pane report follows.
 #[allow(clippy::too_many_arguments)]
+/// What the lead is told, at its next session, of a member that answered the person directly.
+fn answered_note(name: &str, answer: &str) -> String {
+    format!(
+        "`{name}` answered the user directly (you did not need to relay it): {}",
+        crate::context::bounded(answer, 1_500)
+    )
+}
+
 fn on_helper(
     event: background::Event,
     background: &mut background::Background<'_>,
@@ -6743,7 +6886,19 @@ fn on_helper(
                     // user's tree is woken by a turn of its own.
                     if finished.post.parent.is_some() {
                         background.reports.push(finished);
-                    } else if !finished.post.reply_to_user {
+                    } else if finished.post.reply_to_user {
+                        // Said to the person, so shown to them as the member's own words.
+                        if matches!(finished.ending, background::Ending::Finished)
+                            && !finished.result.is_empty()
+                        {
+                            for text in finished.result.lines() {
+                                lines.push(format!("  {text}"));
+                            }
+                            background
+                                .answered
+                                .push((finished.name.clone(), finished.result.clone()));
+                        }
+                    } else {
                         results.push(finished);
                     }
                 }

@@ -197,10 +197,17 @@ def delegate(request):
     """A lead that hands two investigations to helpers and answers at once; helpers that report
     back after a while; and the turn that hands their reports back."""
     text = request["params"]["prompt"][0]["text"]
-    if "working in the background for" in text:
+    direct = "wrote this to you directly" in text
+    if "working in the background for" in text or direct:
         name = re.search(r"You are `([a-z0-9-]+)`", text)[1]
-        lead = re.search(r"working in the background for `([^`]+)`", text)[1]
         (root / f"helper-{name}.txt").write_text(text)
+        if direct:
+            # A member the person spoke to answers them, in its own words.
+            time.sleep(0.3)
+            send({"method": "session/update", "params": {"sessionId": session, "update": {
+                "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": f"ANSWER {name}: the cache is fine."}}}})
+            return
+        lead = re.search(r"working in the background for `([^`]+)`", text)[1]
         if name.split("-")[0] in os.environ.get("MOCK_WRITERS", "").split(",") and os.environ.get("MOCK_MERGE"):
             # A writable helper implements in its own worktree: `root` is that worktree.
             (root / "feature.txt").write_text(f"written by {name}\n")

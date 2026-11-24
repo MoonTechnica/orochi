@@ -682,6 +682,66 @@ pub async fn refine(
     }
 }
 
+/// The key the lead answers to among `addressee`'s choices.
+pub const LEAD: &str = "lead";
+
+/// Who should answer a message the person wrote without naming anyone: the lead, or one of
+/// the conversation's members, read from the conversation so far as a person in a group chat
+/// would. `members` are (name, what it is doing). A member is taken only where the model is
+/// as sure of it as of any name it picks; anything else — unsure, `lead`, a name it was not
+/// offered — is the lead's, as an unaddressed message always was. Nothing is cached: the
+/// conversation it is read against is never the same twice.
+pub async fn addressee(
+    config: &DecisionConfig,
+    data: &Path,
+    message: &str,
+    conversation: &[String],
+    members: &[(String, String)],
+) -> Result<Option<String>> {
+    ensure!(chosen(config), "no decision model is chosen");
+    if members.is_empty() {
+        return Ok(None);
+    }
+    let mut criteria = serde_json::Map::new();
+    criteria.insert(
+        LEAD.into(),
+        json!("the agent leading the conversation: a new request, something for everyone, or anything not plainly a reply to one member"),
+    );
+    for (name, about) in members {
+        criteria.insert(name.clone(), json!(about));
+    }
+    let questions = json!({"addressee": {"type": "choice", "instructions": "The user wrote the message below in a group chat with these agents without naming anyone. Who are they talking to? Pick a member only when the message plainly continues what that member said or is doing.", "criteria": criteria}});
+    let text: String = message.chars().take(MAX_TASK_CHARS).collect();
+    let mut state = vec![];
+    if !conversation.is_empty() {
+        state.push(json!(format!(
+            "The conversation so far, oldest first:\n{}",
+            conversation.join("\n")
+        )));
+    }
+    state.push(json!(format!("Message: {text}")));
+    let target = target(config, data).await?;
+    let answers = ask(
+        &target,
+        &Value::Array(state),
+        &questions,
+        Duration::from_millis(config.timeout_ms),
+    )
+    .await?;
+    let answer = &answers["addressee"];
+    let Some(picked) = answer["choice"].as_str() else {
+        return Ok(None);
+    };
+    let sure = answer["probabilities"][picked]
+        .as_f64()
+        .or_else(|| answer["confidence"].as_f64())
+        .unwrap_or(0.0);
+    Ok(members
+        .iter()
+        .find(|(name, _)| name == picked && sure >= NAME)
+        .map(|(name, _)| name.clone()))
+}
+
 fn note(descriptor: &TaskDescriptor, how: &str) -> Progress {
     Progress::Note(format!(
         "classified as {} / {}{} ({how})",

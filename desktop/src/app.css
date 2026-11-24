@@ -1895,3 +1895,9 @@ button.link { background: none; border: 0; color: var(--accent, #3b82f6); cursor
 .avatar.sm { width: 28px; height: 28px; border-width: 1px; border-style: solid; flex: none; display: inline-block; }
 .avatar.sm .badge { width: 14px; height: 14px; right: -4px; bottom: -3px; border-width: 1px; font-size: 8px; }
 .avatar.sm .badge[data-icon="vendor"] img { width: 9px; height: 9px; }
+
+/* A member answering the person directly, as a chat shows someone typing. */
+.replying { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13px; padding: 6px 0 6px 4px; }
+.replying .name { color: var(--text, inherit); font-weight: 600; }
+.replying .what { font-style: italic; }
+.replying button.link { margin-left: auto; font-size: 12px; }
