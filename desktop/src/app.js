@@ -1654,10 +1654,16 @@ function drawTimeline(thread, said = []) {
   const repliesInChannel = new Set(
     thread.seats.filter((s) => s.origin === "user-channel").map((s) => `${s.turn}/${s.ordinal}`),
   );
+  // A post of the person's that also became a turn (it named the lead too, or the host took
+  // it as a note after it was queued) is drawn once, as the turn.
+  const typed = thread.items.filter((i) => i.kind === "user_message");
+  const alsoTurn = (item) => item.via === "user" && !item.member &&
+    typed.some((i) => i.text?.trim() === item.text?.trim() && Math.abs((i.at ?? 0) - (item.at ?? 0)) < 120000);
   let voice = null;
   const turns = new Map();
   for (const item of stream) {
     if (item.kind === "said") {
+      if (alsoTurn(item)) continue;
       const key = item.member ? lowered(item.member) : null;
       // A later assignment to a member that already has its thread continues that thread.
       if (key && item.via === "handoff" && barred.has(key)) continue;
@@ -1682,7 +1688,8 @@ function drawTimeline(thread, said = []) {
       }
       const who = named(item);
       // Who it was for, in words: a post to the channel that names no one is for everyone.
-      const to = item.via === "handoff" ? null
+      // The person's post in the channel names whom it is for with its mentions.
+      const to = item.via === "handoff" || (item.via === "user" && item.whom === "channel") ? null
         : !item.whom || item.whom === "all" ? t("everyone") : `to ${roles.get(item.whom) || item.whom}`;
       turn.append(
         post(

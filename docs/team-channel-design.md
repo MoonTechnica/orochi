@@ -188,7 +188,9 @@ channel only when you need to.
 
 The composer is the channel's. A post with no mention, or mentioning the lead, is a turn for the
 lead as today. A post mentioning a member is a `messages` row from the user with that mention,
-shown in the channel:
+shown in the channel and **only** there: it names no thread (`messages.member` is NULL), so the
+member's thread panel does not repeat it. Only a reply written in a thread (or a note sent to one
+seat) belongs to that thread.
 
 - a running member reads it on its next `read_messages`;
 - an ended member is continued (D7): the host's mail tick (the console's, without a host)

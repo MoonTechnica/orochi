@@ -2412,12 +2412,18 @@ impl Activity {
     }
 
     /// Notes the person wrote to a member that was not there to hear them, oldest first: what
-    /// continues a finished member (`docs/team-channel-design.md` §5).
+    /// continues a finished member (`docs/team-channel-design.md` §5). A reply in a member's
+    /// thread is for that member; a post in the channel is for each member it mentions, and is
+    /// marked as written in the channel so the member answers there.
     pub fn unheard_notes(&self, thread: &str) -> Result<Vec<(i64, String, String, bool)>> {
         let mut statement = self.connection.prepare(
             "SELECT id, member, body, recipient_name='channel' FROM messages
              WHERE thread_id=?1 AND via='user' AND recipient='-' AND member IS NOT NULL
-             ORDER BY id",
+             UNION ALL
+             SELECT m.id, j.value, m.body, 1 FROM messages m, json_each(m.mentions) j
+             WHERE m.thread_id=?1 AND m.via='user' AND m.recipient='-' AND m.member IS NULL
+               AND m.mentions IS NOT NULL AND j.value NOT IN ('you','channel')
+             ORDER BY 1",
         )?;
         let rows = statement.query_map([thread], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))

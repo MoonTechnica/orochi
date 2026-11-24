@@ -1844,6 +1844,67 @@ fn a_member_that_asked_again_is_one_thread_that_remembers_where_its_session_was(
     );
 }
 
+/// A post in the channel that mentions a member who has finished continues each member it
+/// names, answering in the channel, and is not repeated in their threads: only what was written
+/// in a thread is that thread's.
+#[test]
+fn a_channel_post_to_finished_members_continues_them_without_joining_their_threads() {
+    let dir = tempfile::tempdir().unwrap();
+    let activity = Activity::open(dir.path(), 30).unwrap();
+    let (thread, turn, _) = thread_with_a_turn(&activity);
+    for (ordinal, name) in [(100, "reviewer"), (101, "implementer")] {
+        let seat = activity
+            .create_seat(&turn, ordinal, name, false, false, None, None)
+            .unwrap();
+        activity.seat_member(&seat, name, None).unwrap();
+    }
+    let mailbox =
+        orochi::mailbox::Mailbox::open(dir.path(), &orochi::config::MailboxConfig::default())
+            .unwrap();
+    let said = mailbox
+        .speak_in(
+            "proj",
+            None,
+            "@reviewer @implementer reply please",
+            Some(&thread),
+            None,
+        )
+        .unwrap();
+    assert_eq!(said.thread, None);
+    mailbox
+        .speak_in(
+            "proj",
+            None,
+            "and the float case",
+            Some(&thread),
+            Some("reviewer"),
+        )
+        .unwrap();
+
+    let notes: Vec<(String, bool)> = activity
+        .unheard_notes(&thread)
+        .unwrap()
+        .into_iter()
+        .map(|(_, member, _, in_channel)| (member, in_channel))
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            ("reviewer".to_owned(), true),
+            ("implementer".to_owned(), true),
+            ("reviewer".to_owned(), false)
+        ],
+        "each member named in the channel, then the reply in a thread"
+    );
+    let thread_lines: Vec<String> = activity
+        .member_thread(&thread, "reviewer")
+        .unwrap()
+        .into_iter()
+        .map(|line| line.text)
+        .collect();
+    assert_eq!(thread_lines, ["and the float case"]);
+}
+
 /// A request held for an agent's limit shows in the sidebar as held, until when, and is no
 /// longer held once it is given up.
 #[test]

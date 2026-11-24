@@ -1797,7 +1797,9 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                     let mentioned = crate::mailbox::mentions_in(&text, &names)
                         .into_iter()
                         .find(|name| names.iter().any(|n| n == name));
-                    let member = match &thread {
+                    // `--thread` writes in that member's thread; a mention alone is a post in
+                    // the channel, which reaches the member without becoming its thread's.
+                    let in_thread = match &thread {
                         Some(name) => Some(
                             names
                                 .iter()
@@ -1807,13 +1809,18 @@ pub async fn execute(mut cli: Cli) -> Result<u8> {
                                     format!("no member named {name} in this conversation")
                                 })?,
                         ),
-                        None => mentioned,
+                        None => None,
                     };
-                    if let Some(member) = member {
+                    if let Some(member) = in_thread.clone().or(mentioned) {
                         let project = activity.thread_project(&id)?;
                         let mailbox = crate::mailbox::Mailbox::open(&paths.data, &config.mailbox)?;
-                        let said =
-                            mailbox.speak_in(&project, None, &text, Some(&id), Some(&member))?;
+                        let said = mailbox.speak_in(
+                            &project,
+                            None,
+                            &text,
+                            Some(&id),
+                            in_thread.as_deref(),
+                        )?;
                         if cli.json {
                             println!("{}", json!({ "member": member, "message": said.id }));
                         }

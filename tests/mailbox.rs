@@ -1968,7 +1968,8 @@ fn a_mention_of_the_user_is_unseen_until_they_see_it_and_marks_what_waits_on_the
 #[test]
 fn the_person_mentions_a_member_and_it_reaches_that_member_wherever_it_was_written() {
     let team = team();
-    team.mailbox
+    let said = team
+        .mailbox
         .speak(
             "room",
             None,
@@ -1976,6 +1977,10 @@ fn the_person_mentions_a_member_and_it_reaches_that_member_wherever_it_was_writt
             Some(&team.thread),
         )
         .unwrap();
+    assert_eq!(
+        said.thread, None,
+        "a post in the channel stays in the channel, whoever it mentions"
+    );
     for peer in [&team.reviewer, &team.helper] {
         assert_eq!(
             team.mailbox.read(peer, 20).unwrap().len(),

@@ -1166,21 +1166,18 @@ impl Mailbox {
             }
             None => ("*".to_owned(), "all".to_owned()),
         };
-        // A note to someone belongs in their thread, whether or not they are running: the
-        // one that finished is continued from it.
-        let member = member
-            .map(str::to_owned)
-            .or_else(|| {
-                (recipient != "*" && recipient != NOBODY)
-                    .then(|| self.member_of(&recipient))
-                    .flatten()
-            })
-            .or_else(|| {
-                mentions
-                    .iter()
-                    .find(|m| !matches!(m.as_str(), "you" | "channel"))
-                    .cloned()
-            });
+        // Where it was written is where it stays: a reply in a thread, or a note sent to one
+        // seat, is that member's thread; a post in the channel stays in the channel whoever it
+        // mentions, and a member that finished is continued from its mention
+        // (`Activity::unheard_notes`).
+        let member = member.map(str::to_owned).or_else(|| {
+            let name = to?;
+            if recipient != NOBODY {
+                self.member_of(&recipient)
+            } else {
+                Some(name.to_owned())
+            }
+        });
         self.insert(
             channel,
             thread,

@@ -1490,8 +1490,13 @@ impl<'a> Session<'a> {
                 let _ = recorded.store().heard_note(id);
                 asked = true;
                 if write || !self.headless {
+                    let place = if in_channel {
+                        "in the channel"
+                    } else {
+                        "in its thread"
+                    };
                     self.manager.later_note(format!(
-                        "The user told `{member}` directly, in its thread, and it is continuing: {body}"
+                        "The user told `{member}` directly, {place}, and it is continuing: {body}"
                     ));
                 }
             }
