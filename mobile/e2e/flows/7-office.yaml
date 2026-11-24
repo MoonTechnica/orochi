@@ -1,4 +1,4 @@
-# The Office: Home's entry, rooms stacked by project, the avatar sheet, stopping a seat, a room
+# The Office: Workspace entry, rooms stacked by project, the avatar sheet, stopping a seat, a room
 # opening its conversation. run-ios.sh paired the app with a mock desktop serving the recorded
 # Office data (tools/mock-server.mjs --office) by deep link first.
 appId: dev.orochi.mobile
@@ -8,6 +8,14 @@ appId: dev.orochi.mobile
     arguments:
       -AppleLanguages: '(en)'
       -AppleLocale: 'en_US'
+- scrollUntilVisible:
+    element:
+      id: 'workspace-row-.*'
+    timeout: 25000
+- tapOn:
+    id: 'workspace-row-.*'
+- tapOn:
+    id: tab-activity
 - extendedWaitUntil:
     visible:
       id: office-card

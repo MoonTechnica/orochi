@@ -12,9 +12,9 @@ describe('faces outside the Office', () => {
       'src/ui/Composer.tsx',
       'src/ui/Threads.tsx',
       'src/ui/home/Needs.tsx',
-      'app/(tabs)/activity.tsx',
-      'app/(tabs)/conversations.tsx',
-      'app/thread/[id]/member/[name].tsx',
+      'app/(workspace)/(sections)/activity.tsx',
+      'app/(workspace)/(sections)/conversations.tsx',
+      'app/(workspace)/thread/[id]/member/[name].tsx',
     ])
       expect(read(f), f).toMatch(/WhoFace|LiveFace/);
   });
@@ -31,7 +31,7 @@ describe('faces outside the Office', () => {
       'src/ui/Threads.tsx',
       'src/ui/ThreadMenu.tsx',
       'src/ui/home/Needs.tsx',
-      'app/(tabs)/conversations.tsx',
+      'app/(workspace)/(sections)/conversations.tsx',
     ];
     for (const f of users) expect(read(f), f).not.toMatch(/office\/Avatar'/);
   });

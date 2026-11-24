@@ -1,21 +1,12 @@
-import React, { useState } from 'react';
-import {
-  Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-} from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { displayName, titleIn, type Machine } from '@orochi/core';
 import { useAttention, type MachineState } from '../state/attention';
 import { usePrefs } from '../state/prefs';
 import { useSession } from '../state/session';
-import { Icon } from './Icon';
+import { Drawer } from './Drawer';
+import { Icon, type IconName } from './Icon';
 import { Sheet, TextPrompt } from './Sheet';
 
 export function useStateColor() {
@@ -57,6 +48,46 @@ export function useStateLabel() {
           : t('Offline');
 }
 
+const CONNECTION_ICONS: Record<MachineState, IconName> = {
+  online: 'checkmark-circle-outline',
+  connecting: 'time-outline',
+  offline: 'cloud-offline-outline',
+  repair: 'key-outline',
+};
+
+export function ConnectionBadge({ state }: { state: MachineState }) {
+  const { colors } = usePrefs();
+  const label = useStateLabel();
+  const ink = useStateInk();
+  const color =
+    state === 'online'
+      ? colors.connectionOnline
+      : state === 'connecting'
+        ? colors.connectionPending
+        : ink(state);
+  return (
+    <View
+      testID={`connection-${state}`}
+      style={{
+        alignSelf: 'flex-start',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        borderRadius: 8,
+        paddingHorizontal: 7,
+        paddingVertical: 4,
+        backgroundColor: colors.raised,
+        flexShrink: 0,
+      }}
+    >
+      <View aria-hidden>
+        <Icon name={CONNECTION_ICONS[state]} size={14} color={color} />
+      </View>
+      <Text style={{ color, fontSize: 12, fontWeight: '700' }}>{label(state, true)}</Text>
+    </View>
+  );
+}
+
 export function Dot({ state }: { state: MachineState }) {
   const color = useStateColor();
   const label = useStateLabel();
@@ -70,7 +101,7 @@ export function Dot({ state }: { state: MachineState }) {
 
 /**
  * Every paired desktop with its state; tapping one makes it the active machine. The same list
- * is the switcher's sheet and Settings → Desktops.
+ * is in the workspace drawer and Settings → Desktops.
  */
 export function MachineList({ onPicked }: { onPicked?: () => void }) {
   const { colors, t } = usePrefs();
@@ -137,22 +168,35 @@ export function MachineList({ onPicked }: { onPicked?: () => void }) {
                 paddingVertical: 10,
               }}
             >
-              <Dot state={states[m.key] ?? 'connecting'} />
               <View style={{ flex: 1 }}>
                 <Text
                   numberOfLines={1}
                   style={{
-                    color: selected ? colors.text : colors.text,
+                    color: colors.text,
                     fontSize: 16,
                     fontWeight: selected ? '700' : '500',
                   }}
                 >
-                  {titleIn(store, m)}
+                  {displayName(m)}
                   {selected ? '  ✓' : ''}
                 </Text>
-                <Text numberOfLines={1} style={{ color: colors.sub, fontSize: 12 }}>
-                  {label(states[m.key] ?? 'connecting')} · {m.host}:{m.port}
-                </Text>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    flexWrap: 'wrap',
+                    gap: 6,
+                    alignItems: 'center',
+                    marginTop: 4,
+                  }}
+                >
+                  <ConnectionBadge state={states[m.key] ?? 'connecting'} />
+                  <Text
+                    numberOfLines={1}
+                    style={{ color: colors.sub, fontSize: 12, flexShrink: 1 }}
+                  >
+                    {m.host}:{m.port}
+                  </Text>
+                </View>
               </View>
               {count > 0 ? (
                 <Text style={{ color: colors.text, fontWeight: '700' }}>
@@ -216,105 +260,51 @@ export function MachineList({ onPicked }: { onPicked?: () => void }) {
   );
 }
 
-/** The conversation list's header: the active machine's name with its state; opens the list. */
+/** Shows the active workspace and opens the workspace picker. */
 export function MachineSwitcher() {
   const { colors, t } = usePrefs();
-  const { machines, active, titleOf } = useSession();
-  const { states, waiting } = useAttention();
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
+  const { active, titleOf } = useSession();
+  const { states } = useAttention();
   const [open, setOpen] = useState(false);
-  const store = { machines, activeKey: active?.key ?? null };
-  const elsewhere = waiting.filter((w) => w.machineKey !== active?.key).length;
+  const close = useCallback(() => setOpen(false), []);
+  const name = active ? displayName(active) : 'Orochi';
+  const address = active && titleOf(active) !== name ? `${active.host}:${active.port}` : null;
   return (
     <>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${t('Switch desktop')}: ${active ? titleOf(active) : ''}`}
+        accessibilityLabel={`${t('Switch workspace')}: ${active ? titleOf(active) : ''}`}
+        accessibilityState={{ expanded: open }}
         onPress={() => setOpen(true)}
-        style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44 }}
+        style={{
+          flex: 1,
+          flexShrink: 1,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          minHeight: 44,
+        }}
       >
-        <Text
-          numberOfLines={1}
-          style={{
-            color: colors.text,
-            fontSize: 28,
-            fontWeight: '800',
-            letterSpacing: -0.6,
-            flexShrink: 1,
-          }}
-        >
-          {active ? titleIn(store, active) : 'Orochi'}
-        </Text>
         <Dot state={active ? (states[active.key] ?? 'connecting') : 'offline'} />
-        <Icon name="chevron-down" size={18} color={colors.sub} />
-        {elsewhere > 0 ? (
-          <View
-            style={{
-              backgroundColor: colors.attention,
-              borderRadius: 10,
-              paddingHorizontal: 7,
-              minWidth: 20,
-              alignItems: 'center',
-            }}
-          >
-            <Text style={{ color: colors.onPrimary, fontSize: 12, fontWeight: '700' }}>
-              {elsewhere}
+        <View style={{ flexShrink: 1 }}>
+          <Text numberOfLines={1} style={{ color: colors.text, fontSize: 17, fontWeight: '800' }}>
+            {name}
+          </Text>
+          {address ? (
+            <Text numberOfLines={1} style={{ color: colors.sub, fontSize: 12 }}>
+              {address}
             </Text>
-          </View>
-        ) : null}
+          ) : null}
+        </View>
+        <View aria-hidden>
+          <Icon name="chevron-forward" size={16} color={colors.sub} />
+        </View>
       </Pressable>
-      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          accessibilityViewIsModal
-          style={{ flex: 1, backgroundColor: '#0006', justifyContent: 'flex-end' }}
-        >
-          <Pressable
-            style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}
-            onPress={() => setOpen(false)}
-            accessibilityRole="button"
-            accessibilityLabel={t('Close menu')}
-          />
-          <View
-            style={{
-              backgroundColor: colors.card,
-              borderTopLeftRadius: 12,
-              borderTopRightRadius: 12,
-              paddingHorizontal: 20,
-              paddingTop: 14,
-              paddingBottom: insets.bottom + 12,
-              maxHeight: '80%',
-            }}
-          >
-            <Text style={{ color: colors.sub, fontSize: 13, fontWeight: '700', paddingBottom: 6 }}>
-              {t('Desktops')}
-            </Text>
-            <ScrollView keyboardShouldPersistTaps="handled">
-              <MachineList onPicked={() => setOpen(false)} />
-              {machines.length > 1 ? (
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => {
-                    setOpen(false);
-                    router.push('/attention');
-                  }}
-                  style={{
-                    minHeight: 52,
-                    justifyContent: 'center',
-                    borderTopWidth: 1,
-                    borderTopColor: colors.line,
-                  }}
-                >
-                  <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600' }}>
-                    {t('Needs you on all desktops')} ({waiting.length})
-                  </Text>
-                </Pressable>
-              ) : null}
-            </ScrollView>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      <Drawer visible={open} onClose={close} side="left" title={t('Workspaces')}>
+        <View style={{ paddingHorizontal: 16 }}>
+          <MachineList onPicked={close} />
+        </View>
+      </Drawer>
     </>
   );
 }
@@ -324,7 +314,7 @@ export function RepairPanel() {
   const { colors, t } = usePrefs();
   const { active, machines, remove, titleOf } = useSession();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
+
   const confirmRemove = () => {
     if (!active) return;
     const go = () =>
@@ -339,52 +329,51 @@ export function RepairPanel() {
     ]);
   };
   return (
-    <ScrollView
-      testID="repair-panel"
-      style={{ flex: 1, backgroundColor: colors.bg }}
-      contentContainerStyle={{ padding: 20, paddingTop: insets.top + 16, gap: 14 }}
-    >
-      <View style={{ flexDirection: 'row' }}>
-        <MachineSwitcher />
-      </View>
-      <Text style={{ color: colors.text, fontSize: 15 }}>
-        {t('This phone is no longer paired with this desktop (revoked there). Pair again.')}
-      </Text>
-      <Pressable
-        accessibilityRole="button"
-        onPress={() => router.push({ pathname: '/pair', params: { repair: active?.key } })}
-        style={{
-          minHeight: 50,
-          borderRadius: 12,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: colors.primary,
-        }}
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <ScrollView
+        testID="repair-panel"
+        style={{ flex: 1, backgroundColor: colors.bg }}
+        contentContainerStyle={{ padding: 20, paddingTop: 16, gap: 14 }}
       >
-        <Text style={{ color: colors.onPrimary, fontSize: 16, fontWeight: '700' }}>
-          {t('Pair again')}
+        <Text style={{ color: colors.text, fontSize: 15 }}>
+          {t('This phone is no longer paired with this desktop (revoked there). Pair again.')}
         </Text>
-      </Pressable>
-      <Pressable
-        testID="repair-remove"
-        accessibilityRole="button"
-        onPress={confirmRemove}
-        style={{
-          minHeight: 50,
-          borderRadius: 12,
-          alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: 1,
-          borderColor: colors.line,
-        }}
-      >
-        <Text style={{ color: colors.dangerInk, fontSize: 16, fontWeight: '600' }}>
-          {t('Remove this desktop')}
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => router.push({ pathname: '/pair', params: { repair: active?.key } })}
+          style={{
+            minHeight: 50,
+            borderRadius: 12,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: colors.primary,
+          }}
+        >
+          <Text style={{ color: colors.onPrimary, fontSize: 16, fontWeight: '700' }}>
+            {t('Pair again')}
+          </Text>
+        </Pressable>
+        <Pressable
+          testID="repair-remove"
+          accessibilityRole="button"
+          onPress={confirmRemove}
+          style={{
+            minHeight: 50,
+            borderRadius: 12,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: 1,
+            borderColor: colors.line,
+          }}
+        >
+          <Text style={{ color: colors.dangerInk, fontSize: 16, fontWeight: '600' }}>
+            {t('Remove this desktop')}
+          </Text>
+        </Pressable>
+        <Text style={{ color: colors.sub, fontSize: 13 }}>
+          {t('Switch desktops from the name above.')}
         </Text>
-      </Pressable>
-      <Text style={{ color: colors.sub, fontSize: 13 }}>
-        {t('Your other desktops are not affected. Switch from the name above, or use the tabs.')}
-      </Text>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }

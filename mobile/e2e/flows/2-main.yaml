@@ -9,15 +9,14 @@ appId: dev.orochi.mobile
       -AppleLocale: 'en_US'
 - extendedWaitUntil:
     visible:
-      id: headline
+      id: need-option-0
     timeout: 20000
-- assertVisible: 'NESTS'
 - assertVisible: 'Allow once'
 - takeScreenshot: ios-03-paired-by-deeplink-home
 - takeScreenshot: ios-home3-01-serpent-and-needs
-# The first needs-you card's buttons are on the first screen, above the tab bar, without
-# scrolling (the tab bar's own tabs are on screen at the same time).
-- assertVisible: 'Home, tab.*'
+# Global Home shows the approval and workspace directory without workspace tabs.
+- assertNotVisible:
+    id: tab-conversations
 - assertVisible:
     id: need-option-0
 - assertVisible: 'Reject'
@@ -25,6 +24,8 @@ appId: dev.orochi.mobile
 - takeScreenshot: ios-home6-01-home-light
 # Reply on the mention card opens the conversation with the composer focused and the sender
 # addressed: typing goes straight into the field after "@bob ".
+- tapOn:
+    id: needs-more
 - scrollUntilVisible:
     element:
       id: need-reply
@@ -44,17 +45,15 @@ appId: dev.orochi.mobile
 - takeScreenshot: ios-home4-03-reply-focused
 - tapOn: 'Back'
 - waitForAnimationToEnd
-# Scrolled to the end, the last row sits fully above the tab bar.
-- repeat:
-    times: 4
-    commands:
-      - swipe:
-          start: 50%,75%
-          end: 50%,15%
-- assertVisible: 'All conversations.*'
-- assertVisible: 'Home, tab.*'
-- takeScreenshot: ios-home4-04-scrolled-to-end
-- tapOn: 'Conversations, tab.*'
+# Depending on the deep-link anchor, return from the workspace to Home first.
+- tapOn:
+    id: workspace-home
+    optional: true
+- scrollUntilVisible:
+    element:
+      id: 'workspace-row-.*'
+- tapOn:
+    id: 'workspace-row-.*'
 - extendedWaitUntil:
     visible: 'Show me what you made, .*'
 - takeScreenshot: ios-04-conversations
@@ -200,7 +199,8 @@ appId: dev.orochi.mobile
 - assertVisible: 'Please also run clippy'
 - takeScreenshot: ios-27-message-queued
 - tapOn: 'Back'
-- tapOn: 'Activity, tab.*'
+- tapOn:
+    id: tab-activity
 - waitForAnimationToEnd
 - takeScreenshot: ios-28-activity
 - takeScreenshot: ios-chat-avatars-07-activity
@@ -208,7 +208,8 @@ appId: dev.orochi.mobile
 - tapOn: 'Usage'
 - waitForAnimationToEnd
 - takeScreenshot: ios-29-activity-usage
-- tapOn: 'Conversations, tab.*'
+- tapOn:
+    id: tab-conversations
 - waitForAnimationToEnd
 - tapOn: 'More: Write up with files'
 - extendedWaitUntil:
@@ -235,7 +236,11 @@ appId: dev.orochi.mobile
     visible: 'Archive'
 - tapOn: 'Archive'
 - waitForAnimationToEnd
+- tapOn:
+    id: conversation-filters
 - tapOn: 'Archived'
 - waitForAnimationToEnd
 - takeScreenshot: ios-34-archived
-- tapOn: 'Conversations'
+- tapOn:
+    id: conversation-filters
+- tapOn: 'All'

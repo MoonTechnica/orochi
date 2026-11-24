@@ -10,6 +10,7 @@ import { Icon } from './Icon';
 
 export function Composer({
   placeholder,
+  safeArea = true,
   working,
   candidates,
   onSend,
@@ -20,6 +21,7 @@ export function Composer({
   draftKey,
 }: {
   placeholder: string;
+  safeArea?: boolean;
   working?: boolean;
   candidates: (query: string) => Candidate[];
   onSend: (text: string) => Promise<void> | void;
@@ -74,7 +76,7 @@ export function Composer({
         borderTopWidth: 1,
         borderTopColor: colors.line,
         backgroundColor: colors.card,
-        paddingBottom: Math.max(insets.bottom, 8),
+        paddingBottom: safeArea ? Math.max(insets.bottom, 8) : 8,
       }}
     >
       {hits.length > 0 ? (

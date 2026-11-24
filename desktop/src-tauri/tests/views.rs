@@ -383,12 +383,58 @@ fn the_agents_and_insights_screens_read_telemetry_through_its_views() {
             ..orochi::types::RuntimeState::new("codex", "*")
         })
         .unwrap();
+    let now = orochi::types::now();
+    let quota = orochi::quota_sources::Snapshot {
+        agent: "codex".into(),
+        source: "test".into(),
+        observed_at: now,
+        valid_until: now + 600,
+        windows: vec![
+            orochi::quota_sources::Window {
+                bucket: "codex/credits".into(),
+                remaining: 1.0,
+                reset_at: None,
+                model: None,
+                affects_routing: false,
+                balance: Some("12.50".into()),
+            },
+            orochi::quota_sources::Window {
+                bucket: "codex/primary".into(),
+                remaining: 0.7,
+                reset_at: Some(now + 300),
+                model: None,
+                affects_routing: true,
+                balance: None,
+            },
+        ],
+    };
+    store.save_quota_snapshot(&quota).unwrap();
+    store
+        .save_quota_snapshot(&orochi::quota_sources::Snapshot {
+            agent: "never-run".into(),
+            ..quota
+        })
+        .unwrap();
     let client = Client::open(dir.path()).unwrap();
 
     let agents = client.agents().unwrap();
     let codex = agents.iter().find(|a| a.agent == "codex").unwrap();
     assert_eq!(codex.status, "cooldown");
     assert!(codex.cooling > 0, "with the time left on it");
+    let never_run = agents.iter().find(|a| a.agent == "never-run").unwrap();
+    assert_eq!(never_run.status, "unknown");
+    assert_eq!(
+        never_run.credits,
+        vec![("codex/credits".into(), "12.50".into())]
+    );
+    assert_eq!(
+        codex.credits,
+        vec![("codex/credits".into(), "12.50".into())]
+    );
+    assert_eq!(
+        codex.windows,
+        vec![("codex/primary".into(), 0.7, Some(now + 300), true)]
+    );
 
     assert!(
         client.insights().unwrap().is_empty(),

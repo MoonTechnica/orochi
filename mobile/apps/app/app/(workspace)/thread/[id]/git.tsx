@@ -3,11 +3,11 @@ import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { since } from '@orochi/core';
 import type { GitOverview } from '@orochi/protocol';
-import { usePrefs } from '../../../src/state/prefs';
-import { useSession } from '../../../src/state/session';
-import { useData } from '../../../src/state/data';
-import { Empty, Header } from '../../../src/ui/Screen';
-import { mono } from '../../../src/ui/theme';
+import { usePrefs } from '../../../../src/state/prefs';
+import { useSession } from '../../../../src/state/session';
+import { useData } from '../../../../src/state/data';
+import { Empty, Header } from '../../../../src/ui/Screen';
+import { mono } from '../../../../src/ui/theme';
 
 export default function Git() {
   const { id } = useLocalSearchParams<{ id: string }>();

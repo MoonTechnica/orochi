@@ -135,53 +135,6 @@ export const ThreadFooter = memo(function ThreadFooter({
   );
 });
 
-/** A single compact pill under the channel header: "Threads 3" with a dot when something is unread. */
-export function ThreadsPill({
-  count,
-  unread,
-  onPress,
-}: {
-  count: number;
-  unread: boolean;
-  onPress: () => void;
-}) {
-  const { colors, t } = usePrefs();
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        paddingHorizontal: 12,
-        paddingVertical: 6,
-        backgroundColor: colors.card,
-        borderBottomWidth: 1,
-        borderBottomColor: colors.line,
-      }}
-    >
-      <Pressable
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={`${t('Threads')} (${count})${unread ? `, ${t('unread')}` : ''}`}
-        testID="threads-pill"
-        style={{
-          minHeight: 36,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 6,
-          paddingHorizontal: 12,
-          borderRadius: 18,
-          borderWidth: 1,
-          borderColor: colors.line,
-        }}
-      >
-        <Icon name="chatbubbles-outline" size={16} color={colors.text} />
-        <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>{t('Threads')}</Text>
-        <Text style={{ color: colors.sub, fontSize: 13 }}>{count}</Text>
-        {unread ? <Dot /> : null}
-      </Pressable>
-    </View>
-  );
-}
-
 const firstLine = (text: string) =>
   (text.split('\n').find((l) => l.trim()) ?? '').replace(/[*_`#>]/g, '').trim();
 

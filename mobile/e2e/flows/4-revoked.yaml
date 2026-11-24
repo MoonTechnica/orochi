@@ -5,36 +5,32 @@ appId: dev.orochi.mobile
     visible: 'Pair again'
     timeout: 60000
 - takeScreenshot: ios-41-revoked-needs-pairing
-# The panel never replaces the tab bar: every tab, Remove and the other desktop stay reachable.
-- assertVisible: 'Home, tab.*'
-- assertVisible: 'Settings, tab.*'
+# A revoked workspace shows recovery in its own screen. Home and switching remain reachable.
+- assertVisible:
+    id: workspace-home
 - assertVisible: 'Remove this desktop'
-- tapOn: 'Activity, tab.*'
-- waitForAnimationToEnd
-- assertVisible: 'Pair again'
-- assertVisible: 'Settings, tab.*'
-- takeScreenshot: ios-41b-revoked-panel-keeps-tab-bar
+- assertNotVisible:
+    id: tab-conversations
 - takeScreenshot: ios-home6-09-revoked-panel
-- tapOn: 'Switch desktop.*'
+- tapOn: 'Switch workspace.*'
 - extendedWaitUntil:
     visible: '.*Add a desktop'
 - takeScreenshot: ios-42-switcher-revoked
 - tapOn: 'TakanorinoMac-Studio, Online'
 - waitForAnimationToEnd
-- tapOn: 'Home, tab.*'
+- tapOn:
+    id: workspace-home
 - waitForAnimationToEnd
 - takeScreenshot: ios-43-home-revoked-desktop
-- tapOn: '.*, Needs pairing again'
-- waitForAnimationToEnd
-- assertVisible: 'Pairing was revoked on the desktop. Pair again.'
-- takeScreenshot: ios-home3-05-repair-nest-reason
-- takeScreenshot: ios-home6-10-repair-nest
-- tapOn: 'Settings, tab.*'
+- assertVisible: '.*, Needs pairing again'
+- tapOn:
+    id: open-settings
 - waitForAnimationToEnd
 - takeScreenshot: ios-44-settings
 - takeScreenshot: ios-home6-05-settings-light
+- tapOn: 'Notifications'
 - tapOn:
-    point: 84%,64%
+    id: notifications-switch
 - waitForAnimationToEnd
 - takeScreenshot: ios-45-notification-permission
 - tapOn: '(Allow|許可)'

@@ -7,7 +7,13 @@ appId: dev.orochi.mobile
     text: 'Stay here'
     optional: true
 - waitForAnimationToEnd
-- tapOn: 'Settings, tab.*'
+- tapOn:
+    id: workspace-home
+    optional: true
+- tapOn:
+    id: open-settings
+- tapOn:
+    id: settings-desktops
 - waitForAnimationToEnd
 - tapOn: 'More: Work Mac'
 - extendedWaitUntil:

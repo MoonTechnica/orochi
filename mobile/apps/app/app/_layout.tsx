@@ -14,6 +14,8 @@ import { PushProvider } from '../src/state/push';
 // A native-driven Animated value that has no listener yet; React Native warns and it is harmless.
 LogBox.ignoreLogs(['Sending `onAnimatedValueUpdate` with no listeners registered.']);
 
+export const unstable_settings = { initialRouteName: '(overview)' };
+
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function Gate({ children }: { children: React.ReactNode }) {

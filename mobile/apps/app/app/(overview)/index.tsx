@@ -3,17 +3,18 @@ import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native'
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RemoteClient, api, baseUrl } from '@orochi/protocol';
-import { dismissMention, groupTrail, headCounts, type NeedItem } from '@orochi/core';
+import { dismissMention, type NeedItem } from '@orochi/core';
 import { useAttention } from '../../src/state/attention';
 import { useOpenThread } from '../../src/state/open';
 import { usePrefs } from '../../src/state/prefs';
 import { useSession } from '../../src/state/session';
+import { Disclosure, DisclosureRow } from '../../src/ui/Disclosure';
+import { ConnectionBadge, useStateLabel } from '../../src/ui/Machines';
+import { HeaderButton } from '../../src/ui/Screen';
+import { Icon } from '../../src/ui/Icon';
 import { Logo } from '../../src/ui/Logo';
-import { OfficeCard } from '../../src/ui/home/OfficeCard';
-import { Nests } from '../../src/ui/home/Nests';
+import { WorkspaceName } from '../../src/ui/OverviewCards';
 import { NeedCard } from '../../src/ui/home/Needs';
-import { Serpent } from '../../src/ui/home/Serpent';
-import { Trail } from '../../src/ui/home/Trail';
 import { radius } from '../../src/ui/theme';
 
 function Guide() {
@@ -51,8 +52,19 @@ function Guide() {
       style={{ flex: 1, backgroundColor: colors.bg }}
       contentContainerStyle={{ padding: 22, paddingTop: insets.top + 28, gap: 18 }}
     >
-      <Logo size={84} />
-      <Text style={{ color: colors.text, fontSize: 32, fontWeight: '800' }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+        <Logo size={64} />
+        <HeaderButton
+          testID="open-settings"
+          icon="settings-outline"
+          label={t('Settings')}
+          onPress={() => router.push('/settings')}
+        />
+      </View>
+      <Text
+        accessibilityRole="header"
+        style={{ color: colors.text, fontSize: 32, fontWeight: '800' }}
+      >
         {t('Pair a desktop to begin')}
       </Text>
       <Text style={{ color: colors.sub, fontSize: 15, lineHeight: 22 }}>
@@ -97,8 +109,7 @@ function Guide() {
         () => router.push({ pathname: '/pair', params: { scan: '1' } }),
         true,
       )}
-      {button(t('Paste a link'), () => router.push('/pair'))}
-      {button(t('Enter the details'), () => router.push('/pair'))}
+      {button(t('Paste a link or enter details'), () => router.push('/pair'))}
     </ScrollView>
   );
 }
@@ -111,17 +122,17 @@ function Label({ children }: { children: string }) {
   const { colors } = usePrefs();
   return (
     <Text
+      accessibilityRole="header"
       style={{
-        color: colors.sub,
-        fontSize: 12,
+        color: colors.text,
+        fontSize: 18,
         fontWeight: '700',
-        letterSpacing: 1.2,
         paddingHorizontal: 18,
-        marginTop: 28,
-        marginBottom: 12,
+        marginTop: 12,
+        marginBottom: 8,
       }}
     >
-      {children.toUpperCase()}
+      {children}
     </Text>
   );
 }
@@ -129,13 +140,14 @@ function Label({ children }: { children: string }) {
 export default function Home() {
   const { colors, t } = usePrefs();
   const { machines, switchTo } = useSession();
-  const { home, snapshots, refreshAll } = useAttention();
+  const { home, refreshAll } = useAttention();
   const open = useOpenThread();
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const [seen, setSeen] = useState<string[]>([]);
   const [all, setAll] = useState(false);
+  const stateLabel = useStateLabel();
 
   const clientFor = useCallback(
     (key: string) => {
@@ -163,26 +175,17 @@ export default function Home() {
   if (machines.length === 0) return <Guide />;
   const many = machines.length > 1;
   const needs = home.needs.filter((n) => !seen.includes(n.id));
-  const counts = headCounts(home.agents);
-  const reachable = home.desktops.some((d) => d.state === 'online');
-  const fill = (key: string, n: number) => t(key).replace('{n}', String(n));
-  const parts = [
-    counts.need
-      ? fill(counts.need === 1 ? '{n} head needs you' : '{n} heads need you', counts.need)
-      : '',
-    counts.working ? fill('{n} working', counts.working) : '',
-    counts.background ? fill('{n} watching', counts.background) : '',
-  ].filter(Boolean);
-  const headline = !reachable
-    ? t('Out of reach')
-    : parts.length
-      ? parts.join(' · ')
-      : t('All quiet');
-  const sub = !reachable
-    ? t('No desktop answers right now.')
-    : parts.length
-      ? t('Tap a head to open it')
-      : t('Nothing is running or waiting.');
+  const renderNeed = (item: NeedItem) => (
+    <NeedCard
+      key={item.id}
+      item={item}
+      many={many}
+      onAnswer={answer}
+      onOpen={(entry) => open(entry.machineKey, entry.thread)}
+      onReply={(entry) => open(entry.machineKey, entry.thread, replyTo(entry))}
+      onDismiss={dismiss}
+    />
+  );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -200,89 +203,111 @@ export default function Home() {
           />
         }
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 18 }}>
-          <Logo size={40} />
-          <Text style={{ color: colors.text, fontWeight: '800', fontSize: 20 }}>Orochi</Text>
-        </View>
-
-        <View style={{ marginTop: 10 }}>
-          <Serpent agents={home.agents} onOpen={(a) => open(a.machineKey, a.thread)} />
-        </View>
-        <View style={{ paddingHorizontal: 18, marginTop: 6 }} accessibilityRole="header">
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 10,
+            paddingHorizontal: 18,
+            paddingVertical: 8,
+          }}
+        >
+          <Logo size={34} />
           <Text
-            testID="headline"
+            accessibilityRole="header"
             style={{
               color: colors.text,
               fontWeight: '800',
+              fontSize: 28,
               letterSpacing: -0.6,
-              fontSize: 26,
-              lineHeight: 31,
+              flex: 1,
             }}
           >
-            {headline}
+            {t('Home')}
           </Text>
-          <Text style={{ color: colors.sub, fontSize: 14, marginTop: 4 }}>{sub}</Text>
+          <HeaderButton
+            testID="open-settings"
+            icon="settings-outline"
+            label={t('Settings')}
+            onPress={() => router.push('/settings')}
+          />
         </View>
 
         {needs.length ? (
-          <View style={{ paddingHorizontal: 18, marginTop: 22, gap: 12 }}>
-            {(all ? needs : needs.slice(0, 2)).map((n) => (
-              <NeedCard
-                key={n.id}
-                item={n}
-                many={many}
-                onAnswer={answer}
-                onOpen={(x) => open(x.machineKey, x.thread)}
-                onReply={(x) => open(x.machineKey, x.thread, replyTo(x))}
-                onDismiss={dismiss}
-              />
-            ))}
-            {needs.length > 2 ? (
-              <Pressable
-                testID="needs-more"
-                accessibilityRole="button"
-                onPress={() => setAll(!all)}
-                style={{ minHeight: 44, justifyContent: 'center' }}
-              >
-                <Text style={{ color: colors.text, fontWeight: '700' }}>
-                  {all
-                    ? t('Show fewer')
-                    : t('{n} more waiting').replace('{n}', String(needs.length - 2))}
-                </Text>
-              </Pressable>
-            ) : null}
+          <View>
+            <Label>{t('Needs you')}</Label>
+            <View style={{ paddingHorizontal: 18, gap: 10 }}>
+              {renderNeed(needs[0]!)}
+              {needs.length > 1 ? (
+                <Disclosure
+                  title={t('{n} more waiting').replace('{n}', String(needs.length - 1))}
+                  expanded={all}
+                  onPress={() => setAll((value) => !value)}
+                  testID="needs-more"
+                >
+                  <View style={{ gap: 10 }}>{needs.slice(1).map(renderNeed)}</View>
+                </Disclosure>
+              ) : null}
+            </View>
           </View>
         ) : null}
 
-        {reachable ? (
-          <OfficeCard snapshots={snapshots} onPress={() => router.push('/office')} />
-        ) : null}
-
-        <Label>{t('Nests')}</Label>
-        <Nests
-          desktops={home.desktops}
-          onOpen={async (d) => {
-            await switchTo(d.key);
-            router.navigate('/conversations');
+        <Label>{t('Workspaces')}</Label>
+        <View
+          style={{
+            marginHorizontal: 18,
+            borderRadius: radius.card,
+            overflow: 'hidden',
+            backgroundColor: colors.card,
+            borderWidth: 1,
+            borderColor: colors.line,
           }}
-          onRetry={() => refreshAll()}
-          onRepair={(d) => router.push({ pathname: '/pair', params: { repair: d.key } })}
-          onAdd={() => router.push({ pathname: '/pair', params: { add: '1' } })}
-        />
-
-        <Label>{t('The trail')}</Label>
-        {home.recent.length === 0 ? (
-          <Text style={{ color: colors.sub, paddingHorizontal: 18 }}>{t('Nothing here.')}</Text>
-        ) : (
-          <Trail groups={groupTrail(home.recent)} many={many} onOpen={(k, id) => open(k, id)} />
-        )}
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => router.navigate('/conversations')}
-          style={{ minHeight: 44, justifyContent: 'center', paddingHorizontal: 18, marginTop: 8 }}
         >
-          <Text style={{ color: colors.text, fontWeight: '700' }}>{t('All conversations')} →</Text>
-        </Pressable>
+          {home.desktops.map((desktop) => (
+            <View
+              key={desktop.key}
+              style={{ borderBottomWidth: 1, borderBottomColor: colors.line }}
+            >
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${desktop.name}, ${stateLabel(desktop.state)}`}
+                testID={`workspace-row-${desktop.key}`}
+                onPress={async () => {
+                  await switchTo(desktop.key);
+                  router.navigate('/conversations');
+                }}
+                style={({ pressed }) => ({
+                  minHeight: 56,
+                  padding: 12,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                  backgroundColor: pressed ? colors.raised : 'transparent',
+                })}
+              >
+                <Icon name="desktop-outline" size={18} color={colors.sub} />
+                <View style={{ flex: 1, gap: 3 }}>
+                  <WorkspaceName workspace={desktop} />
+                  {desktop.active > 0 && desktop.state === 'online' ? (
+                    <Text style={{ color: colors.sub, fontSize: 12 }}>
+                      {t(
+                        desktop.active === 1 ? '1 active conversation' : '{n} active conversations',
+                      ).replace('{n}', String(desktop.active))}
+                    </Text>
+                  ) : null}
+                </View>
+                <ConnectionBadge state={desktop.state} />
+                <Icon name="chevron-forward" size={14} color={colors.sub} />
+              </Pressable>
+            </View>
+          ))}
+          <DisclosureRow
+            title={t('Add a desktop')}
+            icon="add"
+            testID="nest-add"
+            onPress={() => router.push({ pathname: '/pair', params: { add: '1' } })}
+          />
+        </View>
       </ScrollView>
     </View>
   );

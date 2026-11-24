@@ -3,11 +3,11 @@ import { FlatList, Pressable, ScrollView, Text, TextInput, View } from 'react-na
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { crumbs, parentDir, sizeLabel, sortTree } from '@orochi/core';
 import type { DiffScope, FileRow, TreeEntry, TreeHit } from '@orochi/protocol';
-import { usePrefs } from '../../../src/state/prefs';
-import { useSession } from '../../../src/state/session';
-import { useData } from '../../../src/state/data';
-import { Icon } from '../../../src/ui/Icon';
-import { Empty, Header } from '../../../src/ui/Screen';
+import { usePrefs } from '../../../../src/state/prefs';
+import { useSession } from '../../../../src/state/session';
+import { useData } from '../../../../src/state/data';
+import { Icon } from '../../../../src/ui/Icon';
+import { Empty, Header } from '../../../../src/ui/Screen';
 
 type Mode = 'browse' | 'changed';
 const SCOPES: DiffScope[] = ['unstaged', 'staged', 'branch'];

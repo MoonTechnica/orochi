@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Animated, PanResponder, Pressable, Text, View } from 'react-native';
 import { since, whoOf, type NeedItem } from '@orochi/core';
+import { Icon } from '../Icon';
 import { usePrefs } from '../../state/prefs';
 import { WhoFace } from '../people/WhoFace';
 import { mono, radius } from '../theme';
@@ -26,16 +27,17 @@ function Button({
       accessibilityLabel={label}
       disabled={disabled}
       onPress={onPress}
-      style={{
+      accessibilityState={{ disabled }}
+      style={({ pressed }) => ({
         minHeight: 44,
-        paddingHorizontal: 18,
+        paddingHorizontal: 11,
         borderRadius: radius.pill,
         justifyContent: 'center',
         backgroundColor: primary ? colors.attention : 'transparent',
         borderWidth: primary ? 0 : 1,
         borderColor: colors.line,
-        opacity: disabled ? 0.5 : 1,
-      }}
+        opacity: disabled ? 0.5 : pressed ? 0.75 : 1,
+      })}
     >
       <Text
         style={{ color: primary ? colors.onPrimary : colors.text, fontWeight: '700', fontSize: 14 }}
@@ -106,18 +108,16 @@ export function NeedCard({
       testID={`need-${item.kind}`}
       style={{
         transform: [{ translateX: x }],
-        backgroundColor: colors.raised,
+        backgroundColor: colors.card,
         borderRadius: radius.tile,
-        borderWidth: 2,
-        borderColor: colors.attention,
+        borderWidth: 1,
+        borderColor: colors.line,
         padding: 14,
         gap: 10,
       }}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        <View
-          style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: colors.attention }}
-        />
+        <Icon name={p ? 'shield-checkmark-outline' : 'at'} size={17} color={colors.text} />
         <Text
           numberOfLines={1}
           style={{
@@ -141,7 +141,9 @@ export function NeedCard({
         onPress={() => onOpen(item)}
       >
         <Text numberOfLines={1} style={{ color: colors.sub, fontSize: 12 }}>
-          {[item.title || t('New conversation'), where].filter(Boolean).join(' · ')}
+          {[item.mention?.who, item.title || t('New conversation'), where]
+            .filter(Boolean)
+            .join(' · ')}
         </Text>
         <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', marginTop: 4 }}>
           {item.mention ? (
@@ -161,7 +163,7 @@ export function NeedCard({
             numberOfLines={3}
             style={{ color: colors.text, fontWeight: '700', fontSize: 18, flex: 1 }}
           >
-            {p ? p.title : `${item.mention?.who} → ${t('you')}: ${item.mention?.text ?? ''}`}
+            {p ? p.title : item.mention?.text}
           </Text>
         </View>
         {p?.detail ? (

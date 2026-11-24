@@ -6,6 +6,14 @@ appId: dev.orochi.mobile
     arguments:
       -AppleLanguages: '(ja)'
       -AppleLocale: 'ja_JP'
+- scrollUntilVisible:
+    element:
+      id: 'workspace-row-.*'
+    timeout: 25000
+- tapOn:
+    id: 'workspace-row-.*'
+- tapOn:
+    id: tab-activity
 - extendedWaitUntil:
     visible:
       id: office-card

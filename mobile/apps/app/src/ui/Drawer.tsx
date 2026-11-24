@@ -3,6 +3,7 @@ import {
   Animated,
   Dimensions,
   Easing,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
   Platform,
@@ -12,14 +13,16 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { useReducedMotion } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePrefs } from '../state/prefs';
+import { HeaderButton } from './Screen';
 
 const native = Platform.OS !== 'web';
 
 /**
- * A panel that slides in from the right edge (80% of the width, the rest dimmed). A tap on the
- * dimmed part, a swipe to the right on the panel and the system back gesture close it.
+ * A panel that slides in from a screen edge. Tap outside, swipe back towards the edge,
+ * or use the system back action to close it.
  * Content is up to the caller; `DrawerSection` and `DrawerItem` give it the usual shapes.
  */
 export function Drawer({
@@ -27,66 +30,82 @@ export function Drawer({
   onClose,
   children,
   label,
+  side = 'right',
+  title,
 }: {
   visible: boolean;
   onClose: () => void;
   children: React.ReactNode;
   label?: string;
+  side?: 'left' | 'right';
+  title?: string;
 }) {
   const { colors, t } = usePrefs();
   const insets = useSafeAreaInsets();
   const { width: screen } = useWindowDimensions();
-  const width = Math.round(screen * 0.8);
-  const slide = useRef(new Animated.Value(width)).current;
+  const fromLeft = side === 'left';
+  // Update the panel's measured frame so iOS exposes its controls on each opening.
+  const layoutSlide = fromLeft && Platform.OS === 'ios';
+  const direction = fromLeft ? -1 : 1;
+  const width = Math.round(Math.min(screen * 0.8, fromLeft ? 360 : screen));
+  const reduced = useReducedMotion();
+  const slide = useRef(new Animated.Value(1)).current;
   const [mounted, setMounted] = useState(visible);
 
   useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      slide.setValue(width);
+    if (visible) setMounted(true);
+    if (reduced) {
+      slide.setValue(visible ? 0 : 1);
+      if (!visible) setMounted(false);
+      return;
+    }
+    const animation = Animated.timing(slide, {
+      toValue: visible ? 0 : 1,
+      duration: visible ? 220 : 180,
+      easing: visible ? Easing.out(Easing.cubic) : Easing.in(Easing.cubic),
+      useNativeDriver: native && !layoutSlide,
+    });
+    animation.start(({ finished }) => {
+      if (finished && !visible) setMounted(false);
+    });
+    return () => animation.stop();
+  }, [visible, slide, reduced, layoutSlide]);
+
+  const pan = useMemo(() => {
+    const restore = () =>
       Animated.timing(slide, {
         toValue: 0,
-        duration: 220,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: native,
+        duration: reduced ? 0 : 120,
+        useNativeDriver: native && !layoutSlide,
       }).start();
-    } else if (mounted) {
-      Animated.timing(slide, {
-        toValue: width,
-        duration: 180,
-        easing: Easing.in(Easing.cubic),
-        useNativeDriver: native,
-      }).start(() => setMounted(false));
-    }
-  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: (_, g) => g.dx > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
-        onPanResponderMove: (_, g) => slide.setValue(Math.max(0, g.dx)),
-        onPanResponderRelease: (_, g) => {
-          if (g.dx > width * 0.25 || g.vx > 0.6) onClose();
-          else
-            Animated.timing(slide, {
-              toValue: 0,
-              duration: 120,
-              useNativeDriver: native,
-            }).start();
-        },
-      }),
-    [width, onClose, slide],
-  );
+    return PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: (_, g) =>
+        g.dx * direction > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.5,
+      onPanResponderMove: (_, g) => {
+        slide.setValue(Math.max(0, (g.dx * direction) / width));
+      },
+      onPanResponderRelease: (_, g) => {
+        if (g.dx * direction > width * 0.25 || g.vx * direction > 0.6) onClose();
+        else restore();
+      },
+      onPanResponderTerminate: restore,
+    });
+  }, [direction, width, onClose, reduced, slide, layoutSlide]);
 
   const dim = slide.interpolate({
-    inputRange: [0, width],
+    inputRange: [0, 1],
     outputRange: [0.45, 0],
+    extrapolate: 'clamp',
+  });
+  const translateX = slide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, width * direction],
     extrapolate: 'clamp',
   });
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose}>
-      <View style={{ flex: 1 }} accessibilityViewIsModal>
+      <View style={{ flex: 1 }} accessibilityViewIsModal={!fromLeft}>
         <Animated.View
           pointerEvents="none"
           style={{
@@ -100,34 +119,74 @@ export function Drawer({
           }}
         />
         <Pressable
-          style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }}
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel={t('Close panel')}
-        />
-        <Animated.View
-          {...pan.panHandlers}
-          accessibilityLabel={label}
+          testID="drawer-backdrop"
           style={{
             position: 'absolute',
             top: 0,
             bottom: 0,
-            right: 0,
+            left: fromLeft ? width : 0,
+            right: fromLeft ? 0 : width,
+          }}
+          onPress={onClose}
+          accessibilityRole={title ? undefined : 'button'}
+          accessibilityLabel={title ? undefined : t('Close panel')}
+          accessible={!title}
+          tabIndex={title ? -1 : 0}
+        />
+        <Animated.View
+          {...pan.panHandlers}
+          accessibilityLabel={label}
+          accessibilityViewIsModal={fromLeft}
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            ...(fromLeft
+              ? {
+                  left: layoutSlide ? translateX : 0,
+                  borderRightWidth: 1,
+                  paddingLeft: insets.left,
+                }
+              : { right: 0, borderLeftWidth: 1, paddingRight: insets.right }),
             width,
             backgroundColor: colors.card,
-            borderLeftWidth: 1,
-            borderLeftColor: colors.line,
+            borderColor: colors.line,
             paddingTop: insets.top,
             paddingBottom: insets.bottom,
-            transform: [{ translateX: slide }],
+            transform: layoutSlide ? undefined : [{ translateX }],
           }}
         >
-          <ScrollView
-            contentContainerStyle={{ paddingBottom: 24 }}
-            keyboardShouldPersistTaps="handled"
+          {title ? (
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                paddingLeft: 16,
+                paddingRight: 8,
+                minHeight: 52,
+              }}
+            >
+              <Text
+                accessibilityRole="header"
+                style={{ flex: 1, color: colors.text, fontSize: 18, fontWeight: '800' }}
+              >
+                {title}
+              </Text>
+              <HeaderButton icon="close" label={t('Close panel')} onPress={onClose} />
+            </View>
+          ) : null}
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={fromLeft && Platform.OS === 'ios' ? 'padding' : undefined}
           >
-            {children}
-          </ScrollView>
+            <ScrollView
+              contentContainerStyle={{ paddingBottom: 24 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {children}
+            </ScrollView>
+          </KeyboardAvoidingView>
         </Animated.View>
       </View>
     </Modal>

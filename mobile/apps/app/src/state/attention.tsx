@@ -170,7 +170,7 @@ export function AttentionProvider({ children }: { children: React.ReactNode }) {
       if (m.key === active?.key) {
         states[m.key] = m.needsRepair
           ? 'repair'
-          : error && !loaded
+          : error && connection !== 'open'
             ? 'offline'
             : connection === 'open'
               ? 'online'

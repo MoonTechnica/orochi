@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Disclosure } from '../src/ui/Disclosure';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -47,6 +48,7 @@ export default function Pair() {
   const [cameraError, setCameraError] = useState(false);
   const [link, setLink] = useState('');
   const [busy, setBusy] = useState(false);
+  const [manual, setManual] = useState(Boolean(repairing));
   const [message, setMessage] = useState<string | null>(null);
 
   const go = async (text: string) => {
@@ -157,7 +159,7 @@ export default function Pair() {
         contentContainerStyle={{ padding: 20, paddingTop: insets.top + 24, gap: 16 }}
         keyboardShouldPersistTaps="handled"
       >
-        {machines.length > 0 ? (
+        {router.canGoBack() || machines.length > 0 ? (
           <Pressable
             accessibilityRole="button"
             onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}
@@ -263,20 +265,25 @@ export default function Pair() {
           }}
         />
         {button(t('Pair'), () => go(link), false)}
-        <Text style={{ color: colors.sub, fontSize: 13, fontWeight: '700', marginTop: 8 }}>
-          {t('Or enter the details')}
-        </Text>
-        {field(t('Address (Tailscale IP or name)'), host, setHost, { keyboardType: 'url' })}
-        {field(t('Port'), port, setPort, { keyboardType: 'number-pad' })}
-        {field(t('Pairing code'), code, setCode)}
-        {button(
-          t('Pair'),
-          () =>
-            go(
-              `orochi://pair?host=${encodeURIComponent(host.trim())}&port=${port.trim()}&code=${encodeURIComponent(code.trim())}`,
-            ),
-          false,
-        )}
+        <Disclosure
+          title={t('Or enter the details')}
+          expanded={manual}
+          onPress={() => setManual((value) => !value)}
+        >
+          <View style={{ gap: 10 }}>
+            {field(t('Address (Tailscale IP or name)'), host, setHost, { keyboardType: 'url' })}
+            {field(t('Port'), port, setPort, { keyboardType: 'number-pad' })}
+            {field(t('Pairing code'), code, setCode)}
+            {button(
+              t('Pair'),
+              () =>
+                go(
+                  `orochi://pair?host=${encodeURIComponent(host.trim())}&port=${port.trim()}&code=${encodeURIComponent(code.trim())}`,
+                ),
+              false,
+            )}
+          </View>
+        </Disclosure>
         {busy ? <ActivityIndicator color={colors.text} /> : null}
         {message ? <Text style={{ color: colors.dangerInk, fontSize: 14 }}>{message}</Text> : null}
       </ScrollView>

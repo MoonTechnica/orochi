@@ -1,13 +1,5 @@
 import React, { Profiler, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  FlatList,
-  Platform,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  Text,
-  View,
-} from 'react-native';
+import { FlatList, Platform, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   filterCounts,
@@ -21,21 +13,21 @@ import {
   type Person,
   type Room,
 } from '@orochi/core';
-import { useOffice } from '../src/state/office';
-import { useOfficeFilter } from '../src/state/officeView';
-import { useOpenThread } from '../src/state/open';
-import { usePrefs } from '../src/state/prefs';
-import { useSession } from '../src/state/session';
-import { Icon } from '../src/ui/Icon';
-import { Header } from '../src/ui/Screen';
-import { Avatar } from '../src/ui/office/Avatar';
-import { CompactRow } from '../src/ui/office/CompactRow';
-import { Filters } from '../src/ui/office/Filters';
-import { MotionProvider, MotionRoom, useMotionStore } from '../src/ui/office/motion';
-import { RoomCard } from '../src/ui/office/RoomCard';
-import { RoomSheet } from '../src/ui/office/RoomSheet';
-import { SeatSheet } from '../src/ui/office/SeatSheet';
-import { Strip } from '../src/ui/office/Strip';
+import { useOffice } from '../../src/state/office';
+import { useOfficeFilter } from '../../src/state/officeView';
+import { useOpenThread } from '../../src/state/open';
+import { usePrefs } from '../../src/state/prefs';
+import { useSession } from '../../src/state/session';
+import { Icon } from '../../src/ui/Icon';
+import { Header } from '../../src/ui/Screen';
+import { Avatar } from '../../src/ui/office/Avatar';
+import { CompactRow } from '../../src/ui/office/CompactRow';
+import { Filters } from '../../src/ui/office/Filters';
+import { MotionProvider, MotionRoom, useMotionStore } from '../../src/ui/office/motion';
+import { RoomCard } from '../../src/ui/office/RoomCard';
+import { RoomSheet } from '../../src/ui/office/RoomSheet';
+import { SeatSheet } from '../../src/ui/office/SeatSheet';
+import { Strip } from '../../src/ui/office/Strip';
 
 const idle = (provider: string): Person => {
   const who = { role: provider, agent: provider };
@@ -68,16 +60,15 @@ const timing = (globalThis as { __officeTiming?: Record<string, number> }).__off
  */
 export default function Office() {
   const { colors, t } = usePrefs();
-  const { machines, active, titleOf } = useSession();
+  const { active, titleOf } = useSession();
   const insets = useSafeAreaInsets();
   const open = useOpenThread();
-  const [picked, setPicked] = useState<string | null>(null);
-  const key = picked && machines.some((m) => m.key === picked) ? picked : (active?.key ?? null);
+  const key = active?.key ?? null;
   const { machine, snap, office, icons, client, refreshAll, markSeen } = useOffice(key);
   const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
   const [openRoom, setOpenRoom] = useState<Record<string, string>>({});
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
-  const [filter, setFilter] = useOfficeFilter();
+  const [filter, setFilter] = useOfficeFilter(key);
   const [sheet, setSheet] = useState<Person | null>(null);
   const [listId, setListId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -239,38 +230,6 @@ export default function Office() {
 
   const header = (
     <View style={{ gap: 14, marginBottom: 14 }}>
-      {machines.length > 1 ? (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 8 }}
-        >
-          {machines.map((m) => {
-            const on = m.key === key;
-            return (
-              <Pressable
-                key={m.key}
-                accessibilityRole="button"
-                accessibilityState={{ selected: on }}
-                onPress={() => setPicked(m.key)}
-                style={{
-                  minHeight: 40,
-                  paddingHorizontal: 14,
-                  borderRadius: 10,
-                  justifyContent: 'center',
-                  backgroundColor: on ? colors.text : colors.card,
-                  borderWidth: 1,
-                  borderColor: on ? colors.text : colors.line,
-                }}
-              >
-                <Text style={{ color: on ? colors.bg : colors.text, fontWeight: '700' }}>
-                  {titleOf(m)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      ) : null}
       {offline ? (
         <Text style={{ color: colors.sub, textAlign: 'center', padding: 24 }}>
           {snap?.error || t('This desktop does not answer.')}
@@ -325,10 +284,7 @@ export default function Office() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <Header
-        title={t('Office')}
-        subtitle={machines.length > 1 && machine ? titleOf(machine) : undefined}
-      />
+      <Header title={t('Office')} subtitle={machine ? titleOf(machine) : undefined} />
       <MotionProvider value={motion}>
         <Profiler
           id="office"

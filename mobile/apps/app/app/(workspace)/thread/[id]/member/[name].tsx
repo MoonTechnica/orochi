@@ -23,17 +23,17 @@ import {
   type ThreadLine,
   type Voice,
 } from '@orochi/core';
-import { useNow } from '../../../../src/state/now';
-import { usePrefs } from '../../../../src/state/prefs';
-import { useSession } from '../../../../src/state/session';
-import { useThreadData, type ThreadData } from '../../../../src/state/thread';
-import { useThreadSeen } from '../../../../src/state/threadSeen';
-import { Composer } from '../../../../src/ui/Composer';
-import { DayRow, DividerView, PostView, WorkView } from '../../../../src/ui/Entries';
-import { LiveFace } from '../../../../src/ui/people/LiveFace';
-import { PeopleProvider, usePeople } from '../../../../src/ui/people/People';
-import { Empty, Header } from '../../../../src/ui/Screen';
-import { Sheet } from '../../../../src/ui/Sheet';
+import { useNow } from '../../../../../src/state/now';
+import { usePrefs } from '../../../../../src/state/prefs';
+import { useSession } from '../../../../../src/state/session';
+import { useThreadData, type ThreadData } from '../../../../../src/state/thread';
+import { useThreadSeen } from '../../../../../src/state/threadSeen';
+import { Composer } from '../../../../../src/ui/Composer';
+import { DayRow, DividerView, PostView, WorkView } from '../../../../../src/ui/Entries';
+import { LiveFace } from '../../../../../src/ui/people/LiveFace';
+import { PeopleProvider, usePeople } from '../../../../../src/ui/people/People';
+import { Empty, Header } from '../../../../../src/ui/Screen';
+import { Sheet } from '../../../../../src/ui/Sheet';
 
 export default function MemberThread() {
   const { id } = useLocalSearchParams<{ id: string }>();

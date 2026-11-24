@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { officeSummary, type MachineSnapshot, type Person } from '@orochi/core';
 import { usePrefs } from '../../state/prefs';
 import { Icon } from '../Icon';
@@ -14,6 +14,8 @@ export function OfficeCard({
   onPress: () => void;
 }) {
   const { colors, t } = usePrefs();
+  const { width, fontScale } = useWindowDimensions();
+  const faceCount = fontScale > 1.3 ? 0 : width < 380 ? 2 : 3;
   const { stats, faces } = useMemo(() => {
     const sum = { working: 0, assistants: 0, asking: 0, messages: 0, rooms: 0 };
     const faces: { id: string; person: Person }[] = [];
@@ -41,7 +43,8 @@ export function OfficeCard({
       onPress={onPress}
       style={{
         marginHorizontal: 18,
-        marginTop: 20,
+        marginTop: 0,
+        marginBottom: 12,
         borderRadius: 12,
         padding: 16,
         backgroundColor: colors.card,
@@ -58,17 +61,17 @@ export function OfficeCard({
           {line}
         </Text>
         {stats.rooms ? (
-          <Text style={{ color: colors.muted, fontSize: 12 }}>
+          <Text style={{ color: colors.sub, fontSize: 12 }}>
             {t(stats.rooms === 1 ? '{n} room' : '{n} rooms').replace('{n}', String(stats.rooms))} ·{' '}
             {stats.assistants} {t('assistants')}
           </Text>
         ) : null}
       </View>
-      {faces.length ? (
+      {faces.length > 0 && faceCount > 0 ? (
         <View style={{ flexDirection: 'row', paddingRight: 8 }}>
-          {faces.slice(0, 4).map(({ id, person: p }, i) => (
-            <View key={`${id}:${i}`} style={{ marginRight: -14, zIndex: 10 - i }}>
-              <Avatar person={p} size={40} still />
+          {faces.slice(0, faceCount).map(({ id, person: p }, i) => (
+            <View key={`${id}:${i}`} style={{ marginRight: -10, zIndex: 10 - i }}>
+              <Avatar person={p} size={34} still />
             </View>
           ))}
         </View>
