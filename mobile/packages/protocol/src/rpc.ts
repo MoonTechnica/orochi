@@ -2,6 +2,7 @@ import type {
   AgentRow,
   Browse,
   Folder,
+  Placement,
   ProjectAdded,
   LiveSeat,
   LiveTask,
@@ -89,8 +90,10 @@ export const api = (c: RemoteClient) => ({
   stopSeat: (thread: string, seat: string | null) => c.rpc<null>('stop_seat', { thread, seat }),
   seen: (thread: string) => c.rpc<null>('seen', { thread }),
   seeMentions: (thread: string) => c.rpc<null>('see_mentions', { thread }),
-  newThread: (root: string, worktree = false) =>
-    c.rpc<string>('new_thread', { root, worktree, sandbox: null }),
+  /** A sandbox the folder does not have yet is made at the window, never from here. */
+  newThread: (root: string, worktree = false, sandbox: string | null = null) =>
+    c.rpc<string>('new_thread', { root, worktree, sandbox }),
+  placement: (root: string) => c.rpc<Placement>('placement', { root }),
   browse: (path: string | null = null) => c.rpc<Browse>('browse', { path }),
   addProject: (root: string) => c.rpc<ProjectAdded>('add_project', { root }),
   /** A clone can take minutes: the desktop stops it after 15, so the wait is a little longer. */

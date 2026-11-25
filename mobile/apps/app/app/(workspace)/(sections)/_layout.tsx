@@ -1,11 +1,10 @@
 import React from 'react';
 import { View } from 'react-native';
-import { Tabs, usePathname, useRouter } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { usePrefs } from '../../../src/state/prefs';
 import { useSession } from '../../../src/state/session';
 import { MachineSwitcher, RepairPanel } from '../../../src/ui/Machines';
-import { NewThreadButton } from '../../../src/ui/NewThread';
 import { HeaderButton } from '../../../src/ui/Screen';
 import { TabBar } from '../../../src/ui/TabBar';
 
@@ -16,7 +15,6 @@ export default function WorkspaceSections() {
   const { active } = useSession();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const chats = usePathname() === '/conversations';
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <View
@@ -39,7 +37,6 @@ export default function WorkspaceSections() {
           onPress={() => router.dismissTo('/')}
         />
         <MachineSwitcher />
-        {chats && !active?.needsRepair ? <NewThreadButton /> : null}
       </View>
       {active?.needsRepair ? (
         <RepairPanel />

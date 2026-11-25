@@ -22,7 +22,8 @@ const arg = (name, fallback) => {
 const HOST = arg('host', '127.0.0.1');
 const PORT = Number(arg('port', '7421'));
 const CODE = arg('code', 'MOCK-1234');
-const MACHINE = 'Mock Mac';
+// --name tries a long machine name, which every place that shows it has to survive.
+const MACHINE = arg('name', 'Mock Mac');
 
 // ---- data --------------------------------------------------------------------------------
 const sidebar = load('sidebar');
@@ -737,6 +738,25 @@ const rpc = {
     mentions = [];
     return null;
   },
+  // The first project has a container made; the others have only this machine.
+  placement: ({ root: r }) =>
+    r === projects[0]?.root
+      ? {
+          mode: 'runner',
+          tier: 'container',
+          docker: true,
+          name: 'repo',
+          options: ['host', 'runner', 'container'],
+          ready: ['host', 'runner', 'container'],
+        }
+      : {
+          mode: 'host',
+          tier: null,
+          docker: true,
+          name: null,
+          options: ['host', 'runner', 'container', 'vm'],
+          ready: ['host'],
+        },
   new_thread: ({ root: r }) => {
     const id = crypto.randomUUID();
     const project = projects.find((p) => p.root === r) ?? projects[0];

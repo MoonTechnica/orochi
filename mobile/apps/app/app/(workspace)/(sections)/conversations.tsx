@@ -20,6 +20,7 @@ import { DisclosureRow } from '../../../src/ui/Disclosure';
 import { radius, toneInk } from '../../../src/ui/theme';
 import { Empty } from '../../../src/ui/Screen';
 import { ThreadMenu } from '../../../src/ui/ThreadMenu';
+import { FAB, NewThreadButton } from '../../../src/ui/NewThread';
 
 type Filter = 'all' | 'needs' | 'unread' | 'archived';
 
@@ -237,7 +238,7 @@ export default function Conversations() {
           sections={[{ key: 'hits', title: t('Conversations'), data: hits }]}
           keyExtractor={(h) => h.thread_id}
           keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingTop: 8, paddingBottom: 24 }}
+          contentContainerStyle={{ paddingTop: 8, paddingBottom: FAB + 36 }}
           renderItem={({ item }) => (
             <Pressable
               onPress={() => open(item.thread_id)}
@@ -277,7 +278,7 @@ export default function Conversations() {
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.text} />
           }
-          contentContainerStyle={{ paddingBottom: 24 }}
+          contentContainerStyle={{ paddingBottom: FAB + 36 }}
           keyboardShouldPersistTaps="handled"
           stickySectionHeadersEnabled={false}
           ListEmptyComponent={
@@ -335,6 +336,7 @@ export default function Conversations() {
         onClose={() => setMenu(null)}
         onChanged={() => filter === 'archived' && loadArchived()}
       />
+      <NewThreadButton />
     </View>
   );
 }

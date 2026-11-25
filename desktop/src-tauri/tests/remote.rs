@@ -376,6 +376,27 @@ async fn rpc_answers_with_the_views_the_window_reads_and_writes_what_it_writes()
     let root = door.repo.to_string_lossy().into_owned();
     let started = rpc(&door, &token, "new_thread", json!({"root": root})).await;
     assert_eq!(started.status, 200);
+    // It reads where a known project's conversations may run, and only a known project's.
+    let place = rpc(&door, &token, "placement", json!({"root": root})).await;
+    assert_eq!(place.status, 200);
+    assert!(
+        place.json()["ready"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o == "host")
+    );
+    let elsewhere = rpc(&door, &token, "placement", json!({"root": "/tmp"})).await;
+    assert_eq!(elsewhere.status, 400);
+    // A sandbox it has not got is never made from the phone.
+    let unmade = rpc(
+        &door,
+        &token,
+        "new_thread",
+        json!({"root": root, "sandbox": "vm"}),
+    )
+    .await;
+    assert_ne!(unmade.status, 200);
 }
 
 #[tokio::test]

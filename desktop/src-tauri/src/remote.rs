@@ -4,7 +4,7 @@
 //! a library module so it is tested without a webview: every route ends in a call the window
 //! already makes on `view::Client`, behind a whitelist, after a device token has been checked.
 //! Off until the user turns it on in Settings → Mobile.
-use crate::view::Client;
+use crate::view::{Client, Folder};
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
     Router,
@@ -68,6 +68,7 @@ const READS: &[&str] = &[
     "watch",
     "agent_icons",
     "browse",
+    "placement",
     "residents",
     "routines",
     "routine_firings",
@@ -97,6 +98,15 @@ const WRITES: &[&str] = &[
     "resident_add",
     "resident_action",
 ];
+
+fn known_folder(client: &Client, root: &str) -> Result<Folder, Failure> {
+    let asked = Path::new(root).canonicalize().ok();
+    client
+        .folders()?
+        .into_iter()
+        .find(|f| asked.is_some() && Path::new(&f.root).canonicalize().ok() == asked)
+        .ok_or_else(|| Failure::bad("unknown project folder"))
+}
 
 pub fn whitelisted(command: &str) -> bool {
     READS.contains(&command) || WRITES.contains(&command)
@@ -1165,17 +1175,16 @@ fn call(
         "stop_seat" => value(client.stop_seat(&thread()?, maybe(args, "seat").as_deref())),
         "seen" => value(client.seen(&thread()?)),
         "see_mentions" => value(client.see_mentions(&thread()?)),
+        // Where a project's conversations may run: read so the phone can choose among the
+        // places already made. Making a sandbox (`place`) stays at the window.
+        "placement" => {
+            let known = known_folder(client, &text(args, "root")?)?;
+            value(client.placement(Path::new(&known.root)))
+        }
         "new_thread" => {
             // The phone may start a thread only where the window already knows a project:
             // it cannot make the desktop record a thread in an arbitrary folder.
-            let asked = Path::new(&text(args, "root")?).canonicalize().ok();
-            let known = client
-                .folders()?
-                .into_iter()
-                .find(|f| asked.is_some() && Path::new(&f.root).canonicalize().ok() == asked);
-            let Some(known) = known else {
-                return Err(Failure::bad("unknown project folder"));
-            };
+            let known = known_folder(client, &text(args, "root")?)?;
             value(client.new_thread(
                 Path::new(&known.root),
                 flag(args, "worktree"),

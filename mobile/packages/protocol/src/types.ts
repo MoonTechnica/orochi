@@ -356,6 +356,18 @@ export interface Browse {
   entries: { name: string; path: string; git: boolean }[];
 }
 
+/** Where a project's conversations may run (the desktop's `view::Placement`). */
+export interface Placement {
+  /** The project's own setting: a conversation started without a choice runs there. */
+  mode: string;
+  tier: string | null;
+  docker: boolean;
+  name: string | null;
+  options: string[];
+  /** Of `options`, the ones already made: only these can be chosen from a phone. */
+  ready: string[];
+}
+
 export interface ProjectAdded {
   id: string;
   root: string;
